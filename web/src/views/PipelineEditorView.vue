@@ -11,6 +11,7 @@ import {
 } from 'lucide-vue-next'
 
 import client from '@/api/client'
+import { deploymentExecution, clearTaskDeploymentExecution } from '@/utils/deploymentExecution'
 import PipelineTaskControls from '@/components/PipelineTaskControls.vue'
 import DeploymentPlanView from '@/views/DeploymentPlanView.vue'
 import DeploymentPlanReferencePreview from '@/components/DeploymentPlanReferencePreview.vue'
@@ -1237,15 +1238,19 @@ function unlockDeploymentPlanSelection(){if(canEdit.value&&canReadDeploymentPlan
 function modifyLinkedDeploymentPlan(){
   const plan=selectedLibraryDeploymentPlan.value
   if(!plan||!canModifyDeploymentPlan.value)return
-  void router.push({path:'/deployment-plans',query:{plan:plan.id,edit:'1'}})
+  void router.push({path:'/deployment-plans',query:{plan:plan.id,edit:'1'},state:{deployment_execution_handoff:{plan_id:plan.id,user_id:auth.user?.id,project_id:auth.user?.project_id,config_json:JSON.stringify(deploymentExecution(selectedNode.value!.config,stages.value.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')))}}})
 }
 function editInlineDeployment(){
   if(!selectedNode.value||selectedNode.value.type!=='deploy'||!canEdit.value)return
   inlineDeploymentNodeID.value=selectedNode.value.id;inlineDeploymentOpen.value=true
 }
+const inlineDeploymentValue = computed(()=>{
+ const node=selectedNode.value;const plan=node?.config.inline_deployment_plan
+ return plan ? {...plan,execution_config:plan.execution_config || deploymentExecution(node!.config,stages.value.flatMap(stage=>stage.tasks).filter(task=>task.type==='build'))} : undefined
+})
 function applyInlineDeployment(value:WorkflowDeploymentPlan){
   if(!canEdit.value||selectedNode.value?.id!==inlineDeploymentNodeID.value)return
-  updateSelectedNode({}, {deployment_source:'inline',deployment_plan_id:undefined,inline_deployment_plan:value})
+  updateSelectedNode({}, {...clearTaskDeploymentExecution(),deployment_source:'inline',deployment_plan_id:undefined,inline_deployment_plan:value})
 }
 watch(()=>[selectedNodeID.value,scopeIdentity(),canEdit.value],()=>{inlineDeploymentOpen.value=false;inlineDeploymentNodeID.value='';changingDeploymentPlanNodeID.value=''})
 watch(scopeIdentity,()=>{inlineDeploymentDrafts.clear();libraryDeploymentDrafts.clear()})
@@ -1673,8 +1678,8 @@ onBeforeRouteLeave(async () => {
             </div>
           </header>
           <div class="panel-tabs" role="tablist" aria-label="任务配置分区">
-            <button type="button" :class="{ active: propertyTab === 'common' }" role="tab" :aria-selected="propertyTab === 'common'" @click="propertyTab = 'common'">常规配置</button>
-            <button type="button" :class="{ active: propertyTab === 'advanced' }" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">通知及高级配置</button>
+            <button type="button" :class="{ active: propertyTab === 'common' }" role="tab" :aria-selected="propertyTab === 'common'" @click="propertyTab = 'common'">{{ selectedNode.type==='deploy' ? '部署方案' : '常规配置' }}</button>
+            <button type="button" :class="{ active: propertyTab === 'advanced' }" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">{{ selectedNode.type==='deploy' ? '通知' : '通知及高级配置' }}</button>
           </div>
           <a-form v-if="propertyTab === 'common'" layout="vertical">
             <a-form-item :label="selectedNode.type === 'trigger' ? '来源名称' : '任务名称'">
@@ -1787,10 +1792,11 @@ onBeforeRouteLeave(async () => {
                   <a-button v-if="!selectedNode.config.deployment_plan_id&&canCreateDeploymentPlan" class="resource-create" aria-label="创建部署方案" title="创建部署方案" @click="createDeploymentPlan"><Plus :size="16" /></a-button>
                 </div>
               </a-form-item>
-              <DeploymentPlanReferencePreview v-if="selectedLibraryDeploymentPlan" :key="selectedLibraryDeploymentPlan.id" :plan="selectedLibraryDeploymentPlan" />
+              <DeploymentPlanReferencePreview v-if="selectedLibraryDeploymentPlan" :key="selectedLibraryDeploymentPlan.id" :plan="selectedLibraryDeploymentPlan" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" />
+              <DeploymentPlanReferencePreview v-else-if="deploymentSource(selectedNode)==='inline' && selectedNode.config.inline_deployment_plan" :plan="{...selectedNode.config.inline_deployment_plan,id:'inline'}" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" />
               <a-alert v-else-if="deploymentSource(selectedNode)==='plan'&&selectedNode.config.deployment_plan_id" type="warning" show-icon :message="canReadDeploymentPlan?'原部署方案不可用，请检查状态和适用范围。':'没有查看部署方案的权限，已保留原关联。'" />
               <a-alert v-if="deploymentSource(selectedNode)==='plan'&&canReadDeploymentPlan&&!selectedNode.config.deployment_plan_id&&!compatibleDeploymentPlans(selectedNode.id).length" class="panel-alert" type="warning" show-icon message="没有可用的部署方案。Kubernetes 要求镜像构建方案绑定镜像仓库。" />
-              <p v-if="deploymentSource(selectedNode)==='plan'" class="panel-note">部署方案包含执行方式、环境和目标位置；文件来源与部署脚本在当前任务中配置。</p>
+
             </template>
           </a-form>
           <a-form v-else layout="vertical">
@@ -1847,7 +1853,7 @@ onBeforeRouteLeave(async () => {
               </div>
               <div v-else-if="canReadNotificationChannels && activeNotificationChannels.length" class="node-notification-empty">当前任务尚未配置通知；建议至少添加“失败”通知。</div>
             </section>
-            <PipelineTaskControls v-if="selectedTask" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id)?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
+            <PipelineTaskControls v-if="selectedTask && selectedNode.type!=='deploy'" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id)?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
             <a-divider v-if="selectedTask && selectedNode.type !== 'deploy'" class="node-notification-divider" />
             <template v-if="selectedNode.type === 'shell' && !selectedNode.config.check && !selectedNode.config.migration">
               <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canUpdate || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像需包含 /bin/sh，并指定版本 Tag 或 Digest，不能使用 latest。' }}</small></a-form-item>
@@ -1935,7 +1941,7 @@ onBeforeRouteLeave(async () => {
         <p class="notification-channel-note">流水线执行时只会替换标题和内容中实际引用的变量。Webhook 请求还会包含投递所需的级别、来源和运行标识，不会包含仓库凭据或部署密钥。</p>
       </a-form>
     </a-modal>
-    <DeploymentPlanView v-if="inlineDeploymentOpen&&selectedNode?.id===inlineDeploymentNodeID" :key="inlineDeploymentNodeID" inline v-model:inline-open="inlineDeploymentOpen" :inline-value="selectedNode.config.inline_deployment_plan" :inline-kinds="inlineDeploymentKinds(inlineDeploymentNodeID)" @save-inline="applyInlineDeployment"/>
+    <DeploymentPlanView v-if="inlineDeploymentOpen&&selectedNode?.id===inlineDeploymentNodeID" :key="inlineDeploymentNodeID" inline v-model:inline-open="inlineDeploymentOpen" :inline-value="inlineDeploymentValue" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" :inline-kinds="inlineDeploymentKinds(inlineDeploymentNodeID)" @save-inline="applyInlineDeployment"/>
     <WorkflowPresetModal :key="scopeIdentity()" v-model:open="presetOpen" :can-create="canCreate" :can-execute="canExecute" @created="openCreatedTemplate" />
   </section>
 </template>

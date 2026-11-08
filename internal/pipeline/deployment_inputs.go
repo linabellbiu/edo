@@ -55,17 +55,17 @@ func sanitizeDeploymentInputs(node *model.WorkflowNode) error {
 		}
 		switch input.Kind {
 		case "configuration":
-			if input.ConfigurationID == "" || len(input.ConfigurationID) > 36 || configurations[input.ConfigurationID] || input.RegistryID != "" || input.Image != "" || input.Tag != "" || input.ArtifactNodeID != "" {
+			if input.ConfigurationID == "" || len(input.ConfigurationID) > 36 || configurations[input.ConfigurationID] || input.RegistryID != "" || input.Image != "" || input.Tag != "" || input.ArtifactNodeID != "" || input.ArtifactBuildPlanID != "" {
 				return ErrDeploymentInputs
 			}
 			configurations[input.ConfigurationID] = true
 			files = append(files, model.DeploymentConfigFile{ID: input.ConfigurationID, Path: input.Path})
 		case "upstream":
-			if input.ArtifactNodeID == "" || len(input.ArtifactNodeID) > 64 || input.RegistryID != "" || input.Image != "" || input.Tag != "" || input.ConfigurationID != "" {
+			if (input.ArtifactNodeID == "") == (input.ArtifactBuildPlanID == "") || len(input.ArtifactNodeID) > 64 || len(input.ArtifactBuildPlanID) > 36 || input.RegistryID != "" || input.Image != "" || input.Tag != "" || input.ConfigurationID != "" {
 				return ErrDeploymentInputs
 			}
 		case "registry":
-			if input.RegistryID == "" || len(input.RegistryID) > 36 || len(input.Image) > 255 || len(input.Tag) > 128 || input.Path != "" || input.ConfigurationID != "" || input.ArtifactNodeID != "" || !validInputImage(input.Image, input.Tag) {
+			if input.RegistryID == "" || len(input.RegistryID) > 36 || len(input.Image) > 255 || len(input.Tag) > 128 || input.Path != "" || input.ConfigurationID != "" || input.ArtifactNodeID != "" || input.ArtifactBuildPlanID != "" || !validInputImage(input.Image, input.Tag) {
 				return ErrDeploymentInputs
 			}
 		default:

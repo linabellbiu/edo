@@ -29,7 +29,7 @@ func (s *Service) ResolveInlinePlan(ctx context.Context, input *model.WorkflowDe
 		WorkingDirectory: resolved.WorkingDirectory, Namespace: resolved.Namespace, WorkloadName: resolved.WorkloadName, ContainerName: resolved.ContainerName,
 		RolloutTimeout: resolved.RolloutTimeout, IsActive: true}
 	plan := &model.DeploymentPlan{ID: planID, ProjectID: scope.ProjectID, DepartmentID: scope.DepartmentID, Name: input.Name, Description: input.Description, Kind: input.Kind,
-		Script: input.Script, ComposeYAML: input.ComposeYAML, ServiceName: input.ServiceName, DockerConfig: input.DockerConfig, TimeoutSeconds: input.TimeoutSeconds,
+		ExecutionConfig: input.ExecutionConfig, Script: input.Script, ComposeYAML: input.ComposeYAML, ServiceName: input.ServiceName, DockerConfig: input.DockerConfig, TimeoutSeconds: input.TimeoutSeconds,
 		DeploymentTargetID: targetID, DeploymentTarget: target, IsActive: true}
 	return plan, target, nil
 }

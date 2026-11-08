@@ -69,3 +69,12 @@ test('部署方案读取失败或方案类型不匹配时仍显示必要警告',
   assert.match(html, /读取失败/)
   assert.match(html, /请选择 dockercompose 多镜像部署方案/)
 })
+
+test('部署任务通知分区只渲染通知，不再渲染部署参数编辑器',async()=>{
+ const tree=baseParse(editorTemplate)
+ const find=node=>node.tag==='a-form'&&node.children?.some(child=>child.tag==='section'&&child.props?.some(prop=>prop.name==='class'&&prop.value?.content==='node-notification-section'))?node:node.children?.map(find).find(Boolean)
+ const form=find(tree)
+ const html=await render(form.loc.source.replace('v-else',''),{...notificationState(),selectedNode:{id:'deploy',type:'deploy',config:{}},canUpdate:true,canEdit:true})
+ assert.match(html,/node-notification-section/)
+ assert.doesNotMatch(html,/task-controls|构建制品来源|部署脚本|额外引用共享变量|部署前下载/)
+})

@@ -20,12 +20,14 @@ export interface DeploymentInput {
  path?:string
  configuration_id?:string
  artifact_node_id?:string
+ artifact_build_plan_id?:string
  registry_id?:string
  image?:string
  tag?:string
 }
 
 export interface WorkflowNodeConfig {
+ artifact_build_plan_id?:string
  deployment_input_version?:number
  deployment_inputs?:DeploymentInput[]
  deployment_script?:string
@@ -66,7 +68,13 @@ export interface WorkflowNodeConfig {
   notifications?: WorkflowNotificationRule[]
 }
 
+export type DeploymentExecutionConfig = Pick<WorkflowNodeConfig,
+  | 'deployment_input_version' | 'deployment_inputs' | 'deployment_script' | 'deployment_tag_reference'
+  | 'configuration_files' | 'deployment_parameters' | 'environment_variables' | 'variable_names'
+  | 'artifact_node_id' | 'artifact_build_plan_id' | 'artifact_node_ids' | 'compose_images' | 'compose'>
+
 export interface WorkflowDeploymentPlan {
+  execution_config?:DeploymentExecutionConfig
   name:string
   kind:'script'|'docker'|'compose'|'compose_stack'|'kubernetes'
   description?:string

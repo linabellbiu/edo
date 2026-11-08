@@ -3,6 +3,7 @@ import type { WorkflowNodeConfig } from '@/types/pipeline'
 export interface DeploymentCommandPlan {
   id: string
   kind: string
+  compose_yaml?: string
   timeout_seconds?: number
   service_name?: string
   docker_config?: {
@@ -15,7 +16,7 @@ export interface DeploymentCommandPlan {
     command?: string[]
     health_check?: { enabled: boolean; command: string[]; interval_seconds: number; timeout_seconds: number; retries: number; start_period_seconds: number }
   }
-  deployment_target?: { working_directory?: string; workload_name?: string }
+  deployment_target?: { environment_id?: string; working_directory?: string; workload_name?: string }
 }
 
 function quote(value: string) {

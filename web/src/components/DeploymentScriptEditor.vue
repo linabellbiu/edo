@@ -12,7 +12,7 @@ import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 
-const props = defineProps<{ modelValue: string; disabled?: boolean; kind?: string }>()
+const props = defineProps<{ modelValue: string; disabled?: boolean; kind?: string; editPermission?: string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 const auth = useAuthStore(), preferences = usePreferencesStore(), host = ref<HTMLElement>(), upload = ref<HTMLInputElement>()
 type Issue = { line: number; column: number; message: string }
@@ -44,7 +44,7 @@ const scriptExample = computed(() => {
 })
 let editor: EditorView | undefined, controller: AbortController | undefined, timer: ReturnType<typeof setTimeout> | undefined, revision = 0, disposed = false
 function identity() { return JSON.stringify([auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser, auth.authorizationState, localStorage.getItem('edo.project')]) }
-function canEdit() { return Boolean(auth.user?.id && auth.user?.project_id) && !props.disabled && auth.canAny(['workflow.update']) && auth.user?.project_id === localStorage.getItem('edo.project') }
+function canEdit() { return Boolean(auth.user?.id && auth.user?.project_id) && !props.disabled && auth.canAny([props.editPermission || 'workflow.update']) && auth.user?.project_id === localStorage.getItem('edo.project') }
 function highlight() {
   const dark = preferences.theme === 'dark'
   return syntaxHighlighting(HighlightStyle.define([
@@ -77,7 +77,7 @@ async function check() {
   if (!canEdit() || !script.trim()) return
   checking.value = true
   try {
-    const { data } = await client.post<{ issues: Issue[] }>('/workflows/deployment-script/check', { script }, { signal, headers: { 'X-EDO-Project-ID': auth.user!.project_id } })
+    const { data } = await client.post<{ issues: Issue[] }>(props.editPermission?.startsWith('deployment_plan.') ? '/deployment-plans/script/check' : '/workflows/deployment-script/check', { script }, { signal, headers: { 'X-EDO-Project-ID': auth.user!.project_id } })
     if (disposed || signal.aborted || request !== revision || scope !== identity() || script !== props.modelValue) return
     issues.value = data.issues; status.value = data.issues.length ? 'Shell 语法检查未通过' : 'Shell 语法检查通过（POSIX sh）'
     refreshDiagnostics()
@@ -113,7 +113,7 @@ onMounted(() => {
   ] }) }); schedule()
 })
 watch(() => props.modelValue, value => { if (editor && editor.state.doc.toString() !== value) editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value } }); schedule() })
-watch([identity, () => props.disabled], () => {
+watch([identity, () => props.disabled, () => props.editPermission], () => {
   schedule()
   editor?.dispatch({ effects: editing.reconfigure([EditorState.readOnly.of(!canEdit()), EditorView.editable.of(canEdit())]) })
 })

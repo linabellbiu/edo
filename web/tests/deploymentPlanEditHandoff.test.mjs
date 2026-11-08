@@ -64,6 +64,8 @@ async function harness(initialPermissions = ['deployment_plan.read', 'deployment
     '@/locales/deploymentTarget': { deploymentTargetEn: {}, deploymentTargetZh: {} },
     '@/components/ResourceDetailDrawer.vue': { __esModule: true, default: detail },
     '@/components/ResourceRowActions.vue': { __esModule: true, default: actions },
+    '@/components/DeploymentExecutionFields.vue': { __esModule: true, default: pass('div') },
+    '@/components/DeploymentScriptEditor.vue': { __esModule: true, default: pass('div') },
     '@/components/YamlCodeEditor.vue': { __esModule: true, default: pass('div') },
     '@/utils/kubernetesYaml': {},
     '@/components/PageToolbar.vue': { __esModule: true, default: pass('header') },
@@ -368,4 +370,14 @@ test('核验前的迟到列表不覆盖恢复就绪后的当前数据', async t 
   assert.equal(h.visibleIDs().includes('stale'), false)
   assert.deepEqual(h.writes, [])
   assert.deepEqual(h.errors, [])
+})
+
+test('执行配置由部署方案保存，修改其他字段不丢失来源、变量和脚本',async t=>{
+ let payload
+ const h=await harness(undefined,async(_method,_path,body)=>{payload=body;return {data:{deployment_plan:{id:'p11',name:'Plan 11'}}}});t.after(h.stop)
+ h.records.value=h.records.value.map(plan=>plan.id==='p11'?{...plan,execution_config:{deployment_input_version:1,deployment_inputs:[{kind:'configuration',configuration_id:'settings',path:'runtime.env'}],deployment_script:'printf plan',variable_names:['SETTING']}}:plan)
+ await h.refresh();await h.click(h.rowButton('p11','planList.edit'))
+ await h.setName('配置保持');await h.saveButton().props.onClick()
+ assert.deepEqual(payload.execution_config,{deployment_input_version:1,deployment_inputs:[{kind:'configuration',configuration_id:'settings',path:'runtime.env'}],deployment_script:'printf plan',variable_names:['SETTING']})
+ assert.ok(!Object.hasOwn(payload.execution_config,'notifications'))
 })

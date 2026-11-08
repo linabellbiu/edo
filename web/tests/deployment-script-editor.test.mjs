@@ -71,3 +71,12 @@ test('自动检查失败不伪报通过，重新输入后自动重试',async t=>
  fail=false;h.props.modelValue='echo retry';await settle();assert.equal(h.value.error.value,'')
  await h.flushChecks();assert.match(h.value.status.value,/检查通过/)
 })
+
+test('独立部署方案使用方案权限和独立语法检查接口，无需流水线修改权限',async t=>{
+ const h=harness();t.after(h.stop)
+ h.props.editPermission='deployment_plan.update';h.auth.user.permissions=['deployment_plan.update'];await settle()
+ assert.equal(h.value.canEdit(),true)
+ await h.value.check();assert.equal(h.requests.at(-1).path,'/deployment-plans/script/check')
+ h.auth.user.permissions=[];await settle();const count=h.requests.length
+ await h.value.check();assert.equal(h.requests.length,count)
+})

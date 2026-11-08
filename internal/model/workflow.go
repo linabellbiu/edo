@@ -29,6 +29,7 @@ type DeploymentConfigBinding struct {
 }
 
 type WorkflowNodeConfig struct {
+	ArtifactBuildPlanID    string                     `json:"artifact_build_plan_id,omitempty"`
 	DeploymentInputVersion int                        `json:"deployment_input_version,omitempty"`
 	DeploymentInputs       []DeploymentInput          `json:"deployment_inputs,omitempty"`
 	DeploymentScript       string                     `json:"deployment_script,omitempty"`
@@ -72,13 +73,14 @@ type WorkflowNodeConfig struct {
 
 // DeploymentInput 只保存来源和相对路径，不保存文件正文或仓库凭据。
 type DeploymentInput struct {
-	Kind            string `json:"kind"`
-	Path            string `json:"path,omitempty"`
-	ConfigurationID string `json:"configuration_id,omitempty"`
-	RegistryID      string `json:"registry_id,omitempty"`
-	Image           string `json:"image,omitempty"`
-	Tag             string `json:"tag,omitempty"`
-	ArtifactNodeID  string `json:"artifact_node_id,omitempty"`
+	ArtifactBuildPlanID string `json:"artifact_build_plan_id,omitempty"`
+	Kind                string `json:"kind"`
+	Path                string `json:"path,omitempty"`
+	ConfigurationID     string `json:"configuration_id,omitempty"`
+	RegistryID          string `json:"registry_id,omitempty"`
+	Image               string `json:"image,omitempty"`
+	Tag                 string `json:"tag,omitempty"`
+	ArtifactNodeID      string `json:"artifact_node_id,omitempty"`
 }
 
 type ComposeImageBinding struct {

@@ -702,6 +702,7 @@ func (s *Service) validateWorkflow(
 	source model.WorkflowNode,
 	stages []model.WorkflowStage,
 ) []WorkflowIssue {
+	stages = cloneWorkflowStages(stages)
 	issues := make([]WorkflowIssue, 0)
 	if schemaVersion != model.WorkflowSchemaVersion {
 		return []WorkflowIssue{{Code: "unsupported_schema_version", Message: "流水线结构版本无效"}}
@@ -793,6 +794,24 @@ func (s *Service) validateWorkflow(
 		activeDeploymentPlans[plan.ID] = *plan
 		activeTargets[target.ID] = *target
 	}
+	for i := range stages {
+		for j := range stages[i].Tasks {
+			node := &stages[i].Tasks[j]
+			if node.Type != model.WorkflowNodeDeploy {
+				continue
+			}
+			if plan, ok := activeDeploymentPlans[workflowDeploymentPlanKey(*node)]; ok {
+				model.ApplyDeploymentExecution(&node.Config, plan.ExecutionConfig)
+				if node.Config.InlineDeploymentPlan != nil {
+					node.Config.DeploymentPlanID = plan.ID
+				}
+				if err := resolveDeploymentBuildBindings(node, stages); err != nil {
+					issues = append(issues, WorkflowIssue{Code: "invalid_deployment_build_binding", Message: "部署方案的上游构建必须在前序阶段唯一匹配，请检查构建方案引用", NodeID: node.ID})
+				}
+			}
+		}
+	}
+	tasks = workflowTasks(stages)
 	ids := map[string]struct{}{source.ID: {}}
 	if source.Type != model.WorkflowNodeTrigger {
 		issues = append(issues, WorkflowIssue{Code: "invalid_source_type", Message: "代码源类型无效", NodeID: source.ID})
@@ -1408,6 +1427,10 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 						return nil, ErrInvalidWorkflow
 					}
+				}
+				model.ApplyDeploymentExecution(&current.Config, plan.ExecutionConfig)
+				if err := resolveDeploymentBuildBindings(current, resolved.Stages); err != nil {
+					return nil, err
 				}
 				available, environmentErr := s.deploymentEnvironmentAvailable(ctx, database, target, "pipeline_run_environment_validate")
 				if environmentErr != nil {

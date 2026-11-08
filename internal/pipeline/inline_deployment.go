@@ -20,12 +20,13 @@ func normalizeInlineDeploymentPlan(input *model.WorkflowDeploymentPlan) error {
 			HostID: t.HostID, RuntimeID: t.RuntimeID, WorkingDirectory: t.WorkingDirectory, Namespace: t.Namespace, WorkloadName: t.WorkloadName, ContainerName: t.ContainerName, RolloutTimeout: input.TimeoutSeconds}
 	}
 	normalized, err := normalizeDeploymentPlanInput(DeploymentPlanInput{Name: input.Name, Kind: input.Kind, Description: input.Description,
-		Script: input.Script, ComposeYAML: input.ComposeYAML, ServiceName: input.ServiceName, DockerConfig: input.DockerConfig, TimeoutSeconds: input.TimeoutSeconds, DeploymentTarget: target})
+		ExecutionConfig: input.ExecutionConfig, Script: input.Script, ComposeYAML: input.ComposeYAML, ServiceName: input.ServiceName, DockerConfig: input.DockerConfig, TimeoutSeconds: input.TimeoutSeconds, DeploymentTarget: target})
 	if err != nil {
 		return fmt.Errorf("%w：自定义部署方案无效，请检查执行方式和参数", ErrInvalidWorkflow)
 	}
 	input.Name, input.Kind, input.Description = normalized.Name, normalized.Kind, normalized.Description
 	input.Script, input.ComposeYAML, input.ServiceName = normalized.Script, normalized.ComposeYAML, normalized.ServiceName
+	input.ExecutionConfig = normalized.ExecutionConfig
 	input.DockerConfig, input.TimeoutSeconds = normalized.DockerConfig, normalized.TimeoutSeconds
 	// 只接受目标的可配置字段，不保存客户端传入的资源身份和归属。
 	if t := input.DeploymentTarget; t != nil {
@@ -47,6 +48,9 @@ func (s *Service) resolveInlineDeploymentPlan(ctx context.Context, application *
 	if s.deployments == nil {
 		s.logger.ErrorContext(ctx, "自定义部署解析服务不可用", "operation", "workflow_inline_resolve", "node_id", node.ID, "err", ErrInvalidWorkflow)
 		return nil, nil, ErrInvalidWorkflow
+	}
+	if err := s.validateDeploymentExecutionReferences(ctx, node.Config.InlineDeploymentPlan.ExecutionConfig, databases...); err != nil {
+		return nil, nil, err
 	}
 	service := s.deployments
 	if len(databases) > 0 {

@@ -1,17 +1,20 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import client from '@/api/client'
+import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vue'
+import { deploymentExecution } from '@/utils/deploymentExecution'
 import { apiErrorMessage } from '@/api/resources'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import { useAuthStore } from '@/stores/auth'
-import type { WorkflowDeploymentPlan } from '@/types/pipeline'
+import type { WorkflowDeploymentPlan, WorkflowNodeConfig } from '@/types/pipeline'
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 
-const props = defineProps<{ plan: WorkflowDeploymentPlan & { id: string; is_active?: boolean } }>()
+const props = defineProps<{ plan: WorkflowDeploymentPlan & { id: string; is_active?: boolean }; legacyConfig?: WorkflowNodeConfig; applicationID?: string; applicationName?: string }>()
 const auth = useAuthStore()
 const environmentName = ref(''), environmentError = ref(''), loading = ref(false)
 let controller: AbortController | undefined
 const kindNames = { docker: 'Docker 容器', compose: 'dockercompose 单镜像', compose_stack: 'dockercompose 多镜像', script: '主机脚本', kubernetes: 'Kubernetes Deployment' }
+const execution = computed(() => props.plan.execution_config || deploymentExecution(props.legacyConfig || {}))
 const target = computed(() => props.plan.deployment_target)
 const docker = computed(() => (props.plan.docker_config || {}) as NonNullable<DeploymentCommandPlan['docker_config']>)
 const canReadEnvironment = computed(() => auth.canAny(['deployment.read']))
@@ -76,6 +79,7 @@ onBeforeUnmount(() => controller?.abort())
         <a-form-item label="健康检查"><a-textarea :value="docker.health_check?.enabled ? `${docker.health_check.command.join(' ')}\n间隔 ${docker.health_check.interval_seconds} 秒；超时 ${docker.health_check.timeout_seconds} 秒；重试 ${docker.health_check.retries} 次；启动宽限 ${docker.health_check.start_period_seconds} 秒` : '使用镜像内置健康检查'" :auto-size="{ minRows: 1, maxRows: 6 }" disabled /></a-form-item>
       </template>
     </template>
+    <DeploymentExecutionFields :model-value="execution" :plan="plan" disabled :applicationID="applicationID" :applicationName="applicationName" :hide-script="plan.kind==='script' && !execution.deployment_script" />
   </section>
 </template>
 

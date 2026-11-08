@@ -45,7 +45,7 @@ var (
 	ErrInvalidBuildPlan               = errors.New("构建方案配置无效")
 	ErrBuildPlanExists                = errors.New("构建方案名称已存在")
 	ErrBuildPlanNotFound              = errors.New("构建方案不存在")
-	ErrBuildPlanInUse                 = errors.New("构建方案仍被流水线使用，请先更换相关构建任务")
+	ErrBuildPlanInUse                 = errors.New("构建方案仍被流水线或部署方案使用，请先更换相关引用")
 	ErrInvalidScriptEnvironment       = errors.New("脚本环境变量无效；CI、HOME、TMPDIR 和 EDO 流水线元数据名称由系统保留")
 	ErrInvalidRegistry                = errors.New("镜像仓库配置无效")
 	ErrInvalidRegistryName            = errors.New("镜像仓库名称格式无效")
@@ -114,6 +114,7 @@ type RegistryInput struct {
 }
 
 type DeploymentPlanInput struct {
+	ExecutionConfig  *model.DeploymentExecutionConfig
 	Reusable         bool
 	Name             string
 	Kind             model.DeploymentPlanKind
@@ -643,6 +644,17 @@ func (s *Service) DeleteBuildPlan(ctx context.Context, id string) error {
 		if inUse {
 			return ErrBuildPlanInUse
 		}
+		var deployments []model.DeploymentPlan
+		if err := tx.Find(&deployments).Error; err != nil {
+			s.logger.ErrorContext(ctx, "检查构建方案的部署引用失败", "operation", "build_plan_deployment_reference", "build_plan_id", id, "err", err)
+			return ErrInvalidBuildPlan
+		}
+		for _, deployment := range deployments {
+			if executionReferencesBuild(deployment.ExecutionConfig, id) {
+				s.logger.WarnContext(ctx, "构建方案仍被部署方案引用", "operation", "build_plan_deployment_reference", "build_plan_id", id, "deployment_plan_id", deployment.ID, "err", ErrBuildPlanInUse)
+				return ErrBuildPlanInUse
+			}
+		}
 		if err := tx.Delete(&plan).Error; err != nil {
 			return fmt.Errorf("删除构建方案失败: %w", err)
 		}
@@ -678,6 +690,9 @@ func workflowStagesReference(stages []model.WorkflowStage, nodeType model.Workfl
 	for i := range stages {
 		for j := range stages[i].Tasks {
 			task := stages[i].Tasks[j]
+			if nodeType == model.WorkflowNodeBuild && task.Config.InlineDeploymentPlan != nil && executionReferencesBuild(task.Config.InlineDeploymentPlan.ExecutionConfig, resourceID) {
+				return true
+			}
 			if task.Type != nodeType {
 				continue
 			}
@@ -876,12 +891,19 @@ func normalizeDeploymentPlanInput(input DeploymentPlanInput) (DeploymentPlanInpu
 			return input, ErrInvalidDeploymentPlan
 		}
 	}
+	if err := normalizeDeploymentExecution(input.Kind, input.ComposeYAML, input.ExecutionConfig); err != nil {
+		return input, err
+	}
 	return input, nil
 }
 
 func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, input DeploymentPlanInput) (*model.DeploymentPlan, error) {
 	input, err := normalizeDeploymentPlanInput(input)
 	if err != nil {
+		s.logger.WarnContext(ctx, "部署方案参数无效", "operation", "deployment_plan_normalize", "err", err)
+		return nil, err
+	}
+	if err := s.validateDeploymentExecutionReferences(ctx, input.ExecutionConfig); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -889,8 +911,8 @@ func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, inpu
 		ID: uuid.NewString(), Name: input.Name, Kind: input.Kind, Description: input.Description,
 		Script:      input.Script,
 		ComposeYAML: input.ComposeYAML, ServiceName: input.ServiceName, TimeoutSeconds: input.TimeoutSeconds,
-		DockerConfig: input.DockerConfig,
-		IsActive:     true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		DockerConfig: input.DockerConfig, ExecutionConfig: input.ExecutionConfig,
+		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if input.Reusable {
@@ -922,6 +944,10 @@ func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, inpu
 func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input DeploymentPlanInput) (*model.DeploymentPlan, error) {
 	input, err := normalizeDeploymentPlanInput(input)
 	if err != nil {
+		s.logger.WarnContext(ctx, "部署方案参数无效", "operation", "deployment_plan_normalize", "err", err)
+		return nil, err
+	}
+	if err := s.validateDeploymentExecutionReferences(ctx, input.ExecutionConfig); err != nil {
 		return nil, err
 	}
 	var plan model.DeploymentPlan
@@ -932,6 +958,11 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 			}
 			return findErr
 		}
+		if input.ExecutionConfig == nil && plan.ExecutionConfig != nil {
+			if err := normalizeDeploymentExecution(input.Kind, input.ComposeYAML, plan.ExecutionConfig); err != nil {
+				return err
+			}
+		}
 		targetID := plan.DeploymentTargetID
 		if input.Reusable {
 			if targetID != "" {
@@ -939,6 +970,9 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 			}
 			plan.Name, plan.Kind, plan.Description = input.Name, input.Kind, input.Description
 			plan.Script, plan.ComposeYAML, plan.ServiceName = input.Script, input.ComposeYAML, input.ServiceName
+			if input.ExecutionConfig != nil {
+				plan.ExecutionConfig = input.ExecutionConfig
+			}
 			plan.DockerConfig, plan.TimeoutSeconds, plan.UpdatedAt = input.DockerConfig, input.TimeoutSeconds, time.Now().UTC()
 			return tx.Save(&plan).Error
 		}
@@ -966,6 +1000,9 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 		plan.Script = input.Script
 		plan.ComposeYAML, plan.ServiceName = input.ComposeYAML, input.ServiceName
 		plan.DockerConfig = input.DockerConfig
+		if input.ExecutionConfig != nil {
+			plan.ExecutionConfig = input.ExecutionConfig
+		}
 		plan.TimeoutSeconds, plan.UpdatedAt = input.TimeoutSeconds, time.Now().UTC()
 		return tx.Save(&plan).Error
 	})

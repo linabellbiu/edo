@@ -108,16 +108,17 @@ type registryRequest struct {
 }
 
 type deploymentPlanRequest struct {
-	Reusable         bool                        `json:"reusable"`
-	Name             string                      `json:"name" binding:"required,max=128"`
-	Kind             model.DeploymentPlanKind    `json:"kind" binding:"required,max=16"`
-	DeploymentTarget *deploymentTargetRequest    `json:"deployment_target"`
-	Description      string                      `json:"description" binding:"max=500"`
-	Script           string                      `json:"script" binding:"max=262144"`
-	ComposeYAML      string                      `json:"compose_yaml" binding:"max=524288"`
-	ServiceName      string                      `json:"service_name" binding:"max=255"`
-	DockerConfig     model.DockerContainerConfig `json:"docker_config"`
-	TimeoutSeconds   int                         `json:"timeout_seconds" binding:"omitempty,min=30,max=3600"`
+	ExecutionConfig  *model.DeploymentExecutionConfig `json:"execution_config"`
+	Reusable         bool                             `json:"reusable"`
+	Name             string                           `json:"name" binding:"required,max=128"`
+	Kind             model.DeploymentPlanKind         `json:"kind" binding:"required,max=16"`
+	DeploymentTarget *deploymentTargetRequest         `json:"deployment_target"`
+	Description      string                           `json:"description" binding:"max=500"`
+	Script           string                           `json:"script" binding:"max=262144"`
+	ComposeYAML      string                           `json:"compose_yaml" binding:"max=524288"`
+	ServiceName      string                           `json:"service_name" binding:"max=255"`
+	DockerConfig     model.DockerContainerConfig      `json:"docker_config"`
+	TimeoutSeconds   int                              `json:"timeout_seconds" binding:"omitempty,min=30,max=3600"`
 }
 
 type imageRegistryResponse struct {
@@ -635,7 +636,7 @@ func (h pipelineHandler) createDeploymentPlan(c *gin.Context) {
 		Name: request.Name, Kind: request.Kind, DeploymentTarget: target, Reusable: request.Reusable,
 		Description: request.Description, Script: request.Script,
 		ComposeYAML: request.ComposeYAML,
-		ServiceName: request.ServiceName, DockerConfig: request.DockerConfig, TimeoutSeconds: request.TimeoutSeconds,
+		ServiceName: request.ServiceName, DockerConfig: request.DockerConfig, TimeoutSeconds: request.TimeoutSeconds, ExecutionConfig: request.ExecutionConfig,
 	})
 	if err != nil {
 		h.writeError(c, "deployment_plan_create", err)
@@ -661,7 +662,7 @@ func (h pipelineHandler) updateDeploymentPlan(c *gin.Context) {
 		Name: request.Name, Kind: request.Kind, DeploymentTarget: target, Reusable: request.Reusable,
 		Description: request.Description, Script: request.Script,
 		ComposeYAML: request.ComposeYAML,
-		ServiceName: request.ServiceName, DockerConfig: request.DockerConfig, TimeoutSeconds: request.TimeoutSeconds,
+		ServiceName: request.ServiceName, DockerConfig: request.DockerConfig, TimeoutSeconds: request.TimeoutSeconds, ExecutionConfig: request.ExecutionConfig,
 	})
 	if err != nil {
 		h.writeError(c, "deployment_plan_update", err)

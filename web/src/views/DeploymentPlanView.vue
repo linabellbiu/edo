@@ -6,6 +6,8 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
 import client from '@/api/client'
+import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vue'
+import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
@@ -21,8 +23,8 @@ import { formatDateTime } from '@/utils/time'
 import { deploymentTargetEn, deploymentTargetZh } from '@/locales/deploymentTarget'
 import { asyncConfirm } from '@/utils/asyncConfirm'
 import '@/styles/plan-list.css'
-import type {WorkflowDeploymentPlan} from '@/types/pipeline'
-const props=defineProps<{inline?:boolean;inlineOpen?:boolean;inlineValue?:WorkflowDeploymentPlan;inlineKinds?:string[]}>()
+import type {WorkflowDeploymentPlan, DeploymentExecutionConfig, WorkflowNode} from '@/types/pipeline'
+const props=defineProps<{inline?:boolean;inlineOpen?:boolean;inlineValue?:WorkflowDeploymentPlan;inlineKinds?:string[];applicationID?:string;applicationName?:string;buildNodes?:WorkflowNode[]}>()
 const emit=defineEmits<{'save-inline':[value:WorkflowDeploymentPlan];'update:inlineOpen':[value:boolean]}>()
 
 type PlanKind = 'script' | 'docker' | 'compose' | 'compose_stack' | 'kubernetes'
@@ -42,6 +44,7 @@ interface DeploymentTarget {
 }
 
 interface DeploymentPlan extends ResourceRecord {
+  execution_config?: DeploymentExecutionConfig
   id: string
   name: string
   kind: PlanKind
@@ -109,6 +112,7 @@ interface Runtime {
 }
 
 interface DeploymentDraft {
+  execution_config?: DeploymentExecutionConfig
   script: string
   compose_yaml: string
   service_name: string
@@ -221,7 +225,10 @@ const composeFileInput = ref<HTMLInputElement>()
 const deploymentDrafts: Partial<Record<PlanKind, DeploymentDraft>> = {}
 const defaultComposeYAML = 'services:\n  app:\n    restart: unless-stopped\n'
 
+function emptyExecution(kind:PlanKind):DeploymentExecutionConfig { return kind==='compose_stack' ? {compose:{project_name:'',tag_variable:'${IMAGE_TAG}',use_sudo:false,adopt_existing:false}} : {} }
+function cloneExecution(value?:DeploymentExecutionConfig):DeploymentExecutionConfig|undefined { return value===undefined ? undefined : JSON.parse(JSON.stringify(value)) }
 const form = reactive({
+  execution_config: {} as DeploymentExecutionConfig | undefined,
   reusable: true,
   name: '',
   description: '',
@@ -408,7 +415,7 @@ function destinationAddress(plan: DeploymentPlan) {
 function deploymentConfiguration(plan: DeploymentPlan) {
   const target = targetOf(plan)
   if (!target) return { summary: t('deploymentList.noLocation'), detail: '' }
-  if (plan.kind === 'compose_stack') return { summary: 'docker-compose.yaml', detail: '按流水线配置启动服务' }
+  if (plan.kind === 'compose_stack') return { summary: 'docker-compose.yaml', detail: plan.execution_config ? '按部署方案配置启动服务' : '沿用原任务的启动配置' }
   if (plan.kind === 'script') return {
     summary: t('deploymentList.directory', { value: target.working_directory || t('deploymentList.homeDirectory') }),
     detail: t('deploymentList.savedScript'),
@@ -443,7 +450,7 @@ function reset() {
   formRequest = undefined
   saving.value = false
   Object.assign(form, {
-    reusable: true, name: '', description: '', kind: 'docker', script: '', compose_yaml: defaultComposeYAML, service_name: '',
+    execution_config: emptyExecution('docker'), reusable: true, name: '', description: '', kind: 'docker', script: '', compose_yaml: defaultComposeYAML, service_name: '',
     environment_id: '', host_id: '', working_directory: '', runtime_id: '',
     namespace: 'default', workload_name: '', container_name: '', timeout_seconds: 600,
     docker_port_mappings: [emptyDockerPort()], docker_environment_variables: [], docker_volume_mounts: [],
@@ -503,6 +510,14 @@ function beginEdit(plan: DeploymentPlan | undefined) {
   edit(currentPlan)
 }
 
+function legacyExecutionHandoff(plan:DeploymentPlan):DeploymentExecutionConfig|undefined {
+  const handoff = window.history?.state?.deployment_execution_handoff
+  if (handoff?.plan_id!==plan.id || handoff.user_id!==auth.user?.id || handoff.project_id!==auth.user?.project_id || typeof handoff.config_json!=='string') return undefined
+  try { return JSON.parse(handoff.config_json) } catch { return undefined }
+}
+const executionPermission = computed(()=>props.inline ? 'workflow.update' : editingID.value ? 'deployment_plan.update' : 'deployment_plan.create')
+const executionPlan = computed<WorkflowDeploymentPlan>(()=>({name:form.name,kind:form.kind,timeout_seconds:form.timeout_seconds,compose_yaml:form.compose_yaml,script:form.script,deployment_target:{platform:platform.value,environment_id:form.environment_id,working_directory:form.working_directory}}))
+function updateExecution(value:DeploymentExecutionConfig) { if(canUseForm())form.execution_config=value }
 function edit(plan: DeploymentPlan) {
   reset()
   for (const kind of kindOptions) delete deploymentDrafts[kind.value]
@@ -514,11 +529,12 @@ function edit(plan: DeploymentPlan) {
     protocol: item.protocol === 'udp' ? 'udp' as const : 'tcp' as const,
   }))
   Object.assign(form, {
+    execution_config: cloneExecution(plan.execution_config || legacyExecutionHandoff(plan)),
     reusable: !plan.deployment_target_id,
     name: plan.name,
     description: plan.description || '',
     kind: plan.kind,
-    script: plan.script || '',
+    script: plan.kind==='script' ? (plan.execution_config || legacyExecutionHandoff(plan))?.deployment_script || plan.script || '' : plan.script || '',
     compose_yaml: plan.compose_yaml || defaultComposeYAML,
     service_name: plan.kind === 'compose' ? plan.service_name || '' : '',
     environment_id: target?.environment_id || '',
@@ -583,6 +599,7 @@ function confirmDeletePlan(plan: DeploymentPlan) { confirmPlanMutation(plan, tru
 
 function currentDeploymentDraft(): DeploymentDraft {
   return {
+    execution_config: cloneExecution(form.execution_config),
     script: form.script,
     compose_yaml: form.compose_yaml,
     service_name: form.service_name,
@@ -614,6 +631,7 @@ function rememberDeploymentDraft(kind: PlanKind) {
 
 function emptyDeploymentDraft(kind: PlanKind): DeploymentDraft {
   return {
+    execution_config: emptyExecution(kind),
     script: '',
     compose_yaml: kind === 'compose' || kind === 'compose_stack' ? defaultComposeYAML : '',
     service_name: kind === 'compose' ? 'app' : '',
@@ -648,6 +666,7 @@ function changeKind(kind: PlanKind) {
   form.kind = kind
   Object.assign(form, {
     ...next,
+    execution_config: cloneExecution(next.execution_config),
     docker_port_mappings: cloneDockerPorts(next.docker_port_mappings),
     docker_environment_variables: cloneDockerVariables(next.docker_environment_variables),
     docker_volume_mounts: cloneDockerVolumes(next.docker_volume_mounts),
@@ -929,6 +948,7 @@ async function save() {
       rollout_timeout: form.timeout_seconds,
     }
     const payload = {
+      execution_config: form.execution_config===undefined ? undefined : form.kind==='script' ? {...form.execution_config,deployment_input_version:1,deployment_script:form.script} : form.execution_config,
       name: form.name.trim(),
       description: form.description.trim(),
       kind: form.kind,
@@ -1075,6 +1095,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         </dl>
       </section>
       <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly fullscreen label="docker-compose.yaml"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
+      <a-form v-if="detailPlan?.execution_config" layout="vertical"><DeploymentExecutionFields :model-value="detailPlan.execution_config" :plan="detailPlan" disabled :hide-script="detailPlan.kind==='script' && !detailPlan.execution_config.deployment_script" /></a-form>
     </ResourceDetailDrawer>
 
     <a-drawer v-model:open="formOpen" :title="inline?'流水线自定义部署方案':editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">
@@ -1261,7 +1282,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           </template>
           <template v-if="form.kind === 'script'">
             <a-form-item label="部署脚本" required>
-              <a-textarea v-model:value="form.script" :rows="9" placeholder="set -eu&#10;&#10;echo &quot;待发布制品：$EDO_ARTIFACT_PATH&quot;&#10;echo &quot;制品摘要：$EDO_ARTIFACT_DIGEST&quot;" />
+              <DeploymentScriptEditor v-model="form.script" kind="script" :disabled="!canUseForm()" :edit-permission="executionPermission" />
             </a-form-item>
             <a-alert
               type="info"
@@ -1279,7 +1300,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               message="镜像来自上游构建制品，无需在 dockercompose 中填写 image"
               description="部署时自动填入流水线镜像，请勿填写固定镜像地址或 build 配置。"
             />
-            <a-alert v-if="form.kind === 'compose_stack'" type="info" show-icon message="dockercompose 保存在 EDO，image 使用 ${IMAGE_TAG}；在流水线部署任务中关联服务与上游镜像。"/>
+            <a-alert v-if="form.kind === 'compose_stack'" type="info" show-icon message="dockercompose 保存在 EDO，image 使用 ${IMAGE_TAG}；部署时自动匹配当前流水线的上游镜像。"/>
             <div class="compose-import">
               <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />
               <a-button @click="composeFileInput?.click()"><FileUp :size="15" />读取 docker-compose.yaml</a-button>
@@ -1292,10 +1313,12 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
             <a-alert
               type="info"
               show-icon
-              :message="form.kind === 'compose_stack' ? '按流水线配置执行 docker compose up -d' : 'dockercompose 只描述目标服务的运行参数'"
+              :message="form.kind === 'compose_stack' ? '按部署方案配置执行 docker compose up -d' : 'dockercompose 只描述目标服务的运行参数'"
               description="不会读取代码仓库中的 dockercompose 文件；所选执行主机必须安装 dockercompose v2 插件。"
             />
           </template>
+          <a-alert v-if="editingID && form.execution_config===undefined" type="info" show-icon message="旧任务中的部署参数仍保留；修改下方执行配置并保存后，后续运行统一使用此方案。" />
+          <DeploymentExecutionFields :model-value="form.execution_config || {}" :plan="executionPlan" :disabled="!canUseForm()" :edit-permission="executionPermission" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :hide-script="form.kind==='script'" @update:model-value="updateExecution" />
           <a-alert v-if="form.kind === 'kubernetes'" type="info" show-icon message="使用构建产物的镜像摘要更新 Deployment。构建方案需绑定集群能访问的镜像仓库。" />
           </template>
         </div>

@@ -122,6 +122,34 @@ func TestInlineDeploymentPlansStayInWorkflowAndFreezeExecution(t *testing.T) {
 			if err != nil || kind == model.DeploymentPlanScript && frozen.DeploymentPlans[deployID].Script != "printf original" {
 				t.Fatal("草稿变更影响了已固定运行")
 			}
+			if kind == model.DeploymentPlanDocker {
+				for i := range app.Workflow.Stages {
+					for j := range app.Workflow.Stages[i].Tasks {
+						task := &app.Workflow.Stages[i].Tasks[j]
+						if task.ID == deployID {
+							task.Config.InlineDeploymentPlan.ExecutionConfig = &model.DeploymentExecutionConfig{DeploymentInputVersion: 1, DeploymentScript: "printf owned-inline", ArtifactBuildPlanID: build.ID}
+						}
+					}
+				}
+				updated, saveErr := s.SaveWorkflow(ctx, app.ID, "admin", WorkflowInput{SchemaVersion: model.WorkflowSchemaVersion, Name: app.Workflow.Name, Revision: app.Workflow.Revision, Activate: true, Source: app.Workflow.Source, Stages: app.Workflow.Stages})
+				if saveErr != nil {
+					t.Fatal("自定义方案执行配置不能保存", saveErr)
+				}
+				app.Workflow = updated.Workflow
+				ownedRun, runErr := s.newResolvedWorkflowRun(ctx, app, app.Workflow, app.Workflow.Source, "manual", "refs/heads/main", "0123456789012345678901234567890123456789", "admin", "", time.Now().UTC())
+				if runErr != nil {
+					t.Fatal(runErr)
+				}
+				ownedSnapshot, parseErr := parseWorkflowSnapshot(ownedRun)
+				if parseErr != nil {
+					t.Fatal(parseErr)
+				}
+				for _, task := range workflowTasks(ownedSnapshot.Stages) {
+					if task.ID == deployID && (task.Config.DeploymentScript != "printf owned-inline" || task.Config.ArtifactNodeID == "") {
+						t.Fatal("自定义方案未冻结自己的执行配置")
+					}
+				}
+			}
 			otherPlan, otherTarget := model.InlineDeploymentIdentity("another-workflow", deployID)
 			if otherPlan == planID || otherTarget == targetID {
 				t.Fatal("不同流水线复用了执行身份")

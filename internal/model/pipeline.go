@@ -133,25 +133,26 @@ type DockerContainerConfig struct {
 }
 
 type DeploymentPlan struct {
-	RowID              uint64                `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
-	ID                 string                `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
-	Name               string                `gorm:"type:varchar(128);not null;uniqueIndex:ux_deployment_plans_department_name,priority:2;uniqueIndex:ux_deployment_plans_project_name,priority:2" json:"name"`
-	Kind               DeploymentPlanKind    `gorm:"type:varchar(16);not null;index" json:"kind"`
-	DeploymentTargetID string                `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
-	Description        string                `gorm:"type:varchar(500);not null;default:''" json:"description"`
-	Script             string                `gorm:"type:text;not null" json:"script,omitempty"`
-	ComposeYAML        string                `gorm:"type:text;not null" json:"compose_yaml,omitempty"`
-	ServiceName        string                `gorm:"type:varchar(255);not null;default:''" json:"service_name,omitempty"`
-	DockerConfig       DockerContainerConfig `gorm:"serializer:json;type:text;not null" json:"docker_config"`
-	TimeoutSeconds     int                   `gorm:"not null;default:600" json:"timeout_seconds"`
-	IsActive           bool                  `gorm:"not null;default:true;index" json:"is_active"`
-	DepartmentID       string                `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_deployment_plans_department_name,priority:1" json:"department_id"`
-	ProjectID          string                `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_deployment_plans_project_name,priority:1" json:"project_id"`
-	CreatedBy          string                `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	CreatedAt          time.Time             `gorm:"not null" json:"created_at"`
-	UpdatedAt          time.Time             `gorm:"not null" json:"updated_at"`
-	DeletedAt          gorm.DeletedAt        `gorm:"index" json:"-"`
-	DeploymentTarget   *DeploymentTarget     `gorm:"foreignKey:DeploymentTargetID;references:ID;-:migration" json:"deployment_target,omitempty"`
+	ExecutionConfig    *DeploymentExecutionConfig `gorm:"serializer:json;type:text" json:"execution_config,omitempty"`
+	RowID              uint64                     `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                 string                     `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
+	Name               string                     `gorm:"type:varchar(128);not null;uniqueIndex:ux_deployment_plans_department_name,priority:2;uniqueIndex:ux_deployment_plans_project_name,priority:2" json:"name"`
+	Kind               DeploymentPlanKind         `gorm:"type:varchar(16);not null;index" json:"kind"`
+	DeploymentTargetID string                     `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
+	Description        string                     `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	Script             string                     `gorm:"type:text;not null" json:"script,omitempty"`
+	ComposeYAML        string                     `gorm:"type:text;not null" json:"compose_yaml,omitempty"`
+	ServiceName        string                     `gorm:"type:varchar(255);not null;default:''" json:"service_name,omitempty"`
+	DockerConfig       DockerContainerConfig      `gorm:"serializer:json;type:text;not null" json:"docker_config"`
+	TimeoutSeconds     int                        `gorm:"not null;default:600" json:"timeout_seconds"`
+	IsActive           bool                       `gorm:"not null;default:true;index" json:"is_active"`
+	DepartmentID       string                     `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_deployment_plans_department_name,priority:1" json:"department_id"`
+	ProjectID          string                     `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_deployment_plans_project_name,priority:1" json:"project_id"`
+	CreatedBy          string                     `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt          time.Time                  `gorm:"not null" json:"created_at"`
+	UpdatedAt          time.Time                  `gorm:"not null" json:"updated_at"`
+	DeletedAt          gorm.DeletedAt             `gorm:"index" json:"-"`
+	DeploymentTarget   *DeploymentTarget          `gorm:"foreignKey:DeploymentTargetID;references:ID;-:migration" json:"deployment_target,omitempty"`
 }
 
 func (DeploymentPlan) TableName() string { return "deployment_plans" }

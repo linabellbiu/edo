@@ -27,6 +27,7 @@ async function harness({ codes = permissions, project = 'project-a', selected = 
   const component=loadFrontend(task?'../src/components/PipelineTaskControls.vue':'../src/views/PipelineEditorView.vue',{
     vue:{...vue,onMounted:fn=>mounted.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},
     'vue-router':{useRoute:()=>route,useRouter:()=>router,onBeforeRouteUpdate:fn=>routeUpdates.push(fn),onBeforeRouteLeave:fn=>routeLeaves.push(fn)},
+    '@/utils/deploymentExecution':loadFrontend('../src/utils/deploymentExecution.ts'),
     '@/stores/auth':{useAuthStore:()=>auth},'@/api/client':{__esModule:true,default:client},'@/api/resources':{apiErrorMessage:()=> '当前项目操作失败'},
     'ant-design-vue':{Modal:{confirm(config){const value={...config,destroyed:false,destroy(){this.destroyed=true;config.afterClose?.()}};confirmations.push(value);return value}},message:Object.fromEntries(['success','warning','error'].map(kind=>[kind,text=>notifications.push({kind,text})]))},
   },{localStorage,window,document}).default
@@ -69,7 +70,8 @@ test('正常读取后自动回显已有库方案，重复来源事件和重新�
  h.state.selectNode('source');h.state.selectNode('deploy');await settle()
  assert.equal(h.state.selectedNode.value.config.deployment_plan_id,'existing')
  h.state.modifyLinkedDeploymentPlan()
- assert.deepEqual(h.navigations,[{path:'/deployment-plans',query:{plan:'existing',edit:'1'}}])
+ assert.deepEqual(h.navigations.map(({path,query})=>({path,query})),[{path:'/deployment-plans',query:{plan:'existing',edit:'1'}}])
+ assert.deepEqual(h.navigations[0].state.deployment_execution_handoff,{plan_id:'existing',user_id:'operator-a',project_id:'project-a',config_json:'{}'})
  assert.deepEqual(writes(h),[])
 })
 

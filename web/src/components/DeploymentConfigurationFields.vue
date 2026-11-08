@@ -8,7 +8,7 @@ import type { DeploymentInput, WorkflowNode, WorkflowNodeConfig } from '@/types/
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 import { validConfigurationPath } from '@/utils/deploymentCommandPreview'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
-const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: DeploymentCommandPlan; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean }>()
+const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: DeploymentCommandPlan; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string}> }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
 const auth = useAuthStore()
 type Configuration = { id: string; name: string; kind: string; version: number; is_active: boolean; project_id: string; application_id?: string; environment_id?: string }
@@ -20,7 +20,7 @@ const optionRequests = new Map<number, AbortController>()
 function identity() { return JSON.stringify([auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser, auth.authorizationState, props.applicationID, props.environmentID, localStorage.getItem('edo.project')]) }
 const canRead = computed(() => auth.authorizationState === 'ready' && auth.canAny(['delivery_variable.read']))
 const canReadRegistry = computed(() => auth.canAny(['image_registry.read']) && auth.canAny(['image_registry.execute']))
-const canEdit = computed(() => !props.disabled && auth.canAny(['workflow.update']) && !!auth.user?.project_id && auth.user.project_id === localStorage.getItem('edo.project'))
+const canEdit = computed(() => !props.disabled && auth.canAny([props.editPermission || 'workflow.update']) && !!auth.user?.project_id && auth.user.project_id === localStorage.getItem('edo.project'))
 async function load() {
  const request = ++revision, scope = identity(), project = auth.user?.project_id
  controller?.abort(); controller = new AbortController(); const signal = controller.signal
@@ -56,6 +56,13 @@ function removeSource(index: number) { optionRequests.forEach(request=>request.a
 function update(index: number, patch: Partial<DeploymentInput>) { change({ deployment_inputs: selected.value.map((item, i) => i === index ? { ...item, ...patch } : item) }) }
 function chooseKind(index: number, kind: DeploymentInput['kind']) { optionRequests.get(index)?.abort(); delete optionsByRow.value[index]; change({ deployment_inputs: selected.value.map((item, i) => i === index ? { kind, ...(kind === 'registry' ? { registry_id: '', image: '', tag: '' } : { path: '', ...(kind === 'configuration' ? { configuration_id: '' } : { artifact_node_id: '' }) }) } : item) }) }
 function chooseConfiguration(index: number, id: string) { if (!canRead.value || loading.value || error.value || loadedIdentity.value !== identity()) return; const item = configurations.value.find(item => item.id === id); update(index, { configuration_id: id, ...(item ? { path: item.name } : {}) }) }
+function upstreamOptions(input: DeploymentInput) {
+ const options = (props.buildPlans || []).filter(item => item.kind === 'script' && item.artifact_path).map(item => ({value:'plan:'+item.id,label:item.name}))
+ if (input.artifact_build_plan_id && !options.some(item=>item.value==='plan:'+input.artifact_build_plan_id)) options.push({value:'plan:'+input.artifact_build_plan_id,label:'原构建方案不可用'})
+ if (input.artifact_node_id) options.push({value:'node:'+input.artifact_node_id,label:props.buildNodes?.find(item=>item.id===input.artifact_node_id)?.name || '原流水线构建任务'})
+ return options
+}
+function chooseUpstream(index:number, value:string) { update(index,{artifact_build_plan_id:value.startsWith('plan:')?value.slice(5):undefined,artifact_node_id:value.startsWith('node:')?value.slice(5):undefined}) }
 function configurationOptions(index: number) { return configurations.value.filter(item => !selected.value.some((reference, i) => i !== index && reference.configuration_id === item.id)).map(item => ({ value: item.id, label: `${item.name} · ${item.kind.slice(7).toUpperCase()} · v${item.version}` })) }
 async function chooseRegistry(index: number, registry: string) { optionRequests.get(index)?.abort(); delete optionsByRow.value[index]; update(index,{registry_id:registry,image:'',tag:''}); await nextTick(); await registryOptions(index,false) }
 async function chooseImage(index: number, image: string) { optionRequests.get(index)?.abort(); if (optionsByRow.value[index]) optionsByRow.value[index]!.tags = []; update(index,{image,tag:''}) }
@@ -88,14 +95,14 @@ async function registryOptions(index: number, tags: boolean) {
    </template>
    <template v-else>
     <a-form-item v-if="input.kind==='configuration'" label="配置" :validate-status="input.configuration_id&&!configurations.some(item=>item.id===input.configuration_id)&&!loading?'error':undefined" :help="!canRead?'没有查看配置的权限':input.configuration_id&&!configurations.some(item=>item.id===input.configuration_id)&&!loading?'原配置不可用，请检查适用范围或使用权限':undefined"><a-select :value="input.configuration_id||undefined" :loading="loading" :disabled="!canEdit||!canRead||loadedIdentity!==identity()" :options="configurationOptions(index)" placeholder="选择配置文件" :aria-label="`配置文件 ${index+1}`" @update:value="chooseConfiguration(index,String($event))" /></a-form-item>
-    <a-form-item v-else label="上游构建产出"><a-select :value="input.artifact_node_id||undefined" :disabled="!canEdit" :options="(buildNodes||[]).map(item=>({value:item.id,label:item.name}))" placeholder="选择前序已保存文件产物的构建" @update:value="update(index,{artifact_node_id:String($event)})" /></a-form-item>
+    <a-form-item v-else label="上游构建产出"><a-select :value="input.artifact_build_plan_id ? `plan:${input.artifact_build_plan_id}` : input.artifact_node_id ? `node:${input.artifact_node_id}` : undefined" :disabled="!canEdit" :options="upstreamOptions(input)" placeholder="选择前序保存文件产物的构建方案" @update:value="chooseUpstream(index,String($event))" /><template #help>部署时匹配流水线前序阶段中唯一使用此构建方案的任务。</template></a-form-item>
     <a-form-item label="配置文件路径" :validate-status="input.path&&!validConfigurationPath(input.path)?'error':undefined" :help="input.path&&!validConfigurationPath(input.path)?'只填写相对路径，不能使用绝对路径、~/、.. 或保留目录 .edo':undefined"><a-input :value="input.path" :disabled="!canEdit" addon-before="${EDO_APP_CONFIG_PATH}/" placeholder="例如 settings/app.yaml 或 output.tar.gz" :aria-label="`配置文件路径 ${index+1}`" @update:value="update(index,{path:String($event||'')})" /></a-form-item>
    </template>
      </div>
     </a-collapse-panel>
    </a-collapse>
   </section>
-  <a-form-item label="部署脚本"><DeploymentScriptEditor :model-value="config.deployment_script||''" :kind="deploymentPlan?.kind" :disabled="!canEdit" @update:model-value="change({deployment_script:$event})" /><template #help><span>留空使用部署方案原有流程；填写或上传后执行此脚本。支持 <code>${IMAGE_TAG}</code>、<code>${EDO_IMAGE}</code> 和 EDO 内置变量；自定义变量同样使用 <code>${变量名}</code> 引用。</span></template></a-form-item>
+  <a-form-item v-if="!hideScript" label="部署脚本"><DeploymentScriptEditor :edit-permission="editPermission" :model-value="config.deployment_script||''" :kind="deploymentPlan?.kind" :disabled="!canEdit" @update:model-value="change({deployment_script:$event})" /><template #help><span>留空使用部署方案原有流程；填写或上传后执行此脚本。支持 <code>${IMAGE_TAG}</code>、<code>${EDO_IMAGE}</code> 和 EDO 内置变量；自定义变量同样使用 <code>${变量名}</code> 引用。</span></template></a-form-item>
  </section>
 </template>
 <style scoped>

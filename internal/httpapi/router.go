@@ -277,6 +277,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.POST("/image-registries", auditAction(deps.Audits, deps.Logger, "image_registry.create", "image_registry"), requirePermission(deps.Access, deps.Logger, "image_registry.create"), pipelineAPI.createRegistry)
 	protected.GET("/image-registries/:id/deployment-options", requirePermission(deps.Access, deps.Logger, "image_registry.read"), requirePermission(deps.Access, deps.Logger, "image_registry.execute"), pipelineAPI.deploymentRegistryOptions)
 	protected.POST("/image-registries/test", auditAction(deps.Audits, deps.Logger, "image_registry.test", "image_registry"), requirePermission(deps.Access, deps.Logger, "image_registry.execute"), pipelineAPI.testRegistry)
+	protected.POST("/deployment-plans/script/check", requireAnyPermission(deps.Access, deps.Logger, "deployment_plan.create", "deployment_plan.update"), pipelineAPI.checkDeploymentScript)
 	protected.GET("/deployment-plans", requirePermission(deps.Access, deps.Logger, "deployment_plan.read"), pipelineAPI.listDeploymentPlans)
 	protected.POST("/deployment-plans", auditAction(deps.Audits, deps.Logger, "deployment_plan.create", "deployment_plan"), requirePermission(deps.Access, deps.Logger, "deployment_plan.create"), pipelineAPI.createDeploymentPlan)
 	protected.PUT("/deployment-plans/:id", auditAction(deps.Audits, deps.Logger, "deployment_plan.update", "deployment_plan"), requirePermission(deps.Access, deps.Logger, "deployment_plan.update"), pipelineAPI.updateDeploymentPlan)

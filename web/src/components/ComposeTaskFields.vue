@@ -8,16 +8,17 @@ import { useAuthStore } from '@/stores/auth'
 import { readKubeYaml } from '@/utils/kubernetesYaml'
 import type { WorkflowNode, WorkflowNodeConfig } from '@/types/pipeline'
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
-const props = defineProps<{ node: WorkflowNode; buildNodes: WorkflowNode[]; disabled: boolean; applicationID?: string; applicationName?: string }>()
+const props = defineProps<{ node: WorkflowNode; buildNodes: WorkflowNode[]; disabled: boolean; applicationID?: string; applicationName?: string; plan?: DeploymentCommandPlan; editPermission?: string; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string}>; hideScript?: boolean }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
 const auth = useAuthStore(), kind = ref(''), yaml = ref(''), error = ref(''), environmentID=ref('')
 const deploymentPlan = ref<DeploymentCommandPlan>()
 let request = 0, controller: AbortController | undefined
-function identity() { return JSON.stringify([props.node.config.deployment_plan_id,props.node.config.inline_deployment_plan, auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser]) }
+function identity() { return JSON.stringify([props.node.config.deployment_plan_id,props.node.config.inline_deployment_plan, props.plan, auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser]) }
 watch(identity, async () => {
  const revision = ++request, plan = props.node.config.deployment_plan_id, project = auth.user?.project_id
  controller?.abort(); controller = new AbortController(); const signal = controller.signal
  kind.value = ''; yaml.value = ''; error.value = '';environmentID.value='';deploymentPlan.value=undefined
+ if(props.plan) { deploymentPlan.value=props.plan;kind.value=props.plan.kind;yaml.value=props.plan.compose_yaml||'';environmentID.value=props.plan.deployment_target?.environment_id||'';return }
  if(props.node.config.inline_deployment_plan&&project&&auth.canAny(['workflow.read'])){
   const selected=props.node.config.inline_deployment_plan
   deploymentPlan.value={...selected,id:'inline'} as DeploymentCommandPlan
@@ -41,9 +42,9 @@ watch(configuredTag, value => { if (value !== tagReference.value) tagReference.v
 watch(() => props.node.id, () => { tagReference.value = variableReference(configuredTag.value) })
 function updateTag(value: string) { tagReference.value = value; if (kind.value === 'compose_stack') updateSettings({ tag_variable: value }); else change({ deployment_tag_reference: value }) }
 const services = computed(() => Object.keys(readKubeYaml(yaml.value).object?.services || {}).sort())
-function change(config: Partial<WorkflowNodeConfig>) { if (!props.disabled && auth.canAny(['workflow.update'])) emit('change', config) }
+function change(config: Partial<WorkflowNodeConfig>) { if (!props.disabled && auth.canAny([props.editPermission || 'workflow.update'])) emit('change', config) }
 function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']>>) {
- change({ compose: { ...settings.value, ...patch, env_file: undefined }, compose_images: [], artifact_node_ids: [], artifact_node_id: '' })
+ change({ compose: { ...settings.value, ...patch, env_file: undefined }, compose_images: [], artifact_node_ids: [], artifact_node_id: '', artifact_build_plan_id: undefined })
 }
 </script>
 <template>
@@ -60,7 +61,7 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
   <a-checkbox :checked="settings.use_sudo" :disabled="disabled" @change="updateSettings({use_sudo:$event.target.checked})">使用免密码 sudo 执行 Docker</a-checkbox>
  </section>
  <a-alert v-else-if="node.config.compose" type="warning" show-icon message="当前任务含多镜像配置，请选择 dockercompose 多镜像部署方案。"/>
- <DeploymentConfigurationFields v-if="['docker','compose','compose_stack','script'].includes(kind)" :config="node.config" :build-nodes="buildNodes" :deploymentPlan="deploymentPlan" :applicationID="applicationID" :applicationName="applicationName" :environmentID="environmentID" :disabled="disabled" @change="change"/>
+ <DeploymentConfigurationFields v-if="['docker','compose','compose_stack','script'].includes(kind)" :config="node.config" :build-nodes="buildNodes" :build-plans="buildPlans" :edit-permission="editPermission" :hide-script="hideScript" :deploymentPlan="deploymentPlan" :applicationID="applicationID" :applicationName="applicationName" :environmentID="environmentID" :disabled="disabled" @change="change"/>
 </template>
 <style scoped>
 .configuration-help{border:1px solid var(--edo-border);border-radius:50%;background:transparent;color:var(--edo-muted);width:20px;height:20px;padding:0;cursor:help}.configuration-help:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.compose-task-fields{display:grid;gap:12px;min-width:0}
