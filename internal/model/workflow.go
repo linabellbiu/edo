@@ -29,6 +29,10 @@ type DeploymentConfigBinding struct {
 }
 
 type WorkflowNodeConfig struct {
+	DeploymentInputVersion int                        `json:"deployment_input_version,omitempty"`
+	DeploymentInputs       []DeploymentInput          `json:"deployment_inputs,omitempty"`
+	DeploymentScript       string                     `json:"deployment_script,omitempty"`
+	DeploymentTagReference string                     `json:"deployment_tag_reference,omitempty"`
 	ConfigurationFiles     []DeploymentConfigFile     `json:"configuration_files,omitempty"`
 	ConfigurationDirectory string                     `json:"configuration_directory,omitempty"` // 仅用于读取旧运行快照。
 	DeploymentParameters   string                     `json:"deployment_parameters,omitempty"`
@@ -64,6 +68,17 @@ type WorkflowNodeConfig struct {
 	Migration              *WorkflowMigrationConfig   `json:"migration,omitempty"`
 	Description            string                     `json:"description,omitempty"`
 	Notifications          []WorkflowNotificationRule `json:"notifications,omitempty"`
+}
+
+// DeploymentInput 只保存来源和相对路径，不保存文件正文或仓库凭据。
+type DeploymentInput struct {
+	Kind            string `json:"kind"`
+	Path            string `json:"path,omitempty"`
+	ConfigurationID string `json:"configuration_id,omitempty"`
+	RegistryID      string `json:"registry_id,omitempty"`
+	Image           string `json:"image,omitempty"`
+	Tag             string `json:"tag,omitempty"`
+	ArtifactNodeID  string `json:"artifact_node_id,omitempty"`
 }
 
 type ComposeImageBinding struct {

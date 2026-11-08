@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -255,7 +256,7 @@ func (s *Service) RemoveRuntime(ctx context.Context, deploymentID, actorID strin
 	if err := s.requireRuntimeControlPermission(ctx, record, actorID); err != nil {
 		return err
 	}
-	if record.Platform != model.DeploymentDocker || record.DeploymentPlanKind != model.DeploymentPlanDocker || s.docker == nil {
+	if isShellRuntime(record) || record.Platform != model.DeploymentDocker || record.DeploymentPlanKind != model.DeploymentPlanDocker || s.docker == nil {
 		return ErrRuntimeControlUnsupported
 	}
 	lock, err := s.acquireTargetLock(ctx, record)
@@ -324,7 +325,7 @@ func (s *Service) executeRuntimeControl(
 	input RuntimeControlInput,
 ) (*RuntimeState, error) {
 	hasConfiguration := false
-	if input.Action == "restart" && record.UsesDeliveryVariables {
+	if input.Action == "restart" && record.UsesDeliveryVariables && !isShellRuntime(record) {
 		var err error
 		hasConfiguration, err = s.recordUsesConfiguration(ctx, record)
 		if err != nil {
@@ -392,6 +393,16 @@ func (s *Service) executeRuntimeControl(
 
 func (s *Service) readRuntimeState(ctx context.Context, record *model.DeploymentRecord) (*RuntimeState, error) {
 	switch {
+	case isShellRuntime(record):
+		configuration, err := s.findInstanceControl(ctx, record)
+		if err != nil {
+			return nil, err
+		}
+		return &RuntimeState{
+			DeploymentID: record.ID, Kind: "script", Name: record.TargetName, State: "unverified",
+			RestartConfigured: strings.TrimSpace(configuration.RestartScript) != "",
+			StopConfigured:    strings.TrimSpace(configuration.StopScript) != "",
+		}, nil
 	case record.Platform == model.DeploymentSSH && record.DeploymentPlanKind == model.DeploymentPlanComposeStack:
 		readContext, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
@@ -419,16 +430,6 @@ func (s *Service) readRuntimeState(ctx context.Context, record *model.Deployment
 		}
 		result, err := s.kube.DeploymentRuntimeState(ctx, record.RuntimeID, record.Namespace, record.WorkloadName)
 		return kubernetesRuntimeState(record.ID, result), err
-	case isShellRuntime(record):
-		configuration, err := s.findInstanceControl(ctx, record)
-		if err != nil {
-			return nil, err
-		}
-		return &RuntimeState{
-			DeploymentID: record.ID, Kind: "script", Name: record.TargetName, State: "unverified",
-			RestartConfigured: strings.TrimSpace(configuration.RestartScript) != "",
-			StopConfigured:    strings.TrimSpace(configuration.StopScript) != "",
-		}, nil
 	default:
 		return nil, ErrRuntimeControlUnsupported
 	}
@@ -465,14 +466,28 @@ func (s *Service) executeLifecycleScript(
 	if err := s.db.WithContext(ctx).Select("name").First(&application, "uuid = ?", record.ApplicationID).Error; err == nil {
 		applicationName = application.Name
 	}
+	environment := map[string]string{
+		"EDO_APPLICATION_ID": record.ApplicationID, "EDO_APPLICATION_NAME": applicationName,
+		"EDO_DEPLOYMENT_ID": record.ID, "EDO_LIFECYCLE_ACTION": action, "EDO_ACTOR_ID": actorID,
+	}
+	var commandOutput io.Writer = output
+	if isCustomScriptRuntime(record) {
+		prepared, transports, prepareErr := s.prepareCustomLifecycle(commandContext, record, actorID, action, script)
+		if prepareErr != nil {
+			return nil, prepareErr
+		}
+		script = prepared
+		for key, value := range transports {
+			environment[key] = value
+		}
+		// 生命周期输出不具备流水线的流式脱敏器，不回显可能读取到的配置正文。
+		commandOutput = io.Discard
+	}
 	result, err := s.ssh.RunHostDeploymentScript(commandContext, sshdeploy.Input{
 		HostID: record.HostID, EnvironmentID: record.EnvironmentID, WorkingDirectory: record.WorkingDirectory,
 		Script: script, Timeout: timeout,
-		Environment: map[string]string{
-			"EDO_APPLICATION_ID": record.ApplicationID, "EDO_APPLICATION_NAME": applicationName,
-			"EDO_DEPLOYMENT_ID": record.ID, "EDO_LIFECYCLE_ACTION": action, "EDO_ACTOR_ID": actorID,
-		},
-		Stdout: output, Stderr: output,
+		Environment: environment,
+		Stdout:      commandOutput, Stderr: commandOutput,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("生命周期命令执行失败 exit_code=%d: %w", result.ExitCode, err)
@@ -507,7 +522,7 @@ func instanceControlResponse(deploymentID string, configuration model.Deployment
 }
 
 func isShellRuntime(record *model.DeploymentRecord) bool {
-	return record.Platform == model.DeploymentSSH && record.DeploymentPlanKind == model.DeploymentPlanScript
+	return isCustomScriptRuntime(record) || record.Platform == model.DeploymentSSH && record.DeploymentPlanKind == model.DeploymentPlanScript
 }
 
 func (s *Service) currentDeployment(ctx context.Context, deploymentID string) (*model.DeploymentRecord, error) {
@@ -588,4 +603,8 @@ func (w *limitedControlOutput) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return strings.TrimSpace(w.value.String())
+}
+
+func isCustomScriptRuntime(record *model.DeploymentRecord) bool {
+	return record != nil && strings.HasPrefix(record.CommandScript, "# EDO 用户部署脚本 v1\n")
 }

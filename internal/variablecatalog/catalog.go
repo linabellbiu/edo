@@ -70,7 +70,9 @@ var scopeOptions = []Option{
 }
 
 var definitions = []Definition{
-	environment("app_config_path", "EDO_APP_CONFIG_PATH", "应用配置目录", "应用配置文件所在目录，可用 ${EDO_APP_CONFIG_PATH}/相对路径 引用生成文件；配置名称与生成文件路径独立。", "部署", []Scope{ScopeDockerDeployment, ScopeComposeDeployment}, "选择配置文件后可用，默认是目标执行用户的 ~/edo/应用名称/config；已有实例采用冻结目录", false),
+	environment("image_tag", "IMAGE_TAG", "当前流水线镜像 Tag", "当前流水线本次构建产物的实际镜像 Tag；使用 ${IMAGE_TAG} 引用，不能通过用户变量覆盖。", "制品", []Scope{ScopeDeploymentScript, ScopeComposeDeployment, ScopeDockerDeployment}, "上游镜像构建完成后可用；多个镜像必须具有相同 Tag", true),
+	environment("input_image", "EDO_INPUT_IMAGE_1", "所选来源镜像", "部署前选择的镜像仓库来源，值固定为 Digest；序号对应来源列表位置，可引用 ${EDO_INPUT_IMAGE_1}。", "制品", []Scope{ScopeDeploymentScript}, "选择镜像仓库来源并拉取成功后可用", true),
+	environment("app_config_path", "EDO_APP_CONFIG_PATH", "应用配置目录", "应用配置文件所在目录，可用 ${EDO_APP_CONFIG_PATH}/相对路径 引用生成文件；配置名称与生成文件路径独立。", "部署", []Scope{ScopeDockerDeployment, ScopeComposeDeployment, ScopeDeploymentScript}, "部署输入或脚本启用后可用，默认是目标执行用户的 ~/edo/应用名称/config；已有实例采用冻结目录", false),
 	placeholder("configuration_directory", "EDO_CONFIGURATION_DIRECTORY", "历史配置目录", "为已有运行保留的目录变量；新配置请使用 ${EDO_APP_CONFIG_PATH}/相对路径。", []Scope{ScopeComposeDeployment}, "历史运行按部署快照固定的目录解析"),
 	template("application_name", "application.name", "应用名称", "当前流水线所属应用的名称。", "应用", "运行上下文已创建时可用"),
 	template("workflow_name", "workflow.name", "流水线名称", "本次运行绑定的流水线名称。", "流水线", "运行绑定流水线后可用"),
@@ -123,7 +125,7 @@ func template(id, name, label, description, category, availability string) Defin
 
 func environment(id, name, label, description, category string, scopes []Scope, availability string, scriptReserved bool) Definition {
 	return Definition{
-		ID: "environment." + id, Name: name, Syntax: "$" + name, Label: label,
+		ID: "environment." + id, Name: name, Syntax: "${" + name + "}", Label: label,
 		Description: description, Kind: KindEnvironment, Category: category,
 		Scopes: scopes, Availability: availability, ManagedBySystem: true, scriptReserved: scriptReserved,
 	}

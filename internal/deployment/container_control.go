@@ -47,6 +47,9 @@ func ContainerControlPermission(action string) string {
 }
 
 func (s *Service) requireComposeRuntimeActionPermission(ctx context.Context, record *model.DeploymentRecord, actorID, action string) error {
+	if isShellRuntime(record) {
+		return nil
+	}
 	if record.DeploymentPlanKind != model.DeploymentPlanComposeStack && record.DeploymentPlanKind != model.DeploymentPlanDocker && record.DeploymentPlanKind != model.DeploymentPlanCompose {
 		return nil
 	}

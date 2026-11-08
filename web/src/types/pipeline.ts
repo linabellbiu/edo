@@ -15,7 +15,21 @@ export interface WorkflowNotificationRule {
   message?: string
 }
 
+export interface DeploymentInput {
+ kind: 'configuration'|'upstream'|'registry'
+ path?:string
+ configuration_id?:string
+ artifact_node_id?:string
+ registry_id?:string
+ image?:string
+ tag?:string
+}
+
 export interface WorkflowNodeConfig {
+ deployment_input_version?:number
+ deployment_inputs?:DeploymentInput[]
+ deployment_script?:string
+ deployment_tag_reference?:string
 	deployment_source?: 'inline' | 'plan'
 	inline_deployment_plan?: WorkflowDeploymentPlan
   configuration_files?: Array<{id:string;path:string}>

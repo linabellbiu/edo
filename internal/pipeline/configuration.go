@@ -61,7 +61,7 @@ func composeConfiguration(content string, set *deployment.ConfigurationSet) (str
 			return "", "", ErrInvalidComposeDelivery
 		}
 		for _, binding := range set.Bindings {
-			if binding.Kind == "config_env" {
+			if binding.Kind == "config_env" && !set.FilesOnly {
 				file, err := configfile.ComposePath(binding.Path)
 				if err != nil {
 					return "", "", err

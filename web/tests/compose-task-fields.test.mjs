@@ -48,3 +48,13 @@ test('自定义部署方案直接提供 Compose、环境和命令预览，不要
  h.state.updateTag('IMAGE_TAG');await settle();assert.equal(h.state.tagReference.value,'IMAGE_TAG')
  h.state.updateTag('${IMAGE_TAG}');await settle();assert.equal(h.props.node.config.compose.tag_variable,'${IMAGE_TAG}')
  })
+
+test('Docker 与单服务 Compose 同样使用镜像 Tag 引用，不写入多镜像设置',async t=>{
+ for(const kind of ['docker','compose']){
+  const h=harness(()=>({data:{deployment_plans:[{id:'plan',kind}]}}));t.after(h.stop);h.props.node.config={deployment_plan_id:'plan'};await settle()
+  assert.equal(h.state.tagReference.value,'${IMAGE_TAG}')
+  h.state.updateTag('${RELEASE_TAG}');await settle()
+  assert.equal(h.props.node.config.deployment_tag_reference,'${RELEASE_TAG}')
+  assert.equal(h.props.node.config.compose,undefined)
+ }
+})

@@ -19,6 +19,7 @@ import (
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
 	"edo/internal/model"
+	"edo/internal/sshdeploy"
 )
 
 var (
@@ -40,6 +41,7 @@ type BuildTaskPayload struct {
 }
 
 type executionContext struct {
+	inputFiles         []sshdeploy.FileInput
 	run                model.PipelineRun
 	node               model.WorkflowNode
 	snapshot           workflowSnapshot
@@ -121,10 +123,27 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 	prepared.variableFiles = files
 	ctx = deployment.WithReleaseEnvironment(ctx, values)
 	ctx = deployment.WithReleaseEnvFiles(ctx, files)
-	s.appendRunLog(ctx, prepared.run.ID, "deploy", "info", "开始部署已构建制品")
+	if prepared.node.Config.DeploymentInputVersion == 1 {
+		s.appendRunLog(ctx, prepared.run.ID, "prepare", "info", "开始准备部署文件与制品")
+	} else {
+		s.appendRunLog(ctx, prepared.run.ID, "deploy", "info", "开始部署已构建制品")
+	}
 	approvedBy, err := s.latestExecutionApproval(ctx, prepared.run.ID)
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failureState, "读取流水线审核状态失败，请稍后重试", err)
+	}
+	filesToClose, prepareErr := s.prepareDeploymentInputs(ctx, prepared)
+	defer func() {
+		for _, file := range filesToClose {
+			_ = file.Close()
+		}
+	}()
+	if prepareErr != nil {
+		return s.failDeploymentExecution(ctx, failureState, "准备部署输入失败，请检查文件来源与使用权限", prepareErr)
+	}
+	ctx = deployment.WithPreparedFiles(ctx, prepared.inputFiles)
+	if strings.TrimSpace(prepared.node.Config.DeploymentScript) != "" || prepared.deploymentPlan.Kind == model.DeploymentPlanScript && prepared.node.Config.DeploymentInputVersion == 1 {
+		return s.executeCustomDeployment(ctx, prepared, approvedBy)
 	}
 	if prepared.target.Platform == model.DeploymentSSH {
 		if prepared.deploymentPlan.Kind == model.DeploymentPlanComposeStack {
@@ -370,6 +389,27 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 	if err := s.db.WithContext(ctx).First(&result.component, "pipeline_run_id = ?", run.ID).Error; err != nil {
 		return nil, err
 	}
+	if node.Config.DeploymentScript != "" && result.deploymentPlan.Kind != model.DeploymentPlanComposeStack {
+		if run.ArtifactID != "" {
+			if s.artifacts == nil {
+				return nil, ErrPipelineExecutionUnavailable
+			}
+			stored, err := s.artifacts.Find(ctx, run.ArtifactID)
+			if err != nil || stored.ApplicationID != run.ApplicationID || stored.ProjectID != run.ProjectID || !artifactAvailableToPipelineRun(run, stored) || stored.Status != model.ArtifactStatusAvailable {
+				return nil, ErrPipelineExecutionConfig
+			}
+			result.artifact = *stored
+		}
+		return result, nil
+	}
+	if len(snapshot.RegistryInputs[node.ID]) > 0 && (result.deploymentPlan.Kind == model.DeploymentPlanDocker || result.deploymentPlan.Kind == model.DeploymentPlanCompose) {
+		image := snapshot.RegistryInputs[node.ID][0]
+		result.artifact = model.Artifact{Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable, StorageKind: model.ArtifactStorageKindRegistry, ImageRegistryID: image.RegistryID, ImageRef: image.ImageRef, Name: image.Tag}
+		if err := s.db.WithContext(ctx).First(&result.registry, "uuid = ? AND is_active = ?", image.RegistryID, true).Error; err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 	if result.target.Platform == model.DeploymentSSH {
 		if result.deploymentPlan.Kind == model.DeploymentPlanComposeStack {
 			if _, err := parseComposeStack(result.deploymentPlan.ComposeYAML); err != nil {
@@ -382,6 +422,9 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		}
 		if !validSSHDeploymentPlanSnapshot(&result.deploymentPlan, &result.target) {
 			return nil, ErrPipelineExecutionConfig
+		}
+		if run.ArtifactID == "" && node.Config.DeploymentInputVersion == 1 {
+			return result, nil
 		}
 		if run.ArtifactID == "" {
 			return nil, ErrPipelineExecutionConfig
@@ -699,6 +742,9 @@ func completedDeploymentMatches(prepared *executionContext, record *model.Deploy
 		record.RolloutTimeout != prepared.target.RolloutTimeout || record.DeploymentPlanID != prepared.deploymentPlan.ID ||
 		record.DeploymentPlanKind != prepared.deploymentPlan.Kind {
 		return false
+	}
+	if prepared.node.Config.DeploymentScript != "" || prepared.node.Config.DeploymentInputVersion == 1 && prepared.deploymentPlan.Kind == model.DeploymentPlanScript {
+		return record.CommandDigest == model.DeploymentPlanExecutionDigest(prepared.deploymentPlan.Kind, prepared.deploymentPlan.Script, prepared.deploymentPlan.TimeoutSeconds)
 	}
 	if prepared.target.Platform == model.DeploymentSSH {
 		if prepared.deploymentPlan.Kind == model.DeploymentPlanComposeStack {

@@ -1142,7 +1142,7 @@ function hasBuildTaskBeforeTask(taskID: string) {
 
 function compatibleDeploymentPlans(taskID: string) {
   const buildPlan = buildPlanBeforeTask(taskID)
-  return activeDeploymentPlans.value.filter(item => deploymentPlanAcceptsBuild(item, buildPlan))
+  return activeDeploymentPlans.value.filter(item => item.kind !== 'kubernetes' || deploymentPlanAcceptsBuild(item, buildPlan))
 }
 
 function formatEnvironmentVariables(value?: Record<string, string>) {
@@ -1196,7 +1196,7 @@ function createDeploymentPlan() {
 }
 
 function deploymentSource(node:WorkflowNode){return node.config.deployment_source||(node.config.inline_deployment_plan||!node.config.deployment_plan_id?'inline':'plan')}
-function inlineDeploymentKinds(taskID:string){const build=buildPlanBeforeTask(taskID);return (['docker','compose','compose_stack','kubernetes','script'] as DeploymentPlanKind[]).filter(kind=>deploymentPlanAcceptsBuild({id:'inline',name:'',kind,is_active:true},build))}
+function inlineDeploymentKinds(taskID:string){const build=buildPlanBeforeTask(taskID);return (['docker','compose','compose_stack','kubernetes','script'] as DeploymentPlanKind[]).filter(kind=>kind!=='kubernetes'||deploymentPlanAcceptsBuild({id:'inline',name:'',kind,is_active:true},build))}
 function changeDeploymentSource(value:'inline'|'plan'){
   const node=selectedNode.value
   if(!node||node.type!=='deploy'||!canEdit.value)return
@@ -1748,10 +1748,8 @@ onBeforeRouteLeave(async () => {
                   <a-button v-if="canCreateDeploymentPlan" class="resource-create" aria-label="创建部署方案" title="创建部署方案" @click="createDeploymentPlan"><Plus :size="16" /></a-button>
                 </div>
               </a-form-item>
-              <a-alert v-if="!hasBuildTaskBeforeTask(selectedNode.id)" class="panel-alert" type="warning" show-icon message="部署任务前必须先添加构建制品任务。" />
-              <a-alert v-else-if="!buildPlanBeforeTask(selectedNode.id)" class="panel-alert" type="warning" show-icon message="请先为上游构建制品任务选择可用的构建方案。" />
-              <a-alert v-else-if="deploymentSource(selectedNode)==='plan'&&!compatibleDeploymentPlans(selectedNode.id).length" class="panel-alert" type="warning" show-icon message="没有与上游制品类型匹配的部署方案。Kubernetes 还要求镜像构建方案绑定镜像仓库。" />
-              <p v-if="deploymentSource(selectedNode)==='plan'" class="panel-note">部署方案已经包含执行方式、环境和目标位置；这里只显示能消费上游文件或镜像制品的方案。</p>
+              <a-alert v-if="deploymentSource(selectedNode)==='plan'&&!compatibleDeploymentPlans(selectedNode.id).length" class="panel-alert" type="warning" show-icon message="没有可用的部署方案。Kubernetes 要求镜像构建方案绑定镜像仓库。" />
+              <p v-if="deploymentSource(selectedNode)==='plan'" class="panel-note">部署方案包含执行方式、环境和目标位置；文件来源与部署脚本在当前任务中配置。</p>
             </template>
           </a-form>
           <a-form v-else layout="vertical">

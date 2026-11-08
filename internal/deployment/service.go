@@ -450,7 +450,7 @@ func (s *Service) RequestCommandAndRun(ctx context.Context, actorID string, inpu
 	return s.requestCommandAndRun(ctx, actorID, input, target)
 }
 
-// RequestCommandSnapshotAndRun 与 RequestSnapshotAndRun 相同，但用于 SSH 脚本部署。
+// RequestCommandSnapshotAndRun 执行目标主机脚本，也用于 Docker / Compose 的自定义部署脚本。
 func (s *Service) RequestCommandSnapshotAndRun(
 	ctx context.Context,
 	actorID string,
@@ -475,7 +475,8 @@ func (s *Service) requestCommandAndRun(
 	if (input.PlanKind == model.DeploymentPlanComposeStack && ((input.Image != "" || input.ArtifactID != "") && (!immutableImageReference(input.Image) || input.ArtifactID == ""))) || (input.PlanKind == model.DeploymentPlanScript && input.Image != "") {
 		return nil, ErrInvalidTarget
 	}
-	if target.Platform != model.DeploymentSSH || (input.PlanKind != model.DeploymentPlanScript && input.PlanKind != model.DeploymentPlanComposeStack) ||
+	supported := target.Platform == model.DeploymentSSH && (input.PlanKind == model.DeploymentPlanScript || input.PlanKind == model.DeploymentPlanComposeStack) || target.Platform == model.DeploymentDocker && target.HostID != "" && (input.PlanKind == model.DeploymentPlanDocker || input.PlanKind == model.DeploymentPlanCompose)
+	if !supported ||
 		input.DeploymentPlanID == "" || strings.TrimSpace(input.Script) == "" || len(input.Script) > 256*1024 ||
 		input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 || input.ScriptDigest == "" ||
 		input.ScriptDigest != expectedDigest || s.ssh == nil {
@@ -1004,7 +1005,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		if err := s.requireExecutionPermission(ctx, &record); err != nil {
 			return s.failExecutionAuthorization(ctx, &record, err)
 		}
-		if record.Platform == model.DeploymentDocker {
+		if record.Platform == model.DeploymentDocker && record.CommandScript == "" {
 			if err := s.docker.WriteConfigurationFiles(ctx, record.RuntimeID, configuration.Directory, configuration.Files); err != nil {
 				return s.markFailed(ctx, record.ID, "configuration_write_failed", "生成部署配置文件失败", err, "", nil)
 			}
@@ -1017,6 +1018,18 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			}
 			ctx = WithReleaseEnvironment(ctx, values)
 			ctx = dockerengine.WithConfigurationRevision(ctx, configfile.RevisionDigest(configuration.Bindings))
+		}
+	}
+	if files, _ := ctx.Value(preparedFilesKey{}).([]sshdeploy.FileInput); len(files) > 0 {
+		if err := s.requireExecutionPermission(ctx, &record); err != nil {
+			return s.failExecutionAuthorization(ctx, &record, err)
+		}
+		if s.ssh == nil {
+			return s.markFailed(ctx, record.ID, "input_transport_unavailable", "部署文件传输服务不可用", ErrInvalidTarget, "", nil)
+		}
+		_, prepareErr := s.ssh.RunHostDeploymentScript(ctx, sshdeploy.Input{HostID: record.HostID, EnvironmentID: record.EnvironmentID, WorkingDirectory: record.WorkingDirectory, Script: ":", Timeout: time.Duration(record.RolloutTimeout) * time.Second, Files: files})
+		if prepareErr != nil {
+			return s.markFailed(ctx, record.ID, "deployment_input_transfer_failed", "下载部署文件失败，请检查文件来源和目标主机", prepareErr, "", nil)
 		}
 	}
 	expectedImageID = strings.TrimSpace(expectedImageID)
@@ -1044,8 +1057,8 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 	var previousImageID string
 	var warning error
 	var commandExitCode *int
-	switch record.Platform {
-	case model.DeploymentSSH:
+	switch {
+	case record.CommandScript != "":
 		commandTimeout, validTimeout := effectiveSSHTimeout(&record)
 		if command == nil || s.ssh == nil || record.CommandScript == "" || !validTimeout {
 			err = ErrInvalidTarget
@@ -1080,7 +1093,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			commandExitCode = &result.ExitCode
 		}
 		err = commandErr
-	case model.DeploymentDocker:
+	case record.Platform == model.DeploymentDocker:
 		if record.DeploymentPlanKind == model.DeploymentPlanCompose {
 			composeTimeout, validTimeout := effectiveComposeTimeout(&record)
 			expectedDigest := model.DeploymentPlanComposeExecutionDigest(record.ComposeYAML, record.ComposeService, record.ComposeTimeout)
@@ -1155,7 +1168,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 				previousImage, previousImageID, warning, err = previous.Reference, previous.ID, deployWarning, deployErr
 			}
 		}
-	case model.DeploymentKubernetes:
+	case record.Platform == model.DeploymentKubernetes:
 		var identity kube.DeploymentImageIdentity
 		identity, err = s.kubernetesExecutionIdentity(ctx, &record)
 		if err != nil {
@@ -1177,7 +1190,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 	if err != nil {
 		message := "发布执行失败，需人工确认目标状态"
 		code := "deployment_execution_failed"
-		if record.Platform == model.DeploymentSSH {
+		if record.CommandScript != "" {
 			code, message = sshCommandFailureDetails(err, commandExitCode)
 			s.logger.Error("命令脚本部署失败", "operation", "command_deployment_execute", "deployment_id", deploymentID,
 				"target_id", record.TargetID, "host_id", record.HostID, "exit_code", commandExitCode, "err", err)
@@ -1364,7 +1377,7 @@ func (s *Service) acquireTargetLock(ctx context.Context, record *model.Deploymen
 		return nil, ErrInvalidTarget
 	}
 	rolloutTimeout := time.Duration(record.RolloutTimeout) * time.Second
-	if record.Platform == model.DeploymentSSH {
+	if record.Platform == model.DeploymentSSH || record.CommandScript != "" {
 		var valid bool
 		rolloutTimeout, valid = effectiveSSHTimeout(record)
 		if !valid {

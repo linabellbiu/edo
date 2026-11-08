@@ -43,6 +43,7 @@ var (
 var environmentKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
 type Input struct {
+	Files            []FileInput
 	HostID           string
 	EnvironmentID    string
 	WorkingDirectory string
@@ -106,6 +107,11 @@ func (s *Service) RunHostDeploymentScript(ctx context.Context, input Input) (Res
 		return Result{ExitCode: -1}, err
 	}
 	if host.Mode == model.HostModeLocal {
+		fileContext, cancelFiles := context.WithTimeout(ctx, input.Timeout)
+		defer cancelFiles()
+		if err := stageInputFiles(fileContext, nil, input.Files); err != nil {
+			return Result{ExitCode: -1}, err
+		}
 		if input.Artifact != nil {
 			artifactPath, err := stageLocalArtifact(ctx, input)
 			if err != nil {
@@ -131,6 +137,9 @@ func (s *Service) RunHostDeploymentScript(ctx context.Context, input Input) (Res
 		return Result{ExitCode: -1}, fmt.Errorf("%w: %v", ErrHostUnavailable, err)
 	}
 	defer client.Close()
+	if err := stageInputFiles(commandContext, client, input.Files); err != nil {
+		return Result{ExitCode: -1}, err
+	}
 	if input.Artifact != nil {
 		artifactPath, err := stageRemoteArtifact(commandContext, client, input)
 		if err != nil {

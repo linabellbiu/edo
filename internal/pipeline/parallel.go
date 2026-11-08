@@ -255,6 +255,15 @@ func parallelUpstreamArtifact(snapshot *workflowSnapshot, node model.WorkflowNod
 		}
 		return state.ArtifactID, nil
 	}
+	if node.Config.DeploymentInputVersion == 1 && (node.Config.DeploymentScript != "" || hasRegistryDeploymentInput(node.Config) || snapshot.DeploymentPlans[node.ID].Kind == model.DeploymentPlanScript) && node.Config.ArtifactNodeID == "" {
+		sources, err := artifactSources(snapshot.Stages)
+		if err != nil {
+			return "", err
+		}
+		if sources[node.ID] == "" {
+			return "", nil
+		}
+	}
 	if node.Config.Compose != nil && snapshot.DeploymentPlans[node.ID].Kind == model.DeploymentPlanComposeStack && len(node.Config.ArtifactNodeIDs) == 0 {
 		return "", nil
 	}
@@ -396,7 +405,7 @@ func artifactSources(stages []model.WorkflowStage) (map[string]string, error) {
 				continue
 			}
 			source := node.Config.ArtifactNodeID
-			if source == "" && node.Config.Compose != nil {
+			if source == "" && (node.Config.Compose != nil || node.Config.DeploymentInputVersion == 1 && len(latest) != 1) {
 				continue
 			}
 			if source == "" {

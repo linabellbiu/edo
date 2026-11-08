@@ -14,6 +14,9 @@ import (
 )
 
 func (s *Service) containerControlPlan(ctx context.Context, record *model.DeploymentRecord, containerID, actorID, action string) (*dockerengine.ComposeContainerControlPlan, *ConfigurationSet, error) {
+	if isShellRuntime(record) {
+		return nil, nil, ErrRuntimeControlUnsupported
+	}
 	var plan *dockerengine.ComposeContainerControlPlan
 	var err error
 	single := record.Platform == model.DeploymentDocker && record.DeploymentPlanKind == model.DeploymentPlanCompose

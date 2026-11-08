@@ -18,7 +18,7 @@ const notificationTemplate = findSection(baseParse(editorTemplate)).loc.source
 const passthrough = {
   inheritAttrs: false,
   setup(_, { attrs, slots }) {
-    return () => vue.h('div', attrs, [attrs.message, attrs.description, slots.default?.()])
+    return () => vue.h('div', attrs, [attrs.message, attrs.description, slots.label?.(), slots.default?.()])
   },
 }
 async function render(source, state) {
@@ -26,7 +26,7 @@ async function render(source, state) {
   const output = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const render = new Function('Vue', output)(vue)
   const app = vue.createSSRApp({ setup: () => state, render })
-  for (const name of ['a-alert', 'a-button', 'a-select', 'a-form-item', 'a-input', 'a-textarea', 'a-checkbox', 'Bell', 'Plus', 'Trash2']) app.component(name, passthrough)
+  for (const name of ['a-alert', 'a-button', 'a-select', 'a-form-item', 'a-input', 'a-textarea', 'a-checkbox', 'a-tooltip', 'Bell', 'Plus', 'Trash2']) app.component(name, passthrough)
   return renderToString(app)
 }
 function notificationState(patch = {}) {
@@ -54,15 +54,15 @@ test('通知渠道读取权限提醒和已有渠道下的未配置通知提醒�
 test('部署任务删除 Compose 说明，显示 DockerCompose 名称且保留 docker compose 命令', async () => {
   const html = await render(composeTemplate, {
     error: '', kind: 'compose_stack', disabled: false,
-    node: { config: { deployment_plan_id: 'plan' } },
+    node: { config: { deployment_plan_id: 'plan' } }, tagReference:'${IMAGE_TAG}', validTagReference:()=>true,
     settings: { project_name: 'team', tag_variable: 'IMAGE_TAG', services: [] }, services: [], updateSettings() {},
   })
   assert.doesNotMatch(html, /使用 EDO 保存的|上游构建镜像自动匹配并固定摘要/)
   assert.match(html, /DockerCompose 多镜像部署配置/)
   assert.match(html, /查看和编辑 DockerCompose 部署方案/)
   assert.match(html, /DockerCompose 项目名/)
-  assert.match(html, /DockerCompose Tag 变量名/)
-  assert.match(html, /docker compose up -d/)
+  assert.match(html, /镜像 Tag/)
+  assert.match(html, /留空执行整个 docker-compose.yaml 项目/)
 })
 test('部署方案读取失败或方案类型不匹配时仍显示必要警告', async () => {
   const html = await render(composeTemplate, { error: '读取失败', kind: '', node: { config: { compose: {} } } })

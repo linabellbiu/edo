@@ -25,6 +25,7 @@ import (
 	"edo/internal/envtext"
 	"edo/internal/model"
 	"edo/internal/repository"
+	"edo/internal/shellcheck"
 	"edo/internal/task"
 )
 
@@ -76,6 +77,7 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
+	RegistryInputs             map[string][]workflowRegistryInput          `json:"registry_inputs,omitempty"`
 	ApplicationConfigDirectory string                                      `json:"application_config_directory,omitempty"`
 	DirectConfigurationPaths   bool                                        `json:"direct_configuration_paths,omitempty"`
 	ConfigurationBindings      map[string][]model.DeploymentConfigBinding  `json:"configuration_bindings,omitempty"`
@@ -532,6 +534,12 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 }
 
 func sanitizeWorkflowNode(node *model.WorkflowNode) error {
+	if len(node.Config.DeploymentTagReference) > 131 || node.Config.DeploymentTagReference != "" && node.Type != model.WorkflowNodeDeploy {
+		return ErrInvalidWorkflow
+	}
+	if err := sanitizeDeploymentInputs(node); err != nil {
+		return err
+	}
 	// 配置目录由应用确定；旧字段仅保留给已经存在的运行快照解码。
 	node.Config.ConfigurationDirectory = ""
 	if node.Config.Compose != nil {
@@ -885,7 +893,21 @@ func (s *Service) validateWorkflow(
 					issues = append(issues, WorkflowIssue{Code: "missing_deployment_plan", Message: message, NodeID: node.ID, StageID: stage.ID})
 					break
 				}
-				if plan.Kind == model.DeploymentPlanScript && strings.TrimSpace(plan.Script) == strings.TrimSpace(builtinDeliveryScript) {
+				if ref := node.Config.DeploymentTagReference; ref != "" && ref != "${"+composeTagName(ref)+"}" {
+					issues = append(issues, WorkflowIssue{Code: "invalid_deployment_tag_reference", Message: "镜像 Tag 请使用变量引用，例如 ${IMAGE_TAG}", NodeID: node.ID, StageID: stage.ID})
+				}
+				if node.Config.DeploymentInputVersion == 1 {
+					if plan.Kind == model.DeploymentPlanKubernetes {
+						issues = append(issues, WorkflowIssue{Code: "unsupported_deployment_inputs", Message: "部署文件和脚本只用于 Docker、Compose 和 Shell 部署", NodeID: node.ID, StageID: stage.ID})
+					}
+					if len(shellcheck.Check(node.Config.DeploymentScript)) > 0 {
+						issues = append(issues, WorkflowIssue{Code: "invalid_deployment_script", Message: "部署脚本存在 Shell 语法错误，请检查标记位置", NodeID: node.ID, StageID: stage.ID})
+					}
+					if !validDeploymentScriptVariables(node.Config.EnvironmentVariables) {
+						issues = append(issues, WorkflowIssue{Code: "invalid_deployment_variables", Message: "部署脚本变量无效，不能覆盖 EDO 内置变量", NodeID: node.ID, StageID: stage.ID})
+					}
+				}
+				if plan.Kind == model.DeploymentPlanScript && strings.TrimSpace(node.Config.DeploymentScript) == "" && strings.TrimSpace(plan.Script) == strings.TrimSpace(builtinDeliveryScript) {
 					issues = append(issues, WorkflowIssue{Code: "missing_deployment_script", Message: "请先编辑部署方案，将示例脚本替换为该应用的实际部署脚本", NodeID: node.ID, StageID: stage.ID})
 				}
 				if application == nil && plan.DeploymentTargetID == "" {
@@ -993,6 +1015,23 @@ func validateWorkflowArtifactFlow(
 				}
 			}
 		case model.WorkflowNodeDeploy:
+			for _, input := range next.Config.DeploymentInputs {
+				if input.Kind == "upstream" {
+					var sourcePlan model.BuildPlan
+					for _, candidate := range tasks {
+						if candidate.ID == input.ArtifactNodeID {
+							sourcePlan = buildPlans[candidate.Config.BuildPlanID]
+							break
+						}
+					}
+					if !priorBuilds[input.ArtifactNodeID] || sourcePlan.Kind != model.BuildPlanScript || strings.TrimSpace(sourcePlan.ArtifactPath) == "" {
+						issues = append(issues, WorkflowIssue{Code: "invalid_deployment_input_source", Message: "上游文件来源必须是前序已保存文件产物的构建任务", NodeID: next.ID})
+					}
+				}
+			}
+			if next.Config.DeploymentScript != "" || next.Config.DeploymentInputVersion == 1 && (hasRegistryDeploymentInput(next.Config) && deploymentPlans[next.Config.DeploymentPlanID].Kind != model.DeploymentPlanComposeStack || deploymentPlans[next.Config.DeploymentPlanID].Kind == model.DeploymentPlanScript) {
+				continue
+			}
 			if plan, ok := deploymentPlans[next.Config.DeploymentPlanID]; ok && plan.Kind == model.DeploymentPlanComposeStack {
 				if err := validateComposeBindingsYAML(plan.ComposeYAML, next.Config); err != nil {
 					issues = append(issues, WorkflowIssue{Code: "invalid_compose_bindings", Message: "请检查 Compose 服务范围、镜像引用与 Tag 变量", NodeID: next.ID})
@@ -1432,11 +1471,11 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			}
 			if task.Type == model.WorkflowNodeDeploy && len(task.Config.ConfigurationFiles) > 0 {
 				kind := deploymentPlans[task.ID].Kind
-				if kind == model.DeploymentPlanDocker && deploymentPlans[task.ID].DockerConfig.DeploymentScript != "" {
+				if kind == model.DeploymentPlanDocker && deploymentPlans[task.ID].DockerConfig.DeploymentScript != "" && task.Config.DeploymentInputVersion == 0 {
 					s.logger.Warn("Docker 完整命令不能混用配置注入", "operation", "configuration_docker_script", "node_id", task.ID)
 					return nil, fmt.Errorf("%w：选择配置文件时请使用结构化 Docker 部署方案", ErrInvalidWorkflow)
 				}
-				if kind != model.DeploymentPlanDocker && kind != model.DeploymentPlanCompose && kind != model.DeploymentPlanComposeStack {
+				if kind != model.DeploymentPlanDocker && kind != model.DeploymentPlanCompose && kind != model.DeploymentPlanComposeStack && kind != model.DeploymentPlanScript {
 					return nil, ErrInvalidWorkflow
 				}
 				if permissionErr := s.requireDeliveryPermissionWithDatabase(variableContext, database, authorityID, "delivery_variable.execute"); permissionErr != nil {
@@ -1566,7 +1605,15 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		}
 	}
 	configurationDirectory := ""
-	if len(configurationBindings) > 0 {
+	hasDeploymentInputs := false
+	for _, stage := range resolved.Stages {
+		for _, node := range stage.Tasks {
+			if node.Config.DeploymentInputVersion == 1 {
+				hasDeploymentInputs = true
+			}
+		}
+	}
+	if len(configurationBindings) > 0 || hasDeploymentInputs {
 		var directoryErr error
 		configurationDirectory, directoryErr = configfile.ApplicationDirectory(application.Name)
 		if directoryErr != nil {
@@ -1574,7 +1621,20 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			return nil, fmt.Errorf("%w：应用配置目录不可用，请检查应用名称", ErrInvalidWorkflow)
 		}
 	}
+	registryInputs := map[string][]workflowRegistryInput{}
+	for _, stage := range resolved.Stages {
+		for _, node := range stage.Tasks {
+			bindings, inputErr := s.freezeDeploymentRegistryInputs(variableContext, database, node, authorityID)
+			if inputErr != nil {
+				return nil, inputErr
+			}
+			if len(bindings) > 0 {
+				registryInputs[node.ID] = bindings
+			}
+		}
+	}
 	snapshot, err := json.Marshal(workflowSnapshot{
+		RegistryInputs:             registryInputs,
 		ApplicationConfigDirectory: configurationDirectory,
 		DirectConfigurationPaths:   true,
 		SchemaVersion:              resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
