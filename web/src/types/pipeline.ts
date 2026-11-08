@@ -29,6 +29,7 @@ export interface DeploymentInput {
 }
 
 export interface WorkflowNodeConfig {
+ deployment_registry_id?: string
  inline_build?: PipelineBuildPlan
  build_outputs?: Array<{name:string;paths:string[]}>
  runtime_services?: Array<{name:string;restart_script:string;recreate_script:string}>
@@ -77,7 +78,7 @@ export interface WorkflowNodeConfig {
 
 export type DeploymentExecutionConfig = Pick<WorkflowNodeConfig,
   | 'deployment_input_version' | 'deployment_inputs' | 'deployment_script' | 'deployment_tag_reference'
-  | 'configuration_files' | 'deployment_parameters' | 'environment_variables' | 'variable_names'
+  | 'deployment_registry_id' | 'configuration_files' | 'deployment_parameters' | 'environment_variables' | 'variable_names'
   | 'artifact_node_id' | 'artifact_build_plan_id' | 'artifact_node_ids' | 'compose_images' | 'compose'>
 
 export interface WorkflowDeploymentPlan {

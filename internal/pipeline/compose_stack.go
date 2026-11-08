@@ -179,6 +179,10 @@ func (s *Service) loadComposeStackArtifacts(ctx context.Context, prepared *execu
 		if !ok || plan.ID != build.BuildPlanID || plan.ImageRegistryID != stored.ImageRegistryID {
 			return ErrPipelineExecutionConfig
 		}
+		if prepared.snapshot.ExplicitDeploymentRegistries && stored.ImageRegistryID != prepared.node.Config.DeploymentRegistryID {
+			s.logger.WarnContext(ctx, "Compose 上游镜像未使用已保存的仓库", "operation", "compose_saved_registry_binding", "node_id", prepared.node.ID, "err", ErrPipelineExecutionConfig)
+			return ErrPipelineExecutionConfig
+		}
 		var registry model.ImageRegistry
 		if err := s.db.WithContext(ctx).First(&registry, "uuid = ? AND is_active = ?", stored.ImageRegistryID, true).Error; err != nil {
 			return err

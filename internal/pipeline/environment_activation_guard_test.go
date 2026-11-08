@@ -138,6 +138,7 @@ func newInactiveEnvironmentGuardFixture(t *testing.T) inactiveEnvironmentGuardFi
 	t.Helper()
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
+	authorizeRegistryTestActors(t, service, "admin")
 	build, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
 		Name: "环境启用边界构建", Kind: model.BuildPlanDockerfile, DockerfilePath: "Dockerfile",
 	})
@@ -146,6 +147,7 @@ func newInactiveEnvironmentGuardFixture(t *testing.T) inactiveEnvironmentGuardFi
 	}
 	plan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
 		Name: "环境启用边界部署", Kind: model.DeploymentPlanDocker, TimeoutSeconds: 120,
+		ExecutionConfig: savedRegistryExecutionForTest(t, service, build.ID),
 		DeploymentTarget: deploymentPlanTargetInput(t, service, model.DeploymentTarget{
 			Name: "环境启用边界目标", Platform: model.DeploymentDocker, RuntimeID: "local", RolloutTimeout: 120,
 		}),

@@ -13,6 +13,7 @@ import (
 func TestWorkflowDeploymentNodeUsesOnlyPlanAndResolvesItsTarget(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
+	authorizeRegistryTestActors(t, service, "admin")
 	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
 		Name: "方案目标快照构建", Kind: model.BuildPlanDockerfile, DockerfilePath: "Dockerfile",
 	})
@@ -27,6 +28,7 @@ func TestWorkflowDeploymentNodeUsesOnlyPlanAndResolvesItsTarget(t *testing.T) {
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
 		Name: "方案内聚合部署目标", Kind: model.DeploymentPlanDocker,
+		ExecutionConfig: savedRegistryExecutionForTest(t, service, buildPlan.ID),
 		DockerConfig: model.DockerContainerConfig{
 			PortMappings: []model.DockerPortMapping{{HostPort: 18080, ContainerPort: 8080}},
 			Network:      "bridge", Command: []string{"server", "--port", "8080"},
@@ -231,7 +233,7 @@ func TestStageWorkflowValidatesDeploymentPlanOwnedTarget(t *testing.T) {
 		{ID: "stage-missing-target-plan", Name: "缺少目标的方案", Kind: model.DeploymentPlanScript, Script: "echo deploy", TimeoutSeconds: 120, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
 		{ID: "stage-disabled-target-plan", Name: "目标已停用的方案", Kind: model.DeploymentPlanScript, DeploymentTargetID: targets[2].ID, Script: "echo deploy", TimeoutSeconds: 120, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
 		{ID: "stage-mismatch-plan", Name: "目标错配的方案", Kind: model.DeploymentPlanScript, DeploymentTargetID: targets[1].ID, Script: "echo deploy", TimeoutSeconds: 120, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "stage-valid-docker-plan", Name: "有效 Docker 方案", Kind: model.DeploymentPlanDocker, DeploymentTargetID: targets[1].ID, ServiceName: "api", TimeoutSeconds: 120, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ExecutionConfig: savedRegistryExecutionForTest(t, service, ""), ID: "stage-valid-docker-plan", Name: "有效 Docker 方案", Kind: model.DeploymentPlanDocker, DeploymentTargetID: targets[1].ID, ServiceName: "api", TimeoutSeconds: 120, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
 	}
 	if err := db.Create(&plans).Error; err != nil {
 		t.Fatal(err)
@@ -286,6 +288,7 @@ func TestStageWorkflowValidatesDeploymentPlanOwnedTarget(t *testing.T) {
 func TestStageWorkflowRejectsDeployAfterScriptBuildWithoutArtifact(t *testing.T) {
 	service, db, _, _ := newPipelineTestService(t)
 	ctx := context.Background()
+	authorizeRegistryTestActors(t, service, "admin")
 	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
 		Name: "不保存产物构建", Kind: model.BuildPlanScript, Script: "echo test",
 	})
@@ -318,6 +321,7 @@ func TestStageWorkflowRejectsDeployAfterScriptBuildWithoutArtifact(t *testing.T)
 func TestWorkflowDraftAllowsMissingDeploymentPlanButCannotActivate(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
+	authorizeRegistryTestActors(t, service, "admin")
 	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
 		Name: "草稿构建", Kind: model.BuildPlanDockerfile, DockerfilePath: "Dockerfile",
 	})

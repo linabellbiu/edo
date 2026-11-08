@@ -11,13 +11,15 @@ import (
 func TestDeploymentPlanOwnsExecutionAndFreezesNewRuns(t *testing.T) {
 	s, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
+	authorizeRegistryTestActors(t, s, "admin")
+	registry := createTestImageRegistry(t, s, "方案已选仓库")
 	build, err := s.CreateBuildPlan(ctx, "admin", BuildPlanInput{Name: "方案执行构建", Kind: model.BuildPlanDockerfile, DockerfilePath: "Dockerfile"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	target := deploymentPlanTargetInput(t, s, model.DeploymentTarget{Name: "方案执行目标", Platform: model.DeploymentDocker, EnvironmentID: "execution-env", HostID: "execution-host", RuntimeID: "execution-runtime", WorkloadName: "execution-app", RolloutTimeout: 120})
 	input := DeploymentPlanInput{Name: "方案执行参数", Kind: model.DeploymentPlanDocker, DeploymentTarget: target, TimeoutSeconds: 120,
-		ExecutionConfig: &model.DeploymentExecutionConfig{DeploymentInputVersion: 1, DeploymentScript: "printf plan-original", ArtifactBuildPlanID: build.ID, DeploymentTagReference: "${IMAGE_TAG}", EnvironmentVariables: map[string]string{"MODE": "plan"}}}
+		ExecutionConfig: &model.DeploymentExecutionConfig{DeploymentRegistryID: registry.ID, DeploymentInputVersion: 1, DeploymentScript: "printf plan-original", ArtifactBuildPlanID: build.ID, DeploymentTagReference: "${IMAGE_TAG}", EnvironmentVariables: map[string]string{"MODE": "plan"}}}
 	plan, err := s.CreateDeploymentPlan(ctx, "admin", input)
 	if err != nil {
 		t.Fatal(err)
@@ -100,9 +102,9 @@ func TestDeploymentPlanOwnsExecutionAndFreezesNewRuns(t *testing.T) {
 }
 
 func TestDeploymentExecutionLegacyAndExplicitClear(t *testing.T) {
-	legacy := model.WorkflowNodeConfig{DeploymentScript: "printf legacy", VariableNames: []string{"ORIGINAL"}, Notifications: []model.WorkflowNotificationRule{{ID: "notice"}}, DeploymentPlanID: "plan"}
+	legacy := model.WorkflowNodeConfig{DeploymentRegistryID: "task-only-registry", DeploymentScript: "printf legacy", VariableNames: []string{"ORIGINAL"}, Notifications: []model.WorkflowNotificationRule{{ID: "notice"}}, DeploymentPlanID: "plan"}
 	model.ApplyDeploymentExecution(&legacy, nil)
-	if legacy.DeploymentScript != "printf legacy" {
+	if legacy.DeploymentScript != "printf legacy" || legacy.DeploymentRegistryID != "" {
 		t.Fatal("旧方案丢失任务配置")
 	}
 	model.ApplyDeploymentExecution(&legacy, &model.DeploymentExecutionConfig{})

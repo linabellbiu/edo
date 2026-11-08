@@ -135,6 +135,7 @@ func TestExecuteManualRunCanSelectPreviousArtifact(t *testing.T) {
 func TestExecuteManualRunCanSelectUploadedFileArtifact(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
+	authorizeRegistryTestActors(t, service, "admin", "operator", "requester")
 	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
 		Name: "手工上传文件制品构建", Kind: model.BuildPlanScript,
 		Script: "mkdir -p dist && printf ready > dist/app", ArtifactPath: "dist",
@@ -611,6 +612,7 @@ func TestRetryMergedPullRequestKeepsEventSnapshot(t *testing.T) {
 func createManualRunTestApplication(t *testing.T, service *Service, db *gorm.DB, repositoryID, name string) *model.Application {
 	t.Helper()
 	ctx := context.Background()
+	authorizeRegistryTestActors(t, service, "admin", "operator", "requester")
 	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
 		Name: name + "构建", Kind: model.BuildPlanDockerfile, DockerfilePath: "Dockerfile", ContextPath: ".",
 	})
@@ -624,6 +626,7 @@ func createManualRunTestApplication(t *testing.T, service *Service, db *gorm.DB,
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
 		Name: name + "发布", Kind: model.DeploymentPlanDocker, ServiceName: "api",
+		ExecutionConfig:  savedRegistryExecutionForTest(t, service, buildPlan.ID),
 		DeploymentTarget: deploymentPlanTargetInput(t, service, target),
 	})
 	if err != nil {

@@ -64,13 +64,14 @@ func TestDeploymentScriptWithoutBuildSavesFreezesAndExecutesLocalHost(t *testing
 	}
 	node := model.WorkflowNode{ID: "deploy", Name: "部署脚本", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{DeploymentSource: "inline", DeploymentInputVersion: 1, DeploymentScript: script, EnvironmentVariables: map[string]string{"APP_ENV": "production"}, InlineDeploymentPlan: &model.WorkflowDeploymentPlan{Name: "流水线脚本部署", Kind: model.DeploymentPlanDocker, TimeoutSeconds: 120, DeploymentTarget: &model.DeploymentTarget{Platform: model.DeploymentDocker, EnvironmentID: input.EnvironmentID, WorkingDirectory: directory, WorkloadName: "sample"}}}}
 	node.Config.DeploymentInputs = []model.DeploymentInput{{Kind: "configuration", ConfigurationID: configuration.ID, Path: "settings/runtime.env"}}
-	node.Config.DeploymentTagReference = "EDO_IMAGE_TAG"
+	node.Config.InlineDeploymentPlan.ExecutionConfig = model.DeploymentExecutionFromNode(node.Config)
+	node.Config.InlineDeploymentPlan.ExecutionConfig.DeploymentRegistryID = createTestImageRegistry(t, s, "脚本仓库").ID
+	node.Config.InlineDeploymentPlan.ExecutionConfig.DeploymentTagReference = "EDO_IMAGE_TAG"
 	invalid, err := s.SaveWorkflow(ctx, app.ID, actor.ID, WorkflowInput{SchemaVersion: 1, Name: workflow.Workflow.Name, Revision: workflow.Workflow.Revision, Source: source, Stages: []model.WorkflowStage{{ID: "deploy-stage", Name: "部署", Tasks: []model.WorkflowNode{node}}}})
-	if err != nil || invalid.Valid {
+	if err == nil {
 		t.Fatalf("裸镜像 Tag 变量名未被校验拒绝: %+v %v", invalid, err)
 	}
-	workflow = invalid
-	node.Config.DeploymentTagReference = "${EDO_IMAGE_TAG}"
+	node.Config.InlineDeploymentPlan.ExecutionConfig.DeploymentTagReference = "${EDO_IMAGE_TAG}"
 	saved, err := s.SaveWorkflow(ctx, app.ID, actor.ID, WorkflowInput{SchemaVersion: 1, Name: workflow.Workflow.Name, Revision: workflow.Workflow.Revision, Activate: true, Source: source, Stages: []model.WorkflowStage{{ID: "deploy-stage", Name: "部署", Tasks: []model.WorkflowNode{node}}}})
 	if err != nil || !saved.Valid {
 		t.Fatalf("无构建脚本部署无法保存: %+v %v", saved, err)
@@ -102,6 +103,46 @@ func TestDeploymentScriptWithoutBuildSavesFreezesAndExecutesLocalHost(t *testing
 	deployments := deployment.NewService(db, s.docker, nil, sshdeploy.NewService(db, secrets, config.Runtime{}), nil, "", s.logger)
 	deployments.ConfigureReleaseVariables(secrets, permissions)
 	s.ConfigureExecution(s.docker, deployments, s.logger)
+	payload := DeployTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: "deploy"}
+	if err := db.Model(&model.User{}).Where("uuid = ?", actor.ID).Update("is_superuser", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.loadArtifactDeploymentExecution(ctx, payload, run.ExecutionJobID); !errors.Is(err, cicd.ErrExecutionAuthorization) {
+		t.Fatal("运行创建后撤销仓库权限仍可加载执行", err)
+	}
+	if err := db.Model(&model.User{}).Where("uuid = ?", actor.ID).Update("is_superuser", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	originalSnapshot := run.WorkflowSnapshot
+	for _, explicit := range []bool{true, false} {
+		probe := frozen
+		probe.Stages = cloneWorkflowStages(frozen.Stages)
+		probe.ExplicitDeploymentRegistries = explicit
+		for i := range probe.Stages {
+			for j := range probe.Stages[i].Tasks {
+				if probe.Stages[i].Tasks[j].ID == "deploy" {
+					probe.Stages[i].Tasks[j].Config.DeploymentRegistryID = ""
+				}
+			}
+		}
+		raw, err := json.Marshal(probe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Model(run).Update("workflow_snapshot", string(raw)).Error; err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.loadArtifactDeploymentExecution(ctx, payload, run.ExecutionJobID)
+		if explicit && !errors.Is(err, ErrDeploymentRegistryRequired) {
+			t.Fatal("新快照缺少保存仓库却允许执行", err)
+		}
+		if !explicit && err != nil {
+			t.Fatal("历史运行被新的仓库必填规则改变", err)
+		}
+	}
+	if err := db.Model(run).Update("workflow_snapshot", originalSnapshot).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err = s.executeDeployTask(ctx, DeployTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: "deploy"}, run.ExecutionJobID); err != nil {
 		t.Fatal(err)
 	}

@@ -33,7 +33,7 @@ func TestWorkflowInlineDeploymentHTTPPersistsWithoutCreatingLibraryResources(t *
 			}
 			node.Config.DeploymentPlanID = ""
 			node.Config.DeploymentSource = "inline"
-			node.Config.InlineDeploymentPlan = &model.WorkflowDeploymentPlan{Name: "流水线内的部署方案", Kind: plan.Kind, DockerConfig: plan.DockerConfig, TimeoutSeconds: plan.TimeoutSeconds, DeploymentTarget: plan.DeploymentTarget}
+			node.Config.InlineDeploymentPlan = &model.WorkflowDeploymentPlan{Name: "流水线内的部署方案", Kind: plan.Kind, DockerConfig: plan.DockerConfig, TimeoutSeconds: plan.TimeoutSeconds, ExecutionConfig: plan.ExecutionConfig, DeploymentTarget: plan.DeploymentTarget}
 		}
 	}
 	var plansBefore, targetsBefore int64

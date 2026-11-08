@@ -23,10 +23,15 @@ func autoComposeArtifactSources(stages []model.WorkflowStage, plans map[string]w
 				continue
 			}
 			node.Config.ComposeImages = nil
-			node.Config.ArtifactNodeIDs = append([]string{}, prior...)
+			node.Config.ArtifactNodeIDs = []string{}
+			for _, sourceID := range prior {
+				if node.Config.DeploymentRegistryID == "" || plans[sourceID].ImageRegistryID == node.Config.DeploymentRegistryID {
+					node.Config.ArtifactNodeIDs = append(node.Config.ArtifactNodeIDs, sourceID)
+				}
+			}
 			node.Config.ArtifactNodeID = ""
-			if len(prior) > 0 {
-				node.Config.ArtifactNodeID = prior[0]
+			if len(node.Config.ArtifactNodeIDs) > 0 {
+				node.Config.ArtifactNodeID = node.Config.ArtifactNodeIDs[0]
 			}
 		}
 		for _, node := range stages[i].Tasks {

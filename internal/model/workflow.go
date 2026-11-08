@@ -29,6 +29,7 @@ type DeploymentConfigBinding struct {
 }
 
 type WorkflowNodeConfig struct {
+	DeploymentRegistryID   string                     `json:"deployment_registry_id,omitempty"`
 	ExecutionHostID        string                     `json:"execution_host_id,omitempty"` // 仅由运行快照生成，不接受用户指定。
 	ComposeSource          *WorkflowComposeSource     `json:"compose_source,omitempty"`
 	InlineBuild            *BuildPlan                 `json:"inline_build,omitempty"`

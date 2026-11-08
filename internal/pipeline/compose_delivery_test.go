@@ -34,8 +34,8 @@ func TestComposeDeliveryCreatesTwoStageDraftAndSharedImageBuild(t *testing.T) {
 	}
 	input := ComposeDeliveryInput{ProjectName: "example-stack", ComposeYAML: "services:\n  api:\n    image: registry.example.com/engine:${EDO_IMAGE_TAG}\n  jobs:\n    image: registry.example.com/engine:${EDO_IMAGE_TAG}\n", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: build.ID, ImageName: "engine"}, {Service: "jobs", BuildPlanID: build.ID, ImageName: "engine"}}, Target: *target}
 	result, err := s.CreateComposeDeliveryWorkflow(ctx, app.ID, "admin", input)
-	if err != nil || !result.Valid || result.Workflow.IsActive {
-		t.Fatalf("未生成有效独立草稿: err=%v result=%+v", err, result)
+	if err != nil || result.Valid || !hasWorkflowIssue(result.Issues, "missing_deployment_registry") || result.Workflow.IsActive {
+		t.Fatalf("未生成待保存仓库的独立草稿: err=%v result=%+v", err, result)
 	}
 	stages := result.Workflow.Stages
 	if len(stages) != 2 || len(stages[0].Tasks) != 1 || len(stages[1].Tasks[0].Config.ComposeImages) != 2 {

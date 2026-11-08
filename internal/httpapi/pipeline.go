@@ -783,6 +783,10 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusUnprocessableEntity, "image_registry_login_failed", pipeline.ErrRegistryLoginFailed.Error())
 	case errors.Is(err, pipeline.ErrRegistryConnectionFailed):
 		writeError(c, http.StatusBadGateway, "image_registry_connection_failed", pipeline.ErrRegistryConnectionFailed.Error())
+	case errors.Is(err, pipeline.ErrDeploymentRegistryRequired):
+		writeError(c, http.StatusBadRequest, "deployment_registry_required", pipeline.ErrDeploymentRegistryRequired.Error())
+	case errors.Is(err, pipeline.ErrDeploymentRegistryUnavailable):
+		writeError(c, http.StatusBadRequest, "deployment_registry_unavailable", pipeline.ErrDeploymentRegistryUnavailable.Error())
 	case errors.Is(err, pipeline.ErrInvalidApplication), errors.Is(err, pipeline.ErrInvalidApplicationName), errors.Is(err, pipeline.ErrInvalidBuildPlan),
 		errors.Is(err, pipeline.ErrInvalidScriptEnvironment),
 		errors.Is(err, pipeline.ErrInvalidRegistry), errors.Is(err, pipeline.ErrInvalidRegistryName),

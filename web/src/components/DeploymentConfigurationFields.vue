@@ -48,7 +48,7 @@ function sourceTitle(input: DeploymentInput, index: number) {
  return input.path || (input.kind === 'configuration' ? configurations.value.find(item => item.id === input.configuration_id)?.name : props.buildNodes?.find(item => item.id === input.artifact_node_id)?.name) || `文件来源 ${index + 1}`
 }
 function change(config: Partial<WorkflowNodeConfig>) {
- if (!canEdit.value) return
+ if (!canEdit.value || auth.user?.project_id !== localStorage.getItem('edo.project')) return
  const inputs = config.deployment_inputs || selected.value
  emit('change', { deployment_input_version: 1, deployment_inputs: inputs, configuration_files: inputs.filter(item => item.kind === 'configuration').map(item => ({ id: item.configuration_id || '', path: item.path || '' })), deployment_parameters: props.config.deployment_parameters, ...config })
 }
@@ -62,7 +62,12 @@ const inferredRegistry = computed(() => {
  const ids = new Set((props.buildNodes || []).filter(node=>node.type==='build').map(node=>(node.config.inline_build || props.buildPlans?.find(plan=>plan.id===node.config.build_plan_id))?.image_registry_id).filter(Boolean))
  return ids.size === 1 ? [...ids][0] : undefined
 })
-const deploymentRegistry = computed(() => primaryRegistryIndex.value>=0 ? selected.value[primaryRegistryIndex.value]?.registry_id || undefined : inferredRegistry.value)
+const savedRegistry = computed(()=>props.config.deployment_registry_id || (primaryRegistryIndex.value>=0 ? selected.value[primaryRegistryIndex.value]?.registry_id : '') || '')
+const deploymentRegistry = computed(() => savedRegistry.value || (canEdit.value ? inferredRegistry.value : undefined))
+// 仅预填当前编辑草稿，用户保存方案或流水线后才会持久化；只读展示不补写。
+watch(()=>[managesRegistry.value,inferredRegistry.value,savedRegistry.value,canEdit.value,canReadRegistry.value,loadedIdentity.value] as const,()=>{
+ if(managesRegistry.value&&!savedRegistry.value&&inferredRegistry.value&&canEdit.value&&canReadRegistry.value&&loadedIdentity.value===identity()&&registries.value.some(item=>item.id===inferredRegistry.value))change({deployment_registry_id:inferredRegistry.value})
+},{immediate:true})
 const deploymentRegistryOptions = computed(() => {
  const options=registries.value.map(item=>({value:item.id,label:item.name}))
  if(deploymentRegistry.value&&!options.some(item=>item.value===deploymentRegistry.value))options.push({value:deploymentRegistry.value,label:'上游或已保存的镜像仓库'})
@@ -71,16 +76,29 @@ const deploymentRegistryOptions = computed(() => {
 async function setDeploymentRegistry(id:string){
  if(!canEdit.value||!canReadRegistry.value)return
  const index=primaryRegistryIndex.value
- if(index>=0){void chooseRegistry(index,id);return}
+ if(index>=0){
+  const input=selected.value[index]!
+  if(input.registry_id===id){change({deployment_registry_id:id});return}
+  optionRequests.get(index)?.abort();delete optionsByRow.value[index]
+  change({deployment_registry_id:id,deployment_inputs:selected.value.map((item,i)=>i===index?{...item,registry_id:id,image:'',tag:''}:item)})
+  await nextTick();await registryOptions(index,false);return
+ }
+ if(id===inferredRegistry.value){change({deployment_registry_id:id});return}
  const indexToLoad=selected.value.length
- change({deployment_inputs:[...selected.value,{kind:'registry',registry_id:id,image:'',tag:''}]})
+ change({deployment_registry_id:id,deployment_inputs:[...selected.value,{kind:'registry',registry_id:id,image:'',tag:''}]})
  await nextTick(); await registryOptions(indexToLoad,false)
+}
+async function addRegistryImage(){
+ if(!deploymentRegistry.value||!canEdit.value||!canReadRegistry.value)return
+ const index=selected.value.length
+ change({deployment_registry_id:deploymentRegistry.value,deployment_inputs:[...selected.value,{kind:'registry',registry_id:deploymentRegistry.value,image:'',tag:''}]})
+ await nextTick();await registryOptions(index,false)
 }
 function upstreamReference(input:DeploymentInput){return input.artifact_reference || (input.artifact_name?'${'+input.artifact_name+'}':'')}
 function chooseUpstream(index:number,value:string){update(index,{artifact_reference:value,artifact_build_plan_id:undefined,artifact_node_id:undefined,artifact_name:undefined})}
 function invalidUpstreamReference(value:string){return Boolean(value)&&(!/^\$\{[A-Za-z_][A-Za-z0-9_]{0,31}\}$/.test(value)||value.startsWith('${EDO_'))}
 function configurationOptions(index: number) { return configurations.value.filter(item => !selected.value.some((reference, i) => i !== index && reference.configuration_id === item.id)).map(item => ({ value: item.id, label: `${item.name} · ${item.kind.slice(7).toUpperCase()} · v${item.version}` })) }
-async function chooseRegistry(index: number, registry: string) { optionRequests.get(index)?.abort(); delete optionsByRow.value[index]; update(index,{registry_id:registry,image:'',tag:''}); await nextTick(); await registryOptions(index,false) }
+async function chooseRegistry(index: number, registry: string) { optionRequests.get(index)?.abort(); delete optionsByRow.value[index]; if(managesRegistry.value&&index===primaryRegistryIndex.value)change({deployment_registry_id:registry,deployment_inputs:selected.value.map((item,i)=>i===index?{...item,registry_id:registry,image:'',tag:''}:item)});else update(index,{registry_id:registry,image:'',tag:''}); await nextTick(); await registryOptions(index,false) }
 async function chooseImage(index: number, image: string) { optionRequests.get(index)?.abort(); if (optionsByRow.value[index]) optionsByRow.value[index]!.tags = []; update(index,{image,tag:''}) }
 async function registryOptions(index: number, tags: boolean) {
  const input = selected.value[index]; if (!input?.registry_id || !canReadRegistry.value || !canEdit.value || tags && !input.image) return
@@ -97,7 +115,10 @@ async function registryOptions(index: number, tags: boolean) {
 <template>
  <section class="deployment-configuration" aria-label="部署文件与脚本">
   <Teleport :to="registryTarget || 'body'" :disabled="!registryTarget">
-  <a-form-item v-if="managesRegistry" label="镜像仓库"><a-select :value="deploymentRegistry" :loading="loading" :disabled="!canEdit||!canReadRegistry" :options="deploymentRegistryOptions" placeholder="选择镜像仓库" aria-label="部署镜像仓库" @update:value="setDeploymentRegistry(String($event))"/><template #help><span v-if="primaryRegistryIndex&lt;0 &amp;&amp; inferredRegistry">已使用上游构建的镜像仓库。</span><span v-else>可直接指定镜像与实际 Tag，支持只有部署阶段的流水线。</span><a-button v-if="primaryRegistryIndex&lt;0 &amp;&amp; inferredRegistry" type="link" size="small" :disabled="!canEdit||!canReadRegistry" @click="setDeploymentRegistry(inferredRegistry!)">指定镜像与 Tag</a-button></template></a-form-item>
+  <a-form-item v-if="managesRegistry" label="镜像仓库" required :validate-status="!deploymentRegistry&&!loading?'error':undefined">
+   <a-select :value="deploymentRegistry" :loading="loading" :disabled="!canEdit||!canReadRegistry" :options="deploymentRegistryOptions" placeholder="选择镜像仓库" aria-label="部署镜像仓库" @update:value="setDeploymentRegistry(String($event))"/>
+   <template #help><span v-if="!savedRegistry&&!canEdit">尚未保存镜像仓库，请修改部署方案并保存。</span><span v-else-if="primaryRegistryIndex&lt;0&amp;&amp;inferredRegistry&amp;&amp;deploymentRegistry===inferredRegistry">默认显示上游构建仓库，保存后才用于部署。</span><span v-else>必须选择并保存镜像仓库；也可指定镜像与实际 Tag。</span><a-button v-if="primaryRegistryIndex&lt;0&amp;&amp;deploymentRegistry" type="link" size="small" :disabled="!canEdit||!canReadRegistry" @click="addRegistryImage">指定镜像与 Tag</a-button></template>
+  </a-form-item>
   </Teleport>
   <section class="deployment-inputs" aria-label="部署前下载上游产出文件或制品到主机">
    <header class="configuration-heading"><span class="configuration-title">部署前下载上游产出文件或制品到主机</span><a-tooltip :trigger="['hover','focus','click']"><template #title><div class="configuration-tooltip"><p><code>EDO_APP_CONFIG_PATH = ~/edo/{{ applicationName || '应用名称' }}/config</code></p><p>可用 <code>${EDO_APP_CONFIG_PATH}/相对路径</code> 引用生成文件。</p><p>{{ configurationHelp }}</p></div></template><button type="button" class="configuration-help" aria-label="配置目录与生效说明">?</button></a-tooltip><a-button type="link" class="source-add" :disabled="!canEdit||selected.length>=32" aria-label="添加文件来源" @click="change({deployment_inputs:[...selected,{kind:'configuration',configuration_id:'',path:''}]})"><PlusCircle :size="15" />添加</a-button></header>

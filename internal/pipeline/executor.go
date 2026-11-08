@@ -394,6 +394,11 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 	if err := s.db.WithContext(ctx).First(&result.component, "pipeline_run_id = ?", run.ID).Error; err != nil {
 		return nil, err
 	}
+	if snapshot.ExplicitDeploymentRegistries && model.RequiresDeploymentRegistry(result.deploymentPlan.Kind) {
+		if err := s.freezeSavedDeploymentRegistry(ctx, s.db, &result.node, result.deploymentPlan.Kind, snapshot.AuthorityID); err != nil {
+			return nil, err
+		}
+	}
 	if node.Config.DeploymentScript != "" && result.deploymentPlan.Kind != model.DeploymentPlanComposeStack {
 		if run.ArtifactID != "" {
 			if s.artifacts == nil {
@@ -403,12 +408,20 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 			if err != nil || stored.ApplicationID != run.ApplicationID || stored.ProjectID != run.ProjectID || !artifactAvailableToPipelineRun(run, stored) || stored.Status != model.ArtifactStatusAvailable {
 				return nil, ErrPipelineExecutionConfig
 			}
+			if snapshot.ExplicitDeploymentRegistries && model.RequiresDeploymentRegistry(result.deploymentPlan.Kind) && stored.Kind == model.ArtifactKindOCIImage && (stored.StorageKind != model.ArtifactStorageKindRegistry || stored.ImageRegistryID != node.Config.DeploymentRegistryID) {
+				s.logger.WarnContext(ctx, "自定义 Docker 部署镜像与已保存仓库不匹配", "operation", "deployment_script_saved_registry", "node_id", node.ID, "err", ErrPipelineExecutionConfig)
+				return nil, ErrPipelineExecutionConfig
+			}
 			result.artifact = *stored
 		}
 		return result, nil
 	}
 	if len(snapshot.RegistryInputs[node.ID]) > 0 && (result.deploymentPlan.Kind == model.DeploymentPlanDocker || result.deploymentPlan.Kind == model.DeploymentPlanCompose) {
 		image := snapshot.RegistryInputs[node.ID][0]
+		if snapshot.ExplicitDeploymentRegistries && image.RegistryID != node.Config.DeploymentRegistryID {
+			s.logger.WarnContext(ctx, "部署镜像与已保存仓库不匹配", "operation", "deployment_registry_input_binding", "node_id", node.ID, "err", ErrPipelineExecutionConfig)
+			return nil, ErrPipelineExecutionConfig
+		}
 		result.artifact = model.Artifact{Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable, StorageKind: model.ArtifactStorageKindRegistry, ImageRegistryID: image.RegistryID, ImageRef: image.ImageRef, Name: image.Tag}
 		if err := s.db.WithContext(ctx).First(&result.registry, "uuid = ? AND is_active = ?", image.RegistryID, true).Error; err != nil {
 			return nil, err
@@ -457,6 +470,10 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		return nil, ErrPipelineExecutionConfig
 	}
 	result.artifact = *stored
+	if preparedRegistry := result.node.Config.DeploymentRegistryID; result.snapshot.ExplicitDeploymentRegistries && model.RequiresDeploymentRegistry(result.deploymentPlan.Kind) && (stored.StorageKind != model.ArtifactStorageKindRegistry || preparedRegistry == "" || stored.ImageRegistryID != preparedRegistry) {
+		s.logger.WarnContext(ctx, "构建镜像与已保存的部署仓库不匹配", "operation", "deployment_saved_registry_binding", "pipeline_run_id", run.ID, "node_id", node.ID, "err", ErrPipelineExecutionConfig)
+		return nil, ErrPipelineExecutionConfig
+	}
 	if stored.StorageKind == model.ArtifactStorageKindRegistry {
 		if stored.ImageRegistryID == "" || s.db.WithContext(ctx).
 			First(&result.registry, "uuid = ? AND is_active = ?", stored.ImageRegistryID, true).Error != nil {

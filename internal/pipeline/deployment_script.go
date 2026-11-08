@@ -37,6 +37,9 @@ func (s *Service) prepareDeploymentInputs(ctx context.Context, prepared *executi
 			}
 			for _, node := range stage.Tasks {
 				if node.Type == model.WorkflowNodeBuild && prepared.snapshot.BuildPlans[node.ID].Kind == model.BuildPlanDockerfile {
+					if prepared.snapshot.ExplicitDeploymentRegistries && model.RequiresDeploymentRegistry(prepared.deploymentPlan.Kind) && prepared.snapshot.BuildPlans[node.ID].ImageRegistryID != prepared.node.Config.DeploymentRegistryID {
+						continue
+					}
 					prior = append(prior, node.ID)
 				}
 			}
@@ -57,6 +60,9 @@ func (s *Service) prepareDeploymentInputs(ctx context.Context, prepared *executi
 			check.ArtifactID = image.ID
 			if image.ApplicationID != prepared.run.ApplicationID || image.ProjectID != prepared.run.ProjectID || image.Kind != model.ArtifactKindOCIImage || !artifactAvailableToPipelineRun(check, image) {
 				return closers, ErrDeploymentInputs
+			}
+			if prepared.snapshot.ExplicitDeploymentRegistries && model.RequiresDeploymentRegistry(prepared.deploymentPlan.Kind) && (image.StorageKind != model.ArtifactStorageKindRegistry || image.ImageRegistryID != prepared.node.Config.DeploymentRegistryID) {
+				return closers, s.deploymentInputError(prepared.node.ID, "deployment_script_saved_registry", ErrDeploymentInputs)
 			}
 			prepared.composeCandidates[nodeID] = *image
 		}

@@ -382,6 +382,7 @@ func newReleasePlanExecutionHTTPFixture(t *testing.T, commitSHA string) releaseP
 		repository.WithWebhookGate(configurationService),
 	)
 	pipelineService := pipeline.NewService(db, repositoryService, secretManager)
+	pipelineService.ConfigureDeliveryAccess(accessService)
 	dockerService := dockerengine.NewService(db, secretManager, config.Runtime{})
 	pipelineService.ConfigureExecution(
 		dockerService,
@@ -455,8 +456,13 @@ func createReleasePlanExecutionHTTPApplication(
 			t.Fatal(err)
 		}
 	}
+	registry, err := service.CreateRegistry(ctx, "admin", pipeline.RegistryInput{Name: "HTTP 部署仓库", Provider: model.RegistryGeneric, Endpoint: "https://registry.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", pipeline.DeploymentPlanInput{
 		Name: "发布计划 HTTP 部署", Kind: model.DeploymentPlanDocker, ServiceName: "api",
+		ExecutionConfig: &model.DeploymentExecutionConfig{DeploymentRegistryID: registry.ID},
 		DeploymentTarget: &deployment.TargetInput{
 			Name: "发布计划 HTTP 部署位置", Platform: model.DeploymentDocker,
 			EnvironmentID: environment.ID, HostID: host.ID,

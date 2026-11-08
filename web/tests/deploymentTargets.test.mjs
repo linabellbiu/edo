@@ -4,6 +4,8 @@ import { test } from 'node:test'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
+import * as yaml from 'yaml'
+import { loadFrontend } from './acceptanceHarness.mjs'
 
 const source = readFileSync(new URL('../src/views/DeploymentPlanView.vue', import.meta.url), 'utf8')
 const { outputText } = ts.transpileModule(compileScript(parse(source).descriptor, { id: 'deployment-target-test' }).content, {
@@ -25,6 +27,8 @@ function harness(t, denied = [], props = {}, query = {}) {
     'vue-i18n': { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) },
     'vue-router': { useRoute: () => route, useRouter: () => ({ resolve: () => ({ href: '/resource' }), async replace(value){replacements.push(value);route.query={...value.query}} }) },
     'ant-design-vue': { message: { error: value => errors.push(value), success() {} } },
+    '@/utils/kubernetesYaml': loadFrontend('../src/utils/kubernetesYaml.ts', {yaml}),
+    '@/utils/deploymentExecution': loadFrontend('../src/utils/deploymentExecution.ts'),
     '@/stores/auth': { useAuthStore: () => auth },
     '@/utils/resourceList': { useResourceList: () => ({ detailOpen: vue.ref(false), selected: vue.ref(), openDetails() {} }) },
     '@/api/resources': { apiErrorMessage: () => '请求失败' },
@@ -94,6 +98,7 @@ test('流水线内创建方案只提交给流水线，不读取或写入方案�
  h.props.inlineOpen=true;await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()
  assert.equal(h.state.formOpen.value,true);assert.equal(h.state.form.reusable,false)
  h.state.changeEnvironment('env');h.state.form.name='当前流水线方案'
+ h.state.form.execution_config={...h.state.form.execution_config,deployment_registry_id:'saved-registry'}
  await h.state.save()
  assert.deepEqual(h.errors,[]);assert.equal(h.requests.filter(r=>r.path==='/deployment-plans').length,0)
  const saved=h.events.find(event=>event.name==='save-inline')?.value
@@ -228,6 +233,7 @@ test('Compose 编辑仅改 YAML 保存不把服务名写入容器名，也不继
     const { state, requests, errors } = dockerHostHarness(t)
     state.edit(composePlan(previousName))
     state.form.compose_yaml += '# 仅修改测试配置\n'
+    state.form.execution_config={...state.form.execution_config,deployment_registry_id:'saved-registry'}
     await state.save()
     const saved = requests.find(x => x.method === 'PUT')
     assert.ok(saved)
@@ -246,6 +252,7 @@ test('Compose 服务改名只写独立服务字段，目标容器名称保持空
   state.edit(composePlan())
   state.form.service_name = 'api'
   state.form.compose_yaml = 'services:\n  api:\n    restart: no\n'
+  state.form.execution_config={...state.form.execution_config,deployment_registry_id:'saved-registry'}
   await state.save()
   const saved = requests.find(x => x.method === 'PUT')
   assert.equal(saved.body.service_name, 'api')
@@ -283,6 +290,7 @@ test('Docker 显式容器名称和留空自动命名的提交语义不变', asyn
     dockerPlan.service_name = name
     state.edit(dockerPlan)
     state.form.service_name = '不可混入Docker的Compose服务名'
+    state.form.execution_config={...state.form.execution_config,deployment_registry_id:'saved-registry'}
     await state.save()
     const saved = requests.find(x => x.method === 'PUT')
     assert.equal(saved.body.deployment_target.workload_name, name)
@@ -311,6 +319,7 @@ test('新建可复用Compose默认服务app且不生成部署目标', async t =>
   state.create()
   state.changeKind('compose')
   state.form.name = '可复用Compose'
+  state.form.execution_config={...state.form.execution_config,deployment_registry_id:'saved-registry'}
   await state.save()
   const saved = requests.find(x => x.method === 'POST')
   assert.equal(saved.body.service_name, 'app')
@@ -320,4 +329,17 @@ test('新建可复用Compose默认服务app且不生成部署目标', async t =>
 
 test('Compose 服务输入绑定独立服务字段，不再绑定单容器名称', () => {
   assert.ok(source.includes('<a-input v-model:value="form.service_name"'))
+})
+
+test('Docker 和两种 compose 方案保存前必须有显式仓库，上游显示值不能绕过校验',async t=>{
+ for(const kind of ['docker','compose','compose_stack']){
+  const {state,requests,errors}=dockerHostHarness(t)
+  state.create();state.changeKind(kind);state.form.name='必须保存仓库'
+  state.form.execution_config={}
+  assert.equal(state.validate(),'请选择并保存镜像仓库')
+  await state.save();assert.deepEqual(requests,[]);assert.deepEqual(errors,['请选择并保存镜像仓库'])
+  state.form.execution_config={deployment_registry_id:'chosen-registry'}
+  await state.save()
+  assert.equal(requests.find(item=>item.method==='POST').body.execution_config.deployment_registry_id,'chosen-registry')
+ }
 })

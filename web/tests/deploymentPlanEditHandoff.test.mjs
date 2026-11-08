@@ -23,7 +23,7 @@ const resourceList = load(readFileSync(new URL('../src/utils/resourceList.ts', i
 const pass = tag => ({ inheritAttrs: false, setup: (_, { attrs, slots }) => () => vue.h(tag, attrs, slots.default?.()) })
 
 async function harness(initialPermissions = ['deployment_plan.read', 'deployment_plan.update'], request = null, readRequest = null) {
-  const records = vue.ref(Array.from({ length: 21 }, (_, index) => ({ id: `p${index + 1}`, name: `Plan ${index + 1}`, kind: 'docker', timeout_seconds: 600, is_active: true })))
+  const records = vue.ref(Array.from({ length: 21 }, (_, index) => ({ id: `p${index + 1}`, name: `Plan ${index + 1}`, kind: 'docker', execution_config: {deployment_registry_id:'saved-registry'}, timeout_seconds: 600, is_active: true })))
   const permissions = vue.reactive(new Set(initialPermissions))
   const auth = vue.reactive({ loaded: true, authorizationReady: true, user: { id: 'user', department_id: 'department', project_id: 'project', permissions: [...initialPermissions] }, canAny: codes => auth.authorizationReady && codes.some(code => permissions.has(code)) })
   const trace = [], writes = [], reads = [], errors = []
@@ -59,6 +59,7 @@ async function harness(initialPermissions = ['deployment_plan.read', 'deployment
     '@/api/resources': { apiErrorMessage: error => error.message },
     '@/api/infrastructure': { environmentIDsOf: host => host.environment_ids || [], listEnvironments: async () => [], listHosts: async () => [] },
     '@/utils/resourceList': { useResourceList: (...args) => { const state = resourceList.useResourceList(...args); vue.watch(state.detailOpen, value => { if (!value) trace.push('detail-close') }, { flush: 'sync' }); return state } },
+    '@/utils/deploymentExecution': load(readFileSync(new URL('../src/utils/deploymentExecution.ts', import.meta.url), 'utf8'), {}),
     '@/utils/hostGroups': load(readFileSync(new URL('../src/utils/hostGroups.ts', import.meta.url), 'utf8'), {}),
     '@/utils/time': { formatDateTime: value => value || '—' },
     '@/utils/asyncConfirm': { asyncConfirm: () => assert.fail('交接不能打开写操作确认框') },
@@ -359,7 +360,7 @@ test('核验确认失去查看权限后保持清空，不请求部署列表', as
 
 test('核验前的迟到列表不覆盖恢复就绪后的当前数据', async t => {
   let hold = false, finish
-  const h = await harness(undefined, null, rows => hold ? new Promise(resolve => { finish = () => resolve([{ id: 'stale', name: '过期列表', kind: 'docker', timeout_seconds: 600 }]) }) : rows); t.after(h.stop)
+  const h = await harness(undefined, null, rows => hold ? new Promise(resolve => { finish = () => resolve([{ id: 'stale', name: '过期列表', kind: 'docker', execution_config: {deployment_registry_id:'saved-registry'}, timeout_seconds: 600 }]) }) : rows); t.after(h.stop)
   hold = true
   await h.refresh()
   assert.equal(typeof finish, 'function')
@@ -377,9 +378,9 @@ test('核验前的迟到列表不覆盖恢复就绪后的当前数据', async t 
 test('执行配置由部署方案保存，修改其他字段不丢失来源、变量和脚本',async t=>{
  let payload
  const h=await harness(undefined,async(_method,_path,body)=>{payload=body;return {data:{deployment_plan:{id:'p11',name:'Plan 11'}}}});t.after(h.stop)
- h.records.value=h.records.value.map(plan=>plan.id==='p11'?{...plan,execution_config:{deployment_input_version:1,deployment_inputs:[{kind:'configuration',configuration_id:'settings',path:'runtime.env'}],deployment_script:'printf plan',variable_names:['SETTING']}}:plan)
+ h.records.value=h.records.value.map(plan=>plan.id==='p11'?{...plan,execution_config:{deployment_registry_id:'saved-registry',deployment_input_version:1,deployment_inputs:[{kind:'configuration',configuration_id:'settings',path:'runtime.env'}],deployment_script:'printf plan',variable_names:['SETTING']}}:plan)
  await h.refresh();await h.click(h.rowButton('p11','planList.edit'))
  await h.setName('配置保持');await h.saveButton().props.onClick()
- assert.deepEqual(payload.execution_config,{deployment_input_version:1,deployment_inputs:[{kind:'configuration',configuration_id:'settings',path:'runtime.env'}],deployment_script:'printf plan',variable_names:['SETTING']})
+ assert.deepEqual(payload.execution_config,{deployment_registry_id:'saved-registry',deployment_input_version:1,deployment_inputs:[{kind:'configuration',configuration_id:'settings',path:'runtime.env'}],deployment_script:'printf plan',variable_names:['SETTING']})
  assert.ok(!Object.hasOwn(payload.execution_config,'notifications'))
 })

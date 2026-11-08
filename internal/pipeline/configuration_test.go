@@ -129,6 +129,15 @@ func TestConfigurationWorkflowSnapshotPinsSelectionUntilNextDeployment(t *testin
 			}
 		}
 	}
+	var plan model.DeploymentPlan
+	if err := f.db.First(&plan, "uuid = ?", workflow.Stages[len(workflow.Stages)-1].Tasks[0].Config.DeploymentPlanID).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan.ExecutionConfig.ConfigurationFiles = []model.DeploymentConfigFile{{ID: saved.ID, Path: "config/.prod.env"}}
+	plan.ExecutionConfig.DeploymentParameters = "--env-file config/.prod.env"
+	if err := f.db.Save(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
 	run, err := f.service.newResolvedWorkflowRun(ctx, f.application, &workflow, workflow.Source, "manual", "refs/heads/main", strings.Repeat("a", 40), actor.ID, "", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +183,11 @@ func TestConfigurationWorkflowSnapshotPinsSelectionUntilNextDeployment(t *testin
 				node.Config.DeploymentParameters = ""
 			}
 		}
+	}
+	plan.ExecutionConfig.ConfigurationFiles = nil
+	plan.ExecutionConfig.DeploymentParameters = ""
+	if err := f.db.Save(&plan).Error; err != nil {
+		t.Fatal(err)
 	}
 	next, err := f.service.newResolvedWorkflowRun(ctx, f.application, &workflow, workflow.Source, "manual", "refs/heads/main", strings.Repeat("b", 40), actor.ID, "", time.Now().UTC())
 	if err != nil {

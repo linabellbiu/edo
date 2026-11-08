@@ -544,7 +544,8 @@ func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
 		Name: "Webhook 部署", Kind: model.DeploymentPlanDocker, ServiceName: "payment",
-		TimeoutSeconds: 120, DeploymentTarget: deploymentPlanTargetInput(t, service, target),
+		ExecutionConfig: savedRegistryExecutionForTest(t, service, buildPlan.ID),
+		TimeoutSeconds:  120, DeploymentTarget: deploymentPlanTargetInput(t, service, target),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -560,6 +561,7 @@ func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
 		t.Fatal(err)
 	}
 	source, stages := testStageWorkflowGraph(buildPlan.ID, deploymentPlan.ID)
+	authorizeRegistryTestActors(t, service, "admin")
 	source.Config.Events = []string{"manual", "push", "pr", "tag"}
 	source.Config.TagPattern = "v*"
 	if _, err := service.SaveWorkflow(ctx, application.ID, "admin", WorkflowInput{

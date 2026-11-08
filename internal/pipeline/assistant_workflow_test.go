@@ -81,6 +81,18 @@ func TestAssistantDraftUsesNativePlansAndAtomicRollback(t *testing.T) {
 	if workflow.Workflow.IsActive || len(workflow.Workflow.Stages) != 3 {
 		t.Fatalf("缺少构建/审核/部署或已启用: %+v", workflow.Workflow)
 	}
+	for _, node := range workflowTasks(workflow.Workflow.Stages) {
+		if node.Type == model.WorkflowNodeDeploy {
+			var plan model.DeploymentPlan
+			if err := db.First(&plan, "uuid = ?", node.Config.DeploymentPlanID).Error; err != nil {
+				t.Fatal(err)
+			}
+			plan.ExecutionConfig = savedRegistryExecutionForTest(t, s, "")
+			if err := db.Save(&plan).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	activation, err := s.PreviewAssistantActivation(ctx, created.ApplicationID, created.WorkflowID)
 	if err != nil {
 		t.Fatal(err)

@@ -1,6 +1,6 @@
 import type { DeploymentExecutionConfig, WorkflowNodeConfig, WorkflowNode } from '@/types/pipeline'
 
-export const deploymentExecutionKeys = ['deployment_input_version', 'deployment_inputs', 'deployment_script', 'deployment_tag_reference',
+export const deploymentExecutionKeys = ['deployment_registry_id', 'deployment_input_version', 'deployment_inputs', 'deployment_script', 'deployment_tag_reference',
   'configuration_files', 'deployment_parameters', 'environment_variables', 'variable_names', 'artifact_node_id', 'artifact_build_plan_id',
   'artifact_node_ids', 'compose_images', 'compose'] as const
 
@@ -17,4 +17,8 @@ export function deploymentExecution(config: WorkflowNodeConfig, builds: Workflow
 
 export function clearTaskDeploymentExecution(): Partial<WorkflowNodeConfig> {
   return Object.fromEntries(deploymentExecutionKeys.map(key => [key, undefined]))
+}
+
+export function savedDeploymentRegistry(config?: DeploymentExecutionConfig): string {
+  return config?.deployment_registry_id || config?.deployment_inputs?.find(input=>input.kind==='registry' && input.registry_id)?.registry_id || ''
 }

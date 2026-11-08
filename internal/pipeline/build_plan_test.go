@@ -49,7 +49,8 @@ func TestBuildPlanCanBeUpdatedDisabledAndSoftDeleted(t *testing.T) {
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
 		Name: "构建方案删除测试部署", Kind: model.DeploymentPlanDocker,
-		ServiceName: "build-plan-delete", TimeoutSeconds: 120, DeploymentTarget: deploymentPlanTargetInput(t, service, target),
+		ExecutionConfig: savedRegistryExecutionForTest(t, service, ""),
+		ServiceName:     "build-plan-delete", TimeoutSeconds: 120, DeploymentTarget: deploymentPlanTargetInput(t, service, target),
 	})
 	if err != nil {
 		t.Fatalf("创建测试部署方案失败: %v", err)

@@ -77,21 +77,22 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
-	RegistryInputs             map[string][]workflowRegistryInput          `json:"registry_inputs,omitempty"`
-	ApplicationConfigDirectory string                                      `json:"application_config_directory,omitempty"`
-	DirectConfigurationPaths   bool                                        `json:"direct_configuration_paths,omitempty"`
-	ConfigurationBindings      map[string][]model.DeploymentConfigBinding  `json:"configuration_bindings,omitempty"`
-	ExecutionVersion           int                                         `json:"execution_version,omitempty"`
-	VariableBindings           map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
-	ReleasePolicies            map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
-	AuthorityID                string                                      `json:"authority_id,omitempty"`
-	SchemaVersion              uint16                                      `json:"schema_version"`
-	Source                     model.WorkflowNode                          `json:"source"`
-	Stages                     []model.WorkflowStage                       `json:"stages"`
-	BuildPlans                 map[string]workflowBuildPlanSnapshot        `json:"build_plans,omitempty"`
-	DeploymentPlans            map[string]workflowDeploymentPlanSnapshot   `json:"deployment_plans,omitempty"`
-	DeploymentTargets          map[string]workflowDeploymentTargetSnapshot `json:"deployment_targets,omitempty"`
-	ApprovalEnabled            bool                                        `json:"approval_enabled"`
+	ExplicitDeploymentRegistries bool                                        `json:"explicit_deployment_registries,omitempty"`
+	RegistryInputs               map[string][]workflowRegistryInput          `json:"registry_inputs,omitempty"`
+	ApplicationConfigDirectory   string                                      `json:"application_config_directory,omitempty"`
+	DirectConfigurationPaths     bool                                        `json:"direct_configuration_paths,omitempty"`
+	ConfigurationBindings        map[string][]model.DeploymentConfigBinding  `json:"configuration_bindings,omitempty"`
+	ExecutionVersion             int                                         `json:"execution_version,omitempty"`
+	VariableBindings             map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
+	ReleasePolicies              map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
+	AuthorityID                  string                                      `json:"authority_id,omitempty"`
+	SchemaVersion                uint16                                      `json:"schema_version"`
+	Source                       model.WorkflowNode                          `json:"source"`
+	Stages                       []model.WorkflowStage                       `json:"stages"`
+	BuildPlans                   map[string]workflowBuildPlanSnapshot        `json:"build_plans,omitempty"`
+	DeploymentPlans              map[string]workflowDeploymentPlanSnapshot   `json:"deployment_plans,omitempty"`
+	DeploymentTargets            map[string]workflowDeploymentTargetSnapshot `json:"deployment_targets,omitempty"`
+	ApprovalEnabled              bool                                        `json:"approval_enabled"`
 }
 
 type workflowBuildPlanSnapshot struct {
@@ -841,6 +842,9 @@ func (s *Service) validateWorkflow(
 				if node.Config.InlineDeploymentPlan != nil {
 					node.Config.DeploymentPlanID = plan.ID
 				}
+				if model.RequiresDeploymentRegistry(plan.Kind) && model.SavedDeploymentRegistryID(node.Config) == "" {
+					issues = append(issues, WorkflowIssue{Code: "missing_deployment_registry", Message: "Docker 和 docker compose 部署必须选择并保存镜像仓库", NodeID: node.ID})
+				}
 				if err := resolveDeploymentBuildBindings(node, stages); err != nil {
 					issues = append(issues, WorkflowIssue{Code: "invalid_deployment_build_binding", Message: "部署方案的上游构建或产物变量必须在前序阶段唯一匹配，请检查引用", NodeID: node.ID})
 				}
@@ -1500,6 +1504,9 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					plan.ComposeYAML = content
 				}
 				model.ApplyDeploymentExecution(&current.Config, plan.ExecutionConfig)
+				if err := s.freezeSavedDeploymentRegistry(variableContext, database, current, plan.Kind, authorityID); err != nil {
+					return nil, err
+				}
 				if err := resolveDeploymentBuildBindings(current, resolved.Stages); err != nil {
 					return nil, err
 				}
@@ -1745,10 +1752,11 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		}
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
-		RegistryInputs:             registryInputs,
-		ApplicationConfigDirectory: configurationDirectory,
-		DirectConfigurationPaths:   true,
-		SchemaVersion:              resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
+		RegistryInputs:               registryInputs,
+		ApplicationConfigDirectory:   configurationDirectory,
+		DirectConfigurationPaths:     true,
+		ExplicitDeploymentRegistries: true,
+		SchemaVersion:                resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
 		ExecutionVersion: 2, VariableBindings: variableBindings, ConfigurationBindings: configurationBindings, ReleasePolicies: policies, AuthorityID: authorityID,
 		BuildPlans:      buildPlans,
 		DeploymentPlans: deploymentPlans, DeploymentTargets: deploymentTargets,

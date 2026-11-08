@@ -38,6 +38,9 @@ func (s *Service) validateDeploymentExecutionReferences(ctx context.Context, con
 		}
 		return nil
 	}
+	if err := check(&model.ImageRegistry{}, config.DeploymentRegistryID); err != nil {
+		return err
+	}
 	if err := check(&model.BuildPlan{}, config.ArtifactBuildPlanID); err != nil {
 		return err
 	}
@@ -69,6 +72,10 @@ func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML str
 		return nil
 	}
 	node := model.WorkflowNode{ID: "deployment-plan", Name: "部署方案", Type: model.WorkflowNodeDeploy, Config: config.NodeConfig()}
+	if len(config.DeploymentRegistryID) > 36 {
+		slog.Warn("部署镜像仓库标识无效", "operation", "deployment_registry_normalize", "err", ErrInvalidDeploymentPlan)
+		return ErrInvalidDeploymentPlan
+	}
 	if len(node.Config.ArtifactNodeIDs) > 64 || len(node.Config.ComposeImages) > 32 {
 		slog.Warn("部署方案上游来源数量无效", "operation", "deployment_plan_execution_normalize", "kind", kind, "err", ErrInvalidDeploymentPlan)
 		return ErrInvalidDeploymentPlan

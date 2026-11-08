@@ -118,7 +118,7 @@ func TestDeliveryWorkflowFourKindsCreateIndependentDrafts(t *testing.T) {
 				if result.Workflow.IsActive || result.Workflow.WorkflowTemplateID != "" || result.Workflow.ApplicationID != app.ID {
 					t.Fatalf("应该创建独立草稿: %+v", result.Workflow)
 				}
-				if kind != model.DeploymentPlanScript && !result.Valid {
+				if kind != model.DeploymentPlanScript && !model.RequiresDeploymentRegistry(kind) && !result.Valid {
 					t.Fatalf("创建的流程无效: %+v", result.Issues)
 				}
 				if kind == model.DeploymentPlanScript && result.Valid {
@@ -137,6 +137,16 @@ func TestDeliveryWorkflowFourKindsCreateIndependentDrafts(t *testing.T) {
 				}
 				firstPlanID, firstTargetID = plan.ID, plan.DeploymentTargetID
 				if kind != model.DeploymentPlanScript {
+					if model.RequiresDeploymentRegistry(kind) {
+						if result.Valid || !hasWorkflowIssue(result.Issues, "missing_deployment_registry") {
+							t.Fatal("未保存部署仓库的生成草稿不应有效")
+						}
+						plan.ExecutionConfig = savedRegistryExecutionForTest(t, service, build.ID)
+						if err := db.Save(plan).Error; err != nil {
+							t.Fatal(err)
+						}
+						authorizeRegistryTestActors(t, service, "admin")
+					}
 					saved, err := service.SaveApplicationWorkflow(ctx, app.ID, result.Workflow.ID, "admin", WorkflowInput{Name: result.Workflow.Name, Revision: result.Workflow.Revision, SchemaVersion: model.WorkflowSchemaVersion, Source: result.Workflow.Source, Stages: result.Workflow.Stages, Activate: true})
 					if err != nil {
 						t.Fatal(err)
@@ -176,7 +186,7 @@ func TestDeliveryCustomDefaultCopiesRulesWithoutOriginalTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	originalTarget := deploymentPlanTargetInput(t, service, model.DeploymentTarget{Name: "旧应用位置", Platform: model.DeploymentDocker, RuntimeID: "local", WorkloadName: "old_app", RolloutTimeout: 300})
-	original, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{Name: "自定义 Docker 规则", Kind: model.DeploymentPlanDocker, DeploymentTarget: originalTarget, TimeoutSeconds: 300})
+	original, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{Name: "自定义 Docker 规则", Kind: model.DeploymentPlanDocker, ExecutionConfig: savedRegistryExecutionForTest(t, service, build.ID), DeploymentTarget: originalTarget, TimeoutSeconds: 300})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +254,7 @@ func TestReusableDeploymentPlanCanActivatePublicTemplateButNotApplication(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{Name: "通用规则", Kind: model.DeploymentPlanDocker, Reusable: true, TimeoutSeconds: 300})
+	plan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{Name: "通用规则", Kind: model.DeploymentPlanDocker, ExecutionConfig: savedRegistryExecutionForTest(t, service, build.ID), Reusable: true, TimeoutSeconds: 300})
 	if err != nil {
 		t.Fatal(err)
 	}

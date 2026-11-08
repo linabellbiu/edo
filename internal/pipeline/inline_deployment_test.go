@@ -27,6 +27,8 @@ func TestInlineDeploymentPlansStayInWorkflowAndFreezeExecution(t *testing.T) {
 			s, db, _, repositoryID := newPipelineTestService(t)
 			homeProbe := &inlineComposeHomeProbe{}
 			ctx := context.Background()
+			authorizeRegistryTestActors(t, s, "admin")
+			deploymentRegistry := createTestImageRegistry(t, s, "部署仓库")
 			buildInput := BuildPlanInput{Name: "自定义方案构建", Kind: model.BuildPlanDockerfile, DockerfilePath: "Dockerfile"}
 			platform := model.DeploymentDocker
 			if kind == model.DeploymentPlanScript {
@@ -52,7 +54,12 @@ func TestInlineDeploymentPlansStayInWorkflowAndFreezeExecution(t *testing.T) {
 			}
 			targetInput := deploymentPlanTargetInput(t, s, model.DeploymentTarget{Name: "流水线自定义目标", Platform: platform, EnvironmentID: "inline-environment", HostID: "inline-host", RuntimeID: "inline-runtime", WorkingDirectory: "/srv/inline", Namespace: "default", WorkloadName: "inline-app", ContainerName: "app", RolloutTimeout: 120})
 			definition := &model.WorkflowDeploymentPlan{Name: "当前流水线部署", Kind: kind, TimeoutSeconds: 120, Script: "printf original", ComposeYAML: "services:\n  app:\n    restart: unless-stopped\n", ServiceName: "app", DeploymentTarget: &model.DeploymentTarget{Platform: platform, EnvironmentID: targetInput.EnvironmentID, HostID: targetInput.HostID, RuntimeID: targetInput.RuntimeID, WorkingDirectory: targetInput.WorkingDirectory, Namespace: targetInput.Namespace, WorkloadName: targetInput.WorkloadName, ContainerName: targetInput.ContainerName}}
+			if model.RequiresDeploymentRegistry(kind) {
+				definition.ExecutionConfig = &model.DeploymentExecutionConfig{DeploymentRegistryID: deploymentRegistry.ID, ArtifactBuildPlanID: build.ID}
+			}
 			if kind == model.DeploymentPlanComposeStack {
+				definition.ExecutionConfig.DeploymentRegistryID = buildInput.ImageRegistryID
+				definition.ExecutionConfig.Compose = &model.ComposeDeploymentSettings{ProjectName: "inline-app", TagVariable: "${IMAGE_TAG}"}
 				definition.ComposeYAML = "services:\n  app:\n    image: registry.example.com/apps/inline_compose_stack:${IMAGE_TAG}\n"
 				definition.DeploymentTarget.WorkingDirectory = ""
 				s.deployments = deployment.NewService(db, nil, nil, homeProbe, nil, "", nil)
@@ -127,7 +134,7 @@ func TestInlineDeploymentPlansStayInWorkflowAndFreezeExecution(t *testing.T) {
 					for j := range app.Workflow.Stages[i].Tasks {
 						task := &app.Workflow.Stages[i].Tasks[j]
 						if task.ID == deployID {
-							task.Config.InlineDeploymentPlan.ExecutionConfig = &model.DeploymentExecutionConfig{DeploymentInputVersion: 1, DeploymentScript: "printf owned-inline", ArtifactBuildPlanID: build.ID}
+							task.Config.InlineDeploymentPlan.ExecutionConfig = &model.DeploymentExecutionConfig{DeploymentRegistryID: deploymentRegistry.ID, DeploymentInputVersion: 1, DeploymentScript: "printf owned-inline", ArtifactBuildPlanID: build.ID}
 						}
 					}
 				}

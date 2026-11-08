@@ -10,6 +10,7 @@ import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vu
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
 import DeploymentHostSelection from '@/components/DeploymentHostSelection.vue'
+import { savedDeploymentRegistry } from '@/utils/deploymentExecution'
 import { hostGroupOptions } from '@/utils/hostGroups'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
@@ -829,6 +830,7 @@ function validateDockerConfig() {
 function validate() {
   reconcileExecutionTarget()
   if (!form.name.trim()) return '请输入方案名称'
+  if(['docker','compose','compose_stack'].includes(form.kind)&&!savedDeploymentRegistry(form.execution_config))return '请选择并保存镜像仓库'
   if (form.kind === 'compose_stack') {
     const parsed = readKubeYaml(form.compose_yaml)
     if (parsed.issues.length) return `dockercompose YAML 无效：第 ${parsed.issues[0]!.line} 行，第 ${parsed.issues[0]!.column} 列`
