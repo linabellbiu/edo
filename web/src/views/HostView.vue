@@ -1057,7 +1057,7 @@ onBeforeUnmount(() => {
 .host-group-tree>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .host-group-tree>p{padding:12px 4px}.host-group-tree :deep(.ant-tree){margin-top:8px;background:transparent;color:var(--edo-text)}
 .host-group-tree :deep(.ant-tree-node-content-wrapper){min-width:0;padding:2px 4px}
-.host-group-tree :deep(.ant-tree-treenode){width:100%;align-items:center}
+.host-group-tree :deep(.ant-tree-treenode:not([aria-hidden="true"])){width:100%;align-items:center}
 .host-group-tree :deep(.ant-tree-title){display:block}.host-group-tree :deep(.ant-tree-node-selected){background:var(--edo-primary-soft)!important;color:var(--edo-primary)}
 .host-group-node{display:flex;min-width:0;align-items:center;gap:6px}.host-group-node>svg{flex-shrink:0}.host-group-node>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .host-group-node :deep(.ant-btn){padding:0 3px;flex-shrink:0}.all-hosts{display:flex;align-items:center;gap:8px;width:100%;margin-top:12px;padding:8px;border:0;border-radius:4px;background:transparent;color:var(--edo-text);text-align:left;cursor:pointer}.all-hosts span{margin-left:auto;color:var(--edo-muted)}.all-hosts.active,.all-hosts:hover{background:var(--edo-primary-soft);color:var(--edo-primary)}.all-hosts:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}

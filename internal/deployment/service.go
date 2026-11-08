@@ -3,6 +3,7 @@ package deployment
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -52,6 +53,7 @@ var targetNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}
 var workloadNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,252}$`)
 
 type TargetInput struct {
+	HostIDs          []string
 	Name             string
 	Description      string
 	Platform         model.DeploymentPlatform
@@ -188,7 +190,7 @@ func (s *Service) CreateTarget(ctx context.Context, actorID string, input Target
 	target := &model.DeploymentTarget{
 		ID: uuid.NewString(), Name: input.Name, Description: input.Description,
 		Platform:      input.Platform,
-		EnvironmentID: input.EnvironmentID, HostID: input.HostID,
+		EnvironmentID: input.EnvironmentID, HostID: input.HostID, HostIDs: input.HostIDs,
 		RuntimeID: input.RuntimeID, WorkingDirectory: input.WorkingDirectory,
 		Namespace: input.Namespace, WorkloadName: input.WorkloadName,
 		ContainerName: input.ContainerName, RolloutTimeout: input.RolloutTimeout,
@@ -219,7 +221,7 @@ func (s *Service) UpdateTarget(ctx context.Context, id string, input TargetInput
 	if err := s.db.WithContext(ctx).Model(&existing).Updates(map[string]any{
 		"name": input.Name, "description": input.Description,
 		"platform":       input.Platform,
-		"environment_id": input.EnvironmentID, "host_id": input.HostID,
+		"environment_id": input.EnvironmentID, "host_id": input.HostID, "host_ids": encodedHostIDs(input.HostIDs),
 		"runtime_id": input.RuntimeID, "working_directory": input.WorkingDirectory, "namespace": input.Namespace,
 		"workload_name": input.WorkloadName, "container_name": input.ContainerName,
 		"rollout_timeout": input.RolloutTimeout, "updated_at": now,
@@ -231,7 +233,7 @@ func (s *Service) UpdateTarget(ctx context.Context, id string, input TargetInput
 	}
 	existing.Name, existing.Description = input.Name, input.Description
 	existing.Platform = input.Platform
-	existing.EnvironmentID, existing.HostID = input.EnvironmentID, input.HostID
+	existing.EnvironmentID, existing.HostID, existing.HostIDs = input.EnvironmentID, input.HostID, input.HostIDs
 	existing.RuntimeID, existing.WorkingDirectory, existing.Namespace = input.RuntimeID, input.WorkingDirectory, input.Namespace
 	existing.WorkloadName, existing.ContainerName = input.WorkloadName, input.ContainerName
 	existing.RolloutTimeout, existing.UpdatedAt = input.RolloutTimeout, now
@@ -1518,7 +1520,19 @@ func (s *Service) ReconcileEnvironmentTargets(ctx context.Context, tx *gorm.DB, 
 	now := time.Now().UTC()
 	for i := range targets {
 		target := &targets[i]
-		host, capability, err := service.resolveEnvironmentTarget(ctx, environmentID, target.Platform, target.RuntimeID)
+		selected := ""
+		if target.HostIDs != nil {
+			if len(target.HostIDs) == 0 {
+				return ErrInvalidTarget
+			}
+			for _, hostID := range target.HostIDs {
+				if _, _, err := service.resolveEnvironmentTarget(ctx, environmentID, target.Platform, "", hostID); err != nil {
+					return err
+				}
+			}
+			selected = target.HostIDs[0]
+		}
+		host, capability, err := service.resolveEnvironmentTarget(ctx, environmentID, target.Platform, target.RuntimeID, selected)
 		if err != nil {
 			service.logger.Warn(
 				"调整环境后重新解析部署目标失败",
@@ -1568,7 +1582,24 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 	if input.EnvironmentID == "" {
 		return TargetInput{}, ErrInvalidTarget
 	}
-	resolvedHost, resolvedCapability, err := s.resolveEnvironmentTarget(ctx, input.EnvironmentID, input.Platform, input.RuntimeID)
+	var selected string
+	if input.HostIDs != nil {
+		if input.Platform == model.DeploymentKubernetes || len(input.HostIDs) == 0 || len(input.HostIDs) > 100 {
+			return TargetInput{}, ErrInvalidTarget
+		}
+		seen := map[string]bool{}
+		for _, hostID := range input.HostIDs {
+			if strings.TrimSpace(hostID) != hostID || hostID == "" || len(hostID) > 36 || seen[hostID] {
+				return TargetInput{}, ErrInvalidTarget
+			}
+			seen[hostID] = true
+			if _, _, err := s.resolveEnvironmentTarget(ctx, input.EnvironmentID, input.Platform, "", hostID); err != nil {
+				return TargetInput{}, err
+			}
+		}
+		selected = input.HostIDs[0]
+	}
+	resolvedHost, resolvedCapability, err := s.resolveEnvironmentTarget(ctx, input.EnvironmentID, input.Platform, input.RuntimeID, selected)
 	if err != nil {
 		return TargetInput{}, err
 	}
@@ -1615,6 +1646,7 @@ func (s *Service) resolveEnvironmentTarget(
 	environmentID string,
 	platform model.DeploymentPlatform,
 	runtimeID string,
+	selectedHostIDs ...string,
 ) (model.Host, model.HostCapability, error) {
 	var environment model.Environment
 	if err := s.db.WithContext(ctx).First(&environment, "uuid = ? AND is_active = ?", environmentID, true).Error; err != nil {
@@ -1641,6 +1673,20 @@ func (s *Service) resolveEnvironmentTarget(
 	hostIDs := make([]string, 0, len(memberships))
 	for i := range memberships {
 		hostIDs = append(hostIDs, memberships[i].HostID)
+	}
+	if len(selectedHostIDs) > 0 && selectedHostIDs[0] != "" {
+		found := false
+		for _, id := range hostIDs {
+			if id == selectedHostIDs[0] {
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.logger.WarnContext(ctx, "所选主机不属于执行主机组", "operation", "deployment_selected_host", "environment_id", environmentID, "host_id", selectedHostIDs[0], "err", ErrInvalidTarget)
+			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
+		}
+		hostIDs = []string{selectedHostIDs[0]}
 	}
 	if len(hostIDs) == 0 {
 		s.logger.Warn("环境没有关联主机", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform)
@@ -1837,4 +1883,27 @@ func validatePipelineImage(value, expectedImageID string, target *model.Deployme
 		return "", ErrInvalidImage
 	}
 	return validateImage(value, false)
+}
+
+func encodedHostIDs(ids []string) string { value, _ := json.Marshal(ids); return string(value) }
+
+// ResolveHostTarget 只解析已在方案中勾选的主机，逐主机目标身份保持稳定。
+func (s *Service) ResolveHostTarget(ctx context.Context, target model.DeploymentTarget, hostID string) (*model.DeploymentTarget, error) {
+	selected := false
+	for _, id := range target.HostIDs {
+		if id == hostID {
+			selected = true
+		}
+	}
+	if !selected {
+		s.logger.WarnContext(ctx, "主机未被部署方案选择", "operation", "deployment_host_target", "host_id", hostID, "err", ErrInvalidTarget)
+		return nil, ErrInvalidTarget
+	}
+	normalized, err := s.normalizeTarget(ctx, TargetInput{Name: target.Name, Description: target.Description, Platform: target.Platform, EnvironmentID: target.EnvironmentID, HostIDs: []string{hostID}, WorkingDirectory: target.WorkingDirectory, WorkloadName: target.WorkloadName, ContainerName: target.ContainerName, Namespace: target.Namespace, RolloutTimeout: target.RolloutTimeout})
+	if err != nil {
+		return nil, err
+	}
+	target.ID = model.DeploymentHostNodeID(target.ID, hostID)
+	target.HostIDs, target.HostID, target.RuntimeID = normalized.HostIDs, normalized.HostID, normalized.RuntimeID
+	return &target, nil
 }

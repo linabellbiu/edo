@@ -9,6 +9,7 @@ import client from '@/api/client'
 import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vue'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
+import DeploymentHostSelection from '@/components/DeploymentHostSelection.vue'
 import { hostGroupOptions } from '@/utils/hostGroups'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
@@ -27,12 +28,14 @@ import '@/styles/plan-list.css'
 import type {WorkflowDeploymentPlan, DeploymentExecutionConfig, WorkflowNode} from '@/types/pipeline'
 const props=defineProps<{inline?:boolean;inlineOpen?:boolean;inlineValue?:WorkflowDeploymentPlan;inlineKinds?:string[];applicationID?:string;applicationName?:string;buildNodes?:WorkflowNode[]}>()
 const registryHost=ref<HTMLElement>()
+const legacySelectionID=ref('')
 const emit=defineEmits<{'save-inline':[value:WorkflowDeploymentPlan];'update:inlineOpen':[value:boolean]}>()
 
 type PlanKind = 'script' | 'docker' | 'compose' | 'compose_stack' | 'kubernetes'
 type Platform = 'ssh' | 'docker' | 'kubernetes'
 
 interface DeploymentTarget {
+  host_ids?: string[]
   id: string
   platform: Platform
   environment_id: string
@@ -114,6 +117,7 @@ interface Runtime {
 }
 
 interface DeploymentDraft {
+  host_ids?: string[]
   execution_config?: DeploymentExecutionConfig
   script: string
   compose_yaml: string
@@ -239,6 +243,7 @@ const form = reactive({
   compose_yaml: defaultComposeYAML,
   service_name: '',
   environment_id: '',
+  host_ids: undefined as string[] | undefined,
   host_id: '',
   working_directory: '',
   runtime_id: '',
@@ -308,6 +313,7 @@ const executionTargetError = computed(() => {
   }
   const candidates = executionHosts.value
   if (!candidates.length) return '当前主机组没有可用于所选部署方式的执行主机，请先调整主机组配置。'
+  if (form.host_ids !== undefined) return form.host_ids.length && form.host_ids.every(id=>candidates.some(host=>host.id===id)) ? '' : '请选择本组可用的执行主机'
   if (candidates.length > 1) return '当前主机组有多台可用于所选部署方式的主机，无法唯一确定执行位置，请先调整主机组配置。'
   return ''
 })
@@ -323,7 +329,7 @@ function readyCapability(host: InfrastructureHost, kind: 'ssh' | 'docker' | 'kub
 }
 
 function hostSupportsKind(host: InfrastructureHost, kind: PlanKind) {
-  if (kind === 'compose_stack') return host.mode === 'ssh' && Boolean(readyCapability(host, 'ssh') && readyCapability(host, 'docker')?.runtime_id)
+  if (kind === 'compose_stack') return Boolean(readyCapability(host, host.mode === 'local' ? 'local_exec' : 'ssh') && readyCapability(host, 'docker')?.runtime_id)
   if (kind === 'script') return Boolean(readyCapability(host, host.mode === 'local' ? 'local_exec' : 'ssh'))
   if (kind === 'docker' || kind === 'compose') {
     const capability = readyCapability(host, 'docker')
@@ -385,6 +391,7 @@ function runtimeOf(plan: DeploymentPlan) {
 function destinationName(plan: DeploymentPlan) {
   const target = targetOf(plan)
   if (!target) return '尚未配置运行位置'
+  if(target.host_ids?.length)return target.host_ids.map(id=>hostByID.value.get(id)?.name||'原执行主机不可用').join('、')
   const hostName = hostByID.value.get(target.host_id)?.name
   if (target.platform !== 'kubernetes' && hostName) return hostName
   const runtimeName = runtimeOf(plan)?.name
@@ -444,13 +451,14 @@ function updatedTime(plan: DeploymentPlan) {
 }
 
 function reset() {
+  legacySelectionID.value=''
   formRevision++
   formRequest?.abort()
   formRequest = undefined
   saving.value = false
   Object.assign(form, {
     execution_config: emptyExecution('docker'), reusable: true, name: '', description: '', kind: 'docker', script: '', compose_yaml: defaultComposeYAML, service_name: '',
-    environment_id: '', host_id: '', working_directory: '', runtime_id: '',
+    environment_id: '', host_ids: undefined, host_id: '', working_directory: '', runtime_id: '',
     namespace: 'default', workload_name: '', container_name: '', timeout_seconds: 600,
     docker_port_mappings: [emptyDockerPort()], docker_environment_variables: [], docker_volume_mounts: [],
     docker_network: 'bridge', docker_deployment_script: '', docker_health_enabled: false, docker_health_command: '',
@@ -521,6 +529,7 @@ function edit(plan: DeploymentPlan) {
   reset()
   for (const kind of kindOptions) delete deploymentDrafts[kind.value]
   const target = targetOf(plan)
+  legacySelectionID.value=target?.host_ids==null?target?.host_id||'':''
   const dockerConfig = plan.docker_config
   const healthCheck = dockerConfig?.health_check || emptyDockerHealthCheck()
   const dockerPorts = (dockerConfig?.port_mappings || []).map(item => ({
@@ -537,6 +546,7 @@ function edit(plan: DeploymentPlan) {
     compose_yaml: plan.compose_yaml || defaultComposeYAML,
     service_name: plan.kind === 'compose' ? plan.service_name || '' : '',
     environment_id: target?.environment_id || '',
+    host_ids: target?.host_ids ? [...target.host_ids] : undefined,
     host_id: target?.host_id || '',
     working_directory: target?.working_directory || '',
     runtime_id: target?.runtime_id || '',
@@ -603,6 +613,7 @@ function currentDeploymentDraft(): DeploymentDraft {
     compose_yaml: form.compose_yaml,
     service_name: form.service_name,
     environment_id: form.environment_id,
+    host_ids: form.host_ids ? [...form.host_ids] : undefined,
     host_id: form.host_id,
     working_directory: form.working_directory,
     runtime_id: form.runtime_id,
@@ -635,6 +646,7 @@ function emptyDeploymentDraft(kind: PlanKind): DeploymentDraft {
     compose_yaml: kind === 'compose' || kind === 'compose_stack' ? defaultComposeYAML : '',
     service_name: kind === 'compose' ? 'app' : '',
     environment_id: '',
+    host_ids: undefined,
     host_id: '',
     working_directory: '',
     runtime_id: '',
@@ -675,8 +687,10 @@ function changeKind(kind: PlanKind) {
 }
 
 function changeEnvironment(environmentID: unknown) {
+  legacySelectionID.value=''
   const clusterID = form.kind === 'kubernetes' ? form.runtime_id : ''
   form.environment_id = typeof environmentID === 'string' ? environmentID : ''
+  form.host_ids = undefined
   form.host_id = ''
   form.runtime_id = clusterID
   const firstAvailable = availableKindOptions.value[0]?.value
@@ -695,12 +709,12 @@ function reconcileExecutionTarget() {
     changeKubernetesRuntime(form.runtime_id)
     return
   }
-  if (executionHosts.value.length !== 1) {
+  if (form.host_ids === undefined && executionHosts.value.length !== 1) {
     form.host_id = ''
     form.runtime_id = ''
     return
   }
-  form.host_id = executionHosts.value[0]?.id || ''
+  form.host_id = form.host_ids?.[0] || executionHosts.value[0]?.id || ''
   if (form.kind !== 'docker' && form.kind !== 'compose') {
     form.runtime_id = ''
     return
@@ -849,6 +863,7 @@ function savedTargetMatchesForm(plan: DeploymentPlan) {
   if (form.reusable) return !plan.deployment_target_id
   const target = plan.deployment_target
   if (!plan.deployment_target_id || !target || target.id !== plan.deployment_target_id || target.platform !== platform.value) return false
+  if (JSON.stringify(target.host_ids||null)!==JSON.stringify(form.host_ids||null)) return false
   if (target.environment_id !== form.environment_id || (platform.value !== 'kubernetes' && (target.host_id || '') !== form.host_id)) return false
   if (platform.value === 'ssh') return true
   return target.runtime_id === form.runtime_id
@@ -938,6 +953,7 @@ async function save() {
       description: form.description.trim(),
       platform: platform.value,
       environment_id: form.environment_id,
+      host_ids: platform.value === 'kubernetes' ? undefined : form.host_ids,
       host_id: platform.value === 'kubernetes' ? '' : form.host_id,
       working_directory: platform.value === 'ssh' ? form.working_directory.trim() : '',
       runtime_id: platform.value === 'ssh' ? '' : form.runtime_id,
@@ -1130,6 +1146,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               <a-button v-if="auth.canAny(['deployment.create'])" aria-label="创建主机组" title="创建主机组" @click="router.push('/hosts?create_group=1')"><Plus :size="15" /></a-button>
             </div>
           </a-form-item>
+          <DeploymentHostSelection v-if="form.kind!=='kubernetes'&&form.environment_id" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :ready="!loading&&environmentByID.has(form.environment_id)" :disabled="saving||!canReadHosts" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()"/>
           <div v-if="!canReadEnvironments" class="permission-note">需要发布记录查看权限才能选择执行主机组。</div>
         </div>
 

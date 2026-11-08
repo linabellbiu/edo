@@ -6,6 +6,7 @@ import {apiErrorMessage} from '@/api/resources'
 import {useAuthStore} from '@/stores/auth'
 import {listEnvironments,type InfrastructureEnvironment} from '@/api/infrastructure'
 import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vue'
+import DeploymentHostSelection from '@/components/DeploymentHostSelection.vue'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import {readKubeYaml} from '@/utils/kubernetesYaml'
@@ -16,6 +17,8 @@ const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>]}>()
 const auth=useAuthStore(),environments=ref<InfrastructureEnvironment[]>([]),configs=ref<Array<{id:string;name:string}>>([]),clusters=ref<Array<{id:string;name:string}>>([]),error=ref(''),services=ref<string[]>([]),serviceError=ref(''),serviceLoading=ref(false),repoPreviewCommit=ref('')
 const registryHost=ref<HTMLElement>()
 const plan=computed(()=>props.node.config.inline_deployment_plan)
+const selectedGroup=computed(()=>environments.value.find(group=>group.id===plan.value?.deployment_target?.environment_id))
+const groupHosts=computed(()=>(selectedGroup.value?.hosts||[]).filter(host=>host.is_active&&host.capabilities.some(cap=>cap.kind===(host.mode==='local'?'local_exec':'ssh')&&cap.status==='ready')&&(plan.value?.kind!=='compose_stack'||host.capabilities.some(cap=>cap.kind==='docker'&&cap.status==='ready'&&cap.runtime_id))))
 const execution=computed(()=>plan.value?.execution_config||{})
 const sourceKind=computed(()=>props.node.config.compose_source?.kind||'editor')
 const runtimeServices=computed(()=>props.node.config.runtime_services||[])
@@ -68,7 +71,8 @@ function compose(patch:Record<string,unknown>){updateExecution({compose:{...sett
 <template>
  <section v-if="plan" class="pipeline-deploy-fields">
   <a-alert v-if="error" type="warning" show-icon :message="error"/>
-  <a-form-item label="执行主机组" required><a-select :value="plan.deployment_target?.environment_id||undefined" :disabled="disabled" :options="hostGroupOptions(environments.filter(v=>v.is_active))" placeholder="选择执行主机组" @update:value="target({environment_id:String($event),host_id:undefined,runtime_id:undefined})"/></a-form-item>
+  <a-form-item label="执行主机组" required><a-select :value="plan.deployment_target?.environment_id||undefined" :disabled="disabled" :options="hostGroupOptions(environments.filter(v=>v.is_active))" placeholder="选择执行主机组" @update:value="target({environment_id:String($event),host_ids:undefined,host_id:undefined,runtime_id:undefined})"/></a-form-item>
+  <DeploymentHostSelection v-if="plan.kind!=='kubernetes'&&plan.deployment_target?.environment_id" :model-value="plan.deployment_target?.host_ids" :legacyHostID="plan.deployment_target?.host_id" :hosts="groupHosts" :ready="!!selectedGroup" :disabled="disabled" @update:model-value="target({host_ids:$event,host_id:undefined,runtime_id:undefined})"/>
   <div ref="registryHost"/>
   <template v-if="plan.kind==='compose_stack'">
    <a-form-item label="compose.yaml 来源" required><a-radio-group :value="sourceKind" :disabled="disabled" :options="[{value:'repository',label:'仓库文件'},{value:'editor',label:'上传 / 编辑'},{value:'configuration',label:'配置文件'},{value:'upstream',label:'上游产物'}]" @update:value="source(String($event))"/></a-form-item>

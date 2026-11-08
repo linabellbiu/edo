@@ -29,7 +29,7 @@ func normalizeInlineDeploymentPlan(input *model.WorkflowDeploymentPlan, sources 
 	var target *deployment.TargetInput
 	if t := input.DeploymentTarget; t != nil {
 		target = &deployment.TargetInput{Name: input.Name, Description: input.Description, Platform: t.Platform, EnvironmentID: t.EnvironmentID,
-			HostID: t.HostID, RuntimeID: t.RuntimeID, WorkingDirectory: t.WorkingDirectory, Namespace: t.Namespace, WorkloadName: t.WorkloadName, ContainerName: t.ContainerName, RolloutTimeout: input.TimeoutSeconds}
+			HostIDs: t.HostIDs, HostID: t.HostID, RuntimeID: t.RuntimeID, WorkingDirectory: t.WorkingDirectory, Namespace: t.Namespace, WorkloadName: t.WorkloadName, ContainerName: t.ContainerName, RolloutTimeout: input.TimeoutSeconds}
 	}
 	normalized, err := normalizeDeploymentPlanInput(DeploymentPlanInput{Name: input.Name, Kind: input.Kind, Description: input.Description,
 		ExecutionConfig: input.ExecutionConfig, Script: input.Script, ComposeYAML: input.ComposeYAML, ServiceName: input.ServiceName, DockerConfig: input.DockerConfig, TimeoutSeconds: input.TimeoutSeconds, DeploymentTarget: target})
@@ -42,7 +42,7 @@ func normalizeInlineDeploymentPlan(input *model.WorkflowDeploymentPlan, sources 
 	input.DockerConfig, input.TimeoutSeconds = normalized.DockerConfig, normalized.TimeoutSeconds
 	// 只接受目标的可配置字段，不保存客户端传入的资源身份和归属。
 	if t := input.DeploymentTarget; t != nil {
-		input.DeploymentTarget = &model.DeploymentTarget{Platform: t.Platform, EnvironmentID: t.EnvironmentID, HostID: t.HostID, RuntimeID: t.RuntimeID,
+		input.DeploymentTarget = &model.DeploymentTarget{Platform: t.Platform, EnvironmentID: t.EnvironmentID, HostIDs: t.HostIDs, HostID: t.HostID, RuntimeID: t.RuntimeID,
 			WorkingDirectory: t.WorkingDirectory, Namespace: t.Namespace, WorkloadName: t.WorkloadName, ContainerName: t.ContainerName, RolloutTimeout: normalized.TimeoutSeconds}
 	}
 	return nil

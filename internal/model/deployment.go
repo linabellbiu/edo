@@ -26,6 +26,7 @@ type DeploymentTarget struct {
 	Description      string             `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	Platform         DeploymentPlatform `gorm:"type:varchar(16);not null;index" json:"platform"`
 	EnvironmentID    string             `gorm:"type:varchar(36);not null;default:'';index" json:"environment_id,omitempty"`
+	HostIDs          []string           `gorm:"serializer:json;type:text" json:"host_ids"`
 	HostID           string             `gorm:"type:varchar(36);not null;default:'';index" json:"host_id,omitempty"`
 	RuntimeID        string             `gorm:"type:varchar(36);not null;index" json:"runtime_id"`
 	WorkingDirectory string             `gorm:"type:varchar(1024);not null;default:''" json:"working_directory,omitempty"`

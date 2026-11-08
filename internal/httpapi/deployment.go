@@ -20,6 +20,7 @@ type deploymentHandler struct {
 }
 
 type deploymentTargetRequest struct {
+	HostIDs          []string                 `json:"host_ids" binding:"omitempty,max=100,dive,required,max=36"`
 	Name             string                   `json:"name" binding:"required,max=128"`
 	Description      string                   `json:"description" binding:"max=500"`
 	Platform         model.DeploymentPlatform `json:"platform" binding:"required,max=16"`
@@ -270,7 +271,7 @@ func toDeploymentTargetInput(request deploymentTargetRequest) deployment.TargetI
 	return deployment.TargetInput{
 		Name: request.Name, Description: request.Description,
 		Platform:      request.Platform,
-		EnvironmentID: request.EnvironmentID, HostID: request.HostID,
+		EnvironmentID: request.EnvironmentID, HostID: request.HostID, HostIDs: request.HostIDs,
 		RuntimeID: request.RuntimeID, WorkingDirectory: request.WorkingDirectory,
 		Namespace:    request.Namespace,
 		WorkloadName: request.WorkloadName, ContainerName: request.ContainerName,

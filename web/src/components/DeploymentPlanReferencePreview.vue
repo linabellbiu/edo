@@ -12,6 +12,8 @@ import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 const props = defineProps<{ plan: WorkflowDeploymentPlan & { id: string; is_active?: boolean }; legacyConfig?: WorkflowNodeConfig; applicationID?: string; applicationName?: string }>()
 const registryHost=ref<HTMLElement>()
 const auth = useAuthStore()
+const environmentHosts=ref<Array<{id:string;name:string}>>([])
+const selectedHostNames=computed(()=>(target.value?.host_ids??(target.value?.host_id?[target.value.host_id]:[])).map(id=>environmentHosts.value.find(host=>host.id===id)?.name||'原执行主机不可用').join('、'))
 const environmentName = ref(''), environmentError = ref(''), loading = ref(false)
 let controller: AbortController | undefined
 const execution = computed(() => props.plan.execution_config || deploymentExecution(props.legacyConfig || {}))
@@ -27,13 +29,14 @@ const variables = computed(() => Object.keys(docker.value.environment_variables 
 watch(() => [props.plan.id, target.value?.environment_id, auth.user?.id, auth.user?.project_id, canReadEnvironment.value] as const, async () => {
   controller?.abort(); controller = new AbortController()
   const { signal } = controller, project = auth.user?.project_id
-  environmentName.value = ''; environmentError.value = ''; loading.value = false
+  environmentName.value = ''; environmentHosts.value=[]; environmentError.value = ''; loading.value = false
   if (!target.value?.environment_id || !project || !canReadEnvironment.value || localStorage.getItem('edo.project') !== project) return
   loading.value = true
   try {
-    const { data } = await client.get<{ environments: Array<{ id: string; name: string }> }>('/environments', { signal, headers: { 'X-EDO-Project-ID': project } })
+    const { data } = await client.get<{ environments: Array<{ id: string; name: string; hosts?:Array<{id:string;name:string}> }> }>('/environments', { signal, headers: { 'X-EDO-Project-ID': project } })
     if (signal.aborted || auth.user?.project_id !== project || localStorage.getItem('edo.project') !== project) return
-    environmentName.value = data.environments.find(item => item.id === target.value?.environment_id)?.name || ''
+    const group=data.environments.find(item => item.id === target.value?.environment_id)
+    environmentName.value = group?.name || '';environmentHosts.value=group?.hosts||[]
   } catch (error) {
     if (!signal.aborted) environmentError.value = apiErrorMessage(error)
   } finally {
@@ -50,6 +53,7 @@ onBeforeUnmount(() => controller?.abort())
     <div ref="registryHost"/>
     <div class="reference-grid">
       <a-form-item label="执行主机组"><a-input :value="environmentLabel" disabled /></a-form-item>
+      <a-form-item v-if="plan.kind!=='kubernetes'&&selectedHostNames" label="执行主机"><a-input :value="selectedHostNames" disabled /></a-form-item>
       <a-form-item v-if="plan.kind === 'script' && target?.working_directory" label="工作目录"><a-input :value="target.working_directory" disabled /></a-form-item>
     </div>
     <a-form-item v-if="plan.description" label="方案说明"><a-textarea :value="plan.description" :auto-size="{ minRows: 1, maxRows: 4 }" disabled /></a-form-item>

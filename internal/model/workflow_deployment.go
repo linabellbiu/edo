@@ -21,3 +21,8 @@ func InlineDeploymentIdentity(workflowID, nodeID string) (string, string) {
 	identity := "edo.workflow.deployment:" + workflowID + ":" + nodeID
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(identity+":plan")).String(), uuid.NewSHA1(uuid.NameSpaceOID, []byte(identity+":target")).String()
 }
+
+// DeploymentHostNodeID 为每个任务与主机生成稳定身份，重试或调整勾选顺序不会重复接管实例。
+func DeploymentHostNodeID(nodeID, hostID string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("edo.deployment.host:"+nodeID+":"+hostID)).String()
+}

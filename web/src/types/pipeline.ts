@@ -90,7 +90,7 @@ export interface WorkflowDeploymentPlan {
   service_name?:string
   docker_config?:unknown
   timeout_seconds:number
-  deployment_target?:{platform:'ssh'|'docker'|'kubernetes';environment_id:string;host_id?:string;runtime_id?:string;working_directory?:string;namespace?:string;workload_name?:string;container_name?:string;rollout_timeout?:number}
+  deployment_target?:{platform:'ssh'|'docker'|'kubernetes';environment_id:string;host_ids?:string[]|null;host_id?:string;runtime_id?:string;working_directory?:string;namespace?:string;workload_name?:string;container_name?:string;rollout_timeout?:number}
 }
 
 export interface WorkflowNode {

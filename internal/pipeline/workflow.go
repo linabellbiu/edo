@@ -537,6 +537,7 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 }
 
 func sanitizeWorkflowNode(node *model.WorkflowNode) error {
+	node.Config.ExecutionHostID = ""
 	if err := normalizeTaskRuntimeServices(node); err != nil {
 		slog.Warn("自定义部署服务关联无效", "operation", "workflow_runtime_service_validate", "node_id", node.ID, "err", err)
 		return err
@@ -1409,6 +1410,9 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	} else {
 		variableContext = projectdatabase.WithDepartmentScope(ctx, projectdatabase.DepartmentScope{ProjectID: application.ProjectID, DepartmentID: application.DepartmentID})
 	}
+	if err := s.expandDeploymentHosts(variableContext, database, &resolved); err != nil {
+		return nil, err
+	}
 	delivery := cicd.New(database, s.secrets, s.logger)
 	variableBindings := make(map[string][]model.DeliveryVariableBinding)
 	configurationBindings := make(map[string][]model.DeploymentConfigBinding)
@@ -1479,6 +1483,14 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 						return nil, ErrInvalidWorkflow
 					}
+				}
+				if current.Config.InlineDeploymentPlan == nil && current.Config.ExecutionHostID != "" {
+					resolvedTarget, err := s.deployments.WithTransaction(database).ResolveHostTarget(variableContext, target, current.Config.ExecutionHostID)
+					if err != nil {
+						return nil, err
+					}
+					target = *resolvedTarget
+					plan.DeploymentTargetID, plan.DeploymentTarget = target.ID, &target
 				}
 				if current.Config.ComposeSource != nil && current.Config.ComposeSource.Kind != "upstream" {
 					content, sourceErr := s.runtimeComposeDefinition(ctx, *application, *current, target.EnvironmentID, ref, commitSHA, authorityID)
