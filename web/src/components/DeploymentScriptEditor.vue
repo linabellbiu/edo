@@ -1,36 +1,73 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Compartment, EditorState } from '@codemirror/state'
-import { EditorView, keymap, lineNumbers, drawSelection } from '@codemirror/view'
+import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view'
+import { StreamLanguage, syntaxHighlighting, HighlightStyle, bracketMatching } from '@codemirror/language'
+import { shell } from '@codemirror/legacy-modes/mode/shell'
+import { tags } from '@lezer/highlight'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
-import { linter, forceLinting } from '@codemirror/lint'
+import { lintGutter, setDiagnostics } from '@codemirror/lint'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
+import { usePreferencesStore } from '@/stores/preferences'
 
 const props = defineProps<{ modelValue: string; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
-const auth = useAuthStore(), host = ref<HTMLElement>(), upload = ref<HTMLInputElement>()
+const auth = useAuthStore(), preferences = usePreferencesStore(), host = ref<HTMLElement>(), upload = ref<HTMLInputElement>()
 type Issue = { line: number; column: number; message: string }
 const issues = ref<Issue[]>([]), status = ref(''), error = ref(''), checking = ref(false)
-const editing = new Compartment()
+const editing = new Compartment(), appearance = new Compartment(), highlighting = new Compartment()
 let editor: EditorView | undefined, controller: AbortController | undefined, timer: ReturnType<typeof setTimeout> | undefined, revision = 0, disposed = false
 function identity() { return JSON.stringify([auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser, auth.authorizationState, localStorage.getItem('edo.project')]) }
-function canEdit() { return !props.disabled && auth.canAny(['workflow.update']) && auth.user?.project_id === localStorage.getItem('edo.project') }
+function canEdit() { return Boolean(auth.user?.id && auth.user?.project_id) && !props.disabled && auth.canAny(['workflow.update']) && auth.user?.project_id === localStorage.getItem('edo.project') }
+function highlight() {
+  const dark = preferences.theme === 'dark'
+  return syntaxHighlighting(HighlightStyle.define([
+    { tag: tags.keyword, color: dark ? '#c6b4f5' : '#7453a6' },
+    { tag: [tags.variableName, tags.definition(tags.variableName)], color: dark ? '#9bc3ff' : '#315c9f' },
+    { tag: [tags.string, tags.special(tags.string)], color: dark ? '#a7d9a0' : '#356b3e' },
+    { tag: [tags.number, tags.bool, tags.atom], color: dark ? '#f0bf83' : '#946020' },
+    { tag: tags.comment, color: dark ? '#99a3b5' : '#687589', fontStyle: 'italic' },
+    { tag: [tags.meta, tags.standard(tags.variableName)], color: dark ? '#7cd6df' : '#236a77' },
+    { tag: tags.invalid, color: dark ? '#ff9ba7' : '#be3148' },
+  ]))
+}
+function theme() {
+  return EditorView.theme({ '&': { background: 'var(--edo-surface)', color: 'var(--edo-text)', fontSize: '13px' }, '.cm-content': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', minHeight: '200px', padding: '10px 0' }, '.cm-scroller': { overflow: 'auto', maxHeight: '50vh', lineHeight: '1.7' }, '.cm-gutters': { background: 'var(--edo-bg)', color: 'var(--edo-muted)', borderColor: 'var(--edo-border)' }, '.cm-activeLine, .cm-activeLineGutter': { background: 'var(--edo-primary-soft, rgba(82,102,255,.07))' }, '.cm-tooltip': { background: 'var(--edo-surface)', color: 'var(--edo-text)', borderColor: 'var(--edo-border)' } }, { dark: preferences.theme === 'dark' })
+}
+function refreshDiagnostics() {
+  if (!editor) return
+  const doc = editor.state.doc
+  editor.dispatch(setDiagnostics(editor.state, issues.value.map(issue => {
+    const line = doc.line(Math.min(Math.max(1, issue.line), doc.lines))
+    const from = Math.min(line.to, line.from + Math.max(0, issue.column - 1))
+    return { from, to: Math.min(line.to, from + 1), severity: 'error' as const, message: issue.message }
+  })))
+}
 async function check() {
+  clearTimeout(timer); timer = undefined
   controller?.abort(); controller = new AbortController(); const signal = controller.signal, request = ++revision, scope = identity(), script = props.modelValue
   issues.value = []; status.value = ''; error.value = ''; checking.value = false
-  if (!canEdit() || !script.trim()) { if (editor) forceLinting(editor); return }
+  refreshDiagnostics()
+  if (!canEdit() || !script.trim()) return
   checking.value = true
   try {
     const { data } = await client.post<{ issues: Issue[] }>('/workflows/deployment-script/check', { script }, { signal, headers: { 'X-EDO-Project-ID': auth.user!.project_id } })
     if (disposed || signal.aborted || request !== revision || scope !== identity() || script !== props.modelValue) return
     issues.value = data.issues; status.value = data.issues.length ? 'Shell 语法检查未通过' : 'Shell 语法检查通过（POSIX sh）'
-    if (editor) forceLinting(editor)
+    refreshDiagnostics()
   } catch (cause) { if (!signal.aborted && scope === identity() && request === revision) error.value = apiErrorMessage(cause) }
   finally { if (request === revision) checking.value = false }
 }
-function schedule() { clearTimeout(timer); controller?.abort(); revision++; issues.value = []; status.value = ''; error.value = ''; checking.value = false; timer = setTimeout(() => { void check() }, 500) }
+function schedule() {
+  clearTimeout(timer); timer = undefined; controller?.abort(); revision++
+  issues.value = []; status.value = ''; error.value = ''; checking.value = false
+  refreshDiagnostics()
+  if (disposed || !canEdit() || !props.modelValue.trim()) return
+  status.value = '等待自动检查 Shell 语法…'
+  timer = setTimeout(() => { void check() }, 500)
+}
 async function readUpload(event: Event) {
   const input = event.target as HTMLInputElement, file = input.files?.[0], scope = identity(), original = props.modelValue
   input.value = ''; if (!file || !canEdit()) return
@@ -44,24 +81,27 @@ async function readUpload(event: Event) {
 }
 onMounted(() => {
   editor = new EditorView({ parent: host.value, state: EditorState.create({ doc: props.modelValue, extensions: [
-    lineNumbers(), drawSelection(), history(), keymap.of([...defaultKeymap, ...historyKeymap]),
+    StreamLanguage.define(shell), highlighting.of(highlight()), appearance.of(theme()),
+    lineNumbers(), lintGutter(), drawSelection(), history(), bracketMatching(), highlightActiveLine(), highlightActiveLineGutter(), keymap.of([...defaultKeymap, ...historyKeymap]),
     EditorView.contentAttributes.of({ 'aria-label': '部署脚本', spellcheck: 'false' }),
     editing.of([EditorState.readOnly.of(!canEdit()), EditorView.editable.of(canEdit())]),
-    EditorView.theme({ '&': { background: 'var(--edo-surface)', color: 'var(--edo-text)', fontSize: '13px' }, '.cm-content': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', minHeight: '200px' }, '.cm-scroller': { overflow: 'auto', maxHeight: '50vh', lineHeight: '1.7' }, '.cm-gutters': { background: 'var(--edo-bg)', color: 'var(--edo-muted)', borderColor: 'var(--edo-border)' } }),
     EditorView.updateListener.of(update => { if (update.docChanged && canEdit() && update.state.doc.toString() !== props.modelValue) emit('update:modelValue', update.state.doc.toString()) }),
-    linter(view => issues.value.map(issue => { const line = view.state.doc.line(Math.min(Math.max(1, issue.line), view.state.doc.lines)), from = Math.min(line.to, line.from + Math.max(0, issue.column - 1)); return { from, to: Math.min(line.to, from + 1), severity: 'error' as const, message: issue.message } })),
   ] }) }); schedule()
 })
 watch(() => props.modelValue, value => { if (editor && editor.state.doc.toString() !== value) editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value } }); schedule() })
-watch([identity, () => props.disabled], () => { revision++; controller?.abort(); issues.value = []; status.value = ''; error.value = ''; checking.value = false; editor?.dispatch({ effects: editing.reconfigure([EditorState.readOnly.of(!canEdit()), EditorView.editable.of(canEdit())]) }); if (canEdit()) schedule() })
+watch([identity, () => props.disabled], () => {
+  schedule()
+  editor?.dispatch({ effects: editing.reconfigure([EditorState.readOnly.of(!canEdit()), EditorView.editable.of(canEdit())]) })
+})
+watch(() => preferences.theme, () => editor?.dispatch({ effects: [appearance.reconfigure(theme()), highlighting.reconfigure(highlight())] }))
 onBeforeUnmount(() => { disposed = true; revision++; clearTimeout(timer); controller?.abort(); editor?.destroy() })
 function locate(issue: Issue) { if (!editor) return; const line = editor.state.doc.line(Math.min(issue.line, editor.state.doc.lines)); editor.dispatch({ selection: { anchor: Math.min(line.to, line.from + issue.column - 1) }, scrollIntoView: true }); editor.focus() }
 </script>
 <template>
  <section class="deployment-script-editor" aria-label="部署脚本编辑器">
-  <div class="script-actions"><a-button :disabled="disabled" @click="upload?.click()">上传部署脚本</a-button><a-button :disabled="disabled || !modelValue.trim()" :loading="checking" @click="check">检查 Shell 语法</a-button><input ref="upload" type="file" accept=".sh,.bash,.txt,text/plain,application/x-sh" hidden @change="readUpload" /></div>
+  <div class="script-actions"><a-button :disabled="!canEdit()" @click="upload?.click()">上传部署脚本</a-button><input ref="upload" type="file" accept=".sh,.bash,.txt,text/plain,application/x-sh" hidden @change="readUpload" /></div>
   <div ref="host" class="script-code" />
-  <p v-if="status" :role="issues.length ? 'alert' : 'status'">{{ status }}</p><a-alert v-if="error" type="error" :message="error" show-icon />
+  <p v-if="checking || status" :role="issues.length ? 'alert' : 'status'" :aria-live="issues.length ? 'assertive' : 'polite'">{{ checking ? '正在自动检查 Shell 语法…' : status }}</p><a-alert v-if="error" type="error" :message="error" show-icon />
   <button v-for="(issue, index) in issues" :key="index" class="script-issue" type="button" @click="locate(issue)">第 {{ issue.line }} 行，第 {{ issue.column }} 列：{{ issue.message }}</button>
  </section>
 </template>

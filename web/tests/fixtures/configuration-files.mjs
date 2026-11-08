@@ -14,6 +14,7 @@ import { usePreferencesStore } from '/src/stores/preferences'
 
 // 只使用合成数据，不连接实际业务 API。
 const project = 'configuration-preview', pinia = createPinia(), auth = useAuthStore(pinia), preferences = usePreferencesStore(pinia)
+const scriptChecks=[];window.edoScriptChecks=scriptChecks
 localStorage.setItem('edo.project', project)
 auth.user = { id: 'preview-user', username: 'preview', project_id: project, department_id: 'preview-department', is_superuser: false, permissions: ['delivery_variable.read', 'delivery_variable.create', 'delivery_variable.update', 'delivery_variable.delete', 'delivery_variable.reveal', 'deployment.read', 'deployment.execute', 'deployment_plan.read', 'deployment_plan.update', 'application.read', 'workflow.read', 'workflow.update', 'deployment.container.restart', 'deployment.container.recreate', 'delivery_variable.execute', 'image_registry.read', 'image_registry.execute'] }
 auth.loaded = true; auth.authorizationState = 'ready'
@@ -33,7 +34,10 @@ client.defaults.adapter = async config => {
     data=historical[2]?{revision:{...revision(Number(historical[2])),...(!row.is_secret||historical[3]?{value:values[Number(historical[2])-1],hidden:false}:{})}}:{revisions:values.map((_,i)=>revision(i+1)).reverse(),current_version:row.version,total:values.length}
   }
   else if(path.endsWith('/deployment-options')) data={options:config.params?.image?['v1','v2']:['orders-api','worker']}
-  else if(path==='/workflows/deployment-script/check') data={valid:!body.script.includes('then\n'),issues:body.script.includes('then\n')?[{line:2,column:1,message:'Shell 语法无效，请检查引号、括号和语句结束'}]:[]}
+  else if(path==='/workflows/deployment-script/check') {
+    scriptChecks.push({project:config.headers['X-EDO-Project-ID'],length:body.script.length})
+    data={valid:!body.script.includes('then\n'),issues:body.script.includes('then\n')?[{line:2,column:1,message:'Shell 语法无效，请检查引号、括号和语句结束'}]:[]}
+  }
   else if (path.startsWith('/deployments/')) data = config.method === 'get' ? { preview: { kind: 'compose', action: 'restart', effective_action: 'recreate', configuration_changed: true, configuration_files: [{ path: '.prod.env', version: 2 }], container_id: 'a'.repeat(64), digest: 'f'.repeat(64), service: 'api', run_to_completion: false, containers: [{ id: 'a'.repeat(64), name: 'api-1', image: 'example/api@sha256:sample' }, { id: 'b'.repeat(64), name: 'api-2', image: 'example/api@sha256:sample' }] } } : { runtime: { deployment_id: 'sample', kind: 'compose', state: 'running' } }
   else if (config.method === 'get') data = ({ '/delivery-variables': { variables: rows.map(item => ({ ...item })) }, '/projects': { projects: [{ id: project, name: '示例项目' }] }, '/applications': { applications: [{ id: 'app', name: '订单应用' }] }, '/environments': { environments: [{ id: 'test', name: '测试环境' }, { id: 'prod', name: '生产环境' }] }, '/image-registries':{image_registries:[{id:'sample-registry',name:'示例仓库',is_active:true,project_id:project}]}, '/deployment-plans': { deployment_plans: plans } })[path]
   else if (path.startsWith('/delivery-variables')) {
