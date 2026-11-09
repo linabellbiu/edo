@@ -235,3 +235,26 @@ test('仓库新建、编辑及应用内建表单共用的抽屉宽度不得超�
   assert.equal(directive(save, 'bind', 'loading'), 'saving')
   assert.match(directive(save, 'bind', 'disabled'), /testing/)
 })
+
+
+test('应用已关联流水线与添加草稿分离，取消添加不改动现有关联',()=>{
+ const {state,requests}=formHarness()
+ const app={id:'app',name:'orders',repository_id:'repo',poll_interval_seconds:60,workflows:[{id:'flow',name:'已有发布',is_active:true}]}
+ state.applications.value=[app];state.edit(app)
+ assert.equal(state.workflowPickerOpen.value,false)
+ assert.equal(state.selectedWorkflowTemplateID.value,'')
+ state.openWorkflowPicker();assert.equal(state.workflowPickerOpen.value,true)
+ state.selectedWorkflowTemplateID.value='shared'
+ state.cancelWorkflowPicker()
+ assert.equal(state.workflowPickerOpen.value,false);assert.equal(state.selectedWorkflowTemplateID.value,'')
+ assert.deepEqual(state.editingApplication.value.workflows.map(item=>item.id),['flow']);assert.deepEqual(requests,[])
+})
+
+test('重新编辑应用时不带入另一应用的添加面板和待选流水线',()=>{
+ const {state,requests}=formHarness()
+ const app={id:'app',name:'orders',repository_id:'repo',workflows:[]},next={...app,id:'another',name:'another'}
+ state.applications.value=[app,next];state.edit(app);state.openWorkflowPicker();state.selectedWorkflowTemplateID.value='shared'
+ state.edit(next)
+ assert.equal(state.workflowPickerOpen.value,false);assert.equal(state.selectedWorkflowTemplateID.value,'')
+ assert.equal(state.editingID.value,'another');assert.deepEqual(requests,[])
+})
