@@ -1,7 +1,6 @@
 import {validTagReference} from '@/utils/variableReference'
 import {readKubeYaml} from '@/utils/kubernetesYaml'
 export interface ComposeDeliveryForm {
- project_name:string
  compose_yaml:string
  image_tag:string
  tag_variable:string
@@ -11,10 +10,9 @@ export interface ComposeDeliveryForm {
  timeout_seconds:number
  services:Array<{service:string;build_plan_id:string;image_name:string}>
 }
-export function newComposeDeliveryForm():ComposeDeliveryForm{return {project_name:'',compose_yaml:'services:\n  app:\n    image: registry.example.com/my-app:${EDO_IMAGE_TAG}\n    restart: unless-stopped\n',image_tag:'${EDO_GIT_TAG}',tag_variable:'${EDO_IMAGE_TAG}',health_url:'',use_sudo:false,adopt_existing:true,timeout_seconds:600,services:[{service:'app',build_plan_id:'',image_name:'my-app'}]}}
+export function newComposeDeliveryForm():ComposeDeliveryForm{return {compose_yaml:'services:\n  app:\n    image: registry.example.com/my-app:${EDO_IMAGE_TAG}\n    restart: unless-stopped\n',image_tag:'${EDO_GIT_TAG}',tag_variable:'${EDO_IMAGE_TAG}',health_url:'',use_sudo:false,adopt_existing:true,timeout_seconds:600,services:[{service:'app',build_plan_id:'',image_name:'my-app'}]}}
 export function composeDeliveryErrors(form:ComposeDeliveryForm):Record<string,string>{
  const errors:Record<string,string>={}
- if(!/^[a-z0-9][a-z0-9_-]{0,127}$/.test(form.project_name.trim()))errors.project_name='请输入 Docker Compose 项目名，使用小写字母、数字、下划线或短横线'
  if(!form.image_tag.trim()||form.image_tag.length>512)errors.image_tag='请配置构建镜像 Tag，例如 ${EDO_GIT_TAG}'
  if(!validTagReference(form.tag_variable))errors.tag_variable='请使用变量引用，例如 ${EDO_IMAGE_TAG}；不能覆盖 EDO 内置变量'
  if(form.timeout_seconds<60||form.timeout_seconds>3600)errors.timeout_seconds='部署超时应为 60–3600 秒'

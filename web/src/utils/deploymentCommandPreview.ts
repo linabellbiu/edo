@@ -57,11 +57,11 @@ export function deploymentCommandPreview(plan: DeploymentCommandPlan | undefined
   const withConfiguration = (command: string, equivalent: boolean) => ({ command: prefix + command, equivalent, ...(warning ? { warning } : {}) })
   if (plan.kind === 'compose_stack') {
     const settings = config.compose
-    if (!settings?.project_name || !plan.deployment_target?.working_directory) return undefined
+    if (!settings?.resolved_project_name || !plan.deployment_target?.working_directory) return undefined
     const directory = plan.deployment_target.working_directory
-    const args = [settings.use_sudo ? 'sudo -n docker' : 'docker', 'compose', '--ansi never', '--project-name', quote(settings.project_name), '--project-directory', quote(directory)]
+    const args = [settings.use_sudo ? 'sudo -n docker' : 'docker', 'compose', '--ansi never', '--project-name', quote(settings.resolved_project_name), '--project-directory', quote(directory)]
     if (parameters ?? rawParameters) args.push(parameters ?? rawParameters)
-    args.push('--file', quote(`.edo/compose/${settings.project_name}/current.yml`), 'up -d --no-build --pull never --wait --wait-timeout', String((plan.timeout_seconds || 600) - 30))
+    args.push('--file', quote(`.edo/compose/${settings.resolved_project_name}/current.yml`), 'up -d --no-build --pull never --wait --wait-timeout', String((plan.timeout_seconds || 600) - 30))
     args.push(...(settings.services || []).map(quote))
     return withConfiguration(`cd ${quote(directory)} && ${args.join(' ')}`, false)
   }

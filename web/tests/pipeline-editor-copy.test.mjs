@@ -51,7 +51,7 @@ test('通知渠道读取权限提醒和已有渠道下的未配置通知提醒�
   const available = await render(notificationTemplate, notificationState({ activeNotificationChannels: [{ id: 'channel' }] }))
   assert.match(available, /当前任务尚未配置通知/)
 })
-test('部署任务删除 Compose 说明，显示 Docker Compose 名称且保留 docker compose 命令', async () => {
+test('部署任务自动管理项目名，保留 Docker Compose 名称和服务提示', async () => {
   const html = await render(composeTemplate, {
     error: '', kind: 'compose_stack', disabled: false,
     node: { config: { deployment_plan_id: 'plan' } }, tagReference:'${EDO_IMAGE_TAG}', validTagReference:()=>true,
@@ -60,7 +60,7 @@ test('部署任务删除 Compose 说明，显示 Docker Compose 名称且保留 
   assert.doesNotMatch(html, /使用 EDO 保存的|上游构建镜像自动匹配并固定摘要/)
   assert.match(html, /Docker Compose 部署配置/)
   assert.doesNotMatch(html, /查看和编辑 Docker Compose 部署方案/)
-  assert.match(html, /Docker Compose 项目名/)
+  assert.doesNotMatch(html, /Docker Compose 项目名/)
   assert.match(html, /镜像 Tag/)
   assert.match(html, /留空执行整个 compose.yaml 项目/)
 })

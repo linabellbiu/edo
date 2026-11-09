@@ -12,6 +12,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"edo/internal/artifact"
+	"edo/internal/composeconfig"
 	"edo/internal/deployment"
 	"edo/internal/envtext"
 	"edo/internal/model"
@@ -60,6 +61,9 @@ func parseComposeStack(value string) (map[string]any, error) {
 			return nil, ErrInvalidComposeDelivery
 		}
 	}
+	if err := composeconfig.ValidateProjectNameExpression(doc); err != nil {
+		return nil, fmt.Errorf("%w：%w", ErrInvalidComposeDelivery, err)
+	}
 	encoded, err := yaml.Marshal(doc)
 	if err != nil || len(encoded) > maximumComposeStackBytes {
 		return nil, ErrInvalidComposeDelivery
@@ -72,7 +76,7 @@ func validateComposeNode(config model.WorkflowNodeConfig) error {
 		return ErrInvalidComposeDelivery
 	}
 	settings := config.Compose
-	if !composeProjectPattern.MatchString(settings.ProjectName) || composeTagName(settings.TagVariable) == "" {
+	if settings.ProjectName != "" && !composeconfig.ValidProjectName(settings.ProjectName) || composeTagName(settings.TagVariable) == "" {
 		return ErrInvalidComposeDelivery
 	}
 	if (settings.EnvFile != "" && !validComposeFilePath(settings.EnvFile)) || !validComposeHealthURL(settings.HealthURL) {
@@ -210,6 +214,9 @@ func renderComposeStack(value string, config model.WorkflowNodeConfig, images ma
 	if err := validateComposeNode(config); err != nil {
 		return "", "", err
 	}
+	if !composeconfig.ValidProjectName(config.Compose.ProjectName) {
+		return "", "", composeconfig.ErrProjectName
+	}
 	doc, err := parseComposeStack(value)
 	if err != nil {
 		return "", "", err
@@ -276,6 +283,9 @@ func renderComposeStack(value string, config model.WorkflowNodeConfig, images ma
 
 func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *executionContext, approvedBy string) error {
 	failure := failureStateForRun(prepared.run)
+	if err := s.freezeComposeProject(ctx, prepared); err != nil {
+		return s.failDeploymentExecution(ctx, failure, "无法自动确定 Compose 项目名，请检查 compose.yaml 的 name 和部署变量", err)
+	}
 	if len(prepared.node.Config.ComposeImages) == 0 {
 		config, images, err := autoComposeImages(prepared.deploymentPlan.ComposeYAML, prepared.node.Config, prepared.composeCandidates, prepared.variables)
 		if err != nil {
@@ -354,7 +364,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 }
 
 func composeStackScript(content string, config model.WorkflowNodeConfig, directory string, timeout int, fileWrites string) (string, error) {
-	if validateComposeNode(config) != nil || len(content) > maximumComposeStackBytes || timeout < 60 {
+	if validateComposeNode(config) != nil || !composeconfig.ValidProjectName(config.Compose.ProjectName) || len(content) > maximumComposeStackBytes || timeout < 60 {
 		return "", ErrInvalidComposeDelivery
 	}
 	settings := config.Compose

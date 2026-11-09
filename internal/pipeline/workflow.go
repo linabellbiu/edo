@@ -560,6 +560,7 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 	node.Config.ConfigurationDirectory = ""
 	if node.Config.Compose != nil {
 		node.Config.Compose.EnvFile = ""
+		node.Config.Compose.ProjectName = ""
 	}
 	if len(node.Config.ConfigurationFiles) > 32 {
 		return ErrInvalidWorkflow

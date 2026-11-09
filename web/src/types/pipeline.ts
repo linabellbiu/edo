@@ -67,7 +67,7 @@ export interface WorkflowNodeConfig {
   artifact_node_id?: string
   artifact_node_ids?: string[]
   compose_images?: Array<{service:string;artifact_node_id:string}>
-  compose?: {project_name:string;services?:string[];env_file?:string;tag_variable:string;use_sudo:boolean;health_url?:string;adopt_existing:boolean}
+  compose?: {resolved_project_name?:string;services?:string[];env_file?:string;tag_variable:string;use_sudo:boolean;health_url?:string;adopt_existing:boolean}
   reports?: Array<{format:string;paths:string[];required:boolean;minimum_coverage?:number;fail_severity?:string}>
   check?: {tool:string;dialect?:string;path:string;config_path?:string}
   cache?: {key:string;lock_files:string[];paths:string[]}

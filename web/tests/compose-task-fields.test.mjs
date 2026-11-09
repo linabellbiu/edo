@@ -8,7 +8,7 @@ const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmedi
 function harness(get){
  const events=[],unmounts=[],requests=[]
  const auth=vue.reactive({user:{id:'operator',project_id:'one',permissions:['deployment_plan.read','workflow.update']},canAny(codes){return codes.some(code=>this.user.permissions.includes(code))}})
- const props=vue.reactive({node:{id:'deploy',type:'deploy',config:{deployment_plan_id:'plan',compose:{project_name:'team',tag_variable:'VERSION',use_sudo:false,adopt_existing:true}}},buildNodes:[{id:'build',name:'API'}],disabled:false})
+ const props=vue.reactive({node:{id:'deploy',type:'deploy',config:{deployment_plan_id:'plan',compose:{tag_variable:'VERSION',use_sudo:false,adopt_existing:true}}},buildNodes:[{id:'build',name:'API'}],disabled:false})
  const component=loadFrontend('../src/components/ComposeTaskFields.vue',{
   '@/utils/variableReference':loadFrontend('../src/utils/variableReference.ts'),
   vue:{...vue,onBeforeUnmount:fn=>unmounts.push(fn)},'@/stores/auth':{useAuthStore:()=>auth},'@/utils/kubernetesYaml':yamlModule,
@@ -29,8 +29,8 @@ test('部署任务仅选择启动服务，留空部署全部，镜像来源由�
 test('切换项目中止旧方案读取，禁用或撤权后不更新配置',async t=>{
  let resolve;const pending=new Promise(yes=>{resolve=yes});const h=harness(()=>pending);t.after(h.stop)
  h.auth.user.project_id='two';await settle();assert.equal(h.requests[0].options.signal.aborted,true)
- h.props.disabled=true;h.state.updateSettings({project_name:'forbidden'});assert.deepEqual(h.events,[])
- h.props.disabled=false;h.auth.user.permissions=[];h.state.updateSettings({project_name:'forbidden'});await settle()
+ h.props.disabled=true;h.state.updateSettings({use_sudo:true});assert.deepEqual(h.events,[])
+ h.props.disabled=false;h.auth.user.permissions=[];h.state.updateSettings({use_sudo:true});await settle()
  resolve({data:{deployment_plans:[{id:'plan',kind:'compose_stack'}]}});await settle();assert.equal(h.state.kind.value,'');assert.equal(h.state.deploymentPlan.value,undefined);assert.deepEqual(h.events,[])
 })
 

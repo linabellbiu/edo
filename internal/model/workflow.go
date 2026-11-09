@@ -119,15 +119,16 @@ type ComposeImageBinding struct {
 	ArtifactNodeID string `json:"artifact_node_id"`
 }
 
-// ComposeDeploymentSettings 由部署任务保存并进入运行快照；Compose 正文本身保存在部署方案中。
+// ComposeDeploymentSettings 的执行选项由部署方案保存，自动项目名只在本次运行中确定。
 type ComposeDeploymentSettings struct {
-	Services      []string `json:"services,omitempty"`
-	ProjectName   string   `json:"project_name"`
-	EnvFile       string   `json:"env_file,omitempty"`
-	TagVariable   string   `json:"tag_variable"`
-	UseSudo       bool     `json:"use_sudo"`
-	HealthURL     string   `json:"health_url,omitempty"`
-	AdoptExisting bool     `json:"adopt_existing"`
+	Services []string `json:"services,omitempty"`
+	// ProjectName 只记录本次运行自动解析的身份，不接受部署方案中的手填值。
+	ProjectName   string `json:"resolved_project_name,omitempty"`
+	EnvFile       string `json:"env_file,omitempty"`
+	TagVariable   string `json:"tag_variable"`
+	UseSudo       bool   `json:"use_sudo"`
+	HealthURL     string `json:"health_url,omitempty"`
+	AdoptExisting bool   `json:"adopt_existing"`
 }
 
 // WorkflowNotificationRule 定义单个任务结束后需要发送的通知。规则属于任务配置，

@@ -39,11 +39,14 @@ func TestComposeDeliveryHTTPUsesNormalPermissionsAndCreatesOnlyDraft(t *testing.
 		t.Fatal("应用创建失败")
 	}
 	path := "/api/v1/applications/" + appBody.App.ID + "/compose-delivery-workflows"
-	body := map[string]any{"project_name": "custom-project", "compose_yaml": "services:\n  web:\n    image: registry.example.com/web:${EDO_IMAGE_TAG}\n", "services": []map[string]string{{"service": "web", "build_plan_id": buildBody.Build.ID}}, "target": map[string]string{"name": "通用位置", "platform": "ssh", "environment_id": "httpapi-deployment-environment", "host_id": "httpapi-deployment-host", "working_directory": "/srv/custom"}}
+	body := map[string]any{"compose_yaml": "services:\n  web:\n    image: registry.example.com/web:${EDO_IMAGE_TAG}\n", "services": []map[string]string{{"service": "web", "build_plan_id": buildBody.Build.ID}}, "target": map[string]string{"name": "通用位置", "platform": "ssh", "environment_id": "httpapi-deployment-environment", "host_id": "httpapi-deployment-host", "working_directory": "/srv/custom"}}
 	created := performJSONRequest(t, router, http.MethodPost, path, body, admin)
 	var result pipeline.WorkflowResult
-	if created.Code != 201 || json.Unmarshal(created.Body.Bytes(), &result) != nil || !result.Valid || result.Workflow.IsActive {
-		t.Fatalf("未生成有效草稿: %d %s", created.Code, created.Body.String())
+	if created.Code != 201 || json.Unmarshal(created.Body.Bytes(), &result) != nil || result.Valid || result.Workflow.IsActive || len(result.Issues) != 1 || result.Issues[0].Code != "missing_deployment_registry" {
+		t.Fatalf("未生成待显式选择部署仓库的草稿: %d %s", created.Code, created.Body.String())
+	}
+	if settings := result.Workflow.Stages[1].Tasks[0].Config.Compose; settings == nil || settings.ProjectName != "" {
+		t.Fatal("草稿不应保存用户指定的项目名或伪造运行解析结果")
 	}
 	role := createRoleForHTTPTest(t, router, admin, "compose-no-build-create", []string{"application.update", "workflow.read", "deployment_plan.create", "deployment_plan.read", "build_plan.read", "cluster.read", "deployment.read"})
 	createUserForHTTPTest(t, router, admin, "compose_config_reader", appBody.App.DepartmentID, []string{role})

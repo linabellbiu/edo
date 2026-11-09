@@ -62,7 +62,7 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 			}
 		}
 	}
-	if settings == nil || len(plan.ComposeYAML) == 0 || len(plan.ComposeYAML) > 128*1024 {
+	if settings == nil || !composeconfig.ValidProjectName(settings.ProjectName) || len(plan.ComposeYAML) == 0 || len(plan.ComposeYAML) > 128*1024 {
 		return "", dockerengine.ComposeProjectScope{}, invalid
 	}
 	var document map[string]any

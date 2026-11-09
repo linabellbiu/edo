@@ -32,7 +32,6 @@ type ComposeServiceBuild struct {
 
 type ComposeDeliveryInput struct {
 	Name           string                 `json:"name"`
-	ProjectName    string                 `json:"project_name"`
 	ComposeYAML    string                 `json:"compose_yaml"`
 	EnvFile        string                 `json:"env_file"`
 	ImageTag       string                 `json:"image_tag"`
@@ -45,7 +44,6 @@ type ComposeDeliveryInput struct {
 	Target         deployment.TargetInput `json:"-"`
 }
 
-var composeProjectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,127}$`)
 var composeServicePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 func validComposeFilePath(value string) bool {
@@ -62,7 +60,6 @@ func validComposeHealthURL(value string) bool {
 
 func normalizeComposeDelivery(input ComposeDeliveryInput) (ComposeDeliveryInput, error) {
 	input.Name = strings.TrimSpace(input.Name)
-	input.ProjectName = strings.TrimSpace(input.ProjectName)
 	input.EnvFile = strings.TrimSpace(input.EnvFile)
 	input.ImageTag = strings.TrimSpace(input.ImageTag)
 	input.TagVariable = strings.TrimSpace(input.TagVariable)
@@ -76,7 +73,7 @@ func normalizeComposeDelivery(input ComposeDeliveryInput) (ComposeDeliveryInput,
 	if input.TagVariable == "" {
 		input.TagVariable = "${EDO_IMAGE_TAG}"
 	}
-	if (input.Name != "" && !validResourceName(input.Name)) || !composeProjectPattern.MatchString(input.ProjectName) || input.EnvFile != "" || (input.Target.WorkingDirectory != "" && (!path.IsAbs(input.Target.WorkingDirectory) || !validComposeFilePath(input.Target.WorkingDirectory))) || len(input.Services) == 0 || len(input.Services) > 32 || input.TimeoutSeconds < 60 || input.TimeoutSeconds > 3600 || len(input.ImageTag) > 512 || !validComposeHealthURL(input.HealthURL) || composeTagName(input.TagVariable) == "" {
+	if (input.Name != "" && !validResourceName(input.Name)) || input.EnvFile != "" || (input.Target.WorkingDirectory != "" && (!path.IsAbs(input.Target.WorkingDirectory) || !validComposeFilePath(input.Target.WorkingDirectory))) || len(input.Services) == 0 || len(input.Services) > 32 || input.TimeoutSeconds < 60 || input.TimeoutSeconds > 3600 || len(input.ImageTag) > 512 || !validComposeHealthURL(input.HealthURL) || composeTagName(input.TagVariable) == "" {
 		return input, ErrInvalidComposeDelivery
 	}
 	doc, err := parseComposeStack(input.ComposeYAML)
@@ -185,7 +182,7 @@ func (s *Service) CreateComposeDeliveryWorkflow(ctx context.Context, application
 			return ErrInvalidComposeDelivery
 		}
 		now := time.Now().UTC()
-		settings := &model.ComposeDeploymentSettings{ProjectName: input.ProjectName, EnvFile: input.EnvFile, TagVariable: input.TagVariable, UseSudo: input.UseSudo, HealthURL: input.HealthURL, AdoptExisting: input.AdoptExisting}
+		settings := &model.ComposeDeploymentSettings{EnvFile: input.EnvFile, TagVariable: input.TagVariable, UseSudo: input.UseSudo, HealthURL: input.HealthURL, AdoptExisting: input.AdoptExisting}
 		workflow := model.ReleaseWorkflow{ID: id, ApplicationID: app.ID, Name: name, SchemaVersion: model.WorkflowSchemaVersion, Revision: 1, IsActive: false, Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger, Name: "代码源", Config: model.WorkflowNodeConfig{Branch: "*", Events: []string{"manual"}, TagPattern: defaultWorkflowTagPattern}}, Stages: []model.WorkflowStage{{ID: "images", Name: "构建与推送镜像", Tasks: nodes}, {ID: "deploy", Name: "部署", Tasks: []model.WorkflowNode{{ID: "deploy", Type: model.WorkflowNodeDeploy, Name: "Compose 部署", Config: model.WorkflowNodeConfig{DeploymentPlanID: plan.ID, ArtifactNodeID: dependencies[0], ArtifactNodeIDs: dependencies, ComposeImages: bindings, Compose: settings}}}}}, CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now}
 		if err := tx.Create(&workflow).Error; err != nil {
 			return err

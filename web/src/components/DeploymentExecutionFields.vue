@@ -40,7 +40,7 @@ const sourceOptions = computed(() => [
 function change(patch: Partial<DeploymentExecutionConfig>) { if (canEdit.value && auth.user?.project_id === localStorage.getItem('edo.project') && auth.canAny([permission.value])) emit('update:modelValue', {...props.modelValue,...patch}) }
 function selectSource(value: string) { change({artifact_build_plan_id:value.startsWith('plan:') ? value.slice(5) : undefined,artifact_node_id:value.startsWith('node:') ? value.slice(5) : undefined}) }
 function updateHealthURL(value:string) {
-  change({compose:{...(props.modelValue.compose || {project_name:'',tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}),health_url:value}})
+  change({compose:{...(props.modelValue.compose || {tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}),health_url:value}})
 }
 function updateTimeout(value:number) { if(canEdit.value && auth.user?.project_id === localStorage.getItem('edo.project') && auth.canAny([permission.value]))emit('update:timeoutSeconds',value) }
 </script>

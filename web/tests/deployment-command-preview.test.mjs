@@ -8,7 +8,7 @@ const argument=path=>'"${EDO_APP_CONFIG_PATH:?缺少应用配置目录}/"\''+pat
 
 test('Compose 命令包含应用配置路径、项目、文件和等待参数，旧服务器 ENV 字段不进入新命令',()=>{
  const plan={id:'plan',kind:'compose_stack',timeout_seconds:600,deployment_target:{working_directory:'/srv/my app'}}
- const config={configuration_files:references('.prod.env','config/override.env'),compose:{project_name:'demo',env_file:'/srv/base.env',use_sudo:false,services:[]},deployment_parameters:'--env-file .prod.env --env-file config/override.env'}
+ const config={configuration_files:references('.prod.env','config/override.env'),compose:{resolved_project_name:'demo',env_file:'/srv/base.env',use_sudo:false,services:[]},deployment_parameters:'--env-file .prod.env --env-file config/override.env'}
  const preview=deploymentCommandPreview(plan,config,[],'订单应用')
  assert.equal(preview.command,'export EDO_APP_CONFIG_PATH="${HOME:?无法取得目标用户目录}/edo/"\'订单应用\'"/config"\n'+"cd '/srv/my app' && docker compose --ansi never --project-name demo --project-directory '/srv/my app' --env-file "+argument('.prod.env')+' --env-file '+argument('config/override.env')+' --file .edo/compose/demo/current.yml up -d --no-build --pull never --wait --wait-timeout 570')
  assert.ok(!preview.command.includes('/srv/base.env'))
@@ -48,7 +48,7 @@ test('单服务 Compose 参数支持内置配置路径，未知路径和变量�
 
 test('不选配置时保留原命令，不生成配置目录或读取旧服务器 ENV',()=>{
  const plan={id:'plan',kind:'compose_stack',deployment_target:{working_directory:'/srv/app'}}
- const preview=deploymentCommandPreview(plan,{compose:{project_name:'demo',env_file:'/srv/old.env'}},[])
+ const preview=deploymentCommandPreview(plan,{compose:{resolved_project_name:'demo',env_file:'/srv/old.env'}},[])
  assert.ok(!preview.command.includes('EDO_APP_CONFIG_PATH'));assert.ok(!preview.command.includes('--env-file'))
  assert.ok(preview.command.endsWith('--wait-timeout 570'))
 })
