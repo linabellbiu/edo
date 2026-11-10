@@ -34,7 +34,8 @@ func normalizeInlineBuild(node *model.WorkflowNode) error {
 	if p.Kind == model.BuildPlanDockerfile && (!dockerengine.ValidScriptContainerRelativePath(p.ContextPath) || !dockerengine.ValidScriptContainerRelativePath(p.DockerfilePath) || len(node.Config.BuildOutputs) > 0) {
 		return fail()
 	}
-	n, err := normalizeBuildPlanInput(BuildPlanInput{Name: node.Name, Kind: p.Kind, Script: p.Script, DockerfilePath: p.DockerfilePath, ContextPath: p.ContextPath, WorkingDirectory: p.WorkingDirectory, ArtifactPath: p.ArtifactPath, RuntimeImage: p.RuntimeImage, ImageRegistryID: p.ImageRegistryID, TargetStage: p.TargetStage, Pull: &p.Pull, CacheEnabled: &p.CacheEnabled, BuildArgs: p.BuildArgs, EnvironmentVariables: p.EnvironmentVariables, TimeoutSeconds: p.TimeoutSeconds})
+	// 校验实际执行值，但保留内联方案自身的默认阶段，不把任务覆盖值写回模板。
+	n, err := normalizeBuildPlanInput(BuildPlanInput{Name: node.Name, Kind: p.Kind, Script: p.Script, DockerfilePath: p.DockerfilePath, ContextPath: p.ContextPath, WorkingDirectory: p.WorkingDirectory, ArtifactPath: p.ArtifactPath, RuntimeImage: p.RuntimeImage, ImageRegistryID: p.ImageRegistryID, TargetStage: workflowBuildTarget(node.Config, *p), Pull: &p.Pull, CacheEnabled: &p.CacheEnabled, BuildArgs: p.BuildArgs, EnvironmentVariables: p.EnvironmentVariables, TimeoutSeconds: p.TimeoutSeconds})
 	if err != nil {
 		if errors.Is(err, ErrInvalidBuildTarget) {
 			slog.Warn("流水线构建目标阶段无效", "operation", "workflow_inline_build_validate", "node_id", node.ID, "err", err)
@@ -44,6 +45,9 @@ func normalizeInlineBuild(node *model.WorkflowNode) error {
 	}
 	if p.Kind == model.BuildPlanScript && len(shellcheck.Check(n.Script)) > 0 {
 		return fail()
+	}
+	if p.Kind == model.BuildPlanDockerfile {
+		n.TargetStage = strings.TrimSpace(p.TargetStage)
 	}
 	names := map[string]bool{}
 	for i := range node.Config.BuildOutputs {

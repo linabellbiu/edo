@@ -172,15 +172,15 @@ test('真实 Form 标签保留镜像 Tag 问号按钮及目录说明，不能被
 })
 
 
-test('镜像名称与单 target 位于高级配置，库方案 target 只读且保留修改入口',async()=>{
+test('镜像名称与单 target 位于高级配置，库方案 target 可按任务编辑并保留原方案修改入口',async()=>{
  const find=node=>node.tag==='section'&&node.props?.some(prop=>prop.name==='class'&&prop.value?.content==='build-advanced-fields')?node:node.children?.map(find).find(Boolean)
  const section=find(baseParse(editorTemplate)).loc.source
  for(const inline of [false,true])for(const kind of ['dockerfile','script'])for(const canEdit of [false,true]){
-  const html=await render(section,{selectedTask:{},selectedNode:{type:'build',config:{image_name:'custom',...(inline?{inline_build:{kind,target_stage:'runtime'}}:{build_plan_id:'shared'})}},selectedBuildPlan:{kind,target_stage:'runtime'},selectedLibraryBuildPlan:inline?undefined:{id:'shared'},canEdit,canModifyBuildPlan:!inline&&canEdit,editorApplication:{name:'demo_app'},resourceViewHref:()=>'/build-plans?plan=shared',updateSelectedBuildTarget(){},updateSelectedNode(){},modifyLinkedBuildPlan(){}},{BuildPlanAdvancedFields:advancedComponent})
+  const html=await render(section,{selectedTask:{},selectedNode:{type:'build',config:{image_name:'custom',...(inline?{inline_build:{kind,target_stage:'runtime'}}:{build_plan_id:'shared'})}},selectedBuildPlan:{kind,target_stage:'runtime'},selectedBuildTarget:'runtime',selectedLibraryBuildPlan:inline?undefined:{id:'shared'},canEdit,canModifyBuildPlan:!inline&&canEdit,editorApplication:{name:'demo_app'},resourceViewHref:()=>'/build-plans?plan=shared',updateSelectedBuildTarget(){},updateSelectedNode(){},modifyLinkedBuildPlan(){}},{BuildPlanAdvancedFields:advancedComponent})
   if(kind==='script'){assert.doesNotMatch(html,/镜像名称|BuildPlanAdvancedFields/i);continue}
   assert.match(html,/label="镜像名称"/);assert.match(html,/value="custom"/)
   assert.match(html,/value="runtime"/)
-  assert.equal(/disabled[^>]*aria-label="Docker target"/.test(html),!canEdit||!inline)
+  assert.equal(/disabled[^>]*aria-label="Docker target"/.test(html),!canEdit)
   assert.equal(html.includes('aria-label="修改构建方案"'),!inline&&canEdit)
   assert.doesNotMatch(html,/镜像 Tag/)
  }

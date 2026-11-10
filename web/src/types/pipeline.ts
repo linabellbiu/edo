@@ -54,6 +54,7 @@ export interface WorkflowNodeConfig {
   build_plan_id?: string
   image_name?: string
   image_tag?: string
+  target_stage?: string
   deployment_plan_id?: string
   script?: string
   runtime_image?: string

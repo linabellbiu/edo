@@ -322,27 +322,43 @@ test('原构建方案停用或无权查看时保留关联，不自动改成自�
 })
 
 
-test('高级 target 仅修改当前内联方案，跨来源保存与重新打开保留配置',async t=>{
- const h=await linkedBuildHarness();t.after(h.stop)
- h.state.updateSelectedBuildTarget('forbidden')
- assert.equal(h.state.selectedLibraryBuildPlan.value.target_stage,undefined)
+for(const templateTarget of [undefined,'runtime'])test(`target 继承模板 ${templateTarget??'空值'}，库方案与内联任务均可覆盖且清空不回退`,async t=>{
+ const plan={...linkedBuildPlan,...(templateTarget===undefined?{}:{target_stage:templateTarget})}
+ const h=await linkedBuildHarness({get:r=>r.path==='/build-plans'?{data:{build_plans:[plan]}}:undefined});t.after(h.stop)
+ assert.equal(h.state.selectedBuildTarget.value,templateTarget??'')
+ assert.equal(h.state.selectedNode.value.config.target_stage,undefined)
+ h.state.updateSelectedBuildTarget('builder')
+ assert.equal(h.state.selectedBuildTarget.value,'builder')
+ assert.equal(h.state.selectedLibraryBuildPlan.value.target_stage,templateTarget)
  assert.equal(h.state.selectedNode.value.config.inline_build,undefined)
- h.state.changeBuildSource('inline')
- h.state.updateSelectedBuildTarget('runtime')
- h.state.updateSelectedNode({},{image_name:'custom-image'})
- h.state.changeBuildSource('plan');h.state.changeBuildSource('inline')
- assert.equal(h.state.selectedNode.value.config.inline_build.target_stage,'runtime')
- assert.equal(h.state.selectedNode.value.config.image_name,'custom-image')
+ h.state.changeBuildSource('inline');assert.equal(h.state.selectedBuildTarget.value,'builder')
+ h.state.changeBuildSource('plan');assert.equal(h.state.selectedBuildTarget.value,'builder')
+ h.state.updateSelectedBuildTarget('')
+ assert.equal(h.state.selectedBuildTarget.value,'')
  await h.state.save(false)
  const saved=writes(h).find(r=>r.method==='put').body.stages[0].tasks[0].config
- assert.equal(saved.inline_build.target_stage,'runtime')
- assert.equal(saved.image_name,'custom-image')
+ assert.equal(saved.target_stage,'')
+ assert.equal(saved.build_plan_id,'shared-build')
+ assert.equal(saved.inline_build,undefined)
+ assert.equal(writes(h).some(r=>r.path.startsWith('/build-plans')),false)
+ // 重新加载已保存任务，明确空值不能被非空模板覆盖。
+ h.state.stages.value=[{id:'build-stage',name:'构建',tasks:[{id:'build',name:'镜像构建',type:'build',config:saved}]}]
+ h.state.selectNode('build');assert.equal(h.state.selectedBuildTarget.value,'')
  h.auth.user.permissions=['workflow.read','build_plan.read'];await settle()
  h.state.stages.value=[{id:'build-stage',name:'构建',tasks:[{id:'build',name:'镜像构建',type:'build',config:saved}]}]
- h.state.selectNode('build')
- h.state.updateSelectedBuildTarget('forbidden')
- assert.equal(h.state.selectedNode.value.config.inline_build.target_stage,'runtime')
- assert.equal(writes(h).some(r=>r.path.startsWith('/build-plans')),false)
+ h.state.selectNode('build');h.state.updateSelectedBuildTarget('forbidden')
+ assert.equal(h.state.selectedNode.value.config.target_stage,'')
+})
+
+test('没有任务覆盖值时显示当前模板值，切换模板跟随新值，显式覆盖后保持任务优先',async t=>{
+ const h=await linkedBuildHarness({get:r=>r.path==='/build-plans'?{data:{build_plans:[{...linkedBuildPlan,target_stage:'runtime'},{...linkedBuildPlan,id:'second',target_stage:'worker'}]}}:undefined});t.after(h.stop)
+ assert.equal(h.state.selectedBuildTarget.value,'runtime')
+ h.state.unlockBuildPlanSelection();h.state.changeLibraryBuildPlan('second')
+ assert.equal(h.state.selectedBuildTarget.value,'worker')
+ h.state.updateSelectedBuildTarget('custom')
+ h.state.unlockBuildPlanSelection();h.state.changeLibraryBuildPlan('shared-build')
+ assert.equal(h.state.selectedBuildTarget.value,'custom')
+ assert.equal(h.state.selectedLibraryBuildPlan.value.target_stage,'runtime')
 })
 
 test('无效 target 即使切回常规配置也阻止保存并定位高级配置，修正后可以保存',async t=>{
@@ -353,9 +369,9 @@ test('无效 target 即使切回常规配置也阻止保存并定位高级配置
  await h.state.save(false)
  assert.equal(writes(h).length,0)
  assert.equal(h.state.propertyTab.value,'advanced')
- assert.equal(h.state.selectedNode.value.config.inline_build.target_stage,'web,api')
+ assert.equal(h.state.selectedNode.value.config.target_stage,'web,api')
  assert.match(h.notifications.at(-1).text,/只能填写一个阶段名/)
  h.state.updateSelectedBuildTarget('')
  await h.state.save(false)
- assert.equal(writes(h).find(r=>r.method==='put').body.stages[0].tasks[0].config.inline_build.target_stage,'')
+ assert.equal(writes(h).find(r=>r.method==='put').body.stages[0].tasks[0].config.target_stage,'')
 })

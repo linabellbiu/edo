@@ -540,6 +540,14 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 
 func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 	node.Config.ExecutionHostID = ""
+	if node.Config.TargetStage != nil {
+		target := strings.TrimSpace(*node.Config.TargetStage)
+		if node.Type != model.WorkflowNodeBuild || !validBuildTarget(target) {
+			slog.Warn("流水线任务构建阶段覆盖值无效", "operation", "workflow_build_target_override", "node_id", node.ID, "err", ErrInvalidBuildTarget)
+			return ErrInvalidBuildTarget
+		}
+		node.Config.TargetStage = &target
+	}
 	if err := normalizeTaskRuntimeServices(node); err != nil {
 		slog.Warn("自定义部署服务关联无效", "operation", "workflow_runtime_service_validate", "node_id", node.ID, "err", err)
 		return err
@@ -928,7 +936,7 @@ func (s *Service) validateWorkflow(
 			issues = append(issues, validateWorkflowNotificationRules(node, stage.ID, activeNotificationChannels)...)
 			switch node.Type {
 			case model.WorkflowNodeBuild:
-				if plan, ok := activeBuildPlans[node.Config.BuildPlanID]; ok && plan.Kind == model.BuildPlanDockerfile && !validBuildTarget(plan.TargetStage) {
+				if plan, ok := activeBuildPlans[node.Config.BuildPlanID]; ok && plan.Kind == model.BuildPlanDockerfile && !validBuildTarget(workflowBuildTarget(node.Config, plan)) {
 					s.logger.WarnContext(ctx, "构建目标阶段无效", "operation", "workflow_build_target_validate", "node_id", node.ID, "build_plan_id", plan.ID, "err", ErrInvalidBuildTarget)
 					issues = append(issues, WorkflowIssue{Code: "invalid_build_target", Message: ErrInvalidBuildTarget.Error(), NodeID: node.ID, StageID: stage.ID})
 				}
@@ -1458,6 +1466,9 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 					return nil, ErrInvalidWorkflow
 				}
+				if plan.Kind == model.BuildPlanDockerfile {
+					plan.TargetStage = workflowBuildTarget(current.Config, plan)
+				}
 				if plan.Kind == model.BuildPlanDockerfile && !validBuildTarget(plan.TargetStage) {
 					s.logger.WarnContext(ctx, "构建目标阶段无效", "operation", "workflow_build_target_resolve", "node_id", current.ID, "build_plan_id", plan.ID, "err", ErrInvalidBuildTarget)
 					return nil, ErrInvalidBuildTarget
@@ -1794,6 +1805,13 @@ func deploymentTargetArchitecture(ctx context.Context, database *gorm.DB, hostID
 		return "", errors.New("部署目标主机尚未检测架构")
 	}
 	return architecture, nil
+}
+
+func workflowBuildTarget(config model.WorkflowNodeConfig, plan model.BuildPlan) string {
+	if config.TargetStage != nil {
+		return strings.TrimSpace(*config.TargetStage)
+	}
+	return strings.TrimSpace(plan.TargetStage)
 }
 
 func buildPlanSnapshot(plan model.BuildPlan) workflowBuildPlanSnapshot {

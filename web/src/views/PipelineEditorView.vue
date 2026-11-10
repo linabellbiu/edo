@@ -225,6 +225,7 @@ const canCreateBuildPlan = computed(() => scopeCan('build_plan.create'))
 const canReadBuildPlan = computed(() => scopeCan('build_plan.read'))
 const selectedLibraryBuildPlan = computed(()=>canReadBuildPlan.value&&selectedNode.value?.type==='build'&&buildSource(selectedNode.value)==='plan'?buildPlans.value.find(plan=>plan.id===selectedNode.value?.config.build_plan_id):undefined)
 const selectedBuildPlan=computed(()=>selectedNode.value?.config.inline_build||selectedLibraryBuildPlan.value)
+const selectedBuildTarget=computed(()=>selectedNode.value?.config.target_stage??selectedBuildPlan.value?.target_stage??'')
 const canModifyBuildPlan=computed(()=>!!selectedLibraryBuildPlan.value&&scopeCan('build_plan.update'))
 const selectedBuildPlanOptions=computed(()=>{
  const options=canReadBuildPlan.value?buildPlanOptions.value:[]
@@ -657,7 +658,7 @@ function payload(activate: boolean) {
 function firstEnvironmentVariableError() {
   for (const task of stages.value.flatMap(stage => stage.tasks)) {
     const plan = task.config.inline_build || buildPlans.value.find(plan => plan.id === task.config.build_plan_id)
-    const targetError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerTargetError(plan.target_stage) : ''
+    const targetError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerTargetError(task.config.target_stage ?? plan.target_stage) : ''
     const error = targetError || environmentVariableErrors[task.id] || buildFieldErrors[task.id]
     if (error) return { task, error, tab: targetError || !buildFieldErrors[task.id] ? 'advanced' as const : 'common' as const }
   }
@@ -823,8 +824,8 @@ function updateSelectedNode(update: Partial<WorkflowNode>, config?: Partial<Work
 
 function updateSelectedBuildTarget(value: string) {
   const node = selectedNode.value
-  if (!canEdit.value || node?.type !== 'build' || node.config.inline_build?.kind !== 'dockerfile') return
-  updateSelectedNode({}, { inline_build: { ...node.config.inline_build, target_stage: value } })
+  if (!canEdit.value || node?.type !== 'build' || selectedBuildPlan.value?.kind !== 'dockerfile') return
+  updateSelectedNode({}, { target_stage: value })
 }
 
 function appendNotificationRule(
@@ -1897,7 +1898,7 @@ onBeforeRouteLeave(async () => {
             <section v-if="selectedTask&&selectedNode.type==='build'&&selectedBuildPlan?.kind==='dockerfile'" class="build-advanced-fields">
               <h3 class="task-section-heading">高级配置</h3>
               <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像名称"><a-input :value="selectedNode.config.image_name" :disabled="!canEdit" :placeholder="editorApplication?.name||'留空使用应用名'" aria-label="镜像名称" @update:value="updateSelectedNode({},{image_name:String($event||'')})"/></a-form-item>
-              <BuildPlanAdvancedFields :target="selectedBuildPlan.target_stage" :disabled="!canEdit||!selectedNode.config.inline_build" @change="updateSelectedBuildTarget"/>
+              <BuildPlanAdvancedFields :target="selectedBuildTarget" :disabled="!canEdit" @change="updateSelectedBuildTarget"/>
               <a-button v-if="canModifyBuildPlan" type="link" :href="resourceViewHref('/build-plans','plan',selectedLibraryBuildPlan!.id)+'&amp;edit=1'" aria-label="修改构建方案" @click.prevent="modifyLinkedBuildPlan">修改构建方案</a-button>
             </section>
             <PipelineTaskControls v-if="selectedTask && !['build','deploy'].includes(selectedNode.type)" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="(selectedNode.config.inline_build||activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id))?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
