@@ -24,3 +24,7 @@
 - `internal/sshdeploy/service_test.go` 和 `internal/deployment/compose_runtime_test.go`：移除组关联后仍用冻结主机，继续拒绝能力失效和撤权。
 
 MySQL 使用本次临时实例和每用例独立数据库。前端回归使用 Node 25.8.0 的 `--no-experimental-webstorage`，避免该版本默认的无存储文件全局对象干扰已有测试夹具；产品浏览器存储逻辑未改变。
+
+最终记录：前端完整 1,821 项通过，类型检查与生产构建通过。`pipeline`、`deployment`、`environment`、`sshdeploy` 完整竞争检测回归通过；最终补充用例分别在 SQLite/MySQL 通过。相关主机、部署、环境和流水线 HTTP 用例通过（SQLite，`-race`）；主机选择与关联权限 HTTP 用例也在 MySQL 通过。
+
+完整 HTTP 套件曾发现旧“移出已关联主机应返回 409”断言，已改为确认移组后正常保存仍保留同一主机 UUID，并继续断言无效主机、空选择被拒绝；修复后原失败用例在 SQLite/MySQL 通过。该次完整套件另外达到本机 10 分钟总超时，未跑完，保留此限制，不声明完整 HTTP 套件全部通过。

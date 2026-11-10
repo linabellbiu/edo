@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"reflect"
 	"testing"
 
 	environmentmanager "edo/internal/environment"
@@ -54,7 +55,17 @@ func TestDeploymentHostSelectionHTTP(t *testing.T) {
 	if len(stored["host_ids"].([]any)) != 2 {
 		t.Fatal("HTTP 保存丢失主机选择")
 	}
-	f.request(t, http.MethodPut, "/api/v1/environments/"+group+"/hosts", map[string]any{"host_ids": []string{"httpapi-deployment-host"}}, http.StatusConflict, "environment_deployment_target_invalid")
+	f.request(t, http.MethodPut, "/api/v1/environments/"+group+"/hosts", map[string]any{"host_ids": []string{"httpapi-deployment-host"}}, http.StatusOK)
+	newGroup := operationsID(t, f.request(t, http.MethodPost, "/api/v1/environments", map[string]any{"name": "移动后的组", "host_ids": []string{"second-host"}}, http.StatusCreated), "environment")
+	if newGroup == group {
+		t.Fatal("主机应该移动到另一组")
+	}
+	reopened := operationsObject(t, f.request(t, http.MethodPut, "/api/v1/deployment-plans/"+id, payload, http.StatusOK), "deployment_plan")["deployment_target"].(map[string]any)
+	if !reflect.DeepEqual(reopened["host_ids"], stored["host_ids"]) {
+		t.Fatal("移组后正常保存不得替换或丢失已选主机")
+	}
+	target["host_ids"] = []string{"missing-host"}
+	f.request(t, http.MethodPut, "/api/v1/deployment-plans/"+id, payload, http.StatusBadRequest, "environment_target_unavailable")
 	target["host_ids"] = []string{}
 	f.request(t, http.MethodPut, "/api/v1/deployment-plans/"+id, payload, http.StatusBadRequest, "invalid_deployment_target")
 	var retained model.DeploymentTarget
