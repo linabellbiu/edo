@@ -13,13 +13,13 @@ let controller:AbortController|undefined
 const selectedProject=ref(readSelectedProject())
 function readSelectedProject(){return typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||''}
 function project(){const selected=readSelectedProject();return selected&&selected===auth.user?.project_id?selected:''}
-function context(){return JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,[...(auth.user?.permissions||[])].sort(),readSelectedProject()])}
+function context(){return JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,[...(auth.user?.permissions||[])].sort(),readSelectedProject(),props.node.type])}
 const canEdit=computed(()=>!props.disabled&&!!selectedProject.value&&!!project()&&auth.canAny(['workflow.update']))
 function change(config:Partial<WorkflowNodeConfig>){if(!props.disabled&&project()&&auth.canAny(['workflow.update']))emit('change',config)}
 async function load(){
  const request=++revision,identity=context(),projectID=project();controller?.abort();controller=new AbortController();const signal=controller.signal
  variables.value=[];databases.value=[];environments.value=[];error.value=''
- if(!projectID||!auth.canAny(['workflow.read']))return
+ if(!projectID||!auth.canAny(['workflow.read'])||props.node.type==='build')return
  const options={headers:{'X-EDO-Project-ID':projectID},signal}
  try{
   const [v,d,e]=await Promise.all([auth.canAny(['delivery_variable.read'])?client.get('/delivery-variables',options):Promise.resolve({data:{variables:[]}}),auth.canAny(['application_database.read'])?client.get('/application-databases',options):Promise.resolve({data:{databases:[]}}),auth.canAny(['deployment.read'])?client.get('/environments',options):Promise.resolve({data:{environments:[]}})])
@@ -49,7 +49,6 @@ function updateCache(update:Record<string,unknown>){change({cache:{key:'dependen
  <section class="task-controls">
   <template v-if="node.type==='build'&&!scriptBuild">
    <a-form-item label="镜像名称" help="相对于构建方案镜像仓库的命名空间；留空使用应用名。"><a-input :value="node.config.image_name" :disabled="!canEdit" placeholder="例如 my-service" @update:value="change({image_name:String($event||'')})"/></a-form-item>
-   <a-form-item label="镜像 Tag" help="可用 ${EDO_GIT_TAG} 引用本次 Git Tag，或 ${EDO_COMMIT_SHA} 引用提交；留空自动生成唯一版本。"><a-input :value="node.config.image_tag" :disabled="!canEdit" placeholder="${EDO_GIT_TAG}" @update:value="change({image_tag:String($event||'')})"/></a-form-item>
   </template>
   <a-alert v-if="error" type="warning" :message="error" show-icon/>
   <template v-if="node.type==='shell'">
@@ -67,10 +66,10 @@ function updateCache(update:Record<string,unknown>){change({cache:{key:'dependen
    </template>
    <a-form-item v-if="tool!=='script'" label="超时（秒）"><a-input-number :value="node.config.timeout_seconds||600" :min="30" :max="7200" :disabled="!canEdit" @update:value="change({timeout_seconds:Number($event||600)})"/></a-form-item>
   </template>
-  <a-form-item v-if="['shell','build','deploy'].includes(node.type)&&!node.config.migration" :label="node.type==='deploy'?'额外引用共享变量与密钥':'引用当前项目变量与密钥'" :extra="node.type==='deploy'?'应用环境配置自动使用，无需在此重复选择。':undefined">
+  <a-form-item v-if="['shell','deploy'].includes(node.type)&&!node.config.migration" :label="node.type==='deploy'?'额外引用共享变量与密钥':'引用当前项目变量与密钥'" :extra="node.type==='deploy'?'应用环境配置自动使用，无需在此重复选择。':undefined">
    <a-select mode="tags" :value="node.config.variable_names||[]" :disabled="!canEdit" :options="variableOptions" placeholder="选择或输入变量名称" @update:value="change({variable_names:$event as string[]})"/>
   </a-form-item>
-  <a-form-item v-if="['shell','build'].includes(node.type)&&!node.config.migration" label="变量适用主机组"><a-select allow-clear :value="node.config.variable_environment_id||undefined" :disabled="!canEdit" :options="environments.map(v=>({value:v.id,label:v.name}))" @update:value="change({variable_environment_id:String($event||'')})"/></a-form-item>
+  <a-form-item v-if="node.type==='shell'&&!node.config.migration" label="变量适用主机组"><a-select allow-clear :value="node.config.variable_environment_id||undefined" :disabled="!canEdit" :options="environments.map(v=>({value:v.id,label:v.name}))" @update:value="change({variable_environment_id:String($event||'')})"/></a-form-item>
   <ComposeTaskFields v-if="node.type==='deploy'" :node="node" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :disabled="!canEdit" @change="change"/>
   <a-form-item v-if="node.type==='deploy'&&!node.config.compose&&!node.config.deployment_script&&node.config.deployment_input_version!==1" label="构建制品来源"><a-select allow-clear :value="node.config.artifact_node_id||undefined" :disabled="!canEdit" placeholder="上游只有一个构建时自动选择" :options="buildNodes.map(v=>({value:v.id,label:v.name}))" @update:value="change({artifact_node_id:String($event||'')})"/></a-form-item>
   <a-form-item v-if="node.type==='build'&&scriptBuild" label="汇总的上游构建" help="用于多镜像等制品汇总；所选构建会沿用本次下游主机的目标架构。"><a-select mode="multiple" :value="node.config.artifact_node_ids||[]" :disabled="!canEdit" :options="buildNodes.filter(v=>v.id!==node.id).map(v=>({value:v.id,label:v.name}))" @update:value="change({artifact_node_ids:$event as string[]})"/></a-form-item>

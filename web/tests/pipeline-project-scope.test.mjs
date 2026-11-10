@@ -221,3 +221,29 @@ test('只有流水线查看权限时可从统一目录打开应用流水线，�
  assert.equal(h.state.workflow.value.id,'flow-project-a');assert.ok(h.requests.some(r=>r.path==='/workflows'));assert.equal(h.requests.some(r=>r.path==='/applications'),false)
  assert.equal(h.state.canEdit.value,false)
 })
+
+test('构建任务不为已移除的变量表单读取资源，也不清空已有引用',async t=>{
+ const h=await harness({task:true});t.after(h.stop)
+ h.props.node={id:'build',type:'build',name:'镜像构建',config:{variable_names:['KEEP_ME'],variable_environment_id:'saved-group',image_tag:'old-tag'}}
+ await settle();h.requests.length=0
+ await h.state.load()
+ assert.deepEqual(h.requests,[])
+ assert.deepEqual(h.state.variables.value,[])
+ assert.deepEqual(h.state.environments.value,[])
+ assert.deepEqual(h.props.node.config.variable_names,['KEEP_ME'])
+ assert.equal(h.props.node.config.variable_environment_id,'saved-group')
+})
+
+test('从常规配置修改镜像 Tag 保存时保留原项目变量与主机组引用',async t=>{
+ for(const inline of [false,true]){
+  const config={image_tag:'old-tag',variable_names:['KEEP_ME'],variable_environment_id:'saved-group',...(inline?{inline_build:{kind:'dockerfile',name:'内联构建',dockerfile_path:'Dockerfile',context_path:'.'}}:{build_plan_id:'build-project-a'})}
+  const workflow=graph('project-a',{stages:[{id:'build-stage',name:'构建',tasks:[{id:'build',name:'镜像构建',type:'build',config}]}]})
+  const h=await harness({get:r=>r.path==='/applications/app-project-a/workflows/flow-project-a'?{data:{workflow,issues:[]}}:undefined});t.after(h.stop)
+  h.state.selectNode('build');h.state.updateSelectedNode({},{image_tag:'${EDO_GIT_TAG}'})
+  await h.state.save(false)
+  const saved=writes(h).find(r=>r.method==='put').body.stages[0].tasks[0].config
+  assert.equal(saved.image_tag,'${EDO_GIT_TAG}')
+  assert.deepEqual(saved.variable_names,['KEEP_ME'])
+  assert.equal(saved.variable_environment_id,'saved-group')
+ }
+})

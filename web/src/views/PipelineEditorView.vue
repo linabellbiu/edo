@@ -1756,6 +1756,9 @@ onBeforeRouteLeave(async () => {
               </a-form-item>
               <a-alert v-if="!activeBuildPlans.length" class="panel-alert" type="warning" show-icon message="还没有可用构建方案，请先创建构建方案。" />
               <p class="panel-note">构建方案生成镜像或文件，部署任务使用构建结果。</p></template>
+              <a-form-item v-if="(selectedNode.config.inline_build||activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id))?.kind!=='script'" label="镜像 Tag" help="可用 ${EDO_GIT_TAG} 引用本次 Git Tag，或 ${EDO_COMMIT_SHA} 引用提交；留空自动生成唯一版本。">
+                <a-input :value="selectedNode.config.image_tag" :disabled="!canEdit" placeholder="${EDO_GIT_TAG}" aria-label="镜像 Tag" @update:value="updateSelectedNode({}, { image_tag: String($event || '') })" />
+              </a-form-item>
             </template>
 
             <template v-else-if="selectedNode.type === 'shell' && !selectedNode.config.check && !selectedNode.config.migration">
@@ -1842,7 +1845,7 @@ onBeforeRouteLeave(async () => {
               <div v-else-if="canReadNotificationChannels && activeNotificationChannels.length" class="node-notification-empty">当前任务尚未配置通知；建议至少添加“失败”通知。</div>
             </section>
             <PipelineTaskControls v-if="selectedTask && selectedNode.type!=='deploy'" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="(selectedNode.config.inline_build||activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id))?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
-            <a-divider v-if="selectedTask && selectedNode.type !== 'deploy'" class="node-notification-divider" />
+            <a-divider v-if="selectedTask && !['build','deploy'].includes(selectedNode.type)" class="node-notification-divider" />
             <template v-if="selectedNode.type === 'shell' && !selectedNode.config.check && !selectedNode.config.migration">
               <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canUpdate || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像需包含 /bin/sh，并指定版本 Tag 或 Digest，不能使用 latest。' }}</small></a-form-item>
               <a-form-item label="工作目录"><a-input :value="selectedNode.config.working_directory" :disabled="!canUpdate" placeholder="." @update:value="updateSelectedNode({}, { working_directory: String($event) })" /></a-form-item>
@@ -1864,15 +1867,7 @@ onBeforeRouteLeave(async () => {
               message="代码检查由 EDO 后台主动执行"
               description="检查间隔在应用中设置，也可配置 Webhook 及时接收更新。"
             />
-            <a-alert
-              v-else-if="selectedNode.type === 'build'"
-              class="panel-alert"
-              type="info"
-              show-icon
-              message="构建参数保存在当前任务"
-              description="在任务配置中设置构建脚本、镜像仓库、Dockerfile 和 Context。"
-            />
-            <a-alert v-else-if="selectedNode.type !== 'deploy' && !selectedNode.config.check && !selectedNode.config.migration" class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
+            <a-alert v-else-if="!['build','deploy'].includes(selectedNode.type) && !selectedNode.config.check && !selectedNode.config.migration" class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
           </a-form>
           <a-alert v-for="(issue, index) in issues.filter(item => item.node_id === selectedNode?.id)" :key="`${issue.code}-${index}`" type="warning" :message="issue.message" show-icon />
         </template>

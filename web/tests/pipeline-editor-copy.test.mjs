@@ -10,6 +10,7 @@ import ts from 'typescript'
 const template = path => parse(readFileSync(new URL(path, import.meta.url), 'utf8')).descriptor.template.content
 const editorTemplate = template('../src/views/PipelineEditorView.vue')
 const composeTemplate = template('../src/components/ComposeTaskFields.vue')
+const taskControlsTemplate = template('../src/components/PipelineTaskControls.vue')
 function findSection(node) {
   if (node.tag === 'section' && node.props.some(prop => prop.name === 'class' && prop.value?.content === 'node-notification-section')) return node
   return node.children?.map(findSection).find(Boolean)
@@ -77,4 +78,25 @@ test('部署任务通知分区只渲染通知，不再渲染部署参数编辑�
  const html=await render(form.loc.source.replace('v-else',''),{...notificationState(),selectedNode:{id:'deploy',type:'deploy',config:{}},canUpdate:true,canEdit:true})
  assert.match(html,/node-notification-section/)
  assert.doesNotMatch(html,/task-controls|构建制品来源|部署脚本|额外引用共享变量|部署前下载/)
+})
+
+test('内联与库镜像构建的 Tag 均位于常规配置，自定义构建不显示镜像 Tag',async()=>{
+ const find=node=>node.tag==='a-form'&&node.props?.some(prop=>prop.name==='if'&&prop.exp?.content==="propertyTab === 'common'")?node:node.children?.map(find).find(Boolean)
+ const common=find(baseParse(editorTemplate)).loc.source
+ for(const inline of [false,true])for(const kind of ['dockerfile','script']){
+  const config=inline?{inline_build:{kind},image_tag:'${EDO_GIT_TAG}'}:{build_plan_id:'plan',image_tag:'release-v2'}
+  const html=await render(common,{propertyTab:'common',selectedNode:{id:'build',type:'build',name:'构建',config},activeBuildPlans:[{id:'plan',kind}],canUpdate:true,canEdit:true,canCreateBuildPlan:false,buildPlanOptions:[],updateSelectedNode(){}})
+  assert.equal(html.includes('label="镜像 Tag"'),kind==='dockerfile')
+  if(kind==='dockerfile')assert.match(html,inline?/value="\$\{EDO_GIT_TAG\}"/:/value="release-v2"/)
+ }
+})
+
+test('构建高级配置不重复展示 Tag 或项目变量选择，检查任务继续提供原引用入口',async()=>{
+ for(const scriptBuild of [false,true]){
+  const html=await render(taskControlsTemplate,{node:{id:'build',type:'build',config:{variable_names:['KEEP_ME'],variable_environment_id:'saved-group'}},scriptBuild,canEdit:true,error:'',buildNodes:[],updateCache(){},change(){}})
+  assert.doesNotMatch(html,/镜像 Tag|引用当前项目变量与密钥|变量适用主机组/)
+ }
+ const shell=await render(taskControlsTemplate,{node:{type:'shell',config:{}},canEdit:true,error:'',tool:'script',variableOptions:[],environments:[],change(){}})
+ assert.match(shell,/引用当前项目变量与密钥/)
+ assert.match(shell,/变量适用主机组/)
 })
