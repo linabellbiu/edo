@@ -1,0 +1,35 @@
+# ARM64 模板使用 Linux 持久卷，保留 Docker Desktop 上的真实 UID/GID 和目录权限。
+# 由 .env.arm64.example 中的标准 Compose 变量 COMPOSE_FILE 自动合并。
+services:
+  bootstrap:
+    volumes:
+      - edo-data:/app/data
+      - edo-deployment-files:/app/data/edo/deply
+  migrate:
+    volumes:
+      - edo-data:/app/data
+  api:
+    volumes:
+      - edo-data:/app/data
+      - edo-deployment-files:/app/data/edo/deply
+  postgres:
+    volumes:
+      # PostgreSQL 仍只得到数据库密码子目录，不挂载整个应用数据卷。
+      - type: volume
+        source: edo-data
+        target: /run/edo-postgres
+        read_only: true
+        volume:
+          subpath: bootstrap/postgres
+  redis:
+    volumes:
+      - edo-redis-data:/data
+  nats:
+    volumes:
+      - edo-nats-data:/data
+
+volumes:
+  edo-data:
+  edo-deployment-files:
+  edo-redis-data:
+  edo-nats-data:

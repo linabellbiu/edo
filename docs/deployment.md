@@ -13,7 +13,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-默认配置面向 Linux amd64；ARM64 宿主机（包括 Apple Silicon）首次安装时，上面的复制命令改为 `cp .env.arm64.example .env`，让 EDO、Web 和构建器原生运行。首次自动构建 Web/API，初始化 PostgreSQL 17、Redis、NATS JetStream 和隔离的 Docker 构建器，迁移成功且 API 健康后启动 Web。首次构建需要能访问官方镜像仓库、Go/npm 依赖源。浏览器访问 `http://服务器IP:8080`，本机使用 `http://localhost:8080`。
+默认配置面向 Linux amd64；ARM64 宿主机（包括 Apple Silicon）首次安装时，上面的复制命令改为 `cp .env.arm64.example .env`，让 EDO、Web 和构建器原生运行。该模板通过标准 `COMPOSE_FILE` 自动合并 `docker-compose.arm64.yml`，将应用数据、部署文件、Redis 和 NATS 放入独立的 Linux 持久卷，保留 Docker Desktop 上的 UID/GID 和受限目录权限。Docker 与 Compose 需支持 [volume subpath](https://docs.docker.com/engine/storage/volumes/#mount-a-volume-subdirectory)。首次自动构建 Web/API，初始化 PostgreSQL 17、Redis、NATS JetStream 和隔离的 Docker 构建器，迁移成功且 API 健康后启动 Web。首次构建需要能访问官方镜像仓库、Go/npm 依赖源。浏览器访问 `http://服务器IP:8080`，本机使用 `http://localhost:8080`。
 
 空账户库自动创建 `admin`，初始密码 `123456`。登录后可通过头像菜单修改密码，不限制最小长度，不能为空；创建与重置本地账户采用相同规则。已有账户不会被覆盖。
 
@@ -40,7 +40,7 @@ PostgreSQL 使用默认名为 `edo_edo-postgres-data` 的 Docker 持久卷（自
 
 ### 默认镜像源
 
-按用户指定的 [docker.aityp.com](https://docker.aityp.com/) 公开索引使用其华为云同步地址，已将运行镜像和构建阶段镜像一起写入 Compose。同步条目默认 `linux/amd64`。ARM64 首次安装使用 [.env.arm64.example](../.env.arm64.example)，其中运行镜像与构建阶段镜像均使用同版本的官方多架构源。已有安装不要覆盖 `.env`，只合并该模板中的平台与镜像设置，保留已有密钥、数据库、数据卷和端口配置；运行架构不会改变流水线配置的镜像产出平台。
+按用户指定的 [docker.aityp.com](https://docker.aityp.com/) 公开索引使用其华为云同步地址，已将运行镜像和构建阶段镜像一起写入 Compose。同步条目默认 `linux/amd64`。ARM64 首次安装使用 [.env.arm64.example](../.env.arm64.example)，其中运行镜像与构建阶段镜像均使用同版本的官方多架构源。已有安装不要覆盖 `.env`，只合并该模板中的平台与镜像设置，保留已有密钥、数据库、数据卷和端口配置；不要直接启用新安装的卷覆盖文件切换既有数据来源。运行架构不会改变流水线配置的镜像产出平台。
 
 Apple Silicon 上的 DinD 构建器必须原生运行。amd64 DinD 在 Rosetta 下可能在创建构建容器时失败，日志包含 `rosetta error: failed to open elf at -exec-root=/var/run/docker`。在 `.env` 中单独设置构建器平台和支持 ARM64 的同版本镜像，例如：
 
@@ -88,6 +88,8 @@ docker compose up -d --no-deps --wait docker-builder
 云服务器需在安全组放行 `EDO_HTTP_PORT` 对应的 TCP 端口，默认 `8080`。服务器本机访问正常但公网请求无法到达 Web 时，单独核对云入口和网络策略，不通过重建数据库或重启 Docker 解决。
 
 本地部署生成的配置默认保存在宿主机执行 Compose 用户的 `~/edo/deply`，通过独立 bind 挂载映射到 API 容器的 `/app/data/edo/deply`；容器内 HOME 为 `/app/data`。可以在根 `.env` 设置 `EDO_DEPLOY_HOST_DIRECTORY` 为其他绝对目录。bootstrap 只初始化新空目录的顶层权限，不接管其他用户已有的非空目录；升级既有安装时可单独执行 `docker compose run --rm --no-deps bootstrap sh /usr/local/bin/edo-compose-init.sh --deployment-directory-only`，不重新初始化数据库或密钥。远程 SSH 部署继续使用所选目标用户的 `~/edo/deply`。
+
+ARM64 新安装模板使用 `${项目名}_edo-data` 和 `${项目名}_edo-deployment-files` 命名卷分别保存应用数据与本地部署文件，`EDO_DEPLOY_HOST_DIRECTORY` 不用于该卷布局；Redis、NATS 与 PostgreSQL 也分别持久化。默认项目名为 `edo`，例如应用数据卷为 `edo_edo-data`。更新和重启保留这些卷；迁移时需要连同 `.env` 一起导出，不能只复制源码目录中的 `data/`。
 
 API、数据库、Redis、NATS 和构建器不直接暴露宿主机端口。生产访问可通过 HTTPS 代理转发到 Web，保留 WebSocket Upgrade、上传限制与长连接；`EDO_WEB_PORT` 只影响开发 Compose。默认不信任转发头；需要真实客户端地址时，通过 `EDO_COMPOSE_SERVER_TRUSTED_PROXIES` 仅填写受控代理 IP/CIDR，不能填写 `/0` 或整个 Docker 私网。NGINX 覆盖来路的 `X-Forwarded-For`、`X-Real-IP` 并清除 `Forwarded`，不继承伪造地址。Web 前若还有代理，其信任需单独配置。
 
