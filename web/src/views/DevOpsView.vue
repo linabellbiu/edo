@@ -457,6 +457,7 @@ const applicationWorkflowColumns=computed(()=>[
  {key:'tasks',title:t('applicationWorkspace.columns.tasks'),width:210},
  {key:'status',title:t('applicationCard.latestRun'),width:100},
  {key:'time',title:t('applicationWorkspace.columns.runTime'),width:175},
+ {key:'actions',title:t('applicationWorkspace.columns.actions'),width:132,fixed:'right' as const,align:'right' as const},
 ])
 function applicationTableRow(card:ApplicationCard){return {id:`application-${card.application.id}`}}
 function applicationTableRowClass(card:ApplicationCard){return ['apps-table-row',applicationDetailsOpen(card.application.id)?'is-expanded':'',activeApplicationID.value===card.application.id?'is-linked':''].join(' ')}
@@ -2203,7 +2204,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
       <section v-if="applicationDetailsOpen(card.application.id)" :id="`application-details-${card.application.id}`" class="apps-details-content resource-detail-section" :aria-label="card.application.name+' · '+(applicationDetailTab(card.application.id)==='environment'?'环境配置':applicationDetailTab(card.application.id)==='workflows'?t('applicationCard.linkedWorkflows'):t('applicationCard.deploymentInstances'))">
         <template v-if="applicationDetailTab(card.application.id)==='workflows'">
           <a-table v-if="card.workflowSummaries.length" class="apps-workflow-table" size="small" table-layout="fixed"
-            :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:1435}">
+            :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:1567}">
             <template #bodyCell="{column:workflowColumn,record:item}">
               <a-tooltip v-if="workflowColumn.key==='name'" :title="workflowDisplayName(item.workflow)" :mouse-enter-delay="0.1"><button type="button" class="apps-workflow-name" @click="openApplicationWorkflow(card.application.id,item.workflow.id)"><Workflow :size="15"/><span>{{ workflowDisplayName(item.workflow) }}</span></button></a-tooltip>
               <span v-else-if="workflowColumn.key==='enabled'" class="apps-enabled" :class="{'is-inactive':!item.workflow.is_active}">{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</span>
@@ -2212,6 +2213,9 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
               <span v-else-if="workflowColumn.key==='tasks'" class="apps-workflow-facts"><span>{{ t('applicationCard.taskCount',{count:item.taskCount}) }}</span><span>{{ t('applicationCard.buildCount',{count:item.buildCount}) }}</span><span>{{ t('applicationCard.deployCount',{count:item.deployCount}) }}</span></span>
               <span v-else-if="workflowColumn.key==='status'" class="apps-status" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/>{{ item.state.label }}</span>
               <time v-else-if="workflowColumn.key==='time'" class="apps-time">{{ formatApplicationTime(item.latestRun?.created_at) }}</time>
+              <ResourceRowActions v-else-if="workflowColumn.key==='actions'" :more="false">
+                <a-button v-if="item.latestRun&&canRetryRun(item.latestRun)" size="small" type="primary" :loading="retryRunID===item.latestRun.id&&(retryLoading||retrySubmitting)" :disabled="retryLoading||retrySubmitting" @click="openRetry(item.latestRun)">重新执行</a-button>
+              </ResourceRowActions>
             </template>
           </a-table>
           <div v-else class="apps-empty-inline"><Workflow :size="20"/><span>{{ t('applicationCard.noWorkflows') }}</span></div>
