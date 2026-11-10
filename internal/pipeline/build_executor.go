@@ -840,9 +840,7 @@ func pipelineCommandEnvironment(prepared *buildExecutionContext) map[string]stri
 		"EDO_APPLICATION_ID":  prepared.application.ID,
 		"EDO_GIT_REF":         prepared.run.Ref,
 		"EDO_COMMIT_SHA":      prepared.run.CommitSHA,
-	}
-	if strings.HasPrefix(prepared.run.Ref, "refs/tags/") {
-		environment["EDO_GIT_TAG"] = strings.TrimPrefix(prepared.run.Ref, "refs/tags/")
+		"EDO_GIT_TAG":         pipelineGitTag(prepared.run),
 	}
 	if prepared.plan.Platform != "" {
 		environment["EDO_TARGET_PLATFORM"] = prepared.plan.Platform

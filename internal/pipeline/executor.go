@@ -655,11 +655,15 @@ func executionNodeImageTag(prepared *executionContext) (string, error) {
 }
 
 func expandPipelineImageVariable(value string, run model.PipelineRun, app model.Application) string {
-	tag := ""
-	if strings.HasPrefix(run.Ref, "refs/tags/") {
-		tag = strings.TrimPrefix(run.Ref, "refs/tags/")
+	return strings.NewReplacer("${EDO_GIT_TAG}", pipelineGitTag(run), "${EDO_COMMIT_SHA}", run.CommitSHA, "${EDO_APPLICATION_NAME}", app.Name, "${EDO_PIPELINE_RUN_ID}", run.ID).Replace(value)
+}
+
+// 没有 Git Tag 时使用本次运行固定的完整提交，不改变原始 Ref 或 Commit。
+func pipelineGitTag(run model.PipelineRun) string {
+	if tag, tagged := strings.CutPrefix(run.Ref, "refs/tags/"); tagged && tag != "" {
+		return tag
 	}
-	return strings.NewReplacer("${EDO_GIT_TAG}", tag, "${EDO_COMMIT_SHA}", run.CommitSHA, "${EDO_APPLICATION_NAME}", app.Name, "${EDO_PIPELINE_RUN_ID}", run.ID).Replace(value)
+	return run.CommitSHA
 }
 
 func executionImageTag(run model.PipelineRun) (string, error) {

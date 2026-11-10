@@ -14,6 +14,7 @@ import client from '@/api/client'
 import { deploymentExecution, clearTaskDeploymentExecution } from '@/utils/deploymentExecution'
 import PipelineTaskControls from '@/components/PipelineTaskControls.vue'
 import PipelineBuildFields from '@/components/PipelineBuildFields.vue'
+import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
 import PipelineDeployFields from '@/components/PipelineDeployFields.vue'
 import DeploymentPlanView from '@/views/DeploymentPlanView.vue'
 import DeploymentPlanReferencePreview from '@/components/DeploymentPlanReferencePreview.vue'
@@ -278,6 +279,10 @@ const reservedPipelineEnvironmentNames = computed(() => new Set(['CI','HOME','TM
   .filter(item => item.kind === 'environment' && item.scopes.includes('pipeline_script'))
   .map(item => item.name)]))
 const builtinVariableCatalogReady = computed(() => !builtinVariableLoading.value && !builtinVariableError.value && builtinVariables.value.length > 0)
+const imageTagHelp = computed(() => {
+  const description = builtinVariables.value.find(item => item.name === 'EDO_GIT_TAG' && item.kind === 'environment')?.description
+  return description ? `${description} 镜像 Tag 留空时由 EDO 自动生成。` : builtinVariableLoading.value ? '正在加载内置变量说明…' : builtinVariableError.value || '变量说明暂不可用，请在系统设置的内置变量中查看。'
+})
 const notificationChannelOptions = computed(() => activeNotificationChannels.value.map(item => ({
   value: item.id,
   label: item.name,
@@ -1788,7 +1793,8 @@ onBeforeRouteLeave(async () => {
                 <a-alert v-if="!selectedLibraryBuildPlan||!selectedLibraryBuildPlan.is_active" type="warning" show-icon :message="!canReadBuildPlan?'无权查看原构建方案，原关联继续保留':selectedLibraryBuildPlan?'原构建方案已停用，请修改或更换方案':'请选择可用构建方案；原有失效关联会继续保留'"/>
               </template>
               <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像名称"><a-input :value="selectedNode.config.image_name" :disabled="!canEdit" :placeholder="editorApplication?.name||'留空使用应用名'" aria-label="镜像名称" @update:value="updateSelectedNode({},{image_name:String($event||'')})"/></a-form-item>
-              <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像 Tag" help="可用 ${EDO_GIT_TAG} 引用本次 Git Tag，或 ${EDO_COMMIT_SHA} 引用提交；留空自动生成唯一版本。">
+              <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'">
+                <template #label><span>镜像 Tag<DeploymentFieldHelp :text="imageTagHelp" label="镜像 Tag 说明" /></span></template>
                 <a-input :value="selectedNode.config.image_tag" :disabled="!canEdit" placeholder="${EDO_GIT_TAG}" aria-label="镜像 Tag" @update:value="updateSelectedNode({}, { image_tag: String($event || '') })" />
               </a-form-item>
               <PipelineBuildFields v-if="buildSource(selectedNode)==='plan'&&selectedLibraryBuildPlan" :key="selectedNode.id+':plan:'+selectedLibraryBuildPlan.id" :node="selectedNode" :build-plan="selectedLibraryBuildPlan" disabled/>

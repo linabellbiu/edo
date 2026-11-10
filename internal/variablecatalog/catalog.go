@@ -93,7 +93,7 @@ var definitions = []Definition{
 	environment("application_id", "EDO_APPLICATION_ID", "应用 ID", "本次运行所属应用的唯一标识。", "应用", []Scope{ScopePipelineScript, ScopeDeploymentScript, ScopeLifecycleScript}, "运行绑定应用后可用", true),
 	environment("application_name", "EDO_APPLICATION_NAME", "应用名称", "本次部署所属应用的名称。", "应用", []Scope{ScopeDeploymentScript, ScopeLifecycleScript}, "部署或实例生命周期脚本执行时可用", false),
 	environment("git_ref", "EDO_GIT_REF", "原始 Git Ref", "本次运行固定的原始 Git Ref，例如 refs/heads/main；不会转换成展示文案。", "代码", []Scope{ScopePipelineScript, ScopeDeploymentScript}, "本次运行固定代码版本后可用", true),
-	environment("git_tag", "EDO_GIT_TAG", "Git Tag", "本次运行固定的 Git Tag 名称；分支运行时为空。镜像 Tag 可引用 ${EDO_GIT_TAG}，部署的 Tag 取自实际构建制品。", "代码", []Scope{ScopePipelineScript, ScopeDeploymentScript}, "选择 Tag 引用时可用", true),
+	environment("git_tag", "EDO_GIT_TAG", "Git Tag / Commit", "引用 ${EDO_GIT_TAG}：有 Git Tag 时使用 Tag 名称，没有时自动使用 ${EDO_COMMIT_SHA} 的完整提交哈希；EDO_COMMIT_SHA 始终保持原值。可用于镜像 Tag、构建及部署脚本和 Compose 插值。", "代码", []Scope{ScopePipelineScript, ScopeDeploymentScript, ScopeComposeDeployment}, "本次运行固定 Git Tag 或 Commit 后可用", true),
 	environment("commit_sha", "EDO_COMMIT_SHA", "完整 Commit SHA", "本次运行固定的完整 Commit SHA。", "代码", []Scope{ScopePipelineScript, ScopeDeploymentScript}, "本次运行固定 Commit 后可用", true),
 	environment("upstream_artifacts", "EDO_UPSTREAM_ARTIFACTS_JSON", "上游制品清单", "前序阶段中本次运行已成功构建的制品 JSON 数组，包含 node_id、id、kind、storage_kind、digest、image_ref 和 commit_sha；不包含凭据或文件路径。", "制品", []Scope{ScopePipelineScript}, "前序阶段构建成功后可用；无制品时为 []", true),
 	environment("target_platform", "EDO_TARGET_PLATFORM", "目标构建平台", "构建方案解析出的目标平台；多平台构建时为逗号分隔的平台列表。", "构建", []Scope{ScopePipelineScript}, "构建方案已解析目标平台时可用", true),

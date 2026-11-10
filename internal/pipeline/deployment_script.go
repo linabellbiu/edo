@@ -158,12 +158,9 @@ func deploymentScriptEnvironment(prepared *executionContext) (map[string]string,
 	values = mergeDeploymentVariables(values, map[string]string{
 		"EDO_PIPELINE_RUN_ID": prepared.run.ID, "EDO_APPLICATION_ID": prepared.application.ID,
 		"EDO_APPLICATION_NAME": prepared.application.Name, "EDO_GIT_REF": prepared.run.Ref,
-		"EDO_GIT_TAG":    strings.TrimPrefix(prepared.run.Ref, "refs/tags/"),
+		"EDO_GIT_TAG":    pipelineGitTag(prepared.run),
 		"EDO_COMMIT_SHA": prepared.run.CommitSHA, "EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID,
 	})
-	if !strings.HasPrefix(prepared.run.Ref, "refs/tags/") {
-		values["EDO_GIT_TAG"] = ""
-	}
 	delete(values, "EDO_IMAGE_TAG")
 	delete(values, "IMAGE_TAG")
 	images := []model.Artifact{}

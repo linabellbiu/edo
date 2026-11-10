@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { baseParse, compile } from '@vue/compiler-dom'
-import { parse } from '@vue/compiler-sfc'
+import { compileScript, parse } from '@vue/compiler-sfc'
+import { Form as AntForm } from 'ant-design-vue'
 import { renderToString } from '@vue/server-renderer'
 import * as vue from 'vue'
 import ts from 'typescript'
@@ -23,12 +24,13 @@ const passthrough = {
     return () => vue.h('div', attrs, [attrs.message, attrs.description, slots.label?.(), slots.default?.()])
   },
 }
-async function render(source, state) {
+async function render(source, state, components = {}) {
   const { code } = compile(source, { mode: 'function', prefixIdentifiers: true, expressionPlugins: ['typescript'] })
   const output = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const render = new Function('Vue', output)(vue)
   const app = vue.createSSRApp({ setup: () => state, render })
   for (const name of ['a-alert', 'a-button', 'a-select', 'a-form-item', 'a-input', 'a-textarea', 'a-checkbox', 'a-tooltip', 'Bell', 'Plus', 'Trash2']) app.component(name, passthrough)
+  for (const [name, component] of Object.entries(components)) app.component(name, component)
   return renderToString(app)
 }
 function notificationState(patch = {}) {
@@ -86,7 +88,7 @@ test('内联与库镜像构建的 Tag 均位于常规配置，自定义构建不
  const common=find(baseParse(editorTemplate)).loc.source
  for(const inline of [false,true])for(const kind of ['dockerfile','script']){
   const config=inline?{inline_build:{kind},image_tag:'${EDO_GIT_TAG}'}:{build_plan_id:'plan',image_tag:'release-v2'}
-  const html=await render(common,{propertyTab:'common',editorApplication:{name:'demo_app'},selectedNode:{id:'build',type:'build',name:'构建',config},selectedBuildPlan:{id:'plan',kind},selectedLibraryBuildPlan:inline?undefined:{id:'plan',name:'通用构建',kind,is_active:true},buildSource:()=>inline?'inline':'plan',canReadBuildPlan:true,canModifyBuildPlan:false,changingBuildPlanNodeID:'',selectedBuildPlanOptions:[],canUpdate:true,canEdit:true,canCreateBuildPlan:false,buildPlanOptions:[],updateSelectedNode(){}})
+  const html=await render(common,{propertyTab:'common',editorApplication:{name:'demo_app'},selectedNode:{id:'build',type:'build',name:'构建',config},selectedBuildPlan:{id:'plan',kind},selectedLibraryBuildPlan:inline?undefined:{id:'plan',name:'通用构建',kind,is_active:true},buildSource:()=>inline?'inline':'plan',canReadBuildPlan:true,canModifyBuildPlan:false,changingBuildPlanNodeID:'',selectedBuildPlanOptions:[],canUpdate:true,canEdit:true,canCreateBuildPlan:false,buildPlanOptions:[],imageTagHelp:'服务端变量说明',updateSelectedNode(){}})
   assert.equal(html.includes('label="镜像 Tag"'),kind==='dockerfile')
   assert.equal(html.includes('label="镜像名称"'),kind==='dockerfile')
   if(kind==='dockerfile')assert.match(html,/placeholder="demo_app"/)
@@ -125,4 +127,17 @@ test('任务操作区在常规和高级配置外提供保存入口，只读隐�
  }
  const readonly=await render(actions,{canUpdate:false})
  assert.doesNotMatch(readonly,/保存|任务配置操作/)
+})
+
+test('真实 Form 标签保留镜像 Tag 问号按钮及目录说明，不能被 label 属性覆盖',async()=>{
+ const find=node=>node.tag==='a-form-item'&&node.children?.some(child=>child.tag==='a-input'&&child.props?.some(prop=>prop.name==='aria-label'&&prop.value?.content==='镜像 Tag'))?node:node.children?.map(find).find(Boolean)
+ const field=find(baseParse(editorTemplate)).loc.source
+ const descriptor=parse(readFileSync(new URL('../src/components/DeploymentFieldHelp.vue',import.meta.url),'utf8')).descriptor
+ const script=compileScript(descriptor,{id:'tag-help',inlineTemplate:true}).content
+ const output=ts.transpileModule(script,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText
+ const module={exports:{}}
+ new Function('require','module','exports',output)(name=>name==='vue'?vue:{},module,module.exports)
+ const html=await render(`<a-form>${field}</a-form>`,{selectedBuildPlan:{kind:'dockerfile'},selectedNode:{config:{image_tag:'${EDO_GIT_TAG}'}},canEdit:true,imageTagHelp:'服务端目录：没有 Tag 时使用完整 Commit。',updateSelectedNode(){}},{'a-form':AntForm,'a-form-item':AntForm.Item,DeploymentFieldHelp:module.exports.default})
+ assert.match(html,/<button[^>]*aria-label="镜像 Tag 说明"[^>]*>\?<\/button>/)
+ assert.match(html,/服务端目录：没有 Tag 时使用完整 Commit/)
 })

@@ -2,6 +2,8 @@
 
 EDO 内置 Shell 环境变量统一使用 `EDO_` 前缀，页面、脚本示例及 Compose 默认引用使用 `${EDO_IMAGE_TAG}`。本次镜像 Tag 仍来自当前流水线的实际构建产物，不能由用户变量或外部镜像来源覆盖。
 
+2026-11-10：`${EDO_GIT_TAG}` 有 Git Tag 时返回 Tag 名称，没有时返回本次运行固定的完整 `${EDO_COMMIT_SHA}`；`EDO_COMMIT_SHA` 与原始 Git Ref 保持原值。构建镜像 Tag、构建及部署脚本和 Compose 上下文共用这一规则，输入框旁问号说明复用服务端目录。
+
 | 原名称 | 内置变量名 |
 | --- | --- |
 | `IMAGE_TAG` | `EDO_IMAGE_TAG` |

@@ -572,3 +572,14 @@ test('首次选择镜像方案或从自定义构建切换镜像构建时填入 G
   assert.equal(readonly.state.dirty.value, false)
   assert.equal(readonly.requests.length, 0)
 })
+
+test('镜像 Tag 问号说明使用服务端目录，目录失败时不展示过期规则', t => {
+  const { state } = harness(t)
+  state.builtinVariables.value = [{ name: 'EDO_GIT_TAG', kind: 'environment', description: '目录说明：无 Git Tag 时采用完整 EDO_COMMIT_SHA。' }]
+  assert.match(state.imageTagHelp.value, /目录说明：无 Git Tag 时采用完整 EDO_COMMIT_SHA/)
+  state.builtinVariables.value[0].description = '更新后的服务端说明'
+  assert.match(state.imageTagHelp.value, /更新后的服务端说明/)
+  state.builtinVariables.value = []
+  state.builtinVariableError.value = '内置变量说明读取失败'
+  assert.equal(state.imageTagHelp.value, '内置变量说明读取失败')
+})
