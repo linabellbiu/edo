@@ -93,7 +93,8 @@ test('内联与库镜像构建的 Tag 均位于常规配置，自定义构建不
   assert.equal(html.includes('label="镜像名称"'),kind==='dockerfile')
   if(kind==='dockerfile')assert.match(html,/placeholder="demo_app"/)
   assert.doesNotMatch(html,/Docker target/)
-  assert.match(html,/自定义构建/);assert.match(html,/选择构建方案/)
+  assert.match(html,/配置来源/);assert.match(html,/当前任务配置/);assert.match(html,/选择构建方案/)
+  assert.doesNotMatch(html,/value="inline"[^>]*>自定义构建/)
   if(kind==='dockerfile')assert.match(html,inline?/value="\$\{EDO_GIT_TAG\}"/:/value="release-v2"/)
  }
 })
@@ -110,10 +111,25 @@ test('构建高级配置不重复展示 Tag 或项目变量选择，检查任务
 
 
 test('共享构建参数表单不再提供 Docker target，继续保留 Dockerfile 和 Context',async()=>{
- const html=await render(buildPlanFieldsTemplate,{plan:{kind:'dockerfile',dockerfile_path:'Dockerfile',context_path:'.',timeout_seconds:1800},disabled:false,registries:[],imageDestination:'registry',saveArtifact:false,buildArgsText:'',environmentText:'',editPermission:'workflow.update',emit(){}})
+ const html=await render(buildPlanFieldsTemplate,{plan:{kind:'dockerfile',dockerfile_path:'Dockerfile',context_path:'.',timeout_seconds:1800},disabled:false,hideKind:false,registries:[],imageDestination:'registry',saveArtifact:false,buildArgsText:'',environmentText:'',editPermission:'workflow.update',emit(){}})
  assert.match(html,/Dockerfile 路径/)
  assert.match(html,/Context/)
  assert.doesNotMatch(html,/Docker target|例如 web,api/)
+})
+
+test('流水线隐藏重复构建方式，独立方案编辑保留类型选择及对应参数',async()=>{
+ for(const kind of ['dockerfile','script'])for(const hideKind of [false,true])for(const disabled of [false,true]){
+  const html=await render(buildPlanFieldsTemplate,{plan:{kind,dockerfile_path:'Dockerfile',context_path:'.',script:'echo ok',timeout_seconds:1800,image_registry_id:'registry'},disabled,hideKind,registries:[],imageDestination:'registry',saveArtifact:false,buildArgsText:'',environmentText:'',editPermission:'workflow.update',emit(){}})
+  assert.equal(html.includes('label="构建方式"'),!hideKind)
+  if(kind==='dockerfile'){
+   assert.match(html,/Dockerfile 路径/)
+   assert.match(html,/Context/)
+   assert.match(html,/关联镜像仓库/)
+  }else{
+   assert.match(html,/构建脚本/)
+   assert.doesNotMatch(html,/Dockerfile 路径|关联镜像仓库/)
+  }
+ }
 })
 
 test('任务操作区在常规和高级配置外提供保存入口，只读隐藏，已启用状态仍明确更新',async()=>{

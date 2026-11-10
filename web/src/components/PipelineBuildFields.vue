@@ -46,7 +46,7 @@ function cache(patch:Record<string,unknown>){change({cache:{key:'dependencies',l
  <section v-if="plan" class="pipeline-build-fields">
   <a-alert v-if="error" type="error" show-icon :message="error"/>
   <a-alert v-if="fieldError" type="error" show-icon :message="fieldError"/>
-  <BuildPlanFields :plan="plan" :require-registry="!buildPlan" :named-outputs="outputs.length>0" :disabled="disabled||!!buildPlan" :registries="registries" :image-destination="imageDestination" :save-artifact="saveArtifact" :build-args-text="buildArgsText" :environment-text="environmentText" edit-permission="workflow.update" @change="update" @update:image-destination="destination" @update:save-artifact="artifact" @update:build-args-text="variableText($event)" @update:environment-text="variableText($event,true)"/>
+  <BuildPlanFields :plan="plan" hide-kind :require-registry="!buildPlan" :named-outputs="outputs.length>0" :disabled="disabled||!!buildPlan" :registries="registries" :image-destination="imageDestination" :save-artifact="saveArtifact" :build-args-text="buildArgsText" :environment-text="environmentText" edit-permission="workflow.update" @change="update" @update:image-destination="destination" @update:save-artifact="artifact" @update:build-args-text="variableText($event)" @update:environment-text="variableText($event,true)"/>
   <template v-if="plan.kind==='script'&&!buildPlan">
    <section class="build-outputs">
     <header><strong>暂存构建物</strong><a-button type="link" :disabled="disabled||outputs.length>=16" @click="change({build_outputs:[...outputs,{name:outputs.length?`BUILD_ARTIFACT_${outputs.length+1}`:'BUILD_ARTIFACT',paths:['./output']}]})"><PlusCircle :size="15"/>添加</a-button></header>

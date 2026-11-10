@@ -288,6 +288,26 @@ test('构建来源二选一并保留自定义和通用草稿，保存不创建�
  assert.deepEqual(write.body.stages[0].tasks[0].config.variable_names,['KEEP_ME'])
  assert.equal(writes(h).some(r=>r.path==='/build-plans'),false)
 })
+
+test('脚本方案切回当前任务配置保留构建类型，往返与保存不创建库方案',async t=>{
+ const scriptPlan={...linkedBuildPlan,kind:'script',script:'printf shared',artifact_path:'dist'}
+ const h=await linkedBuildHarness({get:r=>r.path==='/build-plans'?{data:{build_plans:[scriptPlan]}}:undefined});t.after(h.stop)
+ assert.equal(h.state.selectedBuildPlan.value.kind,'script')
+ h.state.changeBuildSource('inline')
+ assert.equal(h.state.selectedNode.value.config.inline_build.kind,'script')
+ h.state.updateSelectedNode({},{inline_build:{...h.state.selectedNode.value.config.inline_build,script:'printf task-local'}})
+ h.state.changeBuildSource('plan')
+ assert.equal(h.state.selectedBuildPlan.value.kind,'script')
+ assert.equal(h.state.selectedLibraryBuildPlan.value.script,'printf shared')
+ h.state.changeBuildSource('inline')
+ assert.equal(h.state.selectedNode.value.config.inline_build.kind,'script')
+ assert.equal(h.state.selectedNode.value.config.inline_build.script,'printf task-local')
+ await h.state.save(false)
+ const write=writes(h).find(r=>r.method==='put')
+ assert.equal(write.body.stages[0].tasks[0].config.inline_build.kind,'script')
+ assert.equal(write.body.stages[0].tasks[0].config.inline_build.script,'printf task-local')
+ assert.equal(writes(h).some(r=>r.path==='/build-plans'),false)
+})
 test('原构建方案停用或无权查看时保留关联，不自动改成自定义或其他方案',async t=>{
  for(const canRead of [true,false]){
   const h=await linkedBuildHarness({codes:permissions.filter(code=>canRead||code!=='build_plan.read')});t.after(h.stop)

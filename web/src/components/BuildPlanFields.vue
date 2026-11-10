@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import type {PipelineBuildPlan} from '@/types/pipeline'
-defineProps<{plan:PipelineBuildPlan;disabled:boolean;requireRegistry?:boolean;namedOutputs?:boolean;registries:Array<{id:string;name:string}>;imageDestination:'local'|'registry';saveArtifact:boolean;buildArgsText:string;environmentText:string;editPermission:string}>()
+defineProps<{plan:PipelineBuildPlan;disabled:boolean;hideKind?:boolean;requireRegistry?:boolean;namedOutputs?:boolean;registries:Array<{id:string;name:string}>;imageDestination:'local'|'registry';saveArtifact:boolean;buildArgsText:string;environmentText:string;editPermission:string}>()
 const emit=defineEmits<{change:[patch:Partial<PipelineBuildPlan>];'update:imageDestination':[value:'local'|'registry'];'update:saveArtifact':[value:boolean];'update:buildArgsText':[value:string];'update:environmentText':[value:string]}>()
 </script>
 <template>
  <section class="build-plan-fields">
-  <a-form-item label="构建方式" required><a-select :value="plan.kind" :disabled="disabled" :options="[{value:'dockerfile',label:'镜像构建'},{value:'script',label:'自定义构建'}]" @update:value="emit('change',{kind:$event})"/></a-form-item>
+  <a-form-item v-if="!hideKind" label="构建方式" required><a-select :value="plan.kind" :disabled="disabled" :options="[{value:'dockerfile',label:'镜像构建'},{value:'script',label:'自定义构建'}]" @update:value="emit('change',{kind:$event})"/></a-form-item>
   <template v-if="plan.kind==='dockerfile'">
    <a-form-item v-if="!requireRegistry" label="镜像输出"><a-radio-group :value="imageDestination" :disabled="disabled" @update:value="emit('update:imageDestination',$event)"><a-radio-button value="local">构建运行时本地镜像</a-radio-button><a-radio-button value="registry">推送镜像仓库</a-radio-button></a-radio-group></a-form-item>
    <a-form-item v-if="requireRegistry||imageDestination==='registry'" label="关联镜像仓库" required :validate-status="!plan.image_registry_id?'error':undefined" :help="!plan.image_registry_id?'请选择镜像仓库':undefined"><a-select :value="plan.image_registry_id||undefined" :disabled="disabled" :options="registries.map(v=>({value:v.id,label:v.name}))" placeholder="选择镜像仓库" @update:value="emit('change',{image_registry_id:String($event||'')})"/></a-form-item>

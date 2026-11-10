@@ -1249,7 +1249,8 @@ function changeBuildSource(value:'inline'|'plan'){
  if(node.config.inline_build)inlineBuildDrafts.set(node.id,JSON.parse(JSON.stringify({inline_build:node.config.inline_build,build_outputs:node.config.build_outputs,cache:node.config.cache,runtime_image:node.config.runtime_image,toolchain_language:node.config.toolchain_language,toolchain_version:node.config.toolchain_version})))
  if(node.config.build_plan_id)libraryBuildDrafts.set(node.id,node.config.build_plan_id)
  buildSourceDrafts.set(node.id,value);changingBuildPlanNodeID.value='';delete buildFieldErrors[node.id]
- const draft=inlineBuildDrafts.get(node.id)||{inline_build:{id:'',name:node.name,kind:'dockerfile',dockerfile_path:'Dockerfile',context_path:'.',pull:true,cache_enabled:true,timeout_seconds:1800,is_active:true}}
+ const kind=selectedBuildPlan.value?.kind||'dockerfile'
+ const draft=inlineBuildDrafts.get(node.id)||{inline_build:{id:'',name:node.name,kind,script:kind==='script'?'set -eu\n# 在这里填写构建命令\n':undefined,dockerfile_path:'Dockerfile',context_path:'.',pull:true,cache_enabled:true,timeout_seconds:1800,is_active:true}}
  updateSelectedNode({},value==='inline'?{...draft,build_plan_id:undefined}:{inline_build:undefined,build_outputs:undefined,cache:undefined,runtime_image:undefined,toolchain_language:undefined,toolchain_version:undefined,build_plan_id:libraryBuildDrafts.get(node.id)})
 }
 function changeLibraryBuildPlan(value:string){
@@ -1781,7 +1782,7 @@ onBeforeRouteLeave(async () => {
             </template>
 
             <template v-else-if="selectedNode.type === 'build'">
-              <a-form-item label="构建来源"><a-radio-group :value="buildSource(selectedNode)" :disabled="!canEdit" @update:value="changeBuildSource($event)"><a-radio-button value="inline">自定义构建</a-radio-button><a-radio-button value="plan">选择构建方案</a-radio-button></a-radio-group></a-form-item>
+              <a-form-item label="配置来源"><a-radio-group :value="buildSource(selectedNode)" :disabled="!canEdit" @update:value="changeBuildSource($event)"><a-radio-button value="inline">当前任务配置</a-radio-button><a-radio-button value="plan">选择构建方案</a-radio-button></a-radio-group></a-form-item>
               <template v-if="buildSource(selectedNode)==='plan'">
                 <a-form-item label="构建方案" required>
                   <div class="resource-picker"><a-select :value="selectedNode.config.build_plan_id" :disabled="!canEdit||!canReadBuildPlan||!!selectedNode.config.build_plan_id&&changingBuildPlanNodeID!==selectedNode.id" :options="selectedBuildPlanOptions" placeholder="选择构建方案" @update:value="changeLibraryBuildPlan(String($event||''))"/>
