@@ -2111,7 +2111,7 @@ onBeforeRouteLeave(async () => {
 .template-shortcuts button:disabled { cursor: not-allowed; opacity: .5; }
 .template-shortcuts b, .template-shortcuts small { display: block; }
 .template-shortcuts small { color: var(--edo-muted); font-size: 10px; }
-.panel-tabs { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); margin: -2px 16px 16px; border: 1px solid var(--edo-border); border-radius: 5px; }
+.panel-tabs { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); margin: 0 16px 16px; border: 1px solid var(--edo-border); border-radius: 5px; }
 .panel-tabs.single { grid-template-columns: 1fr; }
 .task-section-heading { display: flex; align-items: center; gap: 8px; margin: 0 -16px 14px; padding: 10px 16px; border-top: 1px solid var(--edo-border); border-bottom: 1px solid var(--edo-border); background: color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface)); color: var(--edo-text); font-size: 14px; font-weight: 600; }
 .task-section-heading > svg { flex-shrink: 0; color: var(--edo-primary); }
