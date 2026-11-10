@@ -117,6 +117,7 @@ const buildImageDestination=ref<'local'|'registry'>('local'),buildSaveArtifact=r
 const planExecutionOpen=ref(false),planExecutionPlanID=ref(''),planExecutionTitle=ref(''),planExecutionExpectedUpdatedAt=ref(''),planExecutionRequestID=ref(''),planExecutionGroups=ref<PlanExecutionGroup[]>([])
 const executingReleasePlanIDs=ref<string[]>([])
 const retryOpen=ref(false),retryLoading=ref(false),retrySubmitting=ref(false),retryRunID=ref(''),retryOptions=ref<RetryRunOptions|null>(null),retryMode=ref<'rebuild'|'artifact'>('rebuild'),retryArtifactID=ref('')
+let retryRequestRevision=0
 const stoppingRunID=ref('')
 const manualPicker=reactive({open:false,applicationID:'',workflowID:''})
 const rollbackDialog=reactive({open:false,sourceID:'',pipelineRunID:''})
@@ -261,7 +262,7 @@ const runColumns=[
  {title:'状态 / 当前任务',key:'status',width:160},
  {title:'总耗时 / 当前阶段',key:'progress',width:240},
  {title:'执行时间',key:'created_at',width:180},
- {title:'操作',key:'actions',width:175,fixed:'right' as const},
+ {title:'操作',key:'actions',width:245,fixed:'right' as const},
 ]
 const activeRunCount=computed(()=>runs.value.filter(item=>['running','awaiting_approval'].includes(item.status)).length)
 const canReadDeployments=computed(()=>auth.canAny(['deployment.read']))
@@ -1481,26 +1482,38 @@ function confirmStopRun(run:Run){
   },
  })
 }
-function resetRetry(){retryOpen.value=false;retryLoading.value=false;retrySubmitting.value=false;retryRunID.value='';retryOptions.value=null;retryMode.value='rebuild';retryArtifactID.value=''}
+function canRetryRun(entry:RunListEntry):entry is Run{return !isRunExecutionGroup(entry)&&entry.status==='failed'&&auth.canAny(['pipeline_run.execute'])}
+function resetRetry(){retryRequestRevision++;retryOpen.value=false;retryLoading.value=false;retrySubmitting.value=false;retryRunID.value='';retryOptions.value=null;retryMode.value='rebuild';retryArtifactID.value=''}
 async function openRetry(run:Run){
+ if(!canRetryRun(run)||retryLoading.value||retrySubmitting.value)return
  resetRetry();retryOpen.value=true;retryLoading.value=true;retryRunID.value=run.id
+ const revision=retryRequestRevision
  try{
-  retryOptions.value=(await client.get<RetryRunOptions>(`/pipeline-runs/${run.id}/retry-options`,{timeout:35000})).data
-  retryMode.value=retryOptions.value.artifacts.length?'artifact':'rebuild'
-  retryArtifactID.value=retryOptions.value.artifacts.length===1?retryOptions.value.artifacts[0].id:''
- }catch(error){message.error(apiErrorMessage(error));resetRetry()}finally{retryLoading.value=false}
+  const options=(await client.get<RetryRunOptions>(`/pipeline-runs/${run.id}/retry-options`,{timeout:35000})).data
+  if(revision!==retryRequestRevision)return
+  retryOptions.value=options
+  retryMode.value=options.artifacts.length?'artifact':'rebuild'
+  retryArtifactID.value=options.artifacts.length===1?options.artifacts[0].id:''
+ }catch(error){if(revision===retryRequestRevision){message.error(apiErrorMessage(error));resetRetry()}}
+ finally{if(revision===retryRequestRevision)retryLoading.value=false}
 }
 async function executeRetry(){
- if(!retryRunID.value||!retryOptions.value||(retryMode.value==='artifact'&&!retryArtifactID.value))return
+ if(!auth.canAny(['pipeline_run.execute'])||retrySubmitting.value||retryLoading.value||!retryRunID.value||!retryOptions.value||(retryMode.value==='artifact'&&!retryArtifactID.value))return
+ const revision=retryRequestRevision,scope=resourceScopeKey(),mode=retryMode.value
  retrySubmitting.value=true
  try{
-  const retried=(await client.post<{pipeline_run:Run}>(`/pipeline-runs/${retryRunID.value}/retry`,retryMode.value==='artifact'?{artifact_id:retryArtifactID.value}:{},{timeout:35000})).data.pipeline_run
-  message.success(retryMode.value==='artifact'?'已使用原运行制品创建重试':'已按原固定版本重新构建')
+  const retried=(await client.post<{pipeline_run:Run}>(`/pipeline-runs/${retryRunID.value}/retry`,mode==='artifact'?{artifact_id:retryArtifactID.value}:{},{timeout:35000})).data.pipeline_run
+  if(revision!==retryRequestRevision)return
+  message.success(mode==='artifact'?'已使用原运行制品创建重试':'已按原固定版本重新构建')
   resetRetry();await refresh()
+  if(scope!==resourceScopeKey())return
   detachedRun.value=retried
   void router.replace({path:'/release-plans',query:{...route.query,view:'runs',run:retried.id}})
- }catch(error){message.error(apiErrorMessage(error))}finally{retrySubmitting.value=false}
+ }catch(error){if(revision===retryRequestRevision)message.error(apiErrorMessage(error))}
+ finally{if(revision===retryRequestRevision)retrySubmitting.value=false}
 }
+watch(planExecutionScopeIdentity,resetRetry,{flush:'sync'})
+onBeforeUnmount(resetRetry)
 function openTaskLogs(run:Run,node:{id:string;name:string}){log.value={open:true,runID:run.id,nodeID:node.id,title:`任务日志：${node.name}`,status:run.status}}
 function openLogs(run:Run){log.value={open:true,runID:run.id,nodeID:'',title:`流水线日志：${applicationName(run)}`,status:run.status}}
 function resetManualFlow(){
@@ -2340,7 +2353,11 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
   >
     <template #emptyText><a-empty :description="runFilters.status||runFilters.from||runFilters.to?'没有符合条件的运行记录':'还没有流水线运行'"/></template>
     <template #bodyCell="{column,record}">
-      <ResourceRowActions v-if="column.key==='actions'" :more="false"><a-button size="small" @click="expandRunListEntry(true,record)">详情</a-button><a-button v-if="!record.executionGroup" size="small" @click="openLogs(record)">日志</a-button></ResourceRowActions>
+      <ResourceRowActions v-if="column.key==='actions'" :more="false">
+        <a-button size="small" @click="expandRunListEntry(true,record)">详情</a-button>
+        <a-button v-if="!record.executionGroup" size="small" @click="openLogs(record)">日志</a-button>
+        <a-button v-if="canRetryRun(record)" size="small" type="primary" :loading="retryRunID===record.id&&(retryLoading||retrySubmitting)" :disabled="retryLoading||retrySubmitting" @click="openRetry(record)">重试流水线</a-button>
+      </ResourceRowActions>
       <template v-else-if="record.executionGroup">
         <template v-if="column.key==='release_plan'"><button type="button" class="run-resource-link" :title="runEntryPlanName(record)" @click.stop="openReleasePlanFromRun(record.runs[0])">{{ runEntryPlanName(record) }}</button><span class="run-cell-secondary">发布计划执行</span></template>
         <template v-else-if="column.key==='application'"><button class="resource-name" @click="expandRunListEntry(true,record)">{{ executionApplicationCount(record) }} 个应用</button><span class="run-cell-secondary">查看本次发布</span></template>
@@ -2410,7 +2427,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
             <footer class="run-actions">
               <a-button @click="openLogs(run)">查看实时日志</a-button>
               <a-button v-if="canStopRun(run)&&auth.canAny(['pipeline_run.execute'])" danger :loading="stoppingRunID===run.id||run.stage==='stopping'" :disabled="!!stoppingRunID||run.stage==='stopping'" @click="confirmStopRun(run)">{{ t(run.stage==='stopping'?'pipelineStop.stopping':'pipelineStop.confirm') }}</a-button>
-              <a-button v-if="run.status==='failed'&&auth.canAny(['pipeline_run.execute'])" type="primary" @click="openRetry(run)">重试流水线</a-button>
+              <a-button v-if="canRetryRun(run)" type="primary" :loading="retryRunID===run.id&&(retryLoading||retrySubmitting)" :disabled="retryLoading||retrySubmitting" @click="openRetry(run)">重试流水线</a-button>
               <a-button v-if="runHasDeployments(run.id)" @click="openReleasePlanApplicationResources('',run.application_id,run.id)">{{ rollbackT('rollback.recordsAndRollback') }}</a-button>
               <span v-else-if="canReadDeployments&&runDeploymentLoading[run.id]" class="resource-secondary">{{ rollbackT('rollback.recordsLoading') }}</span>
               <div v-if="run.status==='awaiting_approval'" class="resource-secondary" role="status">
@@ -2599,7 +2616,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
   <a-form-item v-else label="历史制品"><a-select v-model:value="selectedArtifactID" show-search option-filter-prop="label" placeholder="选择之前构建或手工上传的可用制品" :options="manualArtifactOptions"><template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template></a-select></a-form-item>
  </a-form>
 </a-modal>
-<a-modal :open="retryOpen" title="重试流水线" :confirm-loading="retrySubmitting" :ok-button-props="{disabled:retryLoading||!retryOptions||(retryMode==='artifact'&&!retryArtifactID)}" ok-text="确认重试" @ok="executeRetry" @cancel="resetRetry">
+<a-modal :open="retryOpen" title="重试流水线" :confirm-loading="retrySubmitting" :cancel-button-props="{disabled:retrySubmitting}" :mask-closable="!retrySubmitting" :keyboard="!retrySubmitting" :ok-button-props="{disabled:retryLoading||!retryOptions||(retryMode==='artifact'&&!retryArtifactID)}" ok-text="确认重试" @ok="executeRetry" @cancel="resetRetry">
  <a-spin :spinning="retryLoading">
   <a-form v-if="retryOptions" layout="vertical">
    <a-alert class="manual-release-note" type="info" show-icon message="代码版本已经由原流水线运行固定，重试不能重新选择分支或 Tag。"/>
