@@ -92,3 +92,41 @@ test('Shell 保存失败时保留当前脚本、有效环境变量和隐藏 Dock
   assert.equal(writes(h).length, 2)
   assert.equal(h.state.formOpen.value, false)
 })
+
+
+test('构建方案修改深链接打开准确对象',t=>{
+ const h=harness(t,{codes:['build_plan.read','build_plan.update']})
+ h.state.formOpen.value=false
+ h.state.buildPlans.value=[{id:'first',name:'第一项',kind:'dockerfile'},{id:'linked',name:'原构建方案',kind:'dockerfile',target_stage:'web,api'}]
+ h.route.query={plan:'linked',edit:'1'}
+ h.state.consumeBuildEditRequest()
+ assert.equal(h.state.editingID.value,'linked')
+ assert.equal(h.state.buildForm.target_stage,'web,api')
+ assert.equal(h.state.formOpen.value,true)
+})
+
+
+test('没有构建方案修改权限时深链接不能打开编辑',t=>{
+ const h=harness(t,{codes:['build_plan.read']})
+ h.state.buildPlans.value=[{id:'linked',name:'原构建方案',kind:'dockerfile'}]
+ h.route.query={plan:'linked',edit:'1'}
+ h.state.consumeBuildEditRequest()
+ assert.equal(h.state.formOpen.value,false)
+ assert.equal(writes(h).length,0)
+})
+
+test('流水线中的库构建参数阻止旧编辑回调写入，内联参数文本错误不会静默丢弃',t=>{
+ for(const library of [false,true]){
+  const props=vue.reactive({node:{id:'build',config:{inline_build:{id:'',kind:'dockerfile',build_args:{KEEP:'original'}}}},disabled:false,...(library?{buildPlan:{id:'shared',kind:'dockerfile',build_args:{KEEP:'library'}}}:{})})
+  const h=componentHarness('../src/components/PipelineBuildFields.vue',{props,codes:[],globals:{localStorage:{getItem:()=>''}}});t.after(h.stop)
+  h.state.update({target_stage:'web,api'})
+  if(library){assert.equal(h.events.some(event=>event.name==='change'),false);continue}
+  h.state.variableText('INVALID')
+  assert.match(h.state.fieldError.value,/KEY=value/)
+  assert.deepEqual(props.node.config.inline_build.build_args,{KEEP:'original'})
+  h.state.variableText('VERSION=1=public')
+  assert.equal(h.state.fieldError.value,'')
+  const change=h.events.filter(event=>event.name==='change').at(-1)
+  assert.deepEqual(change.args[0].inline_build.build_args,{VERSION:'1=public'})
+ }
+})

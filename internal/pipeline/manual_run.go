@@ -393,6 +393,10 @@ func manualArtifactBuildNodes(workflow *model.ReleaseWorkflow, build model.Build
 	}
 	expectedKind := model.ArtifactKindFileBundle
 	if plan.Kind == model.BuildPlanDockerfile {
+		// 当前手动制品选择一次只接收一个制品，不能用单个 target 跳过整组镜像构建。
+		if strings.Contains(plan.TargetStage, ",") {
+			return model.WorkflowNode{}, model.WorkflowNode{}, false
+		}
 		expectedKind = model.ArtifactKindOCIImage
 	} else if plan.Kind != model.BuildPlanScript {
 		return model.WorkflowNode{}, model.WorkflowNode{}, false

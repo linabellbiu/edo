@@ -1632,6 +1632,9 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			}
 		}
 	}
+	if err := expandBuildTargets(&resolved, buildPlans, variableBindings); err != nil {
+		return nil, err
+	}
 	autoComposeArtifactSources(resolved.Stages, buildPlans, deploymentPlans)
 	sources, sourceErr := artifactSources(resolved.Stages)
 	if sourceErr != nil {

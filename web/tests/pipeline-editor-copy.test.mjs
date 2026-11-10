@@ -85,8 +85,9 @@ test('内联与库镜像构建的 Tag 均位于常规配置，自定义构建不
  const common=find(baseParse(editorTemplate)).loc.source
  for(const inline of [false,true])for(const kind of ['dockerfile','script']){
   const config=inline?{inline_build:{kind},image_tag:'${EDO_GIT_TAG}'}:{build_plan_id:'plan',image_tag:'release-v2'}
-  const html=await render(common,{propertyTab:'common',selectedNode:{id:'build',type:'build',name:'构建',config},activeBuildPlans:[{id:'plan',kind}],canUpdate:true,canEdit:true,canCreateBuildPlan:false,buildPlanOptions:[],updateSelectedNode(){}})
+  const html=await render(common,{propertyTab:'common',selectedNode:{id:'build',type:'build',name:'构建',config},selectedBuildPlan:{id:'plan',kind},selectedLibraryBuildPlan:inline?undefined:{id:'plan',name:'通用构建',kind,is_active:true},buildSource:()=>inline?'inline':'plan',canReadBuildPlan:true,canModifyBuildPlan:false,changingBuildPlanNodeID:'',selectedBuildPlanOptions:[],canUpdate:true,canEdit:true,canCreateBuildPlan:false,buildPlanOptions:[],updateSelectedNode(){}})
   assert.equal(html.includes('label="镜像 Tag"'),kind==='dockerfile')
+  assert.match(html,/自定义构建/);assert.match(html,/选择构建方案/)
   if(kind==='dockerfile')assert.match(html,inline?/value="\$\{EDO_GIT_TAG\}"/:/value="release-v2"/)
  }
 })

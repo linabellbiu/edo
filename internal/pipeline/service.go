@@ -436,6 +436,14 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 	input.ArtifactPath, input.RuntimeImage = strings.TrimSpace(input.ArtifactPath), strings.TrimSpace(input.RuntimeImage)
 	input.ImageRegistryID = strings.TrimSpace(input.ImageRegistryID)
 	input.TargetStage = strings.TrimSpace(input.TargetStage)
+	if input.Kind == model.BuildPlanDockerfile {
+		targets, err := buildTargetStages(input.TargetStage)
+		if err != nil {
+			slog.Warn("构建方案 Docker target 无效", "operation", "build_plan_targets_validate", "err", err)
+			return input, ErrInvalidBuildPlan
+		}
+		input.TargetStage = strings.Join(targets, ",")
+	}
 	if input.ContextPath == "" {
 		input.ContextPath = "."
 	}
@@ -487,7 +495,6 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 		len(input.Script) > 256*1024 || utf8.RuneCountInString(input.Description) > 500 ||
 		len(input.DockerfilePath) > 512 || len(input.ContextPath) > 512 || len(input.WorkingDirectory) > 512 ||
 		len(input.ArtifactPath) > 512 || len(input.RuntimeImage) > 512 || len(input.ImageRegistryID) > 36 || len(input.TargetStage) > 128 ||
-		(input.TargetStage != "" && !buildTargetStagePattern.MatchString(input.TargetStage)) ||
 		!validBuildVariables(input.BuildArgs) ||
 		(input.Kind == model.BuildPlanDockerfile && !dockerengine.ValidBuildArgs(input.BuildArgs)) {
 		return input, ErrInvalidBuildPlan

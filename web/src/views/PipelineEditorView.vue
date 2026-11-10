@@ -124,6 +124,11 @@ const auth = useAuthStore()
 const applications = ref<ApplicationRecord[]>([])
 const templates = ref<Workflow[]>([])
 const buildPlans = ref<PipelineBuildPlan[]>([])
+const inlineBuildDrafts=new Map<string,Partial<WorkflowNodeConfig>>()
+const libraryBuildDrafts=new Map<string,string>()
+const buildSourceDrafts=new Map<string,'inline'|'plan'>()
+const changingBuildPlanNodeID=ref('')
+const buildFieldErrors=reactive<Record<string,string>>({})
 const deploymentPlans = ref<DeploymentPlan[]>([])
 const inlineDeploymentOpen=ref(false),inlineDeploymentNodeID=ref('')
 const inlineDeploymentDrafts=new Map<string,WorkflowDeploymentPlan>()
@@ -201,7 +206,7 @@ function resetScope(reload=true) {
   applications.value=[];templates.value=[];buildPlans.value=[];deploymentPlans.value=[];notificationChannels.value=[];builtinVariables.value=[];workflow.value=null;sources.value=[];stages.value=[];issues.value=[]
   selectedNodeID.value='';selectedStageID.value='';libraryStageID.value='';panelMode.value='closed';propertyTab.value='common';presetOpen.value=false;presetContext='';saveConfirmOpen.value=false;saveConfirmSubmitting.value=false
   notificationChannelModalOpen.value=false;notificationChannelSubmitting.value=false;notificationChannelForm.name='';notificationChannelForm.endpoint='';notificationChannelForm.token='';notificationChannelForm.title=defaultNotificationTitle;notificationChannelForm.message=defaultNotificationMessage;notificationChannelForm.allow_http=false
-  for(const values of [environmentVariableTexts,environmentVariableErrors,notificationTemplateTargets])Object.keys(values).forEach(key=>delete values[key])
+  for(const values of [environmentVariableTexts,environmentVariableErrors,buildFieldErrors,notificationTemplateTargets])Object.keys(values).forEach(key=>delete values[key])
   dirty.value=false;editVersion++;saving.value=false;autoSaving.value=false;autoSaveFailed.value=false;switching.value=false;loading.value=false;builtinVariableLoading.value=false;builtinVariableError.value=''
   applicationID.value=typeof route.query.application==='string'?route.query.application:'';workflowID.value=typeof route.query.workflow==='string'?route.query.workflow:'';templateID.value=typeof route.query.template==='string'?route.query.template:''
   scopeError.value=!selectedProject()?'请先选择项目，再管理流水线。':selectedProject()!==auth.user?.project_id?'正在切换项目，请等待项目权限加载完成。':!auth.canAny(['workflow.read'])?'当前项目没有查看流水线的权限。':''
@@ -214,6 +219,15 @@ const canUpdate = computed(() => scopeCan('workflow.update'))
 const canExecute = computed(() => scopeCan('workflow.execute'))
 const canEdit = computed(() => canUpdate.value && (!saving.value || autoSaving.value))
 const canCreateBuildPlan = computed(() => scopeCan('build_plan.create'))
+const canReadBuildPlan = computed(() => scopeCan('build_plan.read'))
+const selectedLibraryBuildPlan = computed(()=>canReadBuildPlan.value&&selectedNode.value?.type==='build'&&buildSource(selectedNode.value)==='plan'?buildPlans.value.find(plan=>plan.id===selectedNode.value?.config.build_plan_id):undefined)
+const selectedBuildPlan=computed(()=>selectedNode.value?.config.inline_build||selectedLibraryBuildPlan.value)
+const canModifyBuildPlan=computed(()=>!!selectedLibraryBuildPlan.value&&scopeCan('build_plan.update'))
+const selectedBuildPlanOptions=computed(()=>{
+ const options=canReadBuildPlan.value?buildPlanOptions.value:[]
+ const id=selectedNode.value?.config.build_plan_id
+ return id&&!options.some(option=>option.value===id)?[{value:id,label:selectedLibraryBuildPlan.value?.name||(canReadBuildPlan.value?'原构建方案不可用':'无权查看原构建方案'),detail:'',disabled:true},...options]:options
+})
 const canCreateDeploymentPlan = computed(() => scopeCan('deployment_plan.create'))
 const canReadDeploymentPlan = computed(() => scopeCan('deployment_plan.read'))
 const selectedLibraryDeploymentPlan = computed(() => canReadDeploymentPlan.value && selectedNode.value?.type==='deploy' && deploymentSource(selectedNode.value)==='plan'
@@ -403,6 +417,7 @@ function cloneWorkflowValue<T>(value: T): T {
 function loadGraph(value: Workflow, loadedIssues: WorkflowIssue[], scope = captureScope()) {
   if (!currentScope(scope)) return
   inlineDeploymentDrafts.clear();libraryDeploymentDrafts.clear();changingDeploymentPlanNodeID.value=''
+  inlineBuildDrafts.clear();libraryBuildDrafts.clear();buildSourceDrafts.clear();changingBuildPlanNodeID.value='';Object.keys(buildFieldErrors).forEach(key=>delete buildFieldErrors[key])
   loadedContext.value = scope.identity
   workflow.value = value
   Object.keys(environmentVariableTexts).forEach(key => delete environmentVariableTexts[key])
@@ -633,7 +648,7 @@ function payload(activate: boolean) {
 
 function firstEnvironmentVariableError() {
   for (const task of stages.value.flatMap(stage => stage.tasks)) {
-    const error = environmentVariableErrors[task.id]
+    const error = environmentVariableErrors[task.id] || buildFieldErrors[task.id]
     if (error) return { task, error }
   }
   return null
@@ -644,7 +659,7 @@ function ensureEnvironmentVariablesValid(showMessage: boolean) {
   if (!invalid) return true
   if (showMessage) {
     selectNode(invalid.task.id)
-    propertyTab.value = 'advanced'
+    propertyTab.value = buildFieldErrors[invalid.task.id] ? 'common' : 'advanced'
     message.error(`${invalid.task.name}：${invalid.error}`)
   }
   return false
@@ -1211,6 +1226,29 @@ function updateEnvironmentVariables(value: string) {
   updateSelectedNode({}, { environment_variables: parsed.values })
 }
 
+function buildSource(node:WorkflowNode){return node.config.inline_build?'inline':node.config.build_plan_id?'plan':buildSourceDrafts.get(node.id)||'inline'}
+function changeBuildSource(value:'inline'|'plan'){
+ const node=selectedNode.value
+ if(!node||node.type!=='build'||!canEdit.value||buildSource(node)===value)return
+ if(node.config.inline_build)inlineBuildDrafts.set(node.id,JSON.parse(JSON.stringify({inline_build:node.config.inline_build,build_outputs:node.config.build_outputs,cache:node.config.cache,runtime_image:node.config.runtime_image,toolchain_language:node.config.toolchain_language,toolchain_version:node.config.toolchain_version})))
+ if(node.config.build_plan_id)libraryBuildDrafts.set(node.id,node.config.build_plan_id)
+ buildSourceDrafts.set(node.id,value);changingBuildPlanNodeID.value='';delete buildFieldErrors[node.id]
+ const draft=inlineBuildDrafts.get(node.id)||{inline_build:{id:'',name:node.name,kind:'dockerfile',dockerfile_path:'Dockerfile',context_path:'.',pull:true,cache_enabled:true,timeout_seconds:1800,is_active:true}}
+ updateSelectedNode({},value==='inline'?{...draft,build_plan_id:undefined}:{inline_build:undefined,build_outputs:undefined,cache:undefined,runtime_image:undefined,toolchain_language:undefined,toolchain_version:undefined,build_plan_id:libraryBuildDrafts.get(node.id)})
+}
+function changeLibraryBuildPlan(value:string){
+ const node=selectedNode.value
+ if(!node||node.type!=='build'||!canEdit.value||!canReadBuildPlan.value||buildSource(node)!=='plan'||node.config.build_plan_id===value)return
+ if(node.config.build_plan_id&&changingBuildPlanNodeID.value!==node.id)return
+ if(!activeBuildPlans.value.some(plan=>plan.id===value))return
+ libraryBuildDrafts.set(node.id,value);changingBuildPlanNodeID.value=''
+ updateSelectedNode({},{build_plan_id:value,inline_build:undefined})
+}
+function unlockBuildPlanSelection(){if(canEdit.value&&canReadBuildPlan.value&&selectedNode.value?.type==='build')changingBuildPlanNodeID.value=selectedNode.value.id}
+function modifyLinkedBuildPlan(){if(canModifyBuildPlan.value)void router.push({path:'/build-plans',query:{plan:selectedLibraryBuildPlan.value!.id,edit:'1',return_to:route.fullPath}})}
+watch(()=>[selectedNodeID.value,scopeIdentity(),canEdit.value],()=>{changingBuildPlanNodeID.value=''})
+watch(scopeIdentity,()=>{inlineBuildDrafts.clear();libraryBuildDrafts.clear();buildSourceDrafts.clear();Object.keys(buildFieldErrors).forEach(key=>delete buildFieldErrors[key])})
+
 function createBuildPlan() {
   if(!canCreateBuildPlan.value||!canEdit.value)return
   void router.push({ path: '/build-plans', query: { create: '1', return_to: route.fullPath } })
@@ -1726,37 +1764,21 @@ onBeforeRouteLeave(async () => {
             </template>
 
             <template v-else-if="selectedNode.type === 'build'">
-              <a-alert
-                v-if="selectedNode.config.toolchain_language && selectedNode.config.toolchain_version"
-                class="panel-alert"
-                type="info"
-                show-icon
-                :message="`构建工具链：${toolchainName(selectedNode.config.toolchain_language)} ${selectedNode.config.toolchain_version}`"
-                :description="`脚本方案使用隔离镜像 ${selectedNode.config.runtime_image}；Dockerfile 方案传入 ${toolchainBuildArgument(selectedNode.config.toolchain_language)} 构建参数。`"
-              />
-              <PipelineBuildFields v-if="selectedNode.config.inline_build" :node="selectedNode" :disabled="!canUpdate" @change="updateSelectedNode({},$event)"/>
-              <template v-else>              <a-form-item label="构建方案" required>
-                <div class="resource-picker">
-                  <a-select
-                    :value="selectedNode.config.build_plan_id"
-                    :disabled="!canUpdate"
-                    :options="buildPlanOptions"
-                    placeholder="选择构建方案"
-                    @update:value="updateSelectedNode({}, { build_plan_id: String($event || '') || undefined })"
-                  >
-                    <template #option="{ value, label, detail }">
-                      <span class="managed-resource-option">
-                        <span class="named-option"><strong>{{ label }}</strong><small>{{ detail }}</small></span>
-                        <a class="managed-resource-option-view" :href="resourceViewHref('/build-plans', 'plan', String(value))" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
-                      </span>
-                    </template>
-                  </a-select>
-                  <a-button v-if="canCreateBuildPlan" class="resource-create" aria-label="创建构建方案" title="创建构建方案" @click="createBuildPlan"><Plus :size="16" /></a-button>
-                </div>
-              </a-form-item>
-              <a-alert v-if="!activeBuildPlans.length" class="panel-alert" type="warning" show-icon message="还没有可用构建方案，请先创建构建方案。" />
-              <p class="panel-note">构建方案生成镜像或文件，部署任务使用构建结果。</p></template>
-              <a-form-item v-if="(selectedNode.config.inline_build||activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id))?.kind!=='script'" label="镜像 Tag" help="可用 ${EDO_GIT_TAG} 引用本次 Git Tag，或 ${EDO_COMMIT_SHA} 引用提交；留空自动生成唯一版本。">
+              <a-form-item label="构建来源"><a-radio-group :value="buildSource(selectedNode)" :disabled="!canEdit" @update:value="changeBuildSource($event)"><a-radio-button value="inline">自定义构建</a-radio-button><a-radio-button value="plan">选择构建方案</a-radio-button></a-radio-group></a-form-item>
+              <template v-if="buildSource(selectedNode)==='plan'">
+                <a-form-item label="构建方案" required>
+                  <div class="resource-picker"><a-select :value="selectedNode.config.build_plan_id" :disabled="!canEdit||!canReadBuildPlan||!!selectedNode.config.build_plan_id&&changingBuildPlanNodeID!==selectedNode.id" :options="selectedBuildPlanOptions" placeholder="选择构建方案" @update:value="changeLibraryBuildPlan(String($event||''))"/>
+                    <a-button v-if="selectedNode.config.build_plan_id&&canEdit&&canReadBuildPlan" type="link" @click="unlockBuildPlanSelection">更换</a-button>
+                    <a v-if="canModifyBuildPlan" :href="resourceViewHref('/build-plans','plan',selectedLibraryBuildPlan!.id)+'&amp;edit=1'" aria-label="修改构建方案" @click.prevent="modifyLinkedBuildPlan">修改</a>
+                    <a-button v-if="canCreateBuildPlan" :disabled="!canEdit" class="resource-create" aria-label="创建构建方案" @click="createBuildPlan"><Plus :size="16"/></a-button>
+                  </div>
+                </a-form-item>
+                <a-alert v-if="!selectedLibraryBuildPlan||!selectedLibraryBuildPlan.is_active" type="warning" show-icon :message="!canReadBuildPlan?'无权查看原构建方案，原关联继续保留':selectedLibraryBuildPlan?'原构建方案已停用，请修改或更换方案':'请选择可用构建方案；原有失效关联会继续保留'"/>
+                <PipelineBuildFields v-if="selectedLibraryBuildPlan" :key="selectedNode.id+':plan:'+selectedLibraryBuildPlan.id" :node="selectedNode" :build-plan="selectedLibraryBuildPlan" disabled/>
+              </template>
+              <PipelineBuildFields v-else :key="selectedNode.id+':inline'" :node="selectedNode" :disabled="!canEdit" @change="updateSelectedNode({},$event)" @invalid="buildFieldErrors[selectedNode!.id]=$event"/>
+              <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像名称" help="留空使用应用名；多个 target 按 Dockerfile 阶段名分别生成镜像。"><a-input :value="selectedNode.config.image_name" :disabled="!canEdit||(selectedBuildPlan?.target_stage||'').includes(',')" placeholder="例如 my-service" @update:value="updateSelectedNode({},{image_name:String($event||'')})"/></a-form-item>
+              <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像 Tag" help="可用 ${EDO_GIT_TAG} 引用本次 Git Tag，或 ${EDO_COMMIT_SHA} 引用提交；留空自动生成唯一版本。">
                 <a-input :value="selectedNode.config.image_tag" :disabled="!canEdit" placeholder="${EDO_GIT_TAG}" aria-label="镜像 Tag" @update:value="updateSelectedNode({}, { image_tag: String($event || '') })" />
               </a-form-item>
             </template>
@@ -1844,7 +1866,7 @@ onBeforeRouteLeave(async () => {
               </div>
               <div v-else-if="canReadNotificationChannels && activeNotificationChannels.length" class="node-notification-empty">当前任务尚未配置通知；建议至少添加“失败”通知。</div>
             </section>
-            <PipelineTaskControls v-if="selectedTask && selectedNode.type!=='deploy'" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="(selectedNode.config.inline_build||activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id))?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
+            <PipelineTaskControls v-if="selectedTask && !['build','deploy'].includes(selectedNode.type)" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="(selectedNode.config.inline_build||activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id))?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
             <a-divider v-if="selectedTask && !['build','deploy'].includes(selectedNode.type)" class="node-notification-divider" />
             <template v-if="selectedNode.type === 'shell' && !selectedNode.config.check && !selectedNode.config.migration">
               <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canUpdate || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像需包含 /bin/sh，并指定版本 Tag 或 Digest，不能使用 latest。' }}</small></a-form-item>
@@ -2029,6 +2051,7 @@ onBeforeRouteLeave(async () => {
 .pipeline-stage-ghost, .pipeline-task-ghost { opacity: .35; }
 .pipeline-stage-chosen, .pipeline-task-chosen .pipeline-task-card { box-shadow: 0 12px 30px rgb(30 45 80 / 16%); }
 .pipeline-side-panel { position: absolute; top: 0; right: 0; bottom: 0; z-index: 20; width: min(560px,calc(100% - 48px)); min-width: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 0; border-radius: 0 10px 10px 0; box-shadow: -12px 0 28px rgb(25 35 55 / 14%); }
+.pipeline-side-panel :deep(.build-plan-fields .ant-form-item) { margin-bottom: 0; }
 .pipeline-panel-enter-active,.pipeline-panel-leave-active { transition: opacity .18s ease,transform .22s cubic-bezier(.22,.61,.36,1); }
 .pipeline-panel-enter-from,.pipeline-panel-leave-to { opacity: 0; transform: translateX(24px); }
 .pipeline-side-panel > header { position: sticky; top: 0; z-index: 4; display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; padding: 10px 16px; border-bottom: 1px solid var(--edo-border); background: var(--edo-surface); }

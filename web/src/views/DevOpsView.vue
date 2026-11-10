@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import BuildPlanFields from '@/components/BuildPlanFields.vue'
+import type {PipelineBuildPlan} from '@/types/pipeline'
 import DeliveryVariablesView from './DeliveryVariablesView.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -2056,6 +2058,13 @@ function selectBuildPlan(id:string){
  selectedBuildPlanID.value=id
  buildPlanView.value='overview'
 }
+function consumeBuildEditRequest(){
+ if(props.section!=='build-plans'||route.query.edit!=='1'||typeof route.query.plan!=='string'||!canUpdate.value||formOpen.value)return
+ const plan=buildPlans.value.find(item=>item.id===route.query.plan)
+ if(!plan)return
+ edit(plan)
+ const query={...route.query};delete query.edit;void router.replace({query})
+}
 function consumeBuildCreateRequest(){
  if(!['applications','build-plans','image-registries'].includes(props.section)||route.query.create!=='1'||!canCreate.value)return
  create()
@@ -2064,7 +2073,7 @@ function consumeBuildCreateRequest(){
  void router.replace({query})
 }
 
-watch(()=>props.section,()=>{formOpen.value=false;resetForms();resetManualFlow();resetPlanExecution();syncBuildPlanSelection();void refresh().then(()=>{syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()})})
+watch(()=>props.section,()=>{formOpen.value=false;resetForms();resetManualFlow();resetPlanExecution();syncBuildPlanSelection();void refresh().then(()=>{syncBuildPlanSelection();consumeBuildEditRequest();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()})})
 watch(()=>registryForm,()=>registryTested.value=false,{deep:true})
 watch(()=>registryForm.provider,(provider,previous)=>{
  if(provider==='docker_hub'){
@@ -2081,7 +2090,7 @@ watch(()=>repoForm.provider,(provider)=>{
 })
 watch(()=>repoForm.auth_type,(authType)=>{if(authType==='none'||!credentials.value.some(item=>item.id===repoForm.credential_id&&item.auth_type===authType))repoForm.credential_id=''})
 watch(()=>buildPlans.value.map(item=>item.id).join(','),syncBuildPlanSelection)
-watch(()=>route.query.plan,syncBuildPlanSelection)
+watch(()=>[route.query.plan,route.query.edit],()=>{syncBuildPlanSelection();consumeBuildEditRequest()})
 watch(()=>applications.value.map(item=>item.id).join(','),syncBuildPlanSelection)
 watch(artifactIdentity,()=>{resetArtifactRequests();if(props.section==='build-plans')buildPlanView.value='overview'},{flush:'sync'})
 watch([()=>auth.authorizationReady,()=>auth.canAny(['build_plan.read']),()=>auth.canAny(['artifact.read']),()=>auth.canAny(['artifact.create']),()=>buildPlans.value.find(item=>item.id===selectedBuildPlanID.value)?.is_active,()=>applications.value.find(item=>item.id===artifactApplicationID.value)?.is_active],()=>{
@@ -2103,7 +2112,7 @@ watch(()=>JSON.stringify([resourceScopeKey(),auth.authorizationState,application
 watch([planExecutionScopeIdentity,()=>auth.authorizationReady],refreshAuthorizedResourceScope,{flush:'post'})
 watch(()=>props.section,connectDeliveryEvents)
 onMounted(()=>{window.addEventListener('edo:projects-changed',syncPlanExecutionProject)})
-onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
+onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildEditRequest();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
 onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())controller.abort();runListController?.abort();executionController?.abort();runQueryRevision++;executionRevision++;stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
 onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abort();resetArtifactRequests();formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
 </script>
@@ -2538,53 +2547,9 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
  </div>
 </template>
 <template v-if="props.section==='build-plans'">
- <section class="build-form-section">
-  <header><strong>基本信息</strong><small>只需选择构建方式即可使用默认配置。</small></header>
-  <div class="form-grid">
-   <a-form-item label="名称" required><a-input v-model:value="buildForm.name" placeholder="例如 API 服务构建"/></a-form-item>
-   <a-form-item label="构建方式" required><a-select v-model:value="buildForm.kind" :options="[{value:'dockerfile',label:'Docker 镜像构建'},{value:'script',label:'自定义构建'}]"/></a-form-item>
-  </div>
- </section>
- <section class="build-form-section">
-	  <header><strong>{{ buildForm.kind==='dockerfile'?'镜像构建':'自定义构建' }}</strong><small>{{ buildForm.kind==='dockerfile'?'默认读取仓库根目录 Dockerfile，并将镜像保留在当前构建运行时。':'在本次任务的独立工作区执行，使用 EDO 所在环境已有工具链。' }}</small></header>
-  <div v-if="buildForm.kind==='dockerfile'" class="form-grid">
-   <a-form-item label="Dockerfile 路径" required><a-input v-model:value="buildForm.dockerfile_path" placeholder="Dockerfile"/></a-form-item>
-   <a-form-item label="构建上下文" required><a-input v-model:value="buildForm.context_path" placeholder="."/></a-form-item>
-  </div>
-  <div v-else class="form-grid">
-   <a-form-item class="span2" label="构建脚本" required><a-textarea v-model:value="buildForm.script" :rows="8" placeholder="例如：npm ci&#10;npm run build"/></a-form-item>
-	   <a-form-item label="保存产物"><a-switch v-model:checked="buildSaveArtifact"/><small class="field-hint">关闭时只执行自定义构建，不登记文件制品。</small></a-form-item>
-	   <a-form-item v-if="buildSaveArtifact" class="span2" label="产物路径" required><a-input v-model:value="buildForm.artifact_path" placeholder="例如 dist 或 bin/server"/></a-form-item>
-	   <a-alert v-if="buildSaveArtifact" class="span2" type="info" show-icon message="产物归档由 EDO 自动完成" description="脚本成功后，EDO 会校验产物路径：目录确定性打包为 tar.gz，普通文件保持原格式，然后计算 SHA256 摘要并登记制品；脚本无需自行上传。"/>
-	   <a-alert v-else class="span2" type="warning" show-icon message="本方案不保存文件制品" description="可用于测试、检查或只需执行命令的流水线；若后续存在主机脚本部署任务，保存流水线时会要求开启产物归档。"/>
-  </div>
- </section>
- <a-collapse class="build-advanced" :bordered="false">
-  <a-collapse-panel key="advanced">
-   <template #header><span class="build-advanced-title"><strong>高级配置</strong><small>{{ buildForm.kind==='dockerfile'?'镜像仓库、缓存、构建参数和超时':'环境变量和超时' }}</small></span></template>
-   <div class="form-grid">
-    <a-form-item v-if="buildForm.kind==='dockerfile'" class="span2" label="镜像输出">
-     <a-radio-group v-model:value="buildImageDestination" button-style="solid"><a-radio-button value="local">构建运行时本地镜像</a-radio-button><a-radio-button value="registry">推送镜像仓库</a-radio-button></a-radio-group>
-    </a-form-item>
-    <a-form-item v-if="buildForm.kind==='dockerfile'&&buildImageDestination==='registry'" class="span2" label="镜像仓库" required>
-     <div class="resource-picker">
-      <a-select v-model:value="buildForm.image_registry_id" show-search option-filter-prop="label" placeholder="选择已测试可用的镜像仓库" :options="registries.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))">
-       <template #option="{value,label}"><span class="managed-resource-option"><span class="managed-resource-option-label">{{ label }}</span><a class="managed-resource-option-view" :href="resourceViewHref('/image-registries','registry',String(value))" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a></span></template>
-      </a-select>
-      <a-button v-if="canCreate" class="resource-create" aria-label="创建镜像仓库" title="创建镜像仓库" @click="createImageRegistry"><Plus :size="16"/></a-button>
-     </div>
-    </a-form-item>
-    <p v-if="buildForm.kind==='dockerfile'&&buildImageDestination==='registry'" class="span2 image-path-preview">当前镜像路径 <code>{{ buildImagePathPreview }}</code></p>
-    <a-form-item v-if="buildForm.kind==='dockerfile'" label="Docker target"><a-input v-model:value="buildForm.target_stage" placeholder="可选，多阶段构建目标"/></a-form-item>
-    <a-form-item v-if="buildForm.kind==='dockerfile'" label="拉取基础镜像"><a-switch v-model:checked="buildForm.pull"/><small class="field-hint">默认开启，确保基础镜像及时更新。</small></a-form-item>
-    <a-form-item v-if="buildForm.kind==='dockerfile'" label="启用本地构建缓存"><a-switch v-model:checked="buildForm.cache_enabled"/><small class="field-hint">默认开启，仅复用当前构建节点的 Docker/BuildKit 层缓存，不会向镜像仓库推送缓存标签。</small></a-form-item>
-    <a-form-item v-if="buildForm.kind==='dockerfile'" class="span2" label="构建参数（每行 KEY=value）"><a-textarea v-model:value="buildArgsText" :rows="5" placeholder="VERSION=1.0.0&#10;ENABLE_FEATURE=true"/></a-form-item>
-    <a-form-item v-if="buildForm.kind==='script'" class="span2" label="环境变量（每行 KEY=value）"><a-textarea v-model:value="buildEnvironmentText" :rows="5" placeholder="NODE_ENV=production&#10;CGO_ENABLED=0"/></a-form-item>
-    <a-form-item label="超时（秒）" required><a-input-number v-model:value="buildForm.timeout_seconds" :min="30" :max="7200"/></a-form-item>
-    <a-form-item class="span2" label="说明"><a-input v-model:value="buildForm.description" placeholder="可选，说明适用应用或制品用途"/></a-form-item>
-   </div>
-  </a-collapse-panel>
- </a-collapse>
+ <a-form-item label="名称" required><a-input v-model:value="buildForm.name" placeholder="例如 API 服务构建"/></a-form-item>
+ <BuildPlanFields :plan="buildForm as PipelineBuildPlan" :disabled="saving" :registries="registries.filter(item=>item.is_active)" v-model:image-destination="buildImageDestination" v-model:save-artifact="buildSaveArtifact" v-model:build-args-text="buildArgsText" v-model:environment-text="buildEnvironmentText" :edit-permission="editingID?'build_plan.update':'build_plan.create'" @change="Object.assign(buildForm,$event)"/>
+ <a-form-item label="说明"><a-input v-model:value="buildForm.description" placeholder="说明适用应用或制品用途"/></a-form-item>
 </template>
 <template v-if="props.section==='image-registries'">
  <div class="form-grid">

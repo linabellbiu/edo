@@ -1,21 +1,43 @@
 <script setup lang="ts">
-import {computed,onBeforeUnmount,ref,watch} from 'vue'
+import {computed,onBeforeUnmount,reactive,ref,watch} from 'vue'
 import {PlusCircle,MinusCircle} from 'lucide-vue-next'
 import client from '@/api/client'
 import {apiErrorMessage} from '@/api/resources'
 import {useAuthStore} from '@/stores/auth'
-import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
+import BuildPlanFields from '@/components/BuildPlanFields.vue'
 import type {WorkflowNode,WorkflowNodeConfig,PipelineBuildPlan} from '@/types/pipeline'
-const props=defineProps<{node:WorkflowNode;disabled:boolean}>()
-const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>]}>()
+const props=defineProps<{node:WorkflowNode;disabled:boolean;buildPlan?:PipelineBuildPlan}>()
+const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>];invalid:[error:string]}>()
 const auth=useAuthStore(),registries=ref<Array<{id:string;name:string}>>([]),error=ref('')
-const plan=computed(()=>props.node.config.inline_build)
+const plan=computed(()=>props.buildPlan||props.node.config.inline_build)
+const buildArgsText=ref(''),environmentText=ref(''),textErrors=reactive({dockerfile:'',script:''}),imageDestination=ref<'local'|'registry'>('registry'),saveArtifact=ref(false)
+watch(()=>props.buildPlan||props.node.id,()=>{buildArgsText.value=formatVariables(plan.value?.build_args);environmentText.value=formatVariables(plan.value?.environment_variables);imageDestination.value=plan.value?.image_registry_id?'registry':props.buildPlan?'local':'registry';saveArtifact.value=!!plan.value?.artifact_path;textErrors.dockerfile='';textErrors.script='';emit('invalid','')},{immediate:true})
+const fieldError=computed(()=>plan.value?.kind==='script'?textErrors.script:textErrors.dockerfile)
+watch(fieldError,error=>emit('invalid',error))
+function formatVariables(values?:Record<string,string>){return Object.entries(values||{}).map(([k,v])=>`${k}=${v}`).join('\n')}
+function variableText(value:string,environment=false){
+ if(props.disabled||props.buildPlan)return
+ const target=environment?environmentText:buildArgsText;target.value=value
+ const values:Record<string,string>={}
+ let error=''
+ for(const [index,line] of value.split(/\r?\n/).entries()){
+  if(!line.trim()||line.trim().startsWith('#'))continue
+  const separator=line.indexOf('='),name=line.slice(0,separator).trim()
+  if(separator<1||! /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)||Object.hasOwn(values,name)){error=`第 ${index+1} 行格式无效或变量名重复，请使用 KEY=value`;break}
+  values[name]=line.slice(separator+1)
+ }
+ if(Object.keys(values).length>100)error='最多配置 100 个变量'
+ textErrors[environment?'script':'dockerfile']=error;emit('invalid',fieldError.value)
+ if(!error)update(environment?{environment_variables:values}:{build_args:values})
+}
+function destination(value:'local'|'registry'){if(props.disabled||props.buildPlan)return;imageDestination.value=value;if(value==='local')update({image_registry_id:''})}
+function artifact(value:boolean){if(props.disabled||props.buildPlan)return;saveArtifact.value=value;if(!value)update({artifact_path:''})}
 const outputs=computed(()=>props.node.config.build_outputs||[])
 let controller:AbortController|undefined
 const scope=()=>JSON.stringify([auth.user?.id,auth.user?.project_id,auth.user?.permissions,localStorage.getItem('edo.project')])
 watch(scope,async()=>{controller?.abort();controller=new AbortController();const current=scope(),signal=controller.signal;registries.value=[];error.value='';if(!auth.canAny(['image_registry.read']))return;try{const {data}=await client.get('/image-registries',{signal});if(!signal.aborted&&current===scope())registries.value=data.image_registries.filter((v:{is_active:boolean;project_id:string})=>v.is_active&&v.project_id===auth.user?.project_id)}catch(e){if(!signal.aborted&&current===scope())error.value=apiErrorMessage(e)}},{immediate:true})
 onBeforeUnmount(()=>controller?.abort())
-function change(patch:Partial<WorkflowNodeConfig>){if(!props.disabled)emit('change',patch)}
+function change(patch:Partial<WorkflowNodeConfig>){if(!props.disabled&&!props.buildPlan)emit('change',patch)}
 function update(patch:Partial<PipelineBuildPlan>){if(plan.value)change({inline_build:{...plan.value,...patch},...(patch.runtime_image!==undefined?{runtime_image:patch.runtime_image,toolchain_language:undefined,toolchain_version:undefined}:{})})}
 function output(index:number,patch:Partial<{name:string;paths:string[]}>){change({build_outputs:outputs.value.map((v,i)=>i===index?{...v,...patch}:v)})}
 function cache(patch:Record<string,unknown>){change({cache:{key:'dependencies',lock_files:[],paths:[],...props.node.config.cache,...patch}})}
@@ -23,15 +45,9 @@ function cache(patch:Record<string,unknown>){change({cache:{key:'dependencies',l
 <template>
  <section v-if="plan" class="pipeline-build-fields">
   <a-alert v-if="error" type="error" show-icon :message="error"/>
-  <template v-if="plan.kind==='dockerfile'">
-   <a-form-item label="关联镜像仓库" required :validate-status="!plan.image_registry_id?'error':undefined" :help="!plan.image_registry_id?'镜像构建必须关联镜像仓库':undefined"><a-select :value="plan.image_registry_id||undefined" :disabled="disabled" :options="registries.map(v=>({value:v.id,label:v.name}))" placeholder="选择镜像仓库" @update:value="update({image_registry_id:String($event||'')})"/></a-form-item>
-   <a-form-item required><template #label><span>Dockerfile 路径 <a-tooltip title="相对于本次运行固定 Commit 的代码仓库根目录，例如 docker/Dockerfile。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="Dockerfile 路径说明">?</button></a-tooltip></span></template><a-input :value="plan.dockerfile_path" :disabled="disabled" placeholder="Dockerfile" @update:value="update({dockerfile_path:String($event)})"/></a-form-item>
-   <a-form-item required><template #label><span>Context <a-tooltip title="Docker 构建上下文，相对于仓库根目录；点号表示整个仓库。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="Context 说明">?</button></a-tooltip></span></template><a-input :value="plan.context_path" :disabled="disabled" placeholder="." @update:value="update({context_path:String($event)})"/></a-form-item>
-   <a-form-item label="构建缓存"><a-switch :checked="plan.cache_enabled" :disabled="disabled" @change="update({cache_enabled:Boolean($event)})"/></a-form-item>
-   <a-form-item label="构建参数"><a-textarea :value="Object.entries(plan.build_args||{}).map(([k,v])=>`${k}=${v}`).join('\n')" :disabled="disabled" :rows="3" placeholder="每行 KEY=value，例如 NODE_ENV=production" @update:value="update({build_args:Object.fromEntries(String($event).split(/\r?\n/).filter(v=>v.includes('=')).map(v=>[v.slice(0,v.indexOf('=')),v.slice(v.indexOf('=')+1)]))})"/></a-form-item>
-  </template>
-  <template v-else>
-   <a-form-item required><DeploymentScriptEditor :model-value="plan.script||''" label="构建脚本" :example-text="'set -eu\n# 例如：npm ci && npm run build\n'" kind="script" :disabled="disabled" edit-permission="workflow.update" @update:model-value="update({script:$event})"><template #label><span>构建脚本 <a-tooltip title="在本次任务的独立工作区执行，使用 EDO 所在环境已有工具链；从仓库根目录开始，需要进入子目录时在脚本中 cd。容器安装 EDO 时，使用 API 容器中的工具。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="自定义构建执行说明">?</button></a-tooltip></span></template></DeploymentScriptEditor></a-form-item>
+  <a-alert v-if="fieldError" type="error" show-icon :message="fieldError"/>
+  <BuildPlanFields :plan="plan" :require-registry="!buildPlan" :named-outputs="outputs.length>0" :disabled="disabled||!!buildPlan" :registries="registries" :image-destination="imageDestination" :save-artifact="saveArtifact" :build-args-text="buildArgsText" :environment-text="environmentText" edit-permission="workflow.update" @change="update" @update:image-destination="destination" @update:save-artifact="artifact" @update:build-args-text="variableText($event)" @update:environment-text="variableText($event,true)"/>
+  <template v-if="plan.kind==='script'&&!buildPlan">
    <section class="build-outputs">
     <header><strong>暂存构建物</strong><a-button type="link" :disabled="disabled||outputs.length>=16" @click="change({build_outputs:[...outputs,{name:outputs.length?`BUILD_ARTIFACT_${outputs.length+1}`:'BUILD_ARTIFACT',paths:['./output']}]})"><PlusCircle :size="15"/>添加</a-button></header>
     <a-collapse v-for="(item,index) in outputs" :key="index" :default-active-key="['output']">
@@ -52,7 +68,6 @@ function cache(patch:Record<string,unknown>){change({cache:{key:'dependencies',l
     <a-form-item label="缓存目录"><a-select mode="tags" :value="node.config.cache.paths" :disabled="disabled" placeholder="例如 .cache/npm" @update:value="cache({paths:$event})"/></a-form-item>
    </template>
   </template>
-  <a-form-item label="构建超时（秒）"><a-input-number :value="plan.timeout_seconds" :min="30" :max="7200" :disabled="disabled" @update:value="update({timeout_seconds:Number($event)})"/></a-form-item>
  </section>
 </template>
 <style scoped>
