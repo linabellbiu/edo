@@ -1899,7 +1899,6 @@ onBeforeRouteLeave(async () => {
               <h3 class="task-section-heading">高级配置</h3>
               <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像名称"><a-input :value="selectedNode.config.image_name" :disabled="!canEdit" :placeholder="editorApplication?.name||'留空使用应用名'" aria-label="镜像名称" @update:value="updateSelectedNode({},{image_name:String($event||'')})"/></a-form-item>
               <BuildPlanAdvancedFields :target="selectedBuildTarget" :disabled="!canEdit" @change="updateSelectedBuildTarget"/>
-              <a-button v-if="canModifyBuildPlan" type="link" :href="resourceViewHref('/build-plans','plan',selectedLibraryBuildPlan!.id)+'&amp;edit=1'" aria-label="修改构建方案" @click.prevent="modifyLinkedBuildPlan">修改构建方案</a-button>
             </section>
             <PipelineTaskControls v-if="selectedTask && !['build','deploy'].includes(selectedNode.type)" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="(selectedNode.config.inline_build||activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id))?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
             <a-divider v-if="selectedTask && !['build','deploy'].includes(selectedNode.type)" class="node-notification-divider" />

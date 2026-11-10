@@ -172,7 +172,7 @@ test('真实 Form 标签保留镜像 Tag 问号按钮及目录说明，不能被
 })
 
 
-test('镜像名称与单 target 位于高级配置，库方案 target 可按任务编辑并保留原方案修改入口',async()=>{
+test('镜像名称与单 target 位于高级配置，库方案 target 可按任务编辑且不重复显示修改入口',async()=>{
  const find=node=>node.tag==='section'&&node.props?.some(prop=>prop.name==='class'&&prop.value?.content==='build-advanced-fields')?node:node.children?.map(find).find(Boolean)
  const section=find(baseParse(editorTemplate)).loc.source
  for(const inline of [false,true])for(const kind of ['dockerfile','script'])for(const canEdit of [false,true]){
@@ -181,7 +181,7 @@ test('镜像名称与单 target 位于高级配置，库方案 target 可按任�
   assert.match(html,/label="镜像名称"/);assert.match(html,/value="custom"/)
   assert.match(html,/value="runtime"/)
   assert.equal(/disabled[^>]*aria-label="Docker target"/.test(html),!canEdit)
-  assert.equal(html.includes('aria-label="修改构建方案"'),!inline&&canEdit)
+  assert.doesNotMatch(html,/修改构建方案/)
   assert.doesNotMatch(html,/镜像 Tag/)
  }
 })
