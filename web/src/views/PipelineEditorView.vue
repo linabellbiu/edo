@@ -1786,7 +1786,7 @@ onBeforeRouteLeave(async () => {
                 <a-form-item label="构建方案" required>
                   <div class="resource-picker"><a-select :value="selectedNode.config.build_plan_id" :disabled="!canEdit||!canReadBuildPlan||!!selectedNode.config.build_plan_id&&changingBuildPlanNodeID!==selectedNode.id" :options="selectedBuildPlanOptions" placeholder="选择构建方案" @update:value="changeLibraryBuildPlan(String($event||''))"/>
                     <a-button v-if="selectedNode.config.build_plan_id&&canEdit&&canReadBuildPlan" type="link" @click="unlockBuildPlanSelection">更换</a-button>
-                    <a v-if="canModifyBuildPlan" :href="resourceViewHref('/build-plans','plan',selectedLibraryBuildPlan!.id)+'&amp;edit=1'" aria-label="修改构建方案" @click.prevent="modifyLinkedBuildPlan">修改</a>
+                    <a-button v-if="canModifyBuildPlan" type="link" :href="resourceViewHref('/build-plans','plan',selectedLibraryBuildPlan!.id)+'&amp;edit=1'" aria-label="修改构建方案" @click.prevent="modifyLinkedBuildPlan">修改</a-button>
                     <a-button v-if="canCreateBuildPlan" :disabled="!canEdit" class="resource-create" aria-label="创建构建方案" @click="createBuildPlan"><Plus :size="16"/></a-button>
                   </div>
                 </a-form-item>
@@ -2124,8 +2124,10 @@ onBeforeRouteLeave(async () => {
 .pipeline-side-panel :deep(.ant-form-item) { margin-bottom: 13px; }
 .pipeline-side-panel :deep(.pipeline-deploy-fields .ant-form-item), .pipeline-side-panel :deep(.deployment-plan-reference .ant-form-item) { margin-bottom: 0; }
 .pipeline-side-panel :deep(.ant-checkbox-wrapper) { display: flex; margin: 5px 0; }
-.resource-picker { display: flex; align-items: stretch; gap: 8px; }
+.resource-picker { display: flex; align-items: center; gap: 6px; }
 .resource-picker :deep(.ant-select) { min-width: 0; flex: 1; }
+.resource-picker :deep(.ant-btn) { flex-shrink: 0; }
+.resource-picker :deep(.ant-btn-link) { padding-inline: 4px; }
 .resource-create { width: 34px; flex: 0 0 34px; padding: 0; }
 .node-notification-section { margin: 0 -16px; }
 .node-notification-header { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; background: var(--edo-primary-soft); }
