@@ -14,8 +14,8 @@ import DevOpsView from '/src/views/DevOpsView.vue'
 
 // 接口与写入仅保存在当前浏览器，不连接真实 EDO。
 const project='build-preview',key='edo.build-plan-preview',clone=x=>JSON.parse(JSON.stringify(x))
-let plan={id:'shared-build',project_id:project,department_id:'department',name:'通用多阶段构建',kind:'dockerfile',dockerfile_path:'Dockerfile',context_path:'.',target_stage:'web,api',image_registry_id:'registry',pull:true,cache_enabled:true,build_args:{MODE:'release'},environment_variables:{},timeout_seconds:1800,is_active:true}
-let workflow=JSON.parse(sessionStorage.getItem(key)||'null')||{id:'flow',name:'构建方案验收',schema_version:1,revision:1,is_active:false,source:{id:'source',type:'trigger',name:'代码源',config:{branch:'main',events:['manual']}},stages:[{id:'build-stage',name:'构建',tasks:[{id:'build',type:'build',name:'多阶段镜像构建',config:{build_plan_id:plan.id,image_tag:'${EDO_GIT_TAG}'}}]}]}
+let plan={id:'shared-build',project_id:project,department_id:'department',name:'通用镜像构建',kind:'dockerfile',dockerfile_path:'Dockerfile',context_path:'.',image_registry_id:'registry',pull:true,cache_enabled:true,build_args:{MODE:'release'},environment_variables:{},timeout_seconds:1800,is_active:true}
+let workflow=JSON.parse(sessionStorage.getItem(key)||'null')||{id:'flow',name:'构建方案验收',schema_version:1,revision:1,is_active:false,source:{id:'source',type:'trigger',name:'代码源',config:{branch:'main',events:['manual']}},stages:[{id:'build-stage',name:'构建',tasks:[{id:'build',type:'build',name:'镜像构建',config:{build_plan_id:plan.id,image_tag:'${EDO_GIT_TAG}'}}]}]}
 const trace=[];window.edoBuildTrace=trace
 client.defaults.adapter=async config=>{
  const path=config.url,method=config.method||'get',payload=typeof config.data==='string'?JSON.parse(config.data):config.data

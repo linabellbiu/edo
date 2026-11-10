@@ -89,7 +89,6 @@ type buildPlanRequest struct {
 	ArtifactPath         string              `json:"artifact_path" binding:"max=512"`
 	RuntimeImage         string              `json:"runtime_image" binding:"max=512"`
 	ImageRegistryID      string              `json:"image_registry_id" binding:"max=36"`
-	TargetStage          string              `json:"target_stage" binding:"max=128"`
 	Pull                 *bool               `json:"pull"`
 	CacheEnabled         *bool               `json:"cache_enabled"`
 	BuildArgs            map[string]string   `json:"build_args" binding:"max=100"`
@@ -514,8 +513,8 @@ func (h pipelineHandler) createBuildPlan(c *gin.Context) {
 		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
 		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
 		WorkingDirectory: request.WorkingDirectory, ArtifactPath: request.ArtifactPath, RuntimeImage: request.RuntimeImage,
-		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage,
-		Pull: request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
+		ImageRegistryID: request.ImageRegistryID,
+		Pull:            request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
 		EnvironmentVariables: request.EnvironmentVariables, TimeoutSeconds: request.TimeoutSeconds,
 	})
 	if err != nil {
@@ -536,8 +535,8 @@ func (h pipelineHandler) updateBuildPlan(c *gin.Context) {
 		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
 		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
 		WorkingDirectory: request.WorkingDirectory, ArtifactPath: request.ArtifactPath, RuntimeImage: request.RuntimeImage,
-		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage,
-		Pull: request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
+		ImageRegistryID: request.ImageRegistryID,
+		Pull:            request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
 		EnvironmentVariables: request.EnvironmentVariables, TimeoutSeconds: request.TimeoutSeconds,
 	})
 	if err != nil {

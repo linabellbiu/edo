@@ -47,9 +47,6 @@ function updateCache(update:Record<string,unknown>){change({cache:{key:'dependen
 </script>
 <template>
  <section class="task-controls">
-  <template v-if="node.type==='build'&&!scriptBuild">
-   <a-form-item label="镜像名称" help="相对于构建方案镜像仓库的命名空间；留空使用应用名。"><a-input :value="node.config.image_name" :disabled="!canEdit" placeholder="例如 my-service" @update:value="change({image_name:String($event||'')})"/></a-form-item>
-  </template>
   <a-alert v-if="error" type="warning" :message="error" show-icon/>
   <template v-if="node.type==='shell'">
    <a-form-item label="任务用途"><a-select :value="tool" :disabled="!canEdit" :options="[{value:'script',label:'自定义脚本'},{value:'sqlfluff',label:'SQL 质量检查'},{value:'trivy',label:'漏洞与配置扫描'},{value:'gitleaks',label:'密钥泄漏扫描'},{value:'migration',label:'数据库变更'}]" @update:value="chooseTool(String($event))"/></a-form-item>

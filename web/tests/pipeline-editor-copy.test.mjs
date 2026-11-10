@@ -11,6 +11,7 @@ const template = path => parse(readFileSync(new URL(path, import.meta.url), 'utf
 const editorTemplate = template('../src/views/PipelineEditorView.vue')
 const composeTemplate = template('../src/components/ComposeTaskFields.vue')
 const taskControlsTemplate = template('../src/components/PipelineTaskControls.vue')
+const buildPlanFieldsTemplate = template('../src/components/BuildPlanFields.vue')
 function findSection(node) {
   if (node.tag === 'section' && node.props.some(prop => prop.name === 'class' && prop.value?.content === 'node-notification-section')) return node
   return node.children?.map(findSection).find(Boolean)
@@ -85,8 +86,11 @@ test('内联与库镜像构建的 Tag 均位于常规配置，自定义构建不
  const common=find(baseParse(editorTemplate)).loc.source
  for(const inline of [false,true])for(const kind of ['dockerfile','script']){
   const config=inline?{inline_build:{kind},image_tag:'${EDO_GIT_TAG}'}:{build_plan_id:'plan',image_tag:'release-v2'}
-  const html=await render(common,{propertyTab:'common',selectedNode:{id:'build',type:'build',name:'构建',config},selectedBuildPlan:{id:'plan',kind},selectedLibraryBuildPlan:inline?undefined:{id:'plan',name:'通用构建',kind,is_active:true},buildSource:()=>inline?'inline':'plan',canReadBuildPlan:true,canModifyBuildPlan:false,changingBuildPlanNodeID:'',selectedBuildPlanOptions:[],canUpdate:true,canEdit:true,canCreateBuildPlan:false,buildPlanOptions:[],updateSelectedNode(){}})
+  const html=await render(common,{propertyTab:'common',editorApplication:{name:'demo_app'},selectedNode:{id:'build',type:'build',name:'构建',config},selectedBuildPlan:{id:'plan',kind},selectedLibraryBuildPlan:inline?undefined:{id:'plan',name:'通用构建',kind,is_active:true},buildSource:()=>inline?'inline':'plan',canReadBuildPlan:true,canModifyBuildPlan:false,changingBuildPlanNodeID:'',selectedBuildPlanOptions:[],canUpdate:true,canEdit:true,canCreateBuildPlan:false,buildPlanOptions:[],updateSelectedNode(){}})
   assert.equal(html.includes('label="镜像 Tag"'),kind==='dockerfile')
+  assert.equal(html.includes('label="镜像名称"'),kind==='dockerfile')
+  if(kind==='dockerfile')assert.match(html,/placeholder="demo_app"/)
+  assert.doesNotMatch(html,/Docker target/)
   assert.match(html,/自定义构建/);assert.match(html,/选择构建方案/)
   if(kind==='dockerfile')assert.match(html,inline?/value="\$\{EDO_GIT_TAG\}"/:/value="release-v2"/)
  }
@@ -95,9 +99,17 @@ test('内联与库镜像构建的 Tag 均位于常规配置，自定义构建不
 test('构建高级配置不重复展示 Tag 或项目变量选择，检查任务继续提供原引用入口',async()=>{
  for(const scriptBuild of [false,true]){
   const html=await render(taskControlsTemplate,{node:{id:'build',type:'build',config:{variable_names:['KEEP_ME'],variable_environment_id:'saved-group'}},scriptBuild,canEdit:true,error:'',buildNodes:[],updateCache(){},change(){}})
-  assert.doesNotMatch(html,/镜像 Tag|引用当前项目变量与密钥|变量适用主机组/)
+  assert.doesNotMatch(html,/镜像名称|镜像 Tag|引用当前项目变量与密钥|变量适用主机组/)
  }
  const shell=await render(taskControlsTemplate,{node:{type:'shell',config:{}},canEdit:true,error:'',tool:'script',variableOptions:[],environments:[],change(){}})
  assert.match(shell,/引用当前项目变量与密钥/)
  assert.match(shell,/变量适用主机组/)
+})
+
+
+test('共享构建参数表单不再提供 Docker target，继续保留 Dockerfile 和 Context',async()=>{
+ const html=await render(buildPlanFieldsTemplate,{plan:{kind:'dockerfile',dockerfile_path:'Dockerfile',context_path:'.',timeout_seconds:1800},disabled:false,registries:[],imageDestination:'registry',saveArtifact:false,buildArgsText:'',environmentText:'',editPermission:'workflow.update',emit(){}})
+ assert.match(html,/Dockerfile 路径/)
+ assert.match(html,/Context/)
+ assert.doesNotMatch(html,/Docker target|例如 web,api/)
 })

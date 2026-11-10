@@ -236,19 +236,20 @@ test('构建任务不为已移除的变量表单读取资源，也不清空已�
 
 test('从常规配置修改镜像 Tag 保存时保留原项目变量与主机组引用',async t=>{
  for(const inline of [false,true]){
-  const config={image_tag:'old-tag',variable_names:['KEEP_ME'],variable_environment_id:'saved-group',...(inline?{inline_build:{kind:'dockerfile',name:'内联构建',dockerfile_path:'Dockerfile',context_path:'.'}}:{build_plan_id:'build-project-a'})}
+  const config={image_name:'saved-image',image_tag:'old-tag',variable_names:['KEEP_ME'],variable_environment_id:'saved-group',...(inline?{inline_build:{kind:'dockerfile',name:'内联构建',dockerfile_path:'Dockerfile',context_path:'.'}}:{build_plan_id:'build-project-a'})}
   const workflow=graph('project-a',{stages:[{id:'build-stage',name:'构建',tasks:[{id:'build',name:'镜像构建',type:'build',config}]}]})
   const h=await harness({get:r=>r.path==='/applications/app-project-a/workflows/flow-project-a'?{data:{workflow,issues:[]}}:undefined});t.after(h.stop)
   h.state.selectNode('build');h.state.updateSelectedNode({},{image_tag:'${EDO_GIT_TAG}'})
   await h.state.save(false)
   const saved=writes(h).find(r=>r.method==='put').body.stages[0].tasks[0].config
   assert.equal(saved.image_tag,'${EDO_GIT_TAG}')
+  assert.equal(saved.image_name,'saved-image')
   assert.deepEqual(saved.variable_names,['KEEP_ME'])
   assert.equal(saved.variable_environment_id,'saved-group')
  }
 })
 
-const linkedBuildPlan={id:'shared-build',name:'通用镜像构建',kind:'dockerfile',dockerfile_path:'Dockerfile',context_path:'.',target_stage:'web,api',image_registry_id:'registry',is_active:true,timeout_seconds:1800}
+const linkedBuildPlan={id:'shared-build',name:'通用镜像构建',kind:'dockerfile',dockerfile_path:'Dockerfile',context_path:'.',image_registry_id:'registry',is_active:true,timeout_seconds:1800}
 async function linkedBuildHarness(options={}){
  const workflow=graph('project-a',{stages:[{id:'build-stage',name:'构建',tasks:[{id:'build',type:'build',name:'镜像构建',config:{build_plan_id:'shared-build',image_tag:'${EDO_GIT_TAG}',variable_names:['KEEP_ME']}}]}]})
  const h=await harness({...options,get:r=>options.get?.(r)||(r.path==='/build-plans'?{data:{build_plans:[linkedBuildPlan]}}:r.path==='/applications/app-project-a/workflows/flow-project-a'?{data:{workflow,issues:[]}}:undefined)})
@@ -257,7 +258,7 @@ async function linkedBuildHarness(options={}){
 test('构建任务回显通用方案，修改跳到准确方案且更换需要显式解锁',async t=>{
  const h=await linkedBuildHarness({codes:[...permissions,'build_plan.update']});t.after(h.stop)
  assert.equal(h.state.buildSource(h.state.selectedNode.value),'plan')
- assert.equal(h.state.selectedLibraryBuildPlan.value.target_stage,'web,api')
+ assert.equal(h.state.selectedLibraryBuildPlan.value.dockerfile_path,'Dockerfile')
  assert.equal(h.state.canModifyBuildPlan.value,true)
  h.state.modifyLinkedBuildPlan()
  assert.deepEqual(h.navigations[0].query,{plan:'shared-build',edit:'1',return_to:'/pipeline-plans/editor'})
@@ -270,19 +271,19 @@ test('构建任务回显通用方案，修改跳到准确方案且更换需要�
 test('构建来源二选一并保留自定义和通用草稿，保存不创建通用方案记录',async t=>{
  const h=await linkedBuildHarness();t.after(h.stop)
  h.state.changeBuildSource('inline')
- h.state.updateSelectedNode({},{inline_build:{...linkedBuildPlan,id:'',target_stage:'worker'},cache:{key:'keep-cache',paths:['.cache'],lock_files:[]},build_outputs:undefined})
+ h.state.updateSelectedNode({},{inline_build:{...linkedBuildPlan,id:'',context_path:'worker'},cache:{key:'keep-cache',paths:['.cache'],lock_files:[]},build_outputs:undefined})
  h.state.changeBuildSource('plan')
  assert.equal(h.state.selectedNode.value.config.inline_build,undefined)
  assert.equal(h.state.selectedNode.value.config.build_plan_id,'shared-build')
  assert.equal(h.state.selectedNode.value.config.cache,undefined)
  h.state.changeBuildSource('inline')
- assert.equal(h.state.selectedNode.value.config.inline_build.target_stage,'worker')
+ assert.equal(h.state.selectedNode.value.config.inline_build.context_path,'worker')
  assert.equal(h.state.selectedNode.value.config.cache.key,'keep-cache')
  assert.equal(h.state.selectedNode.value.config.build_plan_id,undefined)
  assert.equal(h.state.selectedNode.value.config.image_tag,'${EDO_GIT_TAG}')
  await h.state.save(false)
  const write=writes(h).find(r=>r.method==='put')
- assert.equal(write.body.stages[0].tasks[0].config.inline_build.target_stage,'worker')
+ assert.equal(write.body.stages[0].tasks[0].config.inline_build.context_path,'worker')
  assert.equal(write.body.stages[0].tasks[0].config.build_plan_id,undefined)
  assert.deepEqual(write.body.stages[0].tasks[0].config.variable_names,['KEEP_ME'])
  assert.equal(writes(h).some(r=>r.path==='/build-plans'),false)

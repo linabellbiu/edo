@@ -1632,9 +1632,6 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			}
 		}
 	}
-	if err := expandBuildTargets(&resolved, buildPlans, variableBindings); err != nil {
-		return nil, err
-	}
 	autoComposeArtifactSources(resolved.Stages, buildPlans, deploymentPlans)
 	sources, sourceErr := artifactSources(resolved.Stages)
 	if sourceErr != nil {
@@ -1794,8 +1791,8 @@ func buildPlanSnapshot(plan model.BuildPlan) workflowBuildPlanSnapshot {
 		ID: plan.ID, Kind: plan.Kind, ConfigVersion: plan.ConfigVersion,
 		Script: plan.Script, DockerfilePath: plan.DockerfilePath, ContextPath: plan.ContextPath,
 		WorkingDirectory: plan.WorkingDirectory, ArtifactPath: plan.ArtifactPath, RuntimeImage: plan.RuntimeImage,
-		ImageRegistryID: plan.ImageRegistryID, TargetStage: plan.TargetStage,
-		Pull: plan.Pull, CacheEnabled: plan.CacheEnabled, BuildArgs: plan.BuildArgs,
+		ImageRegistryID: plan.ImageRegistryID,
+		Pull:            plan.Pull, CacheEnabled: plan.CacheEnabled, BuildArgs: plan.BuildArgs,
 		EnvironmentVariables: plan.EnvironmentVariables, TimeoutSeconds: plan.TimeoutSeconds,
 	}
 	if plan.Kind == model.BuildPlanScript {

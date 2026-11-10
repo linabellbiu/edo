@@ -1777,7 +1777,7 @@ onBeforeRouteLeave(async () => {
                 <PipelineBuildFields v-if="selectedLibraryBuildPlan" :key="selectedNode.id+':plan:'+selectedLibraryBuildPlan.id" :node="selectedNode" :build-plan="selectedLibraryBuildPlan" disabled/>
               </template>
               <PipelineBuildFields v-else :key="selectedNode.id+':inline'" :node="selectedNode" :disabled="!canEdit" @change="updateSelectedNode({},$event)" @invalid="buildFieldErrors[selectedNode!.id]=$event"/>
-              <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像名称" help="留空使用应用名；多个 target 按 Dockerfile 阶段名分别生成镜像。"><a-input :value="selectedNode.config.image_name" :disabled="!canEdit||(selectedBuildPlan?.target_stage||'').includes(',')" placeholder="例如 my-service" @update:value="updateSelectedNode({},{image_name:String($event||'')})"/></a-form-item>
+              <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像名称"><a-input :value="selectedNode.config.image_name" :disabled="!canEdit" :placeholder="editorApplication?.name||'留空使用应用名'" aria-label="镜像名称" @update:value="updateSelectedNode({},{image_name:String($event||'')})"/></a-form-item>
               <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像 Tag" help="可用 ${EDO_GIT_TAG} 引用本次 Git Tag，或 ${EDO_COMMIT_SHA} 引用提交；留空自动生成唯一版本。">
                 <a-input :value="selectedNode.config.image_tag" :disabled="!canEdit" placeholder="${EDO_GIT_TAG}" aria-label="镜像 Tag" @update:value="updateSelectedNode({}, { image_tag: String($event || '') })" />
               </a-form-item>

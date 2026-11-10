@@ -435,15 +435,8 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 	input.ContextPath, input.WorkingDirectory = strings.TrimSpace(input.ContextPath), strings.TrimSpace(input.WorkingDirectory)
 	input.ArtifactPath, input.RuntimeImage = strings.TrimSpace(input.ArtifactPath), strings.TrimSpace(input.RuntimeImage)
 	input.ImageRegistryID = strings.TrimSpace(input.ImageRegistryID)
-	input.TargetStage = strings.TrimSpace(input.TargetStage)
-	if input.Kind == model.BuildPlanDockerfile {
-		targets, err := buildTargetStages(input.TargetStage)
-		if err != nil {
-			slog.Warn("构建方案 Docker target 无效", "operation", "build_plan_targets_validate", "err", err)
-			return input, ErrInvalidBuildPlan
-		}
-		input.TargetStage = strings.Join(targets, ",")
-	}
+	// 内置镜像构建统一构建 Dockerfile 默认阶段，旧方案字段不参与新运行。
+	input.TargetStage = ""
 	if input.ContextPath == "" {
 		input.ContextPath = "."
 	}
@@ -494,7 +487,7 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 	if !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 7200 ||
 		len(input.Script) > 256*1024 || utf8.RuneCountInString(input.Description) > 500 ||
 		len(input.DockerfilePath) > 512 || len(input.ContextPath) > 512 || len(input.WorkingDirectory) > 512 ||
-		len(input.ArtifactPath) > 512 || len(input.RuntimeImage) > 512 || len(input.ImageRegistryID) > 36 || len(input.TargetStage) > 128 ||
+		len(input.ArtifactPath) > 512 || len(input.RuntimeImage) > 512 || len(input.ImageRegistryID) > 36 ||
 		!validBuildVariables(input.BuildArgs) ||
 		(input.Kind == model.BuildPlanDockerfile && !dockerengine.ValidBuildArgs(input.BuildArgs)) {
 		return input, ErrInvalidBuildPlan
@@ -505,7 +498,6 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 func boolPointer(value bool) *bool { return &value }
 
 var buildVariableNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
-var buildTargetStagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 // validRuntimeImageReference 只接受固定 tag 或 digest。裸镜像名和 latest 会让
 // 同一份流水线快照在不同时间解析到不同内容，不能作为可审计的执行配置。

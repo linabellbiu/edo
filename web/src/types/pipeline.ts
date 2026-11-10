@@ -192,7 +192,6 @@ export interface PipelineBuildPlan {
   artifact_path?: string
   runtime_image?: string
   image_registry_id?: string
-  target_stage?: string
   pull?: boolean
   cache_enabled?: boolean
   build_args?: Record<string, string>
