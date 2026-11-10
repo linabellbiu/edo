@@ -1166,6 +1166,9 @@ func pipelineRunQuery(db *gorm.DB) *gorm.DB {
 }
 
 func (s *Service) enrichPipelineRuns(ctx context.Context, runs []model.PipelineRun) error {
+	if err := s.attachRunRetryEligibility(ctx, runs); err != nil {
+		return err
+	}
 	if err := s.attachRunReleasePlanIDs(ctx, runs); err != nil {
 		return err
 	}

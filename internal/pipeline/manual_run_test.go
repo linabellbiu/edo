@@ -533,20 +533,38 @@ func TestRetryFailedRunCanUseArtifactBuiltByOriginalRun(t *testing.T) {
 	}
 }
 
-func TestRetryRunRejectsNonFailedRun(t *testing.T) {
-	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "reject_duplicate_run")
-	now := time.Now().UTC()
-	run := model.PipelineRun{
-		ID: "succeeded-run", ApplicationID: application.ID, Trigger: "manual",
-		Ref: "refs/heads/main", CommitSHA: strings.Repeat("e", 40),
-		Status: model.PipelineRunSucceeded, Stage: "completed", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&run).Error; err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.RetryRun(context.Background(), run.ID, "operator"); !errors.Is(err, ErrPipelineRunNotRetryable) {
-		t.Fatalf("成功运行不应允许重新执行: %v", err)
+func TestRetryRunRejectsIneligibleStates(t *testing.T) {
+	for _, status := range []model.PipelineRunStatus{
+		model.PipelineRunSucceeded, model.PipelineRunRunning, model.PipelineRunAwaitingApproval,
+		model.PipelineRunCanceled, model.PipelineRunSkipped, model.PipelineRunBlocked,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			service, db, _, repositoryID := newPipelineTestService(t)
+			application := createManualRunTestApplication(t, service, db, repositoryID, "reject_duplicate_run")
+			workflow := application.Workflow
+			workflow.IsActive = true
+			if status == model.PipelineRunSucceeded {
+				workflow.Source.Config.Events = []string{"push"}
+			}
+			if err := db.Save(workflow).Error; err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			run := model.PipelineRun{
+				ID: "original-run", ApplicationID: application.ID, WorkflowID: workflow.ID, Trigger: "manual",
+				Ref: "refs/heads/main", CommitSHA: strings.Repeat("e", 40),
+				Status: status, Stage: "completed", CreatedAt: now, UpdatedAt: now,
+			}
+			if err := db.Create(&run).Error; err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.ListRetryRunOptions(context.Background(), run.ID); !errors.Is(err, ErrPipelineRunNotRetryable) {
+				t.Fatalf("不符合状态或手动执行配置的运行不应提供选项: %v", err)
+			}
+			if _, err := service.RetryRun(context.Background(), run.ID, "operator"); !errors.Is(err, ErrPipelineRunNotRetryable) {
+				t.Fatalf("不符合状态或手动执行配置的运行不应允许重新执行: %v", err)
+			}
+		})
 	}
 }
 

@@ -40,14 +40,16 @@ async function renderActions(state, render = rowRender) {
   return renderToString(app)
 }
 
-test('操作列只给可执行的失败流水线展示重试，分组及其他状态不出现', async t => {
+test('操作列允许失败及开启手动执行的成功记录重新执行，保留权限和其他状态限制', async t => {
   for (const execute of [false, true]) {
     const h = harness(t, { execute })
-    for (const status of ['failed', 'running', 'succeeded', 'canceled', 'awaiting_approval']) {
-      const record = { ...failed, status }
+    for (const status of ['failed', 'running', 'succeeded', 'canceled', 'awaiting_approval', 'skipped']) {
+     for (const manual of [false, true]) {
+      const record = { ...failed, status, retry_allowed: manual }
       const html = await renderActions({ column: { key: 'actions' }, record, canRetryRun: h.state.canRetryRun, retryRunID: '', retryLoading: false, retrySubmitting: false, expandRunListEntry() {}, openLogs() {}, openRetry() {} })
-      assert.equal(html.includes('重试流水线'), execute && status === 'failed')
+      assert.equal(html.includes('重新执行'), execute && (status === 'failed' || status === 'succeeded' && manual))
       assert.match(html, /详情/); assert.match(html, /日志/)
+     }
     }
     assert.equal(h.state.canRetryRun({ id: 'group', executionGroup: true, runs: [failed] }), false)
   }
@@ -101,17 +103,20 @@ test('取消后打开另一条失败运行，迟到选项不能替换新目标�
 })
 
 
-test('应用点开流水线后，操作列按准确流水线的最新失败运行重新执行，主列表不重复加入口', async t => {
+test('应用点开流水线后，按准确流水线的最新成功或失败运行重新执行，主列表不重复加入口', async t => {
   const h = harness(t)
   h.state.applications.value=[{id:'app',name:'示例应用',is_active:true,workflows:[{id:'api-flow',name:'API 流水线',is_active:true,source:{type:'trigger',config:{events:['manual']}},stages:[]},{id:'web-flow',name:'Web 流水线',is_active:true,source:{type:'trigger',config:{events:['manual']}},stages:[]}]}]
-  h.state.runs.value=[{...failed,id:'old-api-failed',workflow_id:'api-flow',created_at:'2026-11-10T00:00:00Z'},{...failed,id:'new-api-success',workflow_id:'api-flow',status:'succeeded',created_at:'2026-11-11T00:00:00Z'},{...failed,id:'web-failed',workflow_id:'web-flow',created_at:'2026-11-11T01:00:00Z'}]
+  h.state.runs.value=[{...failed,id:'old-api-failed',workflow_id:'api-flow',created_at:'2026-11-10T00:00:00Z'},{...failed,id:'new-api-success',workflow_id:'api-flow',status:'succeeded',retry_allowed:true,created_at:'2026-11-11T00:00:00Z'},{...failed,id:'web-failed',workflow_id:'web-flow',created_at:'2026-11-11T01:00:00Z'}]
   const card=h.state.applicationCards.value[0]
   assert.equal(card.workflowSummaries[0].latestRun.id,'new-api-success')
   assert.equal(card.workflowSummaries[1].latestRun.id,'web-failed')
   for(const item of card.workflowSummaries){
     const html=await renderActions({workflowColumn:{key:'actions'},item,canRetryRun:h.state.canRetryRun,retryRunID:'',retryLoading:false,retrySubmitting:false,openRetry(){}},workflowRender)
-    assert.equal(html.includes('重新执行'),item.workflow.id==='web-flow')
+    assert.equal(html.includes('重新执行'),true)
   }
+  await h.state.openRetry(card.workflowSummaries[0].latestRun)
+  assert.equal(h.requests.at(-1).path,'/pipeline-runs/new-api-success/retry-options')
+  h.state.resetRetry()
   await h.state.openRetry(card.workflowSummaries[1].latestRun)
   assert.equal(h.requests.at(-1).path,'/pipeline-runs/web-failed/retry-options')
   assert.equal(writes(h).length,0)

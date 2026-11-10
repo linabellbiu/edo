@@ -41,10 +41,10 @@ function harness({ allowed = true, executeAllowed = true, logsAllowed = true, te
     '@/utils/composeRuntime': compose,
   }
   const module = { exports: {} }
-  new Function('require', 'module', 'exports', 'document', outputText)(name => modules[name] || {}, module, module.exports, {
+  new Function('require', 'module', 'exports', 'document', 'localStorage', outputText)(name => modules[name] || {}, module, module.exports, {
     hidden: true,
     getElementById: id => ({ scrollIntoView: options => scrolls.push({ id, options }) }),
-  })
+  }, { getItem: () => 'project-a' })
   state = module.exports.default.setup({ section: 'applications' }, { expose() {} })
   state.applications.value = [application('api'), application('web', { is_active: false })]
   state.repositories.value = [{ id: 'repo', name: 'Platform' }]

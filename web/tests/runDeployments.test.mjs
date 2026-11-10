@@ -46,9 +46,9 @@ function harness(t, records = [run('failed-run')]) {
   const module = { exports: {} }
   const fakeDocument = { hidden: false, removeEventListener() {}, getElementById() {} }
   const fakeWindow = { removeEventListener() {} }
-  new Function('require', 'module', 'exports', 'document', 'window', 'setTimeout', 'clearTimeout', outputText)(
+  new Function('require', 'module', 'exports', 'document', 'window', 'setTimeout', 'clearTimeout', 'localStorage', outputText)(
     name => modules[name] || {}, module, module.exports, fakeDocument, fakeWindow,
-    callback => { timers.set(++timerID, callback); return timerID }, id => timers.delete(id),
+    callback => { timers.set(++timerID, callback); return timerID }, id => timers.delete(id), { getItem: () => 'project-a' },
   )
   const scope = vue.effectScope()
   state = scope.run(() => module.exports.default.setup(props, { expose() {} }))

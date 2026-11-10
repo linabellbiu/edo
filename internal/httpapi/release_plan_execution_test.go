@@ -288,60 +288,64 @@ func TestManualAndReleasePlanHTTPCanSelectPreviousArtifact(t *testing.T) {
 }
 
 func TestRetryRunHTTPCanSelectOriginalRunArtifactWithoutRefInput(t *testing.T) {
-	const commitSHA = "789abcdef0123456789abcdef0123456789abcde"
-	fixture := newReleasePlanExecutionHTTPFixture(t, commitSHA)
-	defer fixture.close()
+	for _, status := range []model.PipelineRunStatus{model.PipelineRunFailed, model.PipelineRunSucceeded} {
+		t.Run(string(status), func(t *testing.T) {
+			const commitSHA = "789abcdef0123456789abcdef0123456789abcde"
+			fixture := newReleasePlanExecutionHTTPFixture(t, commitSHA)
+			defer fixture.close()
 
-	ctx := context.Background()
-	repositoryItem, _, err := fixture.repositories.Create(ctx, "admin", repository.Input{
-		Name: "重试固定版本测试仓库", Provider: model.GitProviderGeneric,
-		CloneURL: "https://git.example.com/team/retry-artifact.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
-	})
-	if err != nil {
-		t.Fatalf("创建测试仓库失败: %v", err)
-	}
-	application, workflowID, _, workflowRevision := createReleasePlanExecutionHTTPApplication(
-		t, fixture.pipelines, fixture.db, repositoryItem.ID,
-	)
-	now := time.Now().UTC()
-	failed := model.PipelineRun{
-		ID: uuid.NewString(), ApplicationID: application.ID, WorkflowID: workflowID, WorkflowRevision: workflowRevision,
-		Trigger: "manual", Ref: "refs/heads/main", CommitSHA: commitSHA, CommitMessage: "固定版本 HTTP 重试",
-		Status: model.PipelineRunFailed, Stage: "deploy_failed", Message: "部署失败",
-		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := fixture.db.Create(&failed).Error; err != nil {
-		t.Fatalf("创建失败运行失败: %v", err)
-	}
-	artifact := createReleasePlanExecutionHTTPArtifact(t, fixture.db, application, commitSHA, failed.ID)
-	if err := fixture.db.Model(&model.PipelineRun{}).Where("uuid = ?", failed.ID).Update("artifact_id", artifact.ID).Error; err != nil {
-		t.Fatalf("关联失败运行制品失败: %v", err)
-	}
-	login := performJSONRequest(t, fixture.router, http.MethodPost, "/api/v1/auth/login", map[string]string{
-		"username": "admin", "password": "correct horse battery staple",
-	}, nil)
-	if login.Code != http.StatusOK {
-		t.Fatalf("管理员登录失败: status=%d body=%s", login.Code, login.Body.String())
-	}
-	cookie := login.Result().Cookies()[0]
-	options := performJSONRequest(t, fixture.router, http.MethodGet, "/api/v1/pipeline-runs/"+failed.ID+"/retry-options", nil, cookie)
-	if options.Code != http.StatusOK || !strings.Contains(options.Body.String(), artifact.ID) ||
-		!strings.Contains(options.Body.String(), commitSHA) || strings.Contains(options.Body.String(), `"branches"`) {
-		t.Fatalf("重试选项没有只返回固定版本和原运行制品: status=%d body=%s", options.Code, options.Body.String())
-	}
-	retried := performJSONRequest(t, fixture.router, http.MethodPost, "/api/v1/pipeline-runs/"+failed.ID+"/retry", map[string]any{
-		"artifact_id": artifact.ID,
-	}, cookie)
-	var payload struct {
-		PipelineRun model.PipelineRun `json:"pipeline_run"`
-	}
-	if retried.Code != http.StatusCreated || json.Unmarshal(retried.Body.Bytes(), &payload) != nil {
-		t.Fatalf("使用原运行制品重试失败: status=%d body=%s", retried.Code, retried.Body.String())
-	}
-	if payload.PipelineRun.RetryOfID != failed.ID || payload.PipelineRun.Ref != failed.Ref ||
-		payload.PipelineRun.CommitSHA != failed.CommitSHA || payload.PipelineRun.ArtifactID != artifact.ID ||
-		payload.PipelineRun.CurrentNodeID != "approval" || payload.PipelineRun.Status != model.PipelineRunAwaitingApproval {
-		t.Fatalf("HTTP 重试没有固定版本或跳过构建: %+v", payload.PipelineRun)
+			ctx := context.Background()
+			repositoryItem, _, err := fixture.repositories.Create(ctx, "admin", repository.Input{
+				Name: "重试固定版本测试仓库", Provider: model.GitProviderGeneric,
+				CloneURL: "https://git.example.com/team/retry-artifact.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
+			})
+			if err != nil {
+				t.Fatalf("创建测试仓库失败: %v", err)
+			}
+			application, workflowID, _, workflowRevision := createReleasePlanExecutionHTTPApplication(
+				t, fixture.pipelines, fixture.db, repositoryItem.ID,
+			)
+			now := time.Now().UTC()
+			failed := model.PipelineRun{
+				ID: uuid.NewString(), ApplicationID: application.ID, WorkflowID: workflowID, WorkflowRevision: workflowRevision,
+				Trigger: "manual", Ref: "refs/heads/main", CommitSHA: commitSHA, CommitMessage: "固定版本 HTTP 重试",
+				Status: status, Stage: "completed", Message: "原运行已结束",
+				CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+			}
+			if err := fixture.db.Create(&failed).Error; err != nil {
+				t.Fatalf("创建失败运行失败: %v", err)
+			}
+			artifact := createReleasePlanExecutionHTTPArtifact(t, fixture.db, application, commitSHA, failed.ID)
+			if err := fixture.db.Model(&model.PipelineRun{}).Where("uuid = ?", failed.ID).Update("artifact_id", artifact.ID).Error; err != nil {
+				t.Fatalf("关联失败运行制品失败: %v", err)
+			}
+			login := performJSONRequest(t, fixture.router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+				"username": "admin", "password": "correct horse battery staple",
+			}, nil)
+			if login.Code != http.StatusOK {
+				t.Fatalf("管理员登录失败: status=%d body=%s", login.Code, login.Body.String())
+			}
+			cookie := login.Result().Cookies()[0]
+			options := performJSONRequest(t, fixture.router, http.MethodGet, "/api/v1/pipeline-runs/"+failed.ID+"/retry-options", nil, cookie)
+			if options.Code != http.StatusOK || !strings.Contains(options.Body.String(), artifact.ID) ||
+				!strings.Contains(options.Body.String(), commitSHA) || strings.Contains(options.Body.String(), `"branches"`) {
+				t.Fatalf("重试选项没有只返回固定版本和原运行制品: status=%d body=%s", options.Code, options.Body.String())
+			}
+			retried := performJSONRequest(t, fixture.router, http.MethodPost, "/api/v1/pipeline-runs/"+failed.ID+"/retry", map[string]any{
+				"artifact_id": artifact.ID,
+			}, cookie)
+			var payload struct {
+				PipelineRun model.PipelineRun `json:"pipeline_run"`
+			}
+			if retried.Code != http.StatusCreated || json.Unmarshal(retried.Body.Bytes(), &payload) != nil {
+				t.Fatalf("使用原运行制品重试失败: status=%d body=%s", retried.Code, retried.Body.String())
+			}
+			if payload.PipelineRun.RetryOfID != failed.ID || payload.PipelineRun.Ref != failed.Ref ||
+				payload.PipelineRun.CommitSHA != failed.CommitSHA || payload.PipelineRun.ArtifactID != artifact.ID ||
+				payload.PipelineRun.CurrentNodeID != "approval" || payload.PipelineRun.Status != model.PipelineRunAwaitingApproval {
+				t.Fatalf("HTTP 重试没有固定版本或跳过构建: %+v", payload.PipelineRun)
+			}
+		})
 	}
 }
 

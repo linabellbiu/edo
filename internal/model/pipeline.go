@@ -344,6 +344,7 @@ type PipelineRun struct {
 	ApprovedBy                 *string                      `gorm:"type:varchar(36);index" json:"approved_by,omitempty"`
 	ApprovedAt                 *time.Time                   `json:"approved_at,omitempty"`
 	ApprovalRequired           bool                         `gorm:"-" json:"approval_required"`
+	RetryAllowed               bool                         `gorm:"-" json:"retry_allowed"`
 	CurrentNodeName            string                       `gorm:"-" json:"current_node_name,omitempty"`
 	ExecutionGraph             *PipelineRunGraph            `gorm:"-" json:"execution_graph,omitempty"`
 	Timing                     *PipelineStageTiming         `gorm:"-" json:"timing,omitempty"`
