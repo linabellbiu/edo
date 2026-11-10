@@ -518,7 +518,7 @@ func validSSHDeploymentPlanSnapshot(plan *model.DeploymentPlan, target *model.De
 		plan.ID != "" && plan.Kind == model.DeploymentPlanScript &&
 		strings.TrimSpace(plan.Script) != "" && len(plan.Script) <= 256*1024 &&
 		plan.TimeoutSeconds >= 30 && plan.TimeoutSeconds <= 3600 &&
-		target.HostID != "" && target.EnvironmentID != ""
+		target.HostID != ""
 }
 
 func validComposeDeploymentPlanSnapshot(plan *model.DeploymentPlan, target *model.DeploymentTarget) bool {

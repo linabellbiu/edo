@@ -15,3 +15,13 @@ func (h pipelineHandler) listWorkflowCatalog(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"workflows": rows})
 }
+
+func (h pipelineHandler) listHostWorkflows(c *gin.Context) {
+	rows, err := h.service.ListHostWorkflows(c.Request.Context())
+	if err != nil {
+		h.logger.ErrorContext(c.Request.Context(), "读取主机关联流水线失败", "operation", "host_workflows_list", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusInternalServerError, "host_workflows_unavailable", pipeline.ErrHostWorkflowsUnavailable.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"host_workflows": rows})
+}

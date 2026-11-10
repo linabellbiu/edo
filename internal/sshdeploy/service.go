@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -92,7 +93,7 @@ func (s *Service) RunHostDeploymentScript(ctx context.Context, input Input) (Res
 	input.EnvironmentID = strings.TrimSpace(input.EnvironmentID)
 	requestedWorkingDirectory := strings.TrimSpace(input.WorkingDirectory)
 	input.WorkingDirectory = normalizeWorkingDirectory(input.WorkingDirectory)
-	if s == nil || s.db == nil || input.HostID == "" || input.EnvironmentID == "" ||
+	if s == nil || s.db == nil || input.HostID == "" ||
 		(requestedWorkingDirectory != "" && input.WorkingDirectory == "") ||
 		strings.TrimSpace(input.Script) == "" || len(input.Script) > 256*1024 ||
 		input.Timeout < 30*time.Second || input.Timeout > time.Hour {
@@ -370,18 +371,19 @@ func (s *Service) loadHost(ctx context.Context, input Input) (model.Host, sshcli
 		}
 		return host, sshclient.Bundle{}, fmt.Errorf("查询命令发布主机失败: %w", err)
 	}
-	var environment model.Environment
-	if err := s.db.WithContext(ctx).Select("environments.uuid").
-		Joins("JOIN environment_hosts AS membership ON membership.environment_id = environments.uuid").
-		First(&environment,
-			"environments.uuid = ? AND environments.is_active = ? AND membership.host_id = ?",
-			input.EnvironmentID, true, host.ID,
-		).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+	// 主机组不参与执行目标身份判定；仍核对项目及部门归属，主机查询也受当前项目范围限制。
+	if input.EnvironmentID != "" {
+		var environment model.Environment
+		if err := s.db.WithContext(ctx).First(&environment, "uuid = ? AND is_active = ?", input.EnvironmentID, true).Error; err != nil {
+			slog.WarnContext(ctx, "读取部署主机组失败", "operation", "ssh_deployment_host", "host_id", host.ID, "environment_id", input.EnvironmentID, "err", err)
 			return host, sshclient.Bundle{}, ErrEnvironmentChanged
 		}
-		return host, sshclient.Bundle{}, fmt.Errorf("查询命令发布环境失败: %w", err)
+		if environment.ProjectID != host.ProjectID || environment.DepartmentID != host.DepartmentID {
+			slog.WarnContext(ctx, "执行主机归属不一致", "operation", "ssh_deployment_host", "host_id", host.ID, "environment_id", input.EnvironmentID, "err", ErrHostUnavailable)
+			return host, sshclient.Bundle{}, ErrHostUnavailable
+		}
 	}
+
 	capabilityKind := model.HostCapabilitySSH
 	switch host.Mode {
 	case model.HostModeLocal:

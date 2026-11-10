@@ -57,6 +57,7 @@ import { formatDateTime } from '@/utils/time'
 import { clusterForHost, clusterHostIDs } from '@/utils/infrastructureRelations'
 
 type ClusterOption = InfrastructureCluster
+type HostWorkflow={id:string;name:string;application_id:string;application_name:string;is_active:boolean}
 type HostGroupKey = string
 type HostStatusFilter = 'all' | 'ready' | 'warning' | 'inactive'
 type GroupFormMode = 'create' | 'details' | 'hosts'
@@ -77,6 +78,10 @@ const environments = ref<InfrastructureEnvironment[]>([])
 const clusters = ref<ClusterOption[]>([])
 const clusterLoadError = ref('')
 const hostLoadError = ref('')
+const hostWorkflows=ref<Record<string,HostWorkflow[]>>({})
+const workflowLoadError=ref('')
+const canReadWorkflows=computed(()=>auth.canAny(['workflow.read']))
+const workflowLink=(flow:HostWorkflow)=>({path:'/pipeline-plans/editor',query:{application:flow.application_id,workflow:flow.id}})
 const environmentLoadError = ref('')
 const relationOpen = ref(false)
 const relationHost = ref<InfrastructureHost>()
@@ -154,6 +159,7 @@ const tableColumns = [
   { title: '系统资源', key: 'resources', width: 240 },
   { title: '所属分组', key: 'groups', width: 150 },
   { title: '主机能力', key: 'capabilities', width: 120 },
+  { title: '关联流水线', key: 'workflows', width: 220 },
   { title: '关联集群', key: 'cluster', width: 180 },
   { title: '状态', key: 'status', width: 140 },
   { title: '操作', key: 'actions', fixed: 'right' as const, width: 120 },
@@ -298,12 +304,15 @@ async function refresh() {
   const signal = inventoryController.signal
   loading.value = true
   try {
-    const [hostResult, environmentResult, clusterResult] = await Promise.allSettled([
+    const [hostResult, environmentResult, clusterResult, workflowResult] = await Promise.allSettled([
       canReadHosts.value ? listHosts(signal) : Promise.resolve([]),
       canReadGroups.value ? listEnvironments(signal) : Promise.resolve([]),
       canReadClusters.value ? client.get<{ clusters: ClusterOption[] }>('/kubernetes/clusters', { signal }).then(response => response.data.clusters ?? []) : Promise.resolve([]),
+      canReadWorkflows.value && canReadHosts.value ? client.get<{host_workflows:Record<string,HostWorkflow[]>}>('/hosts/workflows',{signal}).then(response=>response.data.host_workflows) : Promise.resolve({}),
     ])
     if (!mounted || read !== inventoryRead || context !== hostReadContext()) return
+    hostWorkflows.value=workflowResult.status==='fulfilled'?workflowResult.value:{}
+    workflowLoadError.value=workflowResult.status==='rejected'?apiErrorMessage(workflowResult.reason):''
     hosts.value = hostResult.status === 'fulfilled' ? hostResult.value : []
     resourceRevision.value += 1
     hostLoadError.value = hostResult.status === 'rejected' ? apiErrorMessage(hostResult.reason) : ''
@@ -735,6 +744,8 @@ watch(hostReadContext, () => {
   statusRefreshing = false
   initialized = false
   hosts.value = []
+  hostWorkflows.value={}
+  workflowLoadError.value=''
   environments.value = []
   clusters.value = []
   selectedID.value = ''
@@ -832,7 +843,7 @@ onBeforeUnmount(() => {
           :data-source="filteredHosts"
           :loading="loading"
           :pagination="{ ...hostPagination, showSizeChanger: false }" @change="changeHostPage"
-          :scroll="{ x: 1320 }"
+          :scroll="{ x: 1540 }"
           row-key="id"
           size="middle"
           class="host-table resource-list-table"
@@ -871,6 +882,15 @@ onBeforeUnmount(() => {
               <span v-else class="muted-text">未配置</span>
             </template>
             <template v-else-if="column.key === 'architecture'">{{ record.architecture ? record.architecture.toUpperCase() : '—' }}</template>
+            <template v-else-if="column.key === 'workflows'">
+              <span v-if="!canReadWorkflows" class="muted-text">无流水线查看权限</span>
+              <a-tooltip v-else-if="workflowLoadError" :title="workflowLoadError"><span class="muted-text">关联读取失败</span></a-tooltip>
+              <div v-else-if="hostWorkflows[record.id]?.length" class="host-workflows">
+                <router-link v-for="flow in hostWorkflows[record.id].slice(0,2)" :key="flow.id" :to="workflowLink(flow)" :title="`${flow.application_name} / ${flow.name}${flow.is_active?'':'（已停用）'}`">{{flow.application_name}} / {{flow.name}}</router-link>
+                <a-popover v-if="hostWorkflows[record.id].length>2" :trigger="['click']" title="关联流水线"><template #content><div class="host-workflow-popover"><router-link v-for="flow in hostWorkflows[record.id]" :key="flow.id" :to="workflowLink(flow)">{{flow.application_name}} / {{flow.name}}{{flow.is_active?'':'（已停用）'}}</router-link></div></template><a-button type="link" size="small">共 {{hostWorkflows[record.id].length}} 条流水线</a-button></a-popover>
+              </div>
+              <span v-else class="muted-text">—</span>
+            </template>
             <template v-else-if="column.key === 'cluster'">
               <span v-if="clusterLoadError" class="muted-text">读取失败</span>
               <div v-else-if="clusterForHost(record, clusters)" class="host-cluster-cell"><button type="button" class="host-cluster-link" @click="manageCluster(clusterForHost(record, clusters)!)"><RuntimeBrandIcon kind="kubernetes" />{{ clusterForHost(record, clusters)?.name }}<ArrowUpRight :size="12" /></button><KubeHostRoleBadge :cluster="clusterForHost(record, clusters)!.id" :host="record.id" /></div>
@@ -1007,6 +1027,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.host-workflows{display:grid;gap:4px;min-width:0}.host-workflows>a{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-workflows>.ant-btn{padding:0;width:fit-content;height:auto}.host-workflow-popover{display:grid;gap:8px;max-width:min(420px,80vw);max-height:280px;overflow:auto;overflow-wrap:anywhere}
 .host-toolbar-action{padding-inline:14px}
 .inventory-error{margin:14px}
 .infrastructure-tabs{display:flex;align-items:center;gap:24px;margin:0 0 18px;border-bottom:1px solid var(--edo-border)}.infrastructure-tabs>a{display:flex;align-items:center;gap:8px;position:relative;padding:0 1px 12px;color:var(--edo-muted);font-size:14px;text-decoration:none}.infrastructure-tabs>a.active{color:var(--edo-primary);font-weight:600}.infrastructure-tabs>a.active::after{position:absolute;right:0;bottom:-1px;left:0;height:2px;border-radius:1px;background:var(--edo-primary);content:''}.infrastructure-tabs>a>svg{width:16px;height:16px}.infrastructure-tabs>a>span{min-width:20px;padding:0 5px;border-radius:4px;background:var(--edo-surface-soft);color:var(--edo-muted);font-size:11px;line-height:18px;text-align:center}.host-cluster-link{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:0;border:0;background:transparent;color:var(--edo-primary);font-size:12px;cursor:pointer;text-align:left}.host-cluster-link :deep(svg){width:15px;height:15px;flex:none}.host-cluster-link:hover{text-decoration:underline}.associated-cluster{display:flex;align-items:center;gap:12px;width:100%;padding:12px 0;border:0;background:transparent;color:var(--edo-text);cursor:pointer;text-align:left}.associated-cluster>span:nth-child(2){flex:1;min-width:0}.associated-cluster strong,.associated-cluster small{display:block}.associated-cluster small{margin-top:4px;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.associated-cluster:hover strong{color:var(--edo-primary)}.association-empty{margin:0;padding:10px 0}.host-association-summary{display:flex;align-items:center;gap:12px;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid var(--edo-border)}.host-association-summary strong,.host-association-summary small{display:block}.host-association-summary small{margin-top:4px;color:var(--edo-muted);font-size:12px}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}
@@ -1019,6 +1040,7 @@ onBeforeUnmount(() => {
 </style>
 
 <style scoped>
+.host-workflows{display:grid;gap:4px;min-width:0}.host-workflows>a{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-workflows>.ant-btn{padding:0;width:fit-content;height:auto}.host-workflow-popover{display:grid;gap:8px;max-width:min(420px,80vw);max-height:280px;overflow:auto;overflow-wrap:anywhere}
 .host-cluster-cell{display:flex;align-items:flex-start;flex-direction:column;gap:2px}
 .host-page{--host-link:#3859cc;--host-ready:#167645}
 :global([data-theme="dark"] .host-page){--host-link:#a5b7ff;--host-ready:#6cdaa5}
@@ -1052,6 +1074,7 @@ onBeforeUnmount(() => {
 </style>
 
 <style scoped>
+.host-workflows{display:grid;gap:4px;min-width:0}.host-workflows>a{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-workflows>.ant-btn{padding:0;width:fit-content;height:auto}.host-workflow-popover{display:grid;gap:8px;max-width:min(420px,80vw);max-height:280px;overflow:auto;overflow-wrap:anywhere}
 .host-workspace:has(.host-group-tree){display:grid;grid-template-columns:250px minmax(0,1fr)}
 .host-group-tree{min-width:0;padding:12px;border-right:1px solid var(--edo-border);background:var(--edo-surface)}
 .host-group-tree>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}

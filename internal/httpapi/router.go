@@ -373,6 +373,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	hostAPI := hostHandler{service: deps.Hosts, logger: deps.Logger}
 	protected.GET("/hosts", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), hostAPI.list)
+	protected.GET("/hosts/workflows", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), requirePermission(deps.Access, deps.Logger, "workflow.read"), pipelineAPI.listHostWorkflows)
 	protected.GET("/hosts/statuses", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), hostAPI.listStatuses)
 	protected.GET("/hosts/:id", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), hostAPI.get)
 	protected.GET("/hosts/:id/resources", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), hostAPI.resources)

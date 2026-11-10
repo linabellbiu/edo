@@ -81,10 +81,11 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 	if err := s.db.WithContext(ctx).Where("uuid = ? AND is_active = ?", record.HostID, true).First(&host).Error; err != nil {
 		return "", dockerengine.ComposeProjectScope{}, err
 	}
-	var membership model.EnvironmentHost
-	if err := s.db.WithContext(ctx).Where("host_id = ? AND environment_id = ?", record.HostID, record.EnvironmentID).First(&membership).Error; err != nil {
-		return "", dockerengine.ComposeProjectScope{}, err
+	if host.ProjectID != record.ProjectID || host.DepartmentID != record.DepartmentID {
+		s.logger.WarnContext(ctx, "运行主机归属与发布快照不一致", "operation", "compose_runtime_scope", "host_id", record.HostID, "err", invalid)
+		return "", dockerengine.ComposeProjectScope{}, invalid
 	}
+
 	var capability model.HostCapability
 	if err := s.db.WithContext(ctx).Where("host_id = ? AND kind = ? AND status = ?", record.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).First(&capability).Error; err != nil {
 		return "", dockerengine.ComposeProjectScope{}, err

@@ -32,7 +32,7 @@ test('撤权只读不会自动改写主机选择，不可用原主机保留为�
 })
 
 
-test('树形子组和主机分别定位，切换主机组仅带入新组勾选集合',t=>{
+test('树形子组和主机分别定位，跨组勾选保留已选主机并按 UUID 去重',t=>{
  const groups=[{id:'root',name:'研发'},{id:'group',name:'生产',parent_id:'root'},{id:'test',name:'测试',parent_id:'root'}]
  const props=vue.reactive({...defaults,groups,hosts,hostOptions:{group:hosts,test:[{id:'c',name:'主机 C'},hosts[0]]},ready:true,modelValue:['a']})
  const h=component(props);t.after(h.stop)
@@ -41,9 +41,9 @@ test('树形子组和主机分别定位，切换主机组仅带入新组勾选�
  assert.equal(h.state.treeData.value[0].children[0].children[0].hostID,'a')
  assert.equal(h.state.treeValue.value[0].halfChecked,true)
  h.state.choose([{value:'group:test'}],[],{triggerValue:'group:test',checked:true})
- assert.deepEqual(h.events.at(-1),{name:'change',args:[{groupID:'test',hostIDs:['c','a']}]})
+ assert.deepEqual(h.events.at(-1),{name:'change',args:[{groupID:'group',hostIDs:['a','c']}]})
  h.state.choose([{value:'host:test:c'}],[],{triggerValue:'host:test:c',checked:true})
- assert.deepEqual(h.events.at(-1).args,[{groupID:'test',hostIDs:['c']}])
+ assert.deepEqual(h.events.at(-1).args,[{groupID:'group',hostIDs:['a','c']}])
  assert.deepEqual(props.modelValue,['a'])
 })
 
@@ -67,4 +67,32 @@ test('只读或未加载时拒绝树选择；Kubernetes 只选组不写主机',t
  assert.equal(h.state.treeValue.value,'group:group');assert.deepEqual(h.events,[])
  h.state.choose('group:group');assert.deepEqual(h.events.at(-1).args,[{groupID:'group',hostIDs:[]}])
  assert.equal(h.state.treeData.value[0].children,undefined)
+})
+
+
+test('未分组主机可选择，跨组移动或退出所有组后准确回显且不自动改写',async t=>{
+ const a={id:'a',name:'主机 A'},b={id:'b',name:'未分组主机'}
+ const props=vue.reactive({...defaults,hosts:[a],allHosts:[a,b],hostOptions:{group:[a]},ready:true,modelValue:['a']})
+ const h=component(props);t.after(h.stop)
+ const ungrouped=h.state.treeData.value.find(node=>node.title==='未分组')
+ assert.equal(ungrouped.children[0].hostID,'b')
+ h.state.choose([{value:ungrouped.children[0].key}],[],{triggerValue:ungrouped.children[0].key,checked:true})
+ assert.deepEqual(h.events.at(-1).args,[{groupID:'group',hostIDs:['a','b']}])
+ h.events.length=0
+ props.hosts=[];props.hostOptions={group:[],other:[a]};props.groups=[...defaults.groups,{id:'other',name:'新组'}]
+ await vue.nextTick()
+ assert.deepEqual(h.state.missing.value,[])
+ assert.ok(h.state.treeValue.value.some(node=>node.value==='host:other:a'))
+ assert.deepEqual(h.events,[])
+ props.hostOptions={group:[],other:[]};await vue.nextTick()
+ assert.ok(h.state.treeValue.value.some(node=>node.value==='host::a'))
+ assert.deepEqual(h.events,[])
+})
+
+test('只有未分组主机且没有组时仍可保存精确选择，不选其他主机',t=>{
+ const h=component({groups:[],hosts:[],allHosts:hosts,ready:true,modelValue:['a']});t.after(h.stop)
+ assert.equal(h.state.error.value,'')
+ assert.ok(h.state.treeValue.value.some(node=>node.value==='host::a'))
+ h.state.choose([{value:'host::b'}],[],{triggerValue:'host::b',checked:true})
+ assert.deepEqual(h.events.at(-1).args,[{groupID:'',hostIDs:['a','b']}])
 })

@@ -25,7 +25,7 @@ func TestDeploymentEnvironmentAvailabilityRequiresExactScope(t *testing.T) {
 		want   bool
 	}{
 		{name: "同项目部门的启用环境", want: true},
-		{name: "空环境", change: func(x *model.DeploymentTarget) { x.EnvironmentID = "" }},
+		{name: "未分组主机", want: true, change: func(x *model.DeploymentTarget) { x.EnvironmentID = "" }},
 		{name: "环境不存在", change: func(x *model.DeploymentTarget) { x.EnvironmentID = "11111111-1111-4111-8111-111111111111" }},
 		{name: "跨项目", change: func(x *model.DeploymentTarget) { x.ProjectID = "22222222-2222-4222-8222-222222222222" }},
 		{name: "跨部门", change: func(x *model.DeploymentTarget) { x.DepartmentID = "33333333-3333-4333-8333-333333333333" }},

@@ -19,6 +19,18 @@ func (s *Service) deploymentEnvironmentAvailable(
 	target model.DeploymentTarget,
 	operation string,
 ) (bool, error) {
+	if target.EnvironmentID == "" && target.Platform != model.DeploymentKubernetes && target.HostID != "" {
+		var host model.Host
+		err := database.WithContext(ctx).First(&host, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?", target.HostID, target.ProjectID, target.DepartmentID, true).Error
+		if err == nil {
+			return true, nil
+		}
+		s.logger.WarnContext(ctx, "校验未分组执行主机失败", "operation", operation, "host_id", target.HostID, "project_id", target.ProjectID, "err", err)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, errDeploymentEnvironmentCheckFailed
+	}
 	var current model.Environment
 	err := database.WithContext(ctx).First(&current,
 		"uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?",

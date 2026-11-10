@@ -298,6 +298,7 @@ const deploymentHostOptions = computed(()=>Object.fromEntries(environments.value
 const environmentHosts = computed(() => hosts.value
   .filter(host => host.is_active && environmentIDsOf(host).includes(form.environment_id)))
 const availableKindOptions = computed(() => kindOptions.map(option=>option.value==='compose_stack'&&form.kind==='compose'?{...option,value:'compose' as PlanKind}:option).filter(option=>(!props.inline||!props.inlineKinds||props.inlineKinds.includes(option.value))&&(form.reusable||environmentSupportsKind(option.value))))
+const availableHosts = computed(()=>hosts.value.filter(host=>host.is_active&&hostSupportsKind(host,form.kind)))
 const executionHosts = computed(() => environmentHosts.value.filter(host => hostSupportsKind(host, form.kind)))
 const kubernetesRuntimeOptions = computed(() => {
   const options = [...clusterByID.value.values()].map(runtime => ({ value: runtime.id, label: runtime.name, disabled: false }))
@@ -308,14 +309,13 @@ const kubernetesRuntimeOptions = computed(() => {
   return options
 })
 const executionTargetError = computed(() => {
-  if (!form.environment_id) return ''
   if (form.kind === 'kubernetes') {
     if (!canReadRuntimes.value) return targetT('deploymentTarget.clusterPermission')
     return form.runtime_id && !clusterByID.value.has(form.runtime_id) ? targetT('deploymentTarget.clusterUnavailable') : ''
   }
-  const candidates = executionHosts.value
+  const candidates = form.host_ids!==undefined ? availableHosts.value : executionHosts.value
   if (!candidates.length) return '当前主机组没有可用于所选部署方式的执行主机，请先调整主机组配置。'
-  if (form.host_ids !== undefined) return form.host_ids.length && form.host_ids.every(id=>candidates.some(host=>host.id===id)) ? '' : '请选择本组可用的执行主机'
+  if (form.host_ids !== undefined) return form.host_ids.length && form.host_ids.every(id=>candidates.some(host=>host.id===id)) ? '' : '请选择可用的执行主机'
   if (candidates.length > 1) return '当前主机组有多台可用于所选部署方式的主机，无法唯一确定执行位置，请先调整主机组配置。'
   return ''
 })
@@ -342,13 +342,13 @@ function hostSupportsKind(host: InfrastructureHost, kind: PlanKind) {
 
 function environmentSupportsKind(kind: PlanKind) {
   if (kind === 'kubernetes') return Boolean(form.environment_id && (clusterByID.value.size || (form.kind === kind && form.runtime_id)))
-  return Boolean(form.environment_id && environmentHosts.value.some(host => hostSupportsKind(host, kind)))
+  return hosts.value.some(host => host.is_active && hostSupportsKind(host, kind))
 }
 
 function targetCapabilityMatches(kind: PlanKind, hostID: string, runtimeID = '') {
   if (kind === 'kubernetes') return Boolean(runtimeID && clusterByID.value.has(runtimeID))
   const host = hostByID.value.get(hostID)
-  if (!host || !environmentIDsOf(host).includes(form.environment_id)) return false
+  if (!host || !host.is_active) return false
   if (kind === 'script' || kind === 'compose_stack') return hostSupportsKind(host, kind)
   const capability = readyCapability(host, 'docker')
   return Boolean(capability?.runtime_id && capability.runtime_id === runtimeID && hostSupportsKind(host, kind))
@@ -689,9 +689,9 @@ function changeKind(kind: PlanKind) {
 }
 
 function selectDeploymentTarget(value:{groupID:string;hostIDs:string[]}) {
-  const previousKind=form.kind
-  if(value.groupID!==form.environment_id)changeEnvironment(value.groupID)
-  if(form.kind!=='kubernetes')form.host_ids=previousKind===form.kind?[...value.hostIDs]:undefined
+  form.environment_id=value.groupID
+  legacySelectionID.value=''
+  if(form.kind!=='kubernetes')form.host_ids=[...value.hostIDs]
   reconcileExecutionTarget()
 }
 
@@ -709,7 +709,7 @@ function changeEnvironment(environmentID: unknown) {
 
 function reconcileExecutionTarget() {
   if (form.reusable) return
-	if (!form.environment_id) {
+	if (form.kind==='kubernetes' && !form.environment_id) {
 		form.host_id = ''
 		form.runtime_id = ''
 		return
@@ -785,10 +785,7 @@ async function readComposeFile(event: Event) {
   }
 }
 
-function hostBelongsToEnvironment(hostID: string, environmentID: string) {
-  const host = hostByID.value.get(hostID)
-  return Boolean(host && environmentIDsOf(host).includes(environmentID))
-}
+
 
 function validWorkingDirectory(value: string) {
   value = value.trim()
@@ -849,11 +846,11 @@ function validate() {
     if (form.kind === 'compose' && (!form.service_name.trim() || !form.compose_yaml.trim())) return '请输入 Docker Compose 服务名称和 YAML'
     return form.kind === 'docker' ? validateDockerConfig() : ''
   }
-  if (!form.environment_id) return t('environment.deployment.environmentRequired')
+  if (form.kind==='kubernetes' && !form.environment_id) return t('environment.deployment.environmentRequired')
   if (!availableKindOptions.value.some(option => option.value === form.kind)) return '当前主机组不支持所选部署方式'
   if (executionTargetError.value) return executionTargetError.value
   if (form.kind === 'script' && !form.host_id) return '当前主机组没有唯一可用的脚本执行主机'
-  if (form.kind === 'script' && !hostBelongsToEnvironment(form.host_id, form.environment_id)) return t('environment.deployment.membershipInvalid')
+  if (form.kind === 'script' && !targetCapabilityMatches(form.kind, form.host_id)) return '所选主机的执行能力不可用'
   if (form.kind === 'script' && !form.script.trim()) return '请输入部署脚本'
   if (form.kind === 'script' && !validWorkingDirectory(form.working_directory)) return '工作目录必须是规范化绝对路径，或留空使用执行用户主目录'
   if ((form.kind === 'docker' || form.kind === 'compose') && !form.host_id) return '当前主机组没有唯一可用的 Docker 执行主机'
@@ -881,14 +878,14 @@ function savedTargetMatchesForm(plan: DeploymentPlan) {
 
 async function testConnection() {
   reconcileExecutionTarget()
-  const validationMessage = !form.environment_id
+  const validationMessage = form.kind==='kubernetes' && !form.environment_id
     ? t('environment.deployment.environmentRequired')
     : executionTargetError.value
       ? executionTargetError.value
       : platform.value !== 'kubernetes' && !form.host_id
         ? '当前主机组没有唯一可用的执行主机'
-      : platform.value === 'ssh' && !hostBelongsToEnvironment(form.host_id, form.environment_id)
-        ? t('environment.deployment.membershipInvalid')
+      : platform.value === 'ssh' && !targetCapabilityMatches(form.kind, form.host_id)
+        ? '所选主机的执行能力不可用'
         : platform.value !== 'ssh' && (!form.runtime_id || !targetCapabilityMatches(form.kind, form.host_id, form.runtime_id))
           ? platform.value === 'kubernetes' ? targetT('deploymentTarget.clusterPlaceholder') : '请选择当前主机组可用的 Docker 主机'
           : ''
@@ -1135,7 +1132,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         </div>
 
         <div v-if="!form.reusable" class="host-target-section">
-          <DeploymentHostSelection :groupID="form.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :host-options="deploymentHostOptions" :group-only="form.kind==='kubernetes'" :ready="!loading" :disabled="saving||!canReadEnvironments||(form.kind!=='kubernetes'&&!canReadHosts)" @change="selectDeploymentTarget" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()">
+          <DeploymentHostSelection :groupID="form.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :all-hosts="availableHosts" :host-options="deploymentHostOptions" :group-only="form.kind==='kubernetes'" :ready="!loading" :disabled="saving||!canReadEnvironments||(form.kind!=='kubernetes'&&!canReadHosts)" @change="selectDeploymentTarget" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()">
             <template #extra><a-button v-if="auth.canAny(['deployment.create'])" aria-label="创建主机组" title="创建主机组" @click="router.push('/hosts?create_group=1')"><Plus :size="15" /></a-button></template>
           </DeploymentHostSelection>
           <div v-if="!canReadEnvironments" class="permission-note">需要发布记录查看权限才能选择执行主机组。</div>
@@ -1143,7 +1140,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
 
         <div class="form-section">
           <header><b>2</b><div><strong>执行方式与配置<DeploymentFieldHelp :text="targetT('deploymentTarget.configurationHint')" label="执行配置说明" /></strong></div></header>
-          <a-alert v-if="!form.reusable && !form.environment_id" type="info" show-icon message="请先选择执行主机组" :description="targetT('deploymentTarget.chooseEnvironmentHint')" />
+          <a-alert v-if="!form.reusable && form.kind==='kubernetes' && !form.environment_id" type="info" show-icon message="请先选择执行主机组" :description="targetT('deploymentTarget.chooseEnvironmentHint')" />
           <a-alert v-else-if="!availableKindOptions.length" type="warning" show-icon message="当前主机组没有可用的执行方式" :description="targetT('deploymentTarget.emptyHint')" />
           <a-form-item v-else label="部署方式" required>
             <a-radio-group :value="form.kind" class="kind-picker">

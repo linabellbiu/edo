@@ -130,7 +130,7 @@ func TestReplaceEnvironmentHostsKeepsProfileAndRollsBack(t *testing.T) {
 	assertHostEnvironments(t, db, hostB.ID, created.Environment.ID)
 }
 
-func TestReplaceHostsReconcilesDeploymentTargetInSameTransaction(t *testing.T) {
+func TestReplaceHostsNotifiesTargetReconcilerInSameTransaction(t *testing.T) {
 	baseService, db := newEnvironmentTestService(t)
 	hostA := createEnvironmentTestHost(t, db, "host-reconcile-a", "旧主机", "")
 	hostB := createEnvironmentTestHost(t, db, "host-reconcile-b", "新主机", "")
@@ -160,12 +160,12 @@ func TestReplaceHostsReconcilesDeploymentTargetInSameTransaction(t *testing.T) {
 			return errors.New("协调器未读取到事务内的新主机关系")
 		}
 		return tx.WithContext(ctx).Model(&model.DeploymentTarget{}).Where("uuid = ?", target.ID).
-			Updates(map[string]any{"host_id": hostB.ID, "runtime_id": "new-runtime"}).Error
+			Updates(map[string]any{"description": "协调器已读取事务内的成员变化"}).Error
 	})
 	service := NewService(db, reconciler)
 	updated, err := service.ReplaceHosts(context.Background(), created.Environment.ID, []string{hostB.ID})
 	if err != nil {
-		t.Fatalf("调整环境时应同步迁移部署目标: %v", err)
+		t.Fatalf("调整分组时应在同一事务通知协调器: %v", err)
 	}
 	if len(updated.Hosts) != 1 || updated.Hosts[0].ID != hostB.ID {
 		t.Fatalf("环境主机未迁移: %+v", updated.Hosts)
@@ -173,8 +173,8 @@ func TestReplaceHostsReconcilesDeploymentTargetInSameTransaction(t *testing.T) {
 	if err := db.First(&target, "uuid = ?", target.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if target.HostID != hostB.ID || target.RuntimeID != "new-runtime" {
-		t.Fatalf("部署目标未随环境迁移: %+v", target)
+	if target.HostID != hostA.ID || target.RuntimeID != "old-runtime" || target.Description != "协调器已读取事务内的成员变化" {
+		t.Fatalf("组调整不应迁移执行目标，协调器应能读取新关系: %+v", target)
 	}
 }
 
@@ -198,7 +198,7 @@ func TestReplaceHostsRollsBackWhenDeploymentTargetCannotBeReconciled(t *testing.
 	assertHostEnvironments(t, db, hostB.ID)
 }
 
-func TestReplaceHostsOnlyBlocksRunningDeployment(t *testing.T) {
+func TestReplaceHostsPreservesRunningDeploymentTarget(t *testing.T) {
 	baseService, db := newEnvironmentTestService(t)
 	hostA := createEnvironmentTestHost(t, db, "host-running-a", "运行中主机", "")
 	hostB := createEnvironmentTestHost(t, db, "host-running-b", "替换主机", "")
@@ -225,14 +225,21 @@ func TestReplaceHostsOnlyBlocksRunningDeployment(t *testing.T) {
 		return nil
 	}))
 
-	if _, err := service.ReplaceHosts(context.Background(), created.Environment.ID, []string{hostB.ID}); !errors.Is(err, ErrHostMembershipRunning) {
-		t.Fatalf("运行中的发布未阻止移除主机: %v", err)
+	if _, err := service.ReplaceHosts(context.Background(), created.Environment.ID, []string{hostB.ID}); err != nil {
+		t.Fatalf("分类调整不应影响运行中发布: %v", err)
 	}
-	if reconcileCount != 0 {
-		t.Fatalf("运行态校验失败后不应继续迁移部署目标: %d", reconcileCount)
+	if reconcileCount != 1 {
+		t.Fatalf("成员修改应通知目标协调器: %d", reconcileCount)
 	}
-	assertHostEnvironments(t, db, hostA.ID, created.Environment.ID)
-	assertHostEnvironments(t, db, hostB.ID)
+	assertHostEnvironments(t, db, hostA.ID)
+	assertHostEnvironments(t, db, hostB.ID, created.Environment.ID)
+	var frozen model.DeploymentRecord
+	if err := db.First(&frozen, "uuid = ?", record.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if frozen.HostID != hostA.ID || frozen.RuntimeID != "running-runtime" || frozen.Status != model.DeploymentRunning {
+		t.Fatalf("组调整篡改运行: %+v", frozen)
+	}
 
 	if err := db.Model(&record).Update("status", model.DeploymentSucceeded).Error; err != nil {
 		t.Fatal(err)
@@ -241,7 +248,7 @@ func TestReplaceHostsOnlyBlocksRunningDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("发布结束后仍阻止移除主机: %v", err)
 	}
-	if reconcileCount != 1 || len(updated.Hosts) != 1 || updated.Hosts[0].ID != hostB.ID {
+	if reconcileCount != 2 || len(updated.Hosts) != 1 || updated.Hosts[0].ID != hostB.ID {
 		t.Fatalf("发布结束后未完成主机迁移: reconciles=%d hosts=%+v", reconcileCount, updated.Hosts)
 	}
 }
@@ -340,7 +347,7 @@ func TestHostCanBelongToMultipleEnvironments(t *testing.T) {
 	assertHostEnvironments(t, db, host.ID, first.Environment.ID)
 }
 
-func TestReplaceHostsRejectsReferencedMembership(t *testing.T) {
+func TestReplaceHostsAllowsMovingReferencedHost(t *testing.T) {
 	service, db := newEnvironmentTestService(t)
 	host := createEnvironmentTestHost(t, db, "host-a", "主机 A", "")
 	created, err := service.Create(context.Background(), "admin", Input{
@@ -359,13 +366,17 @@ func TestReplaceHostsRejectsReferencedMembership(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := service.ReplaceHosts(context.Background(), created.Environment.ID, nil); !errors.Is(err, ErrHostMembershipReferenced) {
-		t.Fatalf("移除被部署配置引用的主机关联未返回稳定错误: %v", err)
+	if _, err := service.ReplaceHosts(context.Background(), created.Environment.ID, nil); err != nil {
+		t.Fatalf("被部署引用的主机应允许移组: %v", err)
 	}
-	assertHostEnvironments(t, db, host.ID, created.Environment.ID)
+	assertHostEnvironments(t, db, host.ID)
+	var kept model.DeploymentTarget
+	if err := db.First(&kept, "uuid = ?", target.ID).Error; err != nil || kept.HostID != host.ID {
+		t.Fatalf("分类调整篡改目标: %+v %v", kept, err)
+	}
 }
 
-func TestReplaceHostsRejectsDockerWorkflowMembership(t *testing.T) {
+func TestReplaceHostsAllowsMovingWorkflowHost(t *testing.T) {
 	service, db := newEnvironmentTestService(t)
 	host := createEnvironmentTestHost(t, db, "docker-host", "Docker 主机", "")
 	created, err := service.Create(context.Background(), "admin", Input{
@@ -410,10 +421,14 @@ func TestReplaceHostsRejectsDockerWorkflowMembership(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := service.ReplaceHosts(context.Background(), created.Environment.ID, nil); !errors.Is(err, ErrHostMembershipReferenced) {
-		t.Fatalf("移除启用流水线使用的 Docker 主机关联未被拒绝: %v", err)
+	if _, err := service.ReplaceHosts(context.Background(), created.Environment.ID, nil); err != nil {
+		t.Fatalf("流水线引用的主机应允许移组: %v", err)
 	}
-	assertHostEnvironments(t, db, host.ID, created.Environment.ID)
+	assertHostEnvironments(t, db, host.ID)
+	var kept model.DeploymentTarget
+	if err := db.First(&kept, "uuid = ?", target.ID).Error; err != nil || kept.HostID != host.ID || kept.RuntimeID != target.RuntimeID {
+		t.Fatalf("分类调整篡改目标: %+v %v", kept, err)
+	}
 }
 
 func TestEnvironmentMutationRollsBackWhenHostIsMissing(t *testing.T) {

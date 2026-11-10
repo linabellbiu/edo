@@ -24,7 +24,7 @@ func (s *Service) ResolveComposeWorkingDirectory(ctx context.Context, target mod
 		return target.WorkingDirectory, nil
 	}
 	configurationPath, err := configfile.ApplicationDirectory(applicationName)
-	if err != nil || s.ssh == nil || target.Platform != model.DeploymentSSH || target.HostID == "" || target.EnvironmentID == "" {
+	if err != nil || s.ssh == nil || target.Platform != model.DeploymentSSH || target.HostID == "" {
 		s.logger.ErrorContext(ctx, "自动部署目录配置无效", "operation", "compose_directory_resolve", "target_id", target.ID, "err", errors.Join(err, ErrInvalidTarget))
 		return "", ErrComposeDirectoryUnavailable
 	}

@@ -76,6 +76,10 @@ func TestComposeStackRuntimeUsesFrozenHostScope(t *testing.T) {
 	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", run.ID).Update("workflow_snapshot", string(encoded)).Error; err != nil {
 		t.Fatal(err)
 	}
+	// 主机退出原组后，已有实例仍按冻结身份读取；失效能力与权限继续由后续断言检查。
+	if err := db.Where("environment_id = ? AND host_id = ?", record.EnvironmentID, record.HostID).Delete(&model.EnvironmentHost{}).Error; err != nil {
+		t.Fatal(err)
+	}
 	state, err := s.RuntimeState(ctx, record.ID)
 	if err != nil || state.RuntimeID != endpoint || state.Kind != "compose" || !state.Running || state.Name != "frozen-project" || len(state.Services) != 2 || state.Services[0].Name != "api" || state.Services[1].State != "completed" || !state.Services[1].RunToCompletion || len(state.Services[0].Containers) != 1 || state.Services[0].Containers[0].ID != "api-id" {
 		t.Fatal("未从冻结的主机和服务范围读取状态", state, err)

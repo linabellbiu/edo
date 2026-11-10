@@ -560,7 +560,7 @@ func validExecutionTargetSnapshot(targetID string, target *model.DeploymentTarge
 	}
 	switch target.Platform {
 	case model.DeploymentSSH:
-		return target.EnvironmentID != "" && target.HostID != ""
+		return target.HostID != ""
 	case model.DeploymentDocker:
 		return target.RuntimeID != "" && (strings.TrimSpace(target.WorkloadName) == "" || workloadNamePattern.MatchString(target.WorkloadName))
 	case model.DeploymentKubernetes:
@@ -1487,9 +1487,7 @@ func (s *Service) findTarget(ctx context.Context, id string) (*model.DeploymentT
 	return &target, nil
 }
 
-// ReconcileEnvironmentTargets 在环境主机集合变更后重新固定当前部署方案的执行目标。
-// 该方法必须与环境成员关系更新共享事务：Docker/脚本无法解析唯一可用主机时，
-// 调用方会回滚环境关系；独立 Kubernetes 集群不随主机成员关系迁移。
+// ReconcileEnvironmentTargets 仅补齐尚未固定主机的旧目标，已选主机不随分类变化。
 func (s *Service) ReconcileEnvironmentTargets(ctx context.Context, tx *gorm.DB, environmentID string) error {
 	environmentID = strings.TrimSpace(environmentID)
 	if environmentID == "" || tx == nil {
@@ -1520,6 +1518,10 @@ func (s *Service) ReconcileEnvironmentTargets(ctx context.Context, tx *gorm.DB, 
 	now := time.Now().UTC()
 	for i := range targets {
 		target := &targets[i]
+		// 已固定的主机不随组成员变化重新选择，也不因主机暂时离线阻止分类调整。
+		if target.Platform != model.DeploymentKubernetes && (target.HostID != "" || target.HostIDs != nil) {
+			continue
+		}
 		selected := ""
 		if target.HostIDs != nil {
 			if len(target.HostIDs) == 0 {
@@ -1579,10 +1581,10 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 		input.RolloutTimeout < 30 || input.RolloutTimeout > 3600 {
 		return TargetInput{}, ErrInvalidTarget
 	}
-	if input.EnvironmentID == "" {
+	if input.EnvironmentID == "" && input.HostIDs == nil {
 		return TargetInput{}, ErrInvalidTarget
 	}
-	var selected string
+	selected := input.HostID
 	if input.HostIDs != nil {
 		if input.Platform == model.DeploymentKubernetes || len(input.HostIDs) == 0 || len(input.HostIDs) > 100 {
 			return TargetInput{}, ErrInvalidTarget
@@ -1639,8 +1641,8 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 	return input, nil
 }
 
-// resolveEnvironmentTarget 为 Docker/脚本解析唯一执行主机；Kubernetes 直接绑定独立集群。
-// 部署方案不接受客户端指定主机，集群也不能通过其他项目的环境绕过归属校验。
+// resolveEnvironmentTarget 按明确保存的主机身份解析能力；分组仅组织候选项，不改变已选目标。
+// Kubernetes 继续使用独立集群及主机组归属校验。
 func (s *Service) resolveEnvironmentTarget(
 	ctx context.Context,
 	environmentID string,
@@ -1649,45 +1651,38 @@ func (s *Service) resolveEnvironmentTarget(
 	selectedHostIDs ...string,
 ) (model.Host, model.HostCapability, error) {
 	var environment model.Environment
-	if err := s.db.WithContext(ctx).First(&environment, "uuid = ? AND is_active = ?", environmentID, true).Error; err != nil {
-		s.logger.Warn("解析环境执行主机失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
-		return model.Host{}, model.HostCapability{}, ErrInvalidTarget
+	if environmentID != "" || platform == model.DeploymentKubernetes {
+		if err := s.db.WithContext(ctx).First(&environment, "uuid = ? AND is_active = ?", environmentID, true).Error; err != nil {
+			s.logger.WarnContext(ctx, "解析执行主机组失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
+			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
+		}
 	}
 	if platform == model.DeploymentKubernetes {
 		if s.kube == nil || strings.TrimSpace(runtimeID) == "" {
-			s.logger.Warn("独立集群部署配置无效", "operation", "deployment_cluster_resolve", "environment_id", environmentID)
+			s.logger.WarnContext(ctx, "独立集群部署配置无效", "operation", "deployment_cluster_resolve", "environment_id", environmentID, "err", ErrInvalidTarget)
 			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
 		}
 		cluster, err := s.kube.Find(ctx, runtimeID)
 		if err != nil || !cluster.IsActive || cluster.ProjectID != environment.ProjectID || cluster.DepartmentID != environment.DepartmentID {
-			s.logger.Warn("独立集群不可用于当前环境", "operation", "deployment_cluster_resolve", "environment_id", environmentID, "cluster_id", runtimeID, "err", err)
+			s.logger.WarnContext(ctx, "独立集群不可用于当前环境", "operation", "deployment_cluster_resolve", "environment_id", environmentID, "cluster_id", runtimeID, "err", err)
 			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
 		}
 		return model.Host{}, model.HostCapability{Kind: model.HostCapabilityKubernetes, RuntimeID: cluster.ID, Status: model.HostCapabilityReady}, nil
 	}
-	var memberships []model.EnvironmentHost
-	if err := s.db.WithContext(ctx).Where("environment_id = ?", environmentID).Find(&memberships).Error; err != nil {
-		s.logger.Error("查询环境主机关系失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
-		return model.Host{}, model.HostCapability{}, fmt.Errorf("查询环境执行主机失败: %w", err)
-	}
-	hostIDs := make([]string, 0, len(memberships))
-	for i := range memberships {
-		hostIDs = append(hostIDs, memberships[i].HostID)
-	}
+	var hostIDs []string
 	if len(selectedHostIDs) > 0 && selectedHostIDs[0] != "" {
-		found := false
-		for _, id := range hostIDs {
-			if id == selectedHostIDs[0] {
-				found = true
-				break
-			}
-		}
-		if !found {
-			s.logger.WarnContext(ctx, "所选主机不属于执行主机组", "operation", "deployment_selected_host", "environment_id", environmentID, "host_id", selectedHostIDs[0], "err", ErrInvalidTarget)
-			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
-		}
 		hostIDs = []string{selectedHostIDs[0]}
+	} else if environmentID != "" {
+		var memberships []model.EnvironmentHost
+		if err := s.db.WithContext(ctx).Where("environment_id = ?", environmentID).Find(&memberships).Error; err != nil {
+			s.logger.ErrorContext(ctx, "查询主机组成员失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "err", err)
+			return model.Host{}, model.HostCapability{}, errors.New("读取执行主机失败，请稍后重试")
+		}
+		for _, membership := range memberships {
+			hostIDs = append(hostIDs, membership.HostID)
+		}
 	}
+
 	if len(hostIDs) == 0 {
 		s.logger.Warn("环境没有关联主机", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform)
 		return model.Host{}, model.HostCapability{}, ErrEnvironmentTargetUnavailable
@@ -1712,6 +1707,10 @@ func (s *Service) resolveEnvironmentTarget(
 	}
 	candidates := make([]candidate, 0, len(hosts))
 	for i := range hosts {
+		if environmentID != "" && (hosts[i].ProjectID != environment.ProjectID || hosts[i].DepartmentID != environment.DepartmentID) {
+			s.logger.WarnContext(ctx, "执行主机与主机组归属不一致", "operation", "deployment_target_resolve", "host_id", hosts[i].ID, "environment_id", environmentID, "err", ErrInvalidTarget)
+			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
+		}
 		expectedKind := model.HostCapabilityKind("")
 		switch platform {
 		case model.DeploymentSSH:

@@ -167,7 +167,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 		if err := tx.Create(environment).Error; err != nil {
 			return err
 		}
-		return replaceHosts(tx, environment.ID, input.HostIDs, now, false)
+		return replaceHosts(tx, environment.ID, input.HostIDs, now)
 	})
 	if err != nil {
 		switch {
@@ -213,7 +213,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 		}).Error; err != nil {
 			return err
 		}
-		if err := replaceHosts(tx, existing.ID, input.HostIDs, now, s.targetReconciler != nil); err != nil {
+		if err := replaceHosts(tx, existing.ID, input.HostIDs, now); err != nil {
 			return err
 		}
 		return s.reconcileDeploymentTargets(ctx, tx, existing.ID)
@@ -301,7 +301,7 @@ func (s *Service) ReplaceHosts(ctx context.Context, id string, hostIDs []string)
 		if err := ensureHostsExist(tx, hostIDs); err != nil {
 			return err
 		}
-		if err := replaceHosts(tx, existing.ID, hostIDs, now, s.targetReconciler != nil); err != nil {
+		if err := replaceHosts(tx, existing.ID, hostIDs, now); err != nil {
 			return err
 		}
 		if err := s.reconcileDeploymentTargets(ctx, tx, existing.ID); err != nil {
@@ -522,42 +522,13 @@ func ensureHostsExist(tx *gorm.DB, hostIDs []string) error {
 	return nil
 }
 
-func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.Time, allowReferenced bool) error {
+func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.Time) error {
 	remove := tx.Model(&model.EnvironmentHost{}).Where("environment_id = ?", environmentID)
 	if len(hostIDs) > 0 {
 		remove = remove.Where("host_id NOT IN ?", hostIDs)
 	}
-	var removedHostIDs []string
-	if err := remove.Pluck("host_id", &removedHostIDs).Error; err != nil {
-		return fmt.Errorf("查询待移除环境主机失败: %w", err)
-	}
-	if len(removedHostIDs) > 0 {
-		running, err := runningDeploymentReferencesHostMembership(tx, environmentID, removedHostIDs)
-		if err != nil {
-			return fmt.Errorf("检查环境主机运行中发布失败: %w", err)
-		}
-		if running {
-			return ErrHostMembershipRunning
-		}
-	}
-	if len(removedHostIDs) > 0 && !allowReferenced {
-		var targetCount int64
-		if err := tx.Model(&model.DeploymentTarget{}).
-			Where("platform = ? AND environment_id = ? AND host_id IN ?", model.DeploymentSSH, environmentID, removedHostIDs).
-			Count(&targetCount).Error; err != nil {
-			return fmt.Errorf("检查环境主机部署配置引用失败: %w", err)
-		}
-		if targetCount > 0 {
-			return ErrHostMembershipReferenced
-		}
-		referenced, err := activeWorkflowReferencesHostMembership(tx, environmentID, removedHostIDs)
-		if err != nil {
-			return fmt.Errorf("检查流水线 Docker 部署环境引用失败: %w", err)
-		}
-		if referenced {
-			return ErrHostMembershipReferenced
-		}
-	}
+	// 分类调整不改变流水线及运行快照中的主机 UUID，无须阻止移出已关联主机。
+
 	if err := remove.Delete(&model.EnvironmentHost{}).Error; err != nil {
 		return fmt.Errorf("解除环境主机归属失败: %w", err)
 	}
@@ -578,19 +549,6 @@ func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.
 	return nil
 }
 
-func runningDeploymentReferencesHostMembership(tx *gorm.DB, environmentID string, hostIDs []string) (bool, error) {
-	if len(hostIDs) == 0 || !tx.Migrator().HasTable(&model.DeploymentRecord{}) {
-		return false, nil
-	}
-	var count int64
-	if err := tx.Model(&model.DeploymentRecord{}).
-		Where("environment_id = ? AND host_id IN ? AND status = ?", environmentID, hostIDs, model.DeploymentRunning).
-		Count(&count).Error; err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
 func (s *Service) reconcileDeploymentTargets(ctx context.Context, tx *gorm.DB, environmentID string) error {
 	if s.targetReconciler == nil {
 		return nil
@@ -599,75 +557,6 @@ func (s *Service) reconcileDeploymentTargets(ctx context.Context, tx *gorm.DB, e
 		return fmt.Errorf("%w: %v", ErrDeploymentTargetInvalid, err)
 	}
 	return nil
-}
-
-func activeWorkflowReferencesHostMembership(
-	tx *gorm.DB,
-	environmentID string,
-	hostIDs []string,
-) (bool, error) {
-	if len(hostIDs) == 0 || !tx.Migrator().HasTable(&model.DeploymentPlan{}) {
-		return false, nil
-	}
-	planIDs := make(map[string]struct{})
-	targetIDs := make(map[string]struct{})
-	collect := func(stages []model.WorkflowStage) {
-		for i := range stages {
-			for j := range stages[i].Tasks {
-				node := stages[i].Tasks[j]
-				if node.Type == model.WorkflowNodeDeploy && node.Config.DeploymentPlanID != "" {
-					planIDs[node.Config.DeploymentPlanID] = struct{}{}
-				}
-			}
-		}
-	}
-	if tx.Migrator().HasTable(&model.ReleaseWorkflow{}) {
-		var workflows []model.ReleaseWorkflow
-		if err := tx.Select("stages").Where("is_active = ?", true).Find(&workflows).Error; err != nil {
-			return false, err
-		}
-		for i := range workflows {
-			collect(workflows[i].Stages)
-		}
-	}
-	if tx.Migrator().HasTable(&model.ReleaseWorkflowTemplate{}) {
-		var templates []model.ReleaseWorkflowTemplate
-		if err := tx.Select("stages").Where("is_active = ?", true).Find(&templates).Error; err != nil {
-			return false, err
-		}
-		for i := range templates {
-			collect(templates[i].Stages)
-		}
-	}
-	if len(planIDs) > 0 {
-		ids := make([]string, 0, len(planIDs))
-		for id := range planIDs {
-			ids = append(ids, id)
-		}
-		var plans []model.DeploymentPlan
-		if err := tx.Select("deployment_target_id").Where("uuid IN ?", ids).Find(&plans).Error; err != nil {
-			return false, err
-		}
-		for i := range plans {
-			if plans[i].DeploymentTargetID != "" {
-				targetIDs[plans[i].DeploymentTargetID] = struct{}{}
-			}
-		}
-	}
-	if len(targetIDs) == 0 {
-		return false, nil
-	}
-	ids := make([]string, 0, len(targetIDs))
-	for id := range targetIDs {
-		ids = append(ids, id)
-	}
-	var count int64
-	if err := tx.Model(&model.DeploymentTarget{}).
-		Where("uuid IN ? AND environment_id = ? AND platform = ? AND host_id IN ?", ids, environmentID, model.DeploymentDocker, hostIDs).
-		Count(&count).Error; err != nil {
-		return false, err
-	}
-	return count > 0, nil
 }
 
 func listHosts(ctx context.Context, db *gorm.DB, environmentID string) ([]model.Host, error) {

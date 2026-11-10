@@ -542,7 +542,7 @@ func TestListForPipelineRunOnlyReturnsAssociatedDeployments(t *testing.T) {
 	}
 }
 
-func TestDockerTargetRejectsHostOutsideSelectedEnvironment(t *testing.T) {
+func TestDockerTargetAllowsPinnedHostOutsideGroup(t *testing.T) {
 	service, db, endpointID := newDeploymentTestService(t)
 	now := time.Now().UTC()
 	environment := model.Environment{
@@ -556,8 +556,8 @@ func TestDockerTargetRejectsHostOutsideSelectedEnvironment(t *testing.T) {
 		Name: "错误环境目标", Platform: model.DeploymentDocker,
 		EnvironmentID: environment.ID, HostID: dockerTestHostID,
 		RuntimeID: endpointID, RolloutTimeout: 120,
-	}); !errors.Is(err, ErrEnvironmentTargetUnavailable) {
-		t.Fatalf("未关联环境不应使用 Docker 主机: %v", err)
+	}); err != nil {
+		t.Fatalf("明确保存的主机不应依赖组成员关系: %v", err)
 	}
 }
 
@@ -1017,8 +1017,8 @@ func TestSSHDeploymentTargetAcceptsAnyConfiguredHostEnvironment(t *testing.T) {
 	if _, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "未关联环境目标", Platform: model.DeploymentSSH,
 		EnvironmentID: unrelated.ID, HostID: host.ID, RolloutTimeout: 60,
-	}); !errors.Is(err, ErrEnvironmentTargetUnavailable) {
-		t.Fatalf("未关联环境不应使用该主机: %v", err)
+	}); err != nil {
+		t.Fatalf("明确保存的主机不应依赖组成员关系: %v", err)
 	}
 }
 
@@ -1153,15 +1153,19 @@ func TestDeploymentTargetResolvesUniqueEnvironmentHost(t *testing.T) {
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "环境自动解析目标", Platform: model.DeploymentDocker,
 		EnvironmentID: dockerTestEnvironmentID,
-		HostID:        "客户端伪造主机", RuntimeID: "客户端伪造运行时",
-		WorkloadName: "demo", RolloutTimeout: 120,
+		RuntimeID:     "客户端伪造运行时",
+		WorkloadName:  "demo", RolloutTimeout: 120,
 	})
 	if err != nil {
 		t.Fatalf("环境内唯一 Docker 主机应自动解析: %v", err)
 	}
 	if target.HostID != dockerTestHostID || target.RuntimeID != endpointID {
-		t.Fatalf("服务端没有忽略客户端主机并按环境解析: %+v", target)
+		t.Fatalf("服务端没有按主机组解析实际主机和运行时: %+v", target)
 	}
+	if _, err := service.CreateTarget(context.Background(), "admin", TargetInput{Name: "无效明确主机", Platform: model.DeploymentDocker, EnvironmentID: dockerTestEnvironmentID, HostID: "不存在的明确主机"}); !errors.Is(err, ErrEnvironmentTargetUnavailable) {
+		t.Fatalf("明确的无效主机不能静默替换成组内其他主机: %v", err)
+	}
+
 }
 
 func TestDeploymentTargetRejectsAmbiguousEnvironmentHosts(t *testing.T) {
@@ -1194,7 +1198,7 @@ func TestDeploymentTargetRejectsAmbiguousEnvironmentHosts(t *testing.T) {
 	}
 }
 
-func TestReconcileEnvironmentTargetsMigratesCurrentDeploymentPlan(t *testing.T) {
+func TestReconcileEnvironmentTargetsPreservesPinnedDeploymentPlan(t *testing.T) {
 	service, db, oldEndpointID := newDeploymentTestService(t)
 	ctx := context.Background()
 	target, err := service.CreateTarget(ctx, "admin", TargetInput{
@@ -1245,8 +1249,8 @@ func TestReconcileEnvironmentTargetsMigratesCurrentDeploymentPlan(t *testing.T) 
 	if err := db.First(target, "uuid = ?", target.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if target.HostID != newHost.ID || target.RuntimeID != newEndpoint.ID || target.RuntimeID == oldEndpointID {
-		t.Fatalf("部署目标没有迁移到替换主机: %+v", target)
+	if target.HostID == newHost.ID || target.RuntimeID != oldEndpointID {
+		t.Fatalf("分类调整不得迁移已有部署目标: %+v", target)
 	}
 
 	if err := db.Transaction(func(tx *gorm.DB) error {
@@ -1254,15 +1258,15 @@ func TestReconcileEnvironmentTargetsMigratesCurrentDeploymentPlan(t *testing.T) 
 			return err
 		}
 		return service.ReconcileEnvironmentTargets(ctx, tx, dockerTestEnvironmentID)
-	}); !errors.Is(err, ErrEnvironmentTargetUnavailable) {
-		t.Fatalf("环境失去可用主机时应拒绝并回滚: %v", err)
+	}); err != nil {
+		t.Fatalf("已固定的主机退出组不应阻断: %v", err)
 	}
 	var memberships []model.EnvironmentHost
 	if err := db.Where("environment_id = ?", dockerTestEnvironmentID).Find(&memberships).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(memberships) != 1 || memberships[0].HostID != newHost.ID {
-		t.Fatalf("重新解析失败后环境成员关系未回滚: %+v", memberships)
+	if len(memberships) != 0 {
+		t.Fatalf("分组应能正常清空: %+v", memberships)
 	}
 }
 

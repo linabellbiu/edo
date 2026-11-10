@@ -173,7 +173,7 @@ test('停用或不可读集群仍明确阻止保存和检查，不把 UUID 当�
   assert.deepEqual(denied.requests, [])
 })
 
-test('Docker、Compose 和脚本继续要求当前环境内唯一已就绪主机', t => {
+test('未指定主机的旧 Docker、Compose 和脚本配置继续唯一解析已就绪主机', t => {
   const { state } = harness(t)
   state.docker.value = [{ id: 'docker-first', is_active: true }, { id: 'docker-second', is_active: true }]
   state.hosts.value = ['first', 'second'].map(id => ({
@@ -342,4 +342,24 @@ test('Docker 和两种 compose 方案保存前必须有显式仓库，上游显�
   await state.save()
   assert.equal(requests.find(item=>item.method==='POST').body.execution_config.deployment_registry_id,'chosen-registry')
  }
+})
+
+test('未分组主机可以检查连接和保存，主机移组后不改变保存的 UUID',async t=>{
+ const h=harness(t)
+ const host={id:'ungrouped',name:'未分组执行主机',mode:'ssh',is_active:true,environment_ids:[],capabilities:[{kind:'ssh',status:'ready'}]}
+ h.state.hosts.value=[host]
+ h.state.create()
+ Object.assign(h.state.form,{kind:'script',reusable:false,name:'未分组部署',script:'printf test',environment_id:'',host_ids:[host.id],host_id:host.id,timeout_seconds:600})
+ h.state.reconcileExecutionTarget()
+ assert.equal(h.state.validate(),'')
+ await h.state.testConnection()
+ assert.ok(h.requests.some(request=>request.path==='/hosts/ungrouped/ping?capability=ssh'))
+ await h.state.save()
+ const saved=h.requests.find(request=>request.path==='/deployment-plans')?.body
+ assert.deepEqual(saved?.deployment_target.host_ids,[host.id])
+ assert.equal(saved.deployment_target.environment_id,'')
+ host.environment_ids=['other-env']
+ h.state.edit(h.state.plans.value[0]);await settle()
+ assert.deepEqual(h.state.form.host_ids,[host.id])
+ assert.equal(h.state.validate(),'')
 })

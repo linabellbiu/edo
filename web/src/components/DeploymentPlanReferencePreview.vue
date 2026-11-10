@@ -20,7 +20,7 @@ const execution = computed(() => props.plan.execution_config || deploymentExecut
 const target = computed(() => props.plan.deployment_target)
 const docker = computed(() => (props.plan.docker_config || {}) as NonNullable<DeploymentCommandPlan['docker_config']>)
 const canReadEnvironment = computed(() => auth.canAny(['deployment.read']))
-const environmentLabel = computed(() => !target.value?.environment_id ? '部署时选择执行主机组'
+const environmentLabel = computed(() => !target.value?.environment_id ? (target.value?.host_ids?.length?'未分组':'部署时选择执行主机组')
   : !canReadEnvironment.value ? '无权查看主机组' : loading.value ? '加载中…' : environmentError.value ? '主机组读取失败' : environmentName.value || '原主机组不可用')
 const ports = computed(() => (docker.value.port_mappings || []).map(port => `${port.host_ip || '127.0.0.1'}:${port.host_port} → ${port.container_port}/${port.protocol || 'tcp'}`).join('\n'))
 const volumes = computed(() => (docker.value.volume_mounts || []).map(volume => `${volume.source} → ${volume.target}${volume.read_only ? '（只读）' : ''}`).join('\n'))
@@ -30,13 +30,13 @@ watch(() => [props.plan.id, target.value?.environment_id, auth.user?.id, auth.us
   controller?.abort(); controller = new AbortController()
   const { signal } = controller, project = auth.user?.project_id
   environmentName.value = ''; environmentHosts.value=[]; environmentError.value = ''; loading.value = false
-  if (!target.value?.environment_id || !project || !canReadEnvironment.value || localStorage.getItem('edo.project') !== project) return
+  if (!project || !canReadEnvironment.value || localStorage.getItem('edo.project') !== project) return
   loading.value = true
   try {
-    const { data } = await client.get<{ environments: Array<{ id: string; name: string; hosts?:Array<{id:string;name:string}> }> }>('/environments', { signal, headers: { 'X-EDO-Project-ID': project } })
+    const [groups,hosts] = await Promise.all([client.get<{environments:Array<{id:string;name:string}>}>('/environments',{signal}),client.get<{hosts:Array<{id:string;name:string}>}>('/hosts',{signal})])
     if (signal.aborted || auth.user?.project_id !== project || localStorage.getItem('edo.project') !== project) return
-    const group=data.environments.find(item => item.id === target.value?.environment_id)
-    environmentName.value = group?.name || '';environmentHosts.value=group?.hosts||[]
+    const group=groups.data.environments.find(item => item.id === target.value?.environment_id)
+    environmentName.value = group?.name || '';environmentHosts.value=hosts.data.hosts||[]
   } catch (error) {
     if (!signal.aborted) environmentError.value = apiErrorMessage(error)
   } finally {

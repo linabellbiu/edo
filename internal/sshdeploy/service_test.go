@@ -110,6 +110,9 @@ func TestRunHostDeploymentScriptExecutesLocalSnapshot(t *testing.T) {
 		Update("level", model.EnvironmentProduction).Error; err != nil {
 		t.Fatalf("修改旧环境安全级别兼容列失败: %v", err)
 	}
+	if err := db.Where("environment_id = ? AND host_id = ?", environment.ID, model.BuiltinLocalHostID).Delete(&model.EnvironmentHost{}).Error; err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("EDO_SECRETS_KEY", "must-not-be-inherited")
 	var stdout, stderr bytes.Buffer
 	result, err := service.RunHostDeploymentScript(context.Background(), Input{

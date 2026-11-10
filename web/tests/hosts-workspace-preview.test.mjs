@@ -9,12 +9,13 @@ import { createHostsPreviewData, createHostsPreviewAdapter, hostPreviewScenarios
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8')
 const request = (adapter, url, extra = {}) => adapter({ method: 'get', url, ...extra })
 
-function hostView(scenario = 'ready', query = {}) {
+function hostView(scenario = 'ready', query = {}, references) {
   const data = createHostsPreviewData(scenario), calls = [], adapter = createHostsPreviewAdapter(data, calls)
-  const get = (url, config = {}) => request(adapter, url, config)
+  if(references!==undefined)data.permissions.push('workflow.read')
+  const get = (url, config = {}) => url==='/hosts/workflows'&&references!==undefined ? (references instanceof Error?Promise.reject(references):Promise.resolve({data:{host_workflows:references}})) : request(adapter, url, config)
   const infrastructure = loadFrontend('../src/api/infrastructure.ts', { '@/api/client': { __esModule: true, default: { get } } })
   const list = loadFrontend('../src/utils/resourceList.ts', { vue, 'vue-i18n': { useI18n: () => ({ t: key => key }) } })
-  const h = componentHarness('../src/views/HostView.vue', { codes: data.permissions, query, api: { get }, modules: { '@/api/infrastructure': infrastructure, '@/utils/resourceList': list, '@/utils/infrastructureRelations': loadFrontend('../src/utils/infrastructureRelations.ts'), '@/utils/time': loadFrontend('../src/utils/time.ts') } })
+  const h = componentHarness('../src/views/HostView.vue', { codes: data.permissions, query, api: { get }, globals:{localStorage:{getItem:()=> 'host-preview'}}, modules: { '@/api/infrastructure': infrastructure, '@/utils/resourceList': list, '@/utils/infrastructureRelations': loadFrontend('../src/utils/infrastructureRelations.ts'), '@/utils/time': loadFrontend('../src/utils/time.ts') } })
   return { ...h, data, calls }
 }
 
@@ -182,4 +183,21 @@ test('真实HostView读取失败清空列表并保留可重试错误，不把失
   await empty.state.refresh()
   assert.deepEqual(empty.state.hosts.value, [])
   assert.equal(empty.state.hostLoadError.value, '')
+})
+
+
+test('主机列表展示准确关联、可跳转，读取失败与无权不冒充未关联',async t=>{
+ const flow={id:'flow',name:'发布 API',application_id:'app',application_name:'演示应用',is_active:false}
+ const h=hostView('ready',{}, {'preview-edge':[flow]});t.after(h.stop)
+ await h.state.refresh()
+ assert.deepEqual(h.state.hostWorkflows.value['preview-edge'],[flow])
+ assert.deepEqual(h.state.workflowLink(flow),{path:'/pipeline-plans/editor',query:{application:'app',workflow:'flow'}})
+ assert.ok(h.state.tableColumns.some(column=>column.key==='workflows'&&column.title==='关联流水线'))
+ const failed=hostView('ready',{},new Error('关联接口失败'));t.after(failed.stop)
+ await failed.state.refresh()
+ assert.equal(failed.state.workflowLoadError.value,'关联接口失败')
+ assert.equal(failed.state.hosts.value.length,3,'关联失败不能阻止主机列表')
+ const denied=hostView('readonly');t.after(denied.stop);await denied.state.refresh()
+ assert.equal(denied.state.canReadWorkflows.value,false)
+ assert.equal(denied.calls.some(call=>call.path==='/hosts/workflows'),false)
 })

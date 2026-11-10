@@ -35,7 +35,7 @@ export function createHostsPreviewData(scenario = 'ready', now = Date.now()) {
     'preview-offline': { state: 'unavailable', source: 'ssh', scope: 'current_environment', cpu_cores: null, memory_total_bytes: null, disk_total_bytes: null, disk_mount: '/', os: '', collected_at: at(0) },
   }
   const topology = { cluster_id: clusters[0].id, nodes: [{ node: { apiVersion: 'v1', kind: 'Node', metadata: { uid: 'preview-node', name: 'edge-worker', labels: { 'node-role.kubernetes.io/control-plane': 'true' } }, status: { addresses: [{ type: 'InternalIP', address: hosts[1].address }], conditions: [{ type: 'Ready', status: 'True' }] } }, roles: ['control-plane', 'worker'], cpu: { capacity: 4, allocatable: 3.8, used: .2 }, memory: { capacity: 8 * GiB, allocatable: 7.5 * GiB, used: 768 * MiB }, pods: { count: 4, capacity: 110, state: 'ok' }, hosts: [hosts[1]], metrics_timestamp: at(0) }], hosts: [{ ...hosts[1], state: 'matched', node_uids: ['preview-node'], roles: ['control-plane', 'worker'] }], hosts_state: 'ok', metrics_state: 'ok', collected_at: at(0) }
-  const permissions = scenario === 'readonly' ? ['cluster.read', 'deployment.read', 'kubernetes.node.read'] : scenario === 'no-resources' ? ['deployment.read'] : ['cluster.read', 'cluster.create', 'cluster.update', 'cluster.delete', 'cluster.execute', 'deployment.read', 'deployment.create', 'deployment.update', 'deployment.delete', 'terminal.open', ...['node', 'workload', 'config', 'storage', 'network'].map(kind => `kubernetes.${kind}.read`)]
+  const permissions = scenario === 'readonly' ? ['cluster.read', 'deployment.read', 'kubernetes.node.read'] : scenario === 'no-resources' ? ['deployment.read'] : ['workflow.read','cluster.read', 'cluster.create', 'cluster.update', 'cluster.delete', 'cluster.execute', 'deployment.read', 'deployment.create', 'deployment.update', 'deployment.delete', 'terminal.open', ...['node', 'workload', 'config', 'storage', 'network'].map(kind => `kubernetes.${kind}.read`)]
   return { scenario, hosts: scenario === 'empty' ? [] : hosts, environments: scenario === 'empty' ? [] : environments, clusters: scenario === 'empty' ? [] : clusters, endpoints: scenario === 'empty' ? [] : endpoints, containers: scenario === 'docker-empty' || scenario === 'empty' ? [] : containers, resources, topology, permissions }
 }
 
@@ -57,6 +57,7 @@ export function createHostsPreviewAdapter(data = createHostsPreviewData(), reque
       if (data.scenario === 'error') throw previewError('预览场景：主机列表暂不可用，请重试', config)
       response = { hosts: path.endsWith('/statuses') ? data.hosts.map(({ id, is_active, capabilities }) => ({ id, is_active, capabilities })) : data.hosts }
     } else if (path === '/environments') response = { environments: data.environments }
+    else if (path === '/hosts/workflows') response={host_workflows:{'preview-local':[{id:'preview-flow',name:'主机发布',application_id:'preview-app',application_name:'演示应用',is_active:true}],'preview-edge':[{id:'preview-flow2',name:'API 发布',application_id:'preview-app2',application_name:'演示 API',is_active:true}]}}
     else if (path === '/kubernetes/clusters') response = { clusters: data.clusters }
     else if (path === '/docker/endpoints') {
       if (data.scenario === 'metadata-error') throw previewError('预览场景：Docker 运行时列表暂不可用', config)

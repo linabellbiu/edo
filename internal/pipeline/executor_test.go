@@ -466,6 +466,12 @@ func TestSSHDeploymentPlanSnapshotValidation(t *testing.T) {
 		t.Fatal("完整 SSH 部署方案快照应当有效")
 	}
 
+	ungrouped := target
+	ungrouped.EnvironmentID = ""
+	if !validSSHDeploymentPlanSnapshot(&plan, &ungrouped) {
+		t.Fatal("未分组主机的完整快照应当有效")
+	}
+
 	tests := []struct {
 		name   string
 		mutate func(*model.DeploymentPlan, *model.DeploymentTarget)
@@ -479,7 +485,6 @@ func TestSSHDeploymentPlanSnapshotValidation(t *testing.T) {
 			target.Platform = model.DeploymentDocker
 		}},
 		{name: "缺少主机", mutate: func(_ *model.DeploymentPlan, target *model.DeploymentTarget) { target.HostID = "" }},
-		{name: "缺少环境归属", mutate: func(_ *model.DeploymentPlan, target *model.DeploymentTarget) { target.EnvironmentID = "" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
