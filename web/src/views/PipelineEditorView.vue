@@ -13,7 +13,7 @@ import {
 import client from '@/api/client'
 import { deploymentExecution, clearTaskDeploymentExecution } from '@/utils/deploymentExecution'
 import PipelineTaskControls from '@/components/PipelineTaskControls.vue'
-import { dockerTargetError } from '@/utils/buildTarget'
+import { dockerTargetError, dockerBuildPlatformError } from '@/utils/buildTarget'
 import BuildPlanAdvancedFields from '@/components/BuildPlanAdvancedFields.vue'
 import PipelineBuildFields from '@/components/PipelineBuildFields.vue'
 import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
@@ -226,6 +226,7 @@ const canReadBuildPlan = computed(() => scopeCan('build_plan.read'))
 const selectedLibraryBuildPlan = computed(()=>canReadBuildPlan.value&&selectedNode.value?.type==='build'&&buildSource(selectedNode.value)==='plan'?buildPlans.value.find(plan=>plan.id===selectedNode.value?.config.build_plan_id):undefined)
 const selectedBuildPlan=computed(()=>selectedNode.value?.config.inline_build||selectedLibraryBuildPlan.value)
 const selectedBuildTarget=computed(()=>selectedNode.value?.config.target_stage??selectedBuildPlan.value?.target_stage??'')
+const selectedBuildPlatform=computed(()=>selectedNode.value?.config.build_platform||selectedBuildPlan.value?.platform||'linux/amd64')
 const canModifyBuildPlan=computed(()=>!!selectedLibraryBuildPlan.value&&scopeCan('build_plan.update'))
 const selectedBuildPlanOptions=computed(()=>{
  const options=canReadBuildPlan.value?buildPlanOptions.value:[]
@@ -659,8 +660,9 @@ function firstEnvironmentVariableError() {
   for (const task of stages.value.flatMap(stage => stage.tasks)) {
     const plan = task.config.inline_build || buildPlans.value.find(plan => plan.id === task.config.build_plan_id)
     const targetError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerTargetError(task.config.target_stage ?? plan.target_stage) : ''
-    const error = targetError || environmentVariableErrors[task.id] || buildFieldErrors[task.id]
-    if (error) return { task, error, tab: targetError || !buildFieldErrors[task.id] ? 'advanced' as const : 'common' as const }
+    const platformError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerBuildPlatformError(task.config.build_platform || plan.platform) : ''
+    const error = targetError || platformError || environmentVariableErrors[task.id] || buildFieldErrors[task.id]
+    if (error) return { task, error, tab: targetError || platformError || !buildFieldErrors[task.id] ? 'advanced' as const : 'common' as const }
   }
   return null
 }
@@ -826,6 +828,11 @@ function updateSelectedBuildTarget(value: string) {
   const node = selectedNode.value
   if (!canEdit.value || node?.type !== 'build' || selectedBuildPlan.value?.kind !== 'dockerfile') return
   updateSelectedNode({}, { target_stage: value })
+}
+
+function updateSelectedBuildPlatform(value: string) {
+  if (!canEdit.value || selectedNode.value?.type !== 'build' || selectedBuildPlan.value?.kind !== 'dockerfile') return
+  updateSelectedNode({}, { build_platform: value })
 }
 
 function appendNotificationRule(
@@ -1898,7 +1905,7 @@ onBeforeRouteLeave(async () => {
             <section v-if="selectedTask&&selectedNode.type==='build'&&selectedBuildPlan?.kind==='dockerfile'" class="build-advanced-fields">
               <h3 class="task-section-heading">高级配置</h3>
               <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像名称"><a-input :value="selectedNode.config.image_name" :disabled="!canEdit" :placeholder="editorApplication?.name||'留空使用应用名'" aria-label="镜像名称" @update:value="updateSelectedNode({},{image_name:String($event||'')})"/></a-form-item>
-              <BuildPlanAdvancedFields :target="selectedBuildTarget" :disabled="!canEdit" @change="updateSelectedBuildTarget"/>
+              <BuildPlanAdvancedFields :target="selectedBuildTarget" :platform="selectedBuildPlatform" :disabled="!canEdit" @change="updateSelectedBuildTarget" @platform-change="updateSelectedBuildPlatform"/>
             </section>
             <PipelineTaskControls v-if="selectedTask && !['build','deploy'].includes(selectedNode.type)" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="(selectedNode.config.inline_build||activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id))?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
             <a-divider v-if="selectedTask && !['build','deploy'].includes(selectedNode.type)" class="node-notification-divider" />

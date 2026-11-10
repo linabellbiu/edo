@@ -135,7 +135,7 @@ func (s *Service) buildAndPushWithOptions(
 	timeout time.Duration,
 	output io.Writer,
 ) (BuiltImage, error) {
-	platform, platforms, err := normalizeBuildPlatforms(options.Platform)
+	platform, platforms, err := NormalizeBuildPlatforms(options.Platform)
 	if err != nil {
 		return BuiltImage{}, err
 	}
@@ -252,7 +252,7 @@ func (s *Service) buildLocalWithOptions(
 	if !IsEDOLocalImage(image) {
 		return BuiltImage{}, errors.New("本地构建镜像名称无效")
 	}
-	platform, platforms, err := normalizeBuildPlatforms(options.Platform)
+	platform, platforms, err := NormalizeBuildPlatforms(options.Platform)
 	if err != nil {
 		return BuiltImage{}, err
 	}
@@ -506,7 +506,8 @@ func (s *Service) runBuildxCommand(
 	return nil
 }
 
-func normalizeBuildPlatforms(value string) (string, []string, error) {
+// NormalizeBuildPlatforms 校验并规范化 Docker 支持的构建平台列表。
+func NormalizeBuildPlatforms(value string) (string, []string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", nil, nil

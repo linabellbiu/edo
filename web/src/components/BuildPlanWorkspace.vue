@@ -23,6 +23,7 @@ interface BuildPlan extends ResourceRecord {
   id: string
   name: string
   kind: 'dockerfile' | 'script'
+  platform?: string
   description: string
   script?: string
   dockerfile_path?: string
@@ -288,7 +289,7 @@ function formatTime(value: string) {
           <a-tooltip :title="buildPlanArtifact(plan)" :mouse-enter-delay="0.1"><strong>{{ buildPlanArtifact(plan) }}</strong></a-tooltip>
           <a-tooltip :title="buildPlanRegistry(plan)" :mouse-enter-delay="0.1"><small>{{ buildPlanRegistry(plan) }}</small></a-tooltip>
         </div>
-        <span v-else-if="column.key === 'architecture'">{{ t('buildPlanWorkspace.followHost') }}</span>
+        <span v-else-if="column.key === 'architecture'">{{ plan.kind === 'dockerfile' ? plan.platform || 'linux/amd64' : '—' }}</span>
         <span v-else-if="column.key === 'timeout'">{{ t('planList.seconds', { count: plan.timeout_seconds }) }}</span>
         <div v-else-if="column.key === 'updated'" class="plan-cell"><time :datetime="plan.updated_at">{{ formatTime(plan.updated_at) }}</time></div>
         <ResourceRowActions v-else-if="column.key === 'actions'" :more="canUpdate || canDelete" :loading="mutationID === plan.id">
@@ -319,7 +320,7 @@ function formatTime(value: string) {
         <div><dt>{{ t('buildPlanWorkspace.directory') }}</dt><dd>{{ buildPlanDirectory(drawerPlan) }}</dd></div>
         <div><dt>{{ t('buildPlanWorkspace.artifact') }}</dt><dd>{{ buildPlanArtifact(drawerPlan) }}</dd></div>
         <div><dt>{{ t('buildPlanWorkspace.storage') }}</dt><dd>{{ buildPlanRegistry(drawerPlan) }}</dd></div>
-        <div><dt>{{ t('buildPlanWorkspace.architecture') }}</dt><dd>{{ t('buildPlanWorkspace.followHost') }}</dd></div>
+        <div><dt>{{ t('buildPlanWorkspace.architecture') }}</dt><dd>{{ drawerPlan.kind === 'dockerfile' ? drawerPlan.platform || 'linux/amd64' : '—' }}</dd></div>
         <div><dt>{{ t('buildPlanWorkspace.timeout') }}</dt><dd>{{ t('planList.seconds', { count: drawerPlan.timeout_seconds }) }}</dd></div>
         <div><dt>{{ t('buildPlanWorkspace.updated') }}</dt><dd>{{ formatTime(drawerPlan.updated_at) }}</dd></div>
         <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ drawerPlan.description || '—' }}</dd></div>

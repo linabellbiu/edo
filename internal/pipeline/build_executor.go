@@ -356,7 +356,7 @@ func (s *Service) loadBuildExecution(ctx context.Context, payload BuildTaskPaylo
 	return result, nil
 }
 
-// workflowBuildPlatform 从本次运行已经冻结的下游部署目标中推导构建平台。
+// workflowBuildPlatform 优先采用本次运行冻结的构建平台；旧快照缺少该字段时沿用原解析规则。
 // 遇到下一次构建即停止，避免把后续独立制品的部署架构错误合并到当前制品。
 func workflowBuildPlatform(snapshot workflowSnapshot, buildNodeID string, plan workflowBuildPlanSnapshot) (string, error) {
 	tasks := workflowTasks(snapshot.Stages)
@@ -369,6 +369,13 @@ func workflowBuildPlatform(snapshot workflowSnapshot, buildNodeID string, plan w
 	}
 	if buildIndex < 0 {
 		return "", ErrPipelineExecutionConfig
+	}
+	if plan.Kind == model.BuildPlanDockerfile && plan.Platform != "" {
+		platform, platforms, err := dockerengine.NormalizeBuildPlatforms(plan.Platform)
+		if err != nil || (len(platforms) > 1 && plan.ImageRegistryID == "") {
+			return "", ErrPipelineExecutionConfig
+		}
+		return platform, nil
 	}
 	platformSet := make(map[string]struct{}, 2)
 	for index := buildIndex + 1; index < len(tasks); index++ {
@@ -534,7 +541,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 			},
 		}
 		if options.Platform != "" {
-			s.appendRunLog(ctx, prepared.run.ID, "build", "info", "已根据部署目标选择构建平台 "+options.Platform)
+			s.appendRunLog(ctx, prepared.run.ID, "build", "info", "本次镜像构建平台："+options.Platform)
 		}
 		timeout := time.Duration(prepared.plan.TimeoutSeconds) * time.Second
 		if prepared.plan.ImageRegistryID == "" {

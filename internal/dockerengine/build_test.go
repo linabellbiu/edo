@@ -265,11 +265,11 @@ func TestDockerBuildxPushArgumentsCreateMultiPlatformManifest(t *testing.T) {
 }
 
 func TestNormalizeBuildPlatformsOnlyAcceptsDetectedArchitectures(t *testing.T) {
-	canonical, platforms, err := normalizeBuildPlatforms("linux/arm64, linux/amd64,linux/arm64")
+	canonical, platforms, err := NormalizeBuildPlatforms("linux/arm64, linux/amd64,linux/arm64")
 	if err != nil || canonical != "linux/amd64,linux/arm64" || !slices.Equal(platforms, []string{"linux/amd64", "linux/arm64"}) {
 		t.Fatalf("构建平台没有规范化: canonical=%q platforms=%v err=%v", canonical, platforms, err)
 	}
-	if _, _, err := normalizeBuildPlatforms("linux/386"); err == nil {
+	if _, _, err := NormalizeBuildPlatforms("linux/386"); err == nil {
 		t.Fatal("不受支持的构建架构未被拒绝")
 	}
 }

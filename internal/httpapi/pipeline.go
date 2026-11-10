@@ -90,6 +90,7 @@ type buildPlanRequest struct {
 	RuntimeImage         string              `json:"runtime_image" binding:"max=512"`
 	ImageRegistryID      string              `json:"image_registry_id" binding:"max=36"`
 	TargetStage          string              `json:"target_stage" binding:"max=128"`
+	Platform             string              `json:"platform" binding:"max=64"`
 	Pull                 *bool               `json:"pull"`
 	CacheEnabled         *bool               `json:"cache_enabled"`
 	BuildArgs            map[string]string   `json:"build_args" binding:"max=100"`
@@ -515,7 +516,7 @@ func (h pipelineHandler) createBuildPlan(c *gin.Context) {
 		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
 		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
 		WorkingDirectory: request.WorkingDirectory, ArtifactPath: request.ArtifactPath, RuntimeImage: request.RuntimeImage,
-		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage,
+		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage, Platform: request.Platform,
 		Pull: request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
 		EnvironmentVariables: request.EnvironmentVariables, TimeoutSeconds: request.TimeoutSeconds,
 	})
@@ -538,7 +539,7 @@ func (h pipelineHandler) updateBuildPlan(c *gin.Context) {
 		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
 		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
 		WorkingDirectory: request.WorkingDirectory, ArtifactPath: request.ArtifactPath, RuntimeImage: request.RuntimeImage,
-		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage,
+		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage, Platform: request.Platform,
 		Pull: request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
 		EnvironmentVariables: request.EnvironmentVariables, TimeoutSeconds: request.TimeoutSeconds,
 	})
@@ -791,6 +792,7 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusBadRequest, "deployment_registry_unavailable", pipeline.ErrDeploymentRegistryUnavailable.Error())
 	case errors.Is(err, pipeline.ErrInvalidApplication), errors.Is(err, pipeline.ErrInvalidApplicationName), errors.Is(err, pipeline.ErrInvalidBuildPlan),
 		errors.Is(err, pipeline.ErrInvalidBuildTarget),
+		errors.Is(err, pipeline.ErrInvalidBuildPlatform),
 		errors.Is(err, pipeline.ErrInvalidScriptEnvironment),
 		errors.Is(err, pipeline.ErrInvalidRegistry), errors.Is(err, pipeline.ErrInvalidRegistryName),
 		errors.Is(err, pipeline.ErrInvalidRegistryProvider), errors.Is(err, pipeline.ErrInvalidRegistryEndpoint), errors.Is(err, pipeline.ErrRegistryProviderEndpoint),

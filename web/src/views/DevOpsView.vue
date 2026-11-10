@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dockerTargetError } from '@/utils/buildTarget'
+import { dockerTargetError, dockerBuildPlatformError } from '@/utils/buildTarget'
 import BuildPlanFields from '@/components/BuildPlanFields.vue'
 import type {PipelineBuildPlan} from '@/types/pipeline'
 import DeliveryVariablesView from './DeliveryVariablesView.vue'
@@ -151,7 +151,7 @@ const formSection=computed(()=>creatingApplicationRepository.value?'repositories
 const formEditingID=computed(()=>creatingApplicationRepository.value?'':editingID.value)
 const DEFAULT_RUNTIME_IMAGE='alpine:3.22'
 const runtimeImageOptions=['alpine:3.22','node:24-alpine','golang:1.26-alpine','maven:3.9-eclipse-temurin-21-alpine'].map(value=>({value}))
-const buildForm=reactive({name:'',kind:'dockerfile' as 'dockerfile'|'script',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',pull:true,cache_enabled:true,timeout_seconds:1800})
+const buildForm=reactive({name:'',kind:'dockerfile' as 'dockerfile'|'script',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',platform:'linux/amd64',pull:true,cache_enabled:true,timeout_seconds:1800})
 const registryForm=reactive({name:'',provider:'generic' as RegistryProvider,endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
 const dockerHubRegistry=computed(()=>registryForm.provider==='docker_hub')
 const repositoryWebhookAPI=computed(()=>{
@@ -1131,7 +1131,7 @@ function resetForms(){
 	 editingID.value='';selectedWorkflowTemplateID.value='';workflowPickerOpen.value=false;workflowRemovalID.value='';registryTested.value=false;buildImageDestination.value='local';buildSaveArtifact.value=false;buildArgsText.value='';buildEnvironmentText.value=''
  Object.assign(appForm,{name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 	 Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
-	 Object.assign(buildForm,{name:'',kind:'dockerfile',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',pull:true,cache_enabled:true,timeout_seconds:1800})
+	 Object.assign(buildForm,{name:'',kind:'dockerfile',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',platform:'linux/amd64',pull:true,cache_enabled:true,timeout_seconds:1800})
  Object.assign(registryForm,{name:'',provider:'generic',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
 }
 function create(){
@@ -1198,7 +1198,7 @@ function edit(row:ResourceRecord){
  }
  if(props.section==='build-plans'){
   const item=row as BuildPlan
-	  Object.assign(buildForm,{name:item.name,kind:item.kind,description:item.description||'',script:item.script||'',dockerfile_path:item.dockerfile_path||'Dockerfile',context_path:item.context_path||'.',working_directory:item.working_directory||'.',artifact_path:item.artifact_path||'',runtime_image:item.runtime_image||DEFAULT_RUNTIME_IMAGE,image_registry_id:item.image_registry_id||'',target_stage:item.target_stage||'',pull:item.pull!==false,cache_enabled:item.cache_enabled!==false,timeout_seconds:item.timeout_seconds||1800})
+	  Object.assign(buildForm,{name:item.name,kind:item.kind,description:item.description||'',script:item.script||'',dockerfile_path:item.dockerfile_path||'Dockerfile',context_path:item.context_path||'.',working_directory:item.working_directory||'.',artifact_path:item.artifact_path||'',runtime_image:item.runtime_image||DEFAULT_RUNTIME_IMAGE,image_registry_id:item.image_registry_id||'',target_stage:item.target_stage||'',platform:item.platform||'linux/amd64',pull:item.pull!==false,cache_enabled:item.cache_enabled!==false,timeout_seconds:item.timeout_seconds||1800})
 	  buildSaveArtifact.value=item.kind==='script'&&Boolean(item.artifact_path)
   buildImageDestination.value=item.image_registry_id?'registry':'local'
   buildArgsText.value=formatVariableText(item.build_args)
@@ -1236,6 +1236,7 @@ async function save(){
 	   if(buildForm.kind==='script'&&!buildForm.script.trim()){message.error('请填写构建脚本');return}
 	   if(buildForm.kind==='script'&&buildSaveArtifact.value&&!buildForm.artifact_path.trim()){message.error('开启保存产物后，请填写产物路径');return}
    if(buildForm.kind==='dockerfile'&&dockerTargetError(buildForm.target_stage)){message.error(dockerTargetError(buildForm.target_stage));return}
+   if(buildForm.kind==='dockerfile'&&dockerBuildPlatformError(buildForm.platform)){message.error(dockerBuildPlatformError(buildForm.platform));return}
    const buildArgs=buildForm.kind==='dockerfile'?parseVariableText(buildArgsText.value,'构建参数'):{values:{},error:''}
    const environmentVariables=buildForm.kind==='script'?parseVariableText(buildEnvironmentText.value,'环境变量'):{values:{},error:''}
    if(buildArgs.error||environmentVariables.error){message.error(buildArgs.error||environmentVariables.error);return}
@@ -1247,6 +1248,7 @@ async function save(){
 	    artifact_path:buildForm.kind==='script'&&buildSaveArtifact.value?buildForm.artifact_path:'',
     runtime_image:'',
     target_stage:buildForm.kind==='dockerfile'?buildForm.target_stage.trim():'',
+    platform:buildForm.kind==='dockerfile'?(buildForm.platform||'linux/amd64'):'',
     image_registry_id:buildForm.kind==='dockerfile'&&buildImageDestination.value==='registry'?buildForm.image_registry_id:'',
     build_args:buildForm.kind==='dockerfile'?buildArgs.values:{},
     environment_variables:buildForm.kind==='script'?environmentVariables.values:{},

@@ -31,6 +31,7 @@ func TestWorkflowBuildTargetOverrideHTTP(t *testing.T) {
 		payload["revision"] = result.WorkflowTemplate.Revision
 		config := payload["stages"].([]any)[0].(map[string]any)["tasks"].([]any)[0].(map[string]any)["config"].(map[string]any)
 		config["target_stage"] = target
+		config["build_platform"] = "linux/arm64"
 		saved := performJSONRequest(t, router, http.MethodPut, path, payload, admin)
 		if target == "web,api" {
 			if saved.Code != http.StatusBadRequest {
@@ -42,15 +43,29 @@ func TestWorkflowBuildTargetOverrideHTTP(t *testing.T) {
 			t.Fatalf("覆盖保存失败: %d %s", saved.Code, saved.Body.String())
 		}
 		value := result.WorkflowTemplate.Stages[0].Tasks[0].Config.TargetStage
+		if result.WorkflowTemplate.Stages[0].Tasks[0].Config.BuildPlatform != "linux/arm64" {
+			t.Fatal("任务构建平台未保存")
+		}
 		if value == nil || *value != target {
 			t.Fatalf("接口丢失任务覆盖值: %s", saved.Body.String())
 		}
+	}
+	config := payload["stages"].([]any)[0].(map[string]any)["tasks"].([]any)[0].(map[string]any)["config"].(map[string]any)
+	config["target_stage"] = ""
+	config["build_platform"] = "linux/386"
+	payload["revision"] = result.WorkflowTemplate.Revision
+	rejected := performJSONRequest(t, router, http.MethodPut, path, payload, admin)
+	if rejected.Code != http.StatusBadRequest {
+		t.Fatalf("非法平台未拒绝: %d %s", rejected.Code, rejected.Body.String())
 	}
 	reopened := performJSONRequest(t, router, http.MethodGet, path, nil, admin)
 	if reopened.Code != http.StatusOK || json.Unmarshal(reopened.Body.Bytes(), &result) != nil {
 		t.Fatal("重新读取失败")
 	}
 	value := result.WorkflowTemplate.Stages[0].Tasks[0].Config.TargetStage
+	if result.WorkflowTemplate.Stages[0].Tasks[0].Config.BuildPlatform != "linux/arm64" {
+		t.Fatal("非法请求改变已保存的平台")
+	}
 	if value == nil || *value != "" {
 		t.Fatal("非法保存改变了已保存的明确空值")
 	}

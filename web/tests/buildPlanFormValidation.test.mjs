@@ -156,3 +156,17 @@ test('方案重新打开回显 target，新建不沿用旧方案阶段，脚本�
  await h.state.save()
  assert.equal(writes(h).length,1);assert.equal(writes(h)[0].body.target_stage,'')
 })
+
+
+for(const editing of [false,true])test(`构建方案平台 ${editing?'编辑':'新建'}：默认 amd64，可保存 arm64 且拒绝其他平台`,async t=>{
+ const h=harness(t,{editing})
+ assert.equal(h.state.buildForm.platform,'linux/amd64')
+ h.state.buildForm.platform='linux/386'
+ await h.state.save();assert.equal(writes(h).length,0)
+ assert.equal(h.state.formOpen.value,true)
+ h.state.buildForm.platform='linux/arm64'
+ await h.state.save();assert.equal(writes(h).length,1)
+ assert.equal(writes(h)[0].body.platform,'linux/arm64')
+ h.state.edit({id:'shared',name:'公共方案',kind:'dockerfile',platform:'linux/arm64'})
+ assert.equal(h.state.buildForm.platform,'linux/arm64')
+})

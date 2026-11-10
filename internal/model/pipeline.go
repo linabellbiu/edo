@@ -14,9 +14,10 @@ import (
 type BuildPlanKind string
 
 const (
-	BuildPlanScript     BuildPlanKind = "script"
-	BuildPlanDockerfile BuildPlanKind = "dockerfile"
-	DefaultRuntimeImage               = "alpine:3.22"
+	BuildPlanScript      BuildPlanKind = "script"
+	BuildPlanDockerfile  BuildPlanKind = "dockerfile"
+	DefaultRuntimeImage                = "alpine:3.22"
+	DefaultBuildPlatform               = "linux/amd64"
 )
 
 type BuildPlan struct {
@@ -34,9 +35,8 @@ type BuildPlan struct {
 	RuntimeImage     string        `gorm:"type:varchar(512);not null;default:''" json:"runtime_image,omitempty"`
 	ImageRegistryID  string        `gorm:"type:varchar(36);not null;default:'';index" json:"image_registry_id,omitempty"`
 	TargetStage      string        `gorm:"type:varchar(128);not null;default:''" json:"target_stage,omitempty"`
-	// Platform 仅保留旧数据库列兼容。构建平台现在由流水线下游目标主机自动解析。
-	// Deprecated: 新建和更新构建方案始终清空该字段，接口不再暴露。
-	Platform             string            `gorm:"type:varchar(64);not null;default:''" json:"-"`
+	// Platform 指定产出镜像架构，未配置的新构建默认使用 linux/amd64。
+	Platform             string            `gorm:"type:varchar(64);not null;default:''" json:"platform,omitempty"`
 	Pull                 bool              `gorm:"not null" json:"pull"`
 	CacheEnabled         bool              `gorm:"not null" json:"cache_enabled"`
 	BuildArgs            map[string]string `gorm:"serializer:json;type:text;not null" json:"build_args"`

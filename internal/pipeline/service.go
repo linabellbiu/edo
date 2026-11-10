@@ -44,6 +44,7 @@ var (
 	ErrApplicationNotFound            = errors.New("应用不存在")
 	ErrInvalidBuildPlan               = errors.New("构建方案配置无效")
 	ErrInvalidBuildTarget             = errors.New("Docker target 只能填写一个阶段名，最多 128 个字符，只能包含字母、数字、下划线、点或连字符")
+	ErrInvalidBuildPlatform           = errors.New("构建平台只能选择 linux/amd64 或 linux/arm64")
 	ErrBuildPlanExists                = errors.New("构建方案名称已存在")
 	ErrBuildPlanNotFound              = errors.New("构建方案不存在")
 	ErrBuildPlanInUse                 = errors.New("构建方案仍被流水线或部署方案使用，请先更换相关引用")
@@ -97,6 +98,7 @@ type BuildPlanInput struct {
 	RuntimeImage         string
 	ImageRegistryID      string
 	TargetStage          string
+	Platform             string
 	Pull                 *bool
 	CacheEnabled         *bool
 	BuildArgs            map[string]string
@@ -414,7 +416,7 @@ func (s *Service) CreateBuildPlan(ctx context.Context, actorID string, input Bui
 		ID: uuid.NewString(), Name: input.Name, Kind: input.Kind, ConfigVersion: 1, Description: input.Description,
 		Script: input.Script, DockerfilePath: input.DockerfilePath, ContextPath: input.ContextPath,
 		WorkingDirectory: input.WorkingDirectory, ArtifactPath: input.ArtifactPath, RuntimeImage: input.RuntimeImage,
-		ImageRegistryID: input.ImageRegistryID, TargetStage: input.TargetStage,
+		ImageRegistryID: input.ImageRegistryID, TargetStage: input.TargetStage, Platform: input.Platform,
 		Pull: *input.Pull, CacheEnabled: *input.CacheEnabled, BuildArgs: input.BuildArgs,
 		EnvironmentVariables: input.EnvironmentVariables, TimeoutSeconds: input.TimeoutSeconds,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
@@ -461,6 +463,11 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 	}
 	switch input.Kind {
 	case model.BuildPlanDockerfile:
+		var err error
+		input.Platform, err = normalizeSelectedBuildPlatform(input.Platform)
+		if err != nil {
+			return input, err
+		}
 		if !validBuildTarget(input.TargetStage) {
 			return input, ErrInvalidBuildTarget
 		}
@@ -472,6 +479,7 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 			input.DockerfilePath = "Dockerfile"
 		}
 	case model.BuildPlanScript:
+		input.Platform = ""
 		input.DockerfilePath, input.ImageRegistryID = "", ""
 		input.TargetStage = ""
 		input.BuildArgs = map[string]string{}
@@ -507,6 +515,17 @@ var buildTargetPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 func validBuildTarget(value string) bool {
 	value = strings.TrimSpace(value)
 	return value == "" || buildTargetPattern.MatchString(value)
+}
+
+func normalizeSelectedBuildPlatform(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return model.DefaultBuildPlatform, nil
+	}
+	if value != "linux/amd64" && value != "linux/arm64" {
+		return "", ErrInvalidBuildPlatform
+	}
+	return value, nil
 }
 
 // validRuntimeImageReference 只接受固定 tag 或 digest。裸镜像名和 latest 会让
@@ -600,7 +619,7 @@ func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPla
 		"name": input.Name, "kind": input.Kind, "description": input.Description,
 		"script": input.Script, "dockerfile_path": input.DockerfilePath, "context_path": input.ContextPath,
 		"working_directory": input.WorkingDirectory, "artifact_path": input.ArtifactPath, "runtime_image": input.RuntimeImage,
-		"image_registry_id": input.ImageRegistryID, "target_stage": input.TargetStage, "platform": "",
+		"image_registry_id": input.ImageRegistryID, "target_stage": input.TargetStage, "platform": input.Platform,
 		"pull": *input.Pull, "cache_enabled": *input.CacheEnabled, "build_args": string(buildArgsJSON),
 		"environment_variables": string(environmentJSON), "timeout_seconds": input.TimeoutSeconds,
 		"config_version": existing.ConfigVersion + 1, "updated_at": time.Now().UTC(),

@@ -25,20 +25,21 @@ func TestBuildPlanManagementEndpoints(t *testing.T) {
 			DockerfilePath string `json:"dockerfile_path"`
 			ContextPath    string `json:"context_path"`
 			TargetStage    string `json:"target_stage"`
+			Platform       string `json:"platform"`
 			Pull           bool   `json:"pull"`
 			CacheEnabled   bool   `json:"cache_enabled"`
 		} `json:"build_plan"`
 	}
 	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &createdPayload) != nil ||
 		createdPayload.BuildPlan.DockerfilePath != "Dockerfile" || createdPayload.BuildPlan.ContextPath != "." ||
-		createdPayload.BuildPlan.TargetStage != "runtime" || !createdPayload.BuildPlan.Pull || !createdPayload.BuildPlan.CacheEnabled {
+		createdPayload.BuildPlan.TargetStage != "runtime" || createdPayload.BuildPlan.Platform != "linux/amd64" || !createdPayload.BuildPlan.Pull || !createdPayload.BuildPlan.CacheEnabled {
 		t.Fatalf("创建构建方案失败: status=%d body=%s", created.Code, created.Body.String())
 	}
 
 	updated := performJSONRequest(t, router, http.MethodPut, "/api/v1/build-plans/"+createdPayload.BuildPlan.ID, map[string]any{
 		"name": "正式构建", "kind": "dockerfile", "description": "构建服务镜像",
 		"dockerfile_path": "deploy/Dockerfile", "context_path": "service",
-		"timeout_seconds": 900, "target_stage": "builder",
+		"timeout_seconds": 900, "target_stage": "builder", "platform": "linux/arm64",
 	}, adminCookie)
 	var updatedPayload struct {
 		BuildPlan struct {
@@ -46,6 +47,7 @@ func TestBuildPlanManagementEndpoints(t *testing.T) {
 			DockerfilePath string `json:"dockerfile_path"`
 			ContextPath    string `json:"context_path"`
 			TargetStage    string `json:"target_stage"`
+			Platform       string `json:"platform"`
 			Pull           bool   `json:"pull"`
 			CacheEnabled   bool   `json:"cache_enabled"`
 		} `json:"build_plan"`
@@ -54,7 +56,7 @@ func TestBuildPlanManagementEndpoints(t *testing.T) {
 		updatedPayload.BuildPlan.Name != "正式构建" ||
 		updatedPayload.BuildPlan.DockerfilePath != "deploy/Dockerfile" ||
 		updatedPayload.BuildPlan.ContextPath != "service" ||
-		updatedPayload.BuildPlan.TargetStage != "builder" || !updatedPayload.BuildPlan.Pull || !updatedPayload.BuildPlan.CacheEnabled {
+		updatedPayload.BuildPlan.TargetStage != "builder" || updatedPayload.BuildPlan.Platform != "linux/arm64" || !updatedPayload.BuildPlan.Pull || !updatedPayload.BuildPlan.CacheEnabled {
 		t.Fatalf("更新构建方案失败: status=%d body=%s", updated.Code, updated.Body.String())
 	}
 

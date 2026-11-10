@@ -31,11 +31,16 @@ func normalizeInlineBuild(node *model.WorkflowNode) error {
 		return fail()
 	}
 	p := node.Config.InlineBuild
+	platform, platformErr := workflowSelectedBuildPlatform(node.Config, *p)
+	if p.Kind == model.BuildPlanDockerfile && platformErr != nil {
+		slog.Warn("流水线构建平台无效", "operation", "workflow_inline_build_platform", "node_id", node.ID, "err", platformErr)
+		return platformErr
+	}
 	if p.Kind == model.BuildPlanDockerfile && (!dockerengine.ValidScriptContainerRelativePath(p.ContextPath) || !dockerengine.ValidScriptContainerRelativePath(p.DockerfilePath) || len(node.Config.BuildOutputs) > 0) {
 		return fail()
 	}
 	// 校验实际执行值，但保留内联方案自身的默认阶段，不把任务覆盖值写回模板。
-	n, err := normalizeBuildPlanInput(BuildPlanInput{Name: node.Name, Kind: p.Kind, Script: p.Script, DockerfilePath: p.DockerfilePath, ContextPath: p.ContextPath, WorkingDirectory: p.WorkingDirectory, ArtifactPath: p.ArtifactPath, RuntimeImage: p.RuntimeImage, ImageRegistryID: p.ImageRegistryID, TargetStage: workflowBuildTarget(node.Config, *p), Pull: &p.Pull, CacheEnabled: &p.CacheEnabled, BuildArgs: p.BuildArgs, EnvironmentVariables: p.EnvironmentVariables, TimeoutSeconds: p.TimeoutSeconds})
+	n, err := normalizeBuildPlanInput(BuildPlanInput{Name: node.Name, Kind: p.Kind, Script: p.Script, DockerfilePath: p.DockerfilePath, ContextPath: p.ContextPath, WorkingDirectory: p.WorkingDirectory, ArtifactPath: p.ArtifactPath, RuntimeImage: p.RuntimeImage, ImageRegistryID: p.ImageRegistryID, TargetStage: workflowBuildTarget(node.Config, *p), Platform: platform, Pull: &p.Pull, CacheEnabled: &p.CacheEnabled, BuildArgs: p.BuildArgs, EnvironmentVariables: p.EnvironmentVariables, TimeoutSeconds: p.TimeoutSeconds})
 	if err != nil {
 		if errors.Is(err, ErrInvalidBuildTarget) {
 			slog.Warn("流水线构建目标阶段无效", "operation", "workflow_inline_build_validate", "node_id", node.ID, "err", err)
@@ -48,6 +53,10 @@ func normalizeInlineBuild(node *model.WorkflowNode) error {
 	}
 	if p.Kind == model.BuildPlanDockerfile {
 		n.TargetStage = strings.TrimSpace(p.TargetStage)
+		n.Platform = strings.TrimSpace(p.Platform)
+		if n.Platform == "" {
+			n.Platform = model.DefaultBuildPlatform
+		}
 	}
 	names := map[string]bool{}
 	for i := range node.Config.BuildOutputs {
@@ -75,7 +84,7 @@ func normalizeInlineBuild(node *model.WorkflowNode) error {
 			}
 		}
 	}
-	*p = model.BuildPlan{Name: node.Name, Kind: n.Kind, ConfigVersion: 1, Script: n.Script, DockerfilePath: n.DockerfilePath, ContextPath: n.ContextPath, WorkingDirectory: n.WorkingDirectory, ArtifactPath: n.ArtifactPath, RuntimeImage: n.RuntimeImage, ImageRegistryID: n.ImageRegistryID, TargetStage: n.TargetStage, Pull: *n.Pull, CacheEnabled: *n.CacheEnabled, BuildArgs: n.BuildArgs, EnvironmentVariables: n.EnvironmentVariables, TimeoutSeconds: n.TimeoutSeconds, IsActive: true}
+	*p = model.BuildPlan{Name: node.Name, Kind: n.Kind, ConfigVersion: 1, Script: n.Script, DockerfilePath: n.DockerfilePath, ContextPath: n.ContextPath, WorkingDirectory: n.WorkingDirectory, ArtifactPath: n.ArtifactPath, RuntimeImage: n.RuntimeImage, ImageRegistryID: n.ImageRegistryID, TargetStage: n.TargetStage, Platform: n.Platform, Pull: *n.Pull, CacheEnabled: *n.CacheEnabled, BuildArgs: n.BuildArgs, EnvironmentVariables: n.EnvironmentVariables, TimeoutSeconds: n.TimeoutSeconds, IsActive: true}
 	return nil
 }
 

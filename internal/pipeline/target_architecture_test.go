@@ -67,3 +67,23 @@ func TestWorkflowBuildPlatformUsesFrozenClusterArchitectures(t *testing.T) {
 		t.Fatalf("冻结快照中的未知架构没有被拒绝: %v", err)
 	}
 }
+
+func TestWorkflowBuildPlatformPrefersExplicitChoiceOverDeploymentHosts(t *testing.T) {
+	build := model.WorkflowNode{ID: "build", Type: model.WorkflowNodeBuild}
+	deploy := model.WorkflowNode{ID: "deploy", Type: model.WorkflowNodeDeploy}
+	snapshot := workflowSnapshot{
+		Stages: []model.WorkflowStage{{ID: "stage", Tasks: []model.WorkflowNode{build, deploy}}},
+		DeploymentTargets: map[string]workflowDeploymentTargetSnapshot{
+			deploy.ID: {Architectures: []model.HostArchitecture{model.HostArchitectureAMD64, model.HostArchitectureARM64}},
+		},
+	}
+	for _, selected := range []string{"linux/amd64", "linux/arm64"} {
+		actual, err := workflowBuildPlatform(snapshot, build.ID, workflowBuildPlanSnapshot{Kind: model.BuildPlanDockerfile, Platform: selected})
+		if err != nil || actual != selected {
+			t.Fatalf("部署主机覆盖了用户选择的平台: selected=%q actual=%q err=%v", selected, actual, err)
+		}
+	}
+	if _, err := workflowBuildPlatform(snapshot, build.ID, workflowBuildPlanSnapshot{Kind: model.BuildPlanDockerfile, Platform: "linux/386"}); !errors.Is(err, ErrPipelineExecutionConfig) {
+		t.Fatalf("无效快照平台未拒绝: %v", err)
+	}
+}

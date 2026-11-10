@@ -24,7 +24,7 @@ const emit=defineEmits<{change:[patch:Partial<PipelineBuildPlan>];'update:imageD
    <a-form-item label="环境变量（每行 KEY=value）"><a-textarea :value="environmentText" :disabled="disabled" :rows="3" placeholder="NODE_ENV=production" @update:value="emit('update:environmentText',String($event))"/></a-form-item>
   </template>
   <a-form-item label="构建超时（秒）" required><a-input-number :value="plan.timeout_seconds" :min="30" :max="7200" :disabled="disabled" @update:value="emit('change',{timeout_seconds:Number($event)})"/></a-form-item>
-  <a-collapse v-if="!hideAdvanced&&plan.kind==='dockerfile'"><a-collapse-panel key="advanced" header="高级配置"><BuildPlanAdvancedFields :target="plan.target_stage" :disabled="disabled" @change="emit('change',{target_stage:$event})"/></a-collapse-panel></a-collapse>
+  <a-collapse v-if="!hideAdvanced&&plan.kind==='dockerfile'"><a-collapse-panel key="advanced" header="高级配置"><BuildPlanAdvancedFields :target="plan.target_stage" :platform="plan.platform" :disabled="disabled" @change="emit('change',{target_stage:$event})" @platform-change="emit('change',{platform:$event})"/></a-collapse-panel></a-collapse>
  </section>
 </template>
 <style scoped>.build-plan-fields{display:grid;gap:12px;min-width:0}.build-plan-fields :deep(.ant-form-item){margin-bottom:0}.field-help{width:20px;height:20px;padding:0;border:1px solid var(--edo-border);border-radius:50%;background:transparent;color:var(--edo-muted);cursor:help}.field-help:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}</style>

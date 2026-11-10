@@ -375,3 +375,23 @@ test('无效 target 即使切回常规配置也阻止保存并定位高级配置
  await h.state.save(false)
  assert.equal(writes(h).find(r=>r.method==='put').body.stages[0].tasks[0].config.target_stage,'')
 })
+
+
+for(const fallback of [undefined,'linux/arm64'])test(`构建平台默认/继承 ${fallback??'amd64'}，任务选择覆盖并独立保存`,async t=>{
+ const plan={...linkedBuildPlan,...(fallback?{platform:fallback}:{})}
+ const h=await linkedBuildHarness({get:r=>r.path==='/build-plans'?{data:{build_plans:[plan]}}:undefined});t.after(h.stop)
+ assert.equal(h.state.selectedBuildPlatform.value,fallback??'linux/amd64')
+ h.state.updateSelectedBuildPlatform('linux/arm64')
+ assert.equal(h.state.selectedBuildPlatform.value,'linux/arm64')
+ assert.equal(h.state.selectedLibraryBuildPlan.value.platform,fallback)
+ h.state.changeBuildSource('inline');h.state.changeBuildSource('plan')
+ assert.equal(h.state.selectedBuildPlatform.value,'linux/arm64')
+ await h.state.save(false)
+ const saved=writes(h).find(r=>r.method==='put').body.stages[0].tasks[0].config
+ assert.equal(saved.build_platform,'linux/arm64')
+ assert.equal(writes(h).some(r=>r.path.startsWith('/build-plans')),false)
+ h.auth.user.permissions=['workflow.read','build_plan.read'];await settle()
+ h.state.stages.value=[{id:'build-stage',name:'构建',tasks:[{id:'build',name:'镜像构建',type:'build',config:saved}]}]
+ h.state.selectNode('build');h.state.updateSelectedBuildPlatform('linux/amd64')
+ assert.equal(h.state.selectedNode.value.config.build_platform,'linux/arm64')
+})

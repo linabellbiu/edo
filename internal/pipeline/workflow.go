@@ -110,7 +110,7 @@ type workflowBuildPlanSnapshot struct {
 	RuntimeImage     string                      `json:"runtime_image,omitempty"`
 	ImageRegistryID  string                      `json:"image_registry_id,omitempty"`
 	TargetStage      string                      `json:"target_stage,omitempty"`
-	// Platform 是本次运行根据下游部署主机冻结的 OCI 平台，不来自构建方案表单。
+	// Platform 冻结本次运行的任务覆盖值或方案平台，默认 linux/amd64。
 	Platform             string            `json:"platform,omitempty"`
 	Pull                 bool              `json:"pull"`
 	CacheEnabled         bool              `json:"cache_enabled"`
@@ -540,6 +540,14 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 
 func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 	node.Config.ExecutionHostID = ""
+	node.Config.BuildPlatform = strings.TrimSpace(node.Config.BuildPlatform)
+	if node.Config.BuildPlatform != "" {
+		_, err := normalizeSelectedBuildPlatform(node.Config.BuildPlatform)
+		if node.Type != model.WorkflowNodeBuild || err != nil {
+			slog.Warn("流水线任务构建平台无效", "operation", "workflow_build_platform_validate", "node_id", node.ID, "err", ErrInvalidBuildPlatform)
+			return ErrInvalidBuildPlatform
+		}
+	}
 	if node.Config.TargetStage != nil {
 		target := strings.TrimSpace(*node.Config.TargetStage)
 		if node.Type != model.WorkflowNodeBuild || !validBuildTarget(target) {
@@ -936,6 +944,12 @@ func (s *Service) validateWorkflow(
 			issues = append(issues, validateWorkflowNotificationRules(node, stage.ID, activeNotificationChannels)...)
 			switch node.Type {
 			case model.WorkflowNodeBuild:
+				if plan, ok := activeBuildPlans[node.Config.BuildPlanID]; ok && plan.Kind == model.BuildPlanDockerfile {
+					if _, err := workflowSelectedBuildPlatform(node.Config, plan); err != nil {
+						s.logger.WarnContext(ctx, "构建平台无效", "operation", "workflow_build_platform_validate", "node_id", node.ID, "build_plan_id", plan.ID, "err", err)
+						issues = append(issues, WorkflowIssue{Code: "invalid_build_platform", Message: ErrInvalidBuildPlatform.Error(), NodeID: node.ID, StageID: stage.ID})
+					}
+				}
 				if plan, ok := activeBuildPlans[node.Config.BuildPlanID]; ok && plan.Kind == model.BuildPlanDockerfile && !validBuildTarget(workflowBuildTarget(node.Config, plan)) {
 					s.logger.WarnContext(ctx, "构建目标阶段无效", "operation", "workflow_build_target_validate", "node_id", node.ID, "build_plan_id", plan.ID, "err", ErrInvalidBuildTarget)
 					issues = append(issues, WorkflowIssue{Code: "invalid_build_target", Message: ErrInvalidBuildTarget.Error(), NodeID: node.ID, StageID: stage.ID})
@@ -1468,6 +1482,12 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				}
 				if plan.Kind == model.BuildPlanDockerfile {
 					plan.TargetStage = workflowBuildTarget(current.Config, plan)
+					var platformErr error
+					plan.Platform, platformErr = workflowSelectedBuildPlatform(current.Config, plan)
+					if platformErr != nil {
+						s.logger.WarnContext(ctx, "构建平台无效", "operation", "workflow_build_platform_resolve", "node_id", current.ID, "build_plan_id", plan.ID, "err", platformErr)
+						return nil, platformErr
+					}
 				}
 				if plan.Kind == model.BuildPlanDockerfile && !validBuildTarget(plan.TargetStage) {
 					s.logger.WarnContext(ctx, "构建目标阶段无效", "operation", "workflow_build_target_resolve", "node_id", current.ID, "build_plan_id", plan.ID, "err", ErrInvalidBuildTarget)
@@ -1807,6 +1827,13 @@ func deploymentTargetArchitecture(ctx context.Context, database *gorm.DB, hostID
 	return architecture, nil
 }
 
+func workflowSelectedBuildPlatform(config model.WorkflowNodeConfig, plan model.BuildPlan) (string, error) {
+	if config.BuildPlatform != "" {
+		return normalizeSelectedBuildPlatform(config.BuildPlatform)
+	}
+	return normalizeSelectedBuildPlatform(plan.Platform)
+}
+
 func workflowBuildTarget(config model.WorkflowNodeConfig, plan model.BuildPlan) string {
 	if config.TargetStage != nil {
 		return strings.TrimSpace(*config.TargetStage)
@@ -1820,10 +1847,12 @@ func buildPlanSnapshot(plan model.BuildPlan) workflowBuildPlanSnapshot {
 		Script: plan.Script, DockerfilePath: plan.DockerfilePath, ContextPath: plan.ContextPath,
 		WorkingDirectory: plan.WorkingDirectory, ArtifactPath: plan.ArtifactPath, RuntimeImage: plan.RuntimeImage,
 		ImageRegistryID: plan.ImageRegistryID, TargetStage: strings.TrimSpace(plan.TargetStage),
-		Pull: plan.Pull, CacheEnabled: plan.CacheEnabled, BuildArgs: plan.BuildArgs,
+		Platform: plan.Platform,
+		Pull:     plan.Pull, CacheEnabled: plan.CacheEnabled, BuildArgs: plan.BuildArgs,
 		EnvironmentVariables: plan.EnvironmentVariables, TimeoutSeconds: plan.TimeoutSeconds,
 	}
 	if plan.Kind == model.BuildPlanScript {
+		snapshot.Platform = ""
 		snapshot.TargetStage = ""
 		snapshot.Workspace = true
 		snapshot.RuntimeImage, snapshot.WorkingDirectory = "", "."

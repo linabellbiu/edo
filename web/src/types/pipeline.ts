@@ -55,6 +55,7 @@ export interface WorkflowNodeConfig {
   image_name?: string
   image_tag?: string
   target_stage?: string
+  build_platform?: string
   deployment_plan_id?: string
   script?: string
   runtime_image?: string
@@ -194,6 +195,7 @@ export interface PipelineBuildPlan {
   runtime_image?: string
   image_registry_id?: string
   target_stage?: string
+  platform?: string
   pull?: boolean
   cache_enabled?: boolean
   build_args?: Record<string, string>
