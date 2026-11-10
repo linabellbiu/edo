@@ -16,23 +16,9 @@ func pinRegistryComposeImages(source string, inputs []workflowRegistryInput, var
 	if err != nil {
 		return "", err
 	}
-	images := map[string]string{}
-	for _, input := range inputs {
-		pinned, err := reference.ParseNormalizedNamed(input.ImageRef)
-		if err != nil {
-			return "", ErrDeploymentInputs
-		}
-		if _, ok := pinned.(reference.Canonical); !ok {
-			return "", ErrDeploymentInputs
-		}
-		tagged, err := reference.WithTag(reference.TrimNamed(pinned), input.Tag)
-		if err != nil {
-			return "", ErrDeploymentInputs
-		}
-		if previous := images[tagged.String()]; previous != "" && previous != pinned.String() {
-			return "", ErrDeploymentInputs
-		}
-		images[tagged.String()], images[pinned.String()] = pinned.String(), pinned.String()
+	images, err := registryInputImageBindings(inputs)
+	if err != nil {
+		return "", err
 	}
 	for _, raw := range document["services"].(map[string]any) {
 		service, ok := raw.(map[string]any)
@@ -54,4 +40,26 @@ func pinRegistryComposeImages(source string, inputs []workflowRegistryInput, var
 		return "", ErrDeploymentInputs
 	}
 	return string(encoded), nil
+}
+
+func registryInputImageBindings(inputs []workflowRegistryInput) (map[string]string, error) {
+	images := map[string]string{}
+	for _, input := range inputs {
+		pinned, err := reference.ParseNormalizedNamed(input.ImageRef)
+		if err != nil {
+			return nil, ErrDeploymentInputs
+		}
+		if _, ok := pinned.(reference.Canonical); !ok {
+			return nil, ErrDeploymentInputs
+		}
+		tagged, err := reference.WithTag(reference.TrimNamed(pinned), input.Tag)
+		if err != nil {
+			return nil, ErrDeploymentInputs
+		}
+		if previous := images[tagged.String()]; previous != "" && previous != pinned.String() {
+			return nil, ErrDeploymentInputs
+		}
+		images[tagged.String()], images[pinned.String()] = pinned.String(), pinned.String()
+	}
+	return images, nil
 }

@@ -84,10 +84,10 @@ test('上游产物输入变量引用，切换时清除旧构建身份，不请�
  assert.ok(h.requests.every(item=>!item.path.includes('/artifacts')))
 })
 
-test('部署镜像仓库始终可见，唯一上游仓库自动显示且不覆盖已选仓库',async t=>{
+test('部署镜像仓库始终可见，上游仓库不再自动关联，显式选择继续保留',async t=>{
  const h=await harness();t.after(h.stop)
  h.props.deploymentPlan={kind:'compose_stack'};h.props.buildNodes=[{id:'image',type:'build',config:{inline_build:{kind:'dockerfile',image_registry_id:'upstream'}}}]
- await settle();assert.equal(h.state.managesRegistry.value,true);assert.equal(h.state.deploymentRegistry.value,'upstream');assert.deepEqual(h.events,[])
+ await settle();assert.equal(h.state.managesRegistry.value,true);assert.equal(h.state.deploymentRegistry.value,undefined);assert.deepEqual(h.events,[])
  h.props.config.deployment_input_version=1;h.props.config.deployment_inputs=[{kind:'registry',registry_id:'explicit',image:'app',tag:'v1'}]
  assert.equal(h.state.deploymentRegistry.value,'explicit')
  h.props.buildNodes=[];await settle();assert.equal(h.state.deploymentRegistry.value,'explicit')
@@ -103,15 +103,19 @@ test('无上游构建也能选择仓库及镜像 Tag，撤权后不能修改',as
  await h.state.setDeploymentRegistry('forbidden');assert.equal(h.events.length,count)
 })
 
-test('上游仓库只预填编辑草稿，保存往返后不随上游变化；只读配置不补写',async t=>{
+test('部署仓库必须由用户选择，保存往返不随上游变化；只读配置不补写',async t=>{
  for(const kind of ['docker','compose','compose_stack']){
   const h=await harness(path=>({data:path==='/image-registries'?{image_registries:[{id:'upstream',name:'上游仓库',is_active:true,project_id:'project'}]}:{variables:[]}}));t.after(h.stop)
   h.props.deploymentPlan={kind};h.props.buildNodes=[{id:'build',type:'build',config:{inline_build:{image_registry_id:'upstream'}}}]
   const persisted={};await settle()
-  assert.equal(h.state.deploymentRegistry.value,'upstream')
+  assert.equal(h.state.deploymentRegistry.value,undefined)
+  assert.equal(h.props.config.deployment_registry_id,undefined)
+  assert.deepEqual(h.events,[])
+  assert.ok(h.requests.every(item=>['/delivery-variables','/image-registries'].includes(item.path)))
+  await h.state.setDeploymentRegistry('upstream')
   assert.equal(h.props.config.deployment_registry_id,'upstream')
   assert.deepEqual(persisted,{},'页面打开不能修改已保存记录')
-  assert.ok(h.requests.every(item=>['/delivery-variables','/image-registries'].includes(item.path)))
+  if(kind!=='docker')assert.equal(h.props.config.deployment_inputs?.length||0,0,'Compose 仓库选择不应生成多余镜像来源')
   Object.assign(persisted,JSON.parse(JSON.stringify(h.props.config)))
   h.props.config=persisted;h.props.buildNodes[0].config.inline_build.image_registry_id='another';await settle()
   assert.equal(h.state.deploymentRegistry.value,'upstream')

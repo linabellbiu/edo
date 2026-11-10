@@ -378,7 +378,9 @@ func workflowBuildPlatform(snapshot workflowSnapshot, buildNodeID string, plan w
 		if tasks[index].Type != model.WorkflowNodeDeploy {
 			continue
 		}
-		if snapshot.ExecutionVersion >= 2 {
+		// 独立镜像配置不再绑定构建制品，构建平台仍覆盖后续 Docker 部署主机。
+		independentImages := snapshot.IndependentDeploymentImages && plan.Kind == model.BuildPlanDockerfile && model.RequiresDeploymentRegistry(snapshot.DeploymentPlans[tasks[index].ID].Kind)
+		if snapshot.ExecutionVersion >= 2 && !independentImages {
 			sources, err := artifactSources(snapshot.Stages)
 			if err != nil {
 				return "", err

@@ -77,6 +77,7 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
+	IndependentDeploymentImages  bool                                        `json:"independent_deployment_images,omitempty"`
 	ExplicitDeploymentRegistries bool                                        `json:"explicit_deployment_registries,omitempty"`
 	RegistryInputs               map[string][]workflowRegistryInput          `json:"registry_inputs,omitempty"`
 	ApplicationConfigDirectory   string                                      `json:"application_config_directory,omitempty"`
@@ -994,7 +995,7 @@ func (s *Service) validateWorkflow(
 			}
 		}
 	}
-	if _, err := artifactSources(stages); err != nil {
+	if _, err := configuredArtifactSources(stages); err != nil {
 		issues = append(issues, WorkflowIssue{Code: "ambiguous_artifact_source", Message: "部署任务需要选择已完成阶段的构建制品；并行构建时请明确选择来源任务"})
 	}
 	issues = append(issues, validateWorkflowArtifactFlow(tasks, activeBuildPlans, activeDeploymentPlans, activeTargets)...)
@@ -1076,6 +1077,10 @@ func validateWorkflowArtifactFlow(
 				}
 			}
 		case model.WorkflowNodeDeploy:
+			kind := deploymentPlans[next.Config.DeploymentPlanID].Kind
+			if next.Config.DeploymentInputVersion == 1 && next.Config.DeploymentScript == "" && (kind == model.DeploymentPlanDocker || kind == model.DeploymentPlanCompose) && !hasRegistryDeploymentInput(next.Config) && next.Config.ArtifactNodeID == "" {
+				issues = append(issues, WorkflowIssue{Code: "missing_deployment_image", Message: "请在部署文件来源中选择镜像仓库、镜像与 Tag", NodeID: next.ID})
+			}
 			for _, input := range next.Config.DeploymentInputs {
 				if input.Kind == "upstream" {
 					var sourcePlan model.BuildPlan
@@ -1094,20 +1099,9 @@ func validateWorkflowArtifactFlow(
 				continue
 			}
 			if plan, ok := deploymentPlans[next.Config.DeploymentPlanID]; ok && plan.Kind == model.DeploymentPlanComposeStack {
-				if err := validateComposeBindingsYAML(plan.ComposeYAML, next.Config); err != nil && next.Config.ComposeSource == nil {
+				config := independentComposeConfig(next.Config)
+				if err := validateComposeBindingsYAML(plan.ComposeYAML, config); err != nil && next.Config.ComposeSource == nil {
 					issues = append(issues, WorkflowIssue{Code: "invalid_compose_bindings", Message: "请检查 Compose 服务范围、镜像引用与 Tag 变量", NodeID: next.ID})
-				}
-				for _, source := range next.Config.ArtifactNodeIDs {
-					var sourcePlan model.BuildPlan
-					for _, candidate := range tasks {
-						if candidate.ID == source {
-							sourcePlan = buildPlans[candidate.Config.BuildPlanID]
-							break
-						}
-					}
-					if !priorBuilds[source] || sourcePlan.Kind != model.BuildPlanDockerfile || sourcePlan.ImageRegistryID == "" {
-						issues = append(issues, WorkflowIssue{Code: "compose_image_source", Message: "Compose 镜像来源必须是前序已绑定镜像仓库的构建任务", NodeID: next.ID})
-					}
 				}
 				continue
 			}
@@ -1632,8 +1626,15 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			}
 		}
 	}
-	autoComposeArtifactSources(resolved.Stages, buildPlans, deploymentPlans)
-	sources, sourceErr := artifactSources(resolved.Stages)
+	for i := range resolved.Stages {
+		for j := range resolved.Stages[i].Tasks {
+			task := &resolved.Stages[i].Tasks[j]
+			if deploymentPlans[task.ID].Kind == model.DeploymentPlanComposeStack {
+				task.Config = independentComposeConfig(task.Config)
+			}
+		}
+	}
+	sources, sourceErr := configuredArtifactSources(resolved.Stages)
 	if sourceErr != nil {
 		return nil, sourceErr
 	}
@@ -1753,6 +1754,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		}
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
+		IndependentDeploymentImages:  true,
 		RegistryInputs:               registryInputs,
 		ApplicationConfigDirectory:   configurationDirectory,
 		DirectConfigurationPaths:     true,

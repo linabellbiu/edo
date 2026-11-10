@@ -268,7 +268,7 @@ const form = reactive({
 const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
   { value: 'script', label: '主机脚本', hint: '通过 SSH 执行部署脚本。上游文件制品先暂存到目标主机，脚本可用 ${EDO_ARTIFACT_PATH} 读取文件，并用 ${EDO_ARTIFACT_DIGEST} 校验摘要。' },
   { value: 'docker', label: 'Docker 容器', hint: '选择上游构建镜像，或从镜像仓库指定镜像与 Tag。部署时固定镜像 Digest，按已保存的参数创建或更新容器。' },
-  { value: 'compose_stack', label: 'Docker Compose', hint: '根据 compose.yaml 自动匹配一个或多个上游镜像' },
+  { value: 'compose_stack', label: 'Docker Compose', hint: '按 compose.yaml 中配置的镜像和服务部署' },
   { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '使用构建产物的镜像摘要更新 Deployment；构建方案需绑定集群能访问的镜像仓库。' },
 ]
 const kindNames: Record<PlanKind, string> = { ...Object.fromEntries(kindOptions.map(item => [item.value, item.label])), compose: 'Docker Compose' } as Record<PlanKind, string>

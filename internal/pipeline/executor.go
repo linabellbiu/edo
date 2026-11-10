@@ -147,6 +147,11 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		return s.failDeploymentExecution(ctx, failureState, "准备部署输入失败，请检查文件来源与使用权限", prepareErr)
 	}
 	ctx = deployment.WithPreparedFiles(ctx, prepared.inputFiles)
+	if prepared.snapshot.IndependentDeploymentImages {
+		if err := s.addDeploymentPipelineVariables(ctx, prepared); err != nil {
+			return s.failDeploymentExecution(ctx, failureState, "读取流水线变量失败", err)
+		}
+	}
 	if strings.TrimSpace(prepared.node.Config.DeploymentScript) != "" || prepared.deploymentPlan.Kind == model.DeploymentPlanScript && prepared.node.Config.DeploymentInputVersion == 1 {
 		return s.executeCustomDeployment(ctx, prepared, approvedBy)
 	}
@@ -363,6 +368,10 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 	if target.DepartmentID != "" && target.DepartmentID != run.DepartmentID || target.ProjectID != "" && target.ProjectID != run.ProjectID {
 		return nil, ErrPipelineExecutionConfig
 	}
+	if snapshot.IndependentDeploymentImages && (plan.Kind == model.DeploymentPlanComposeStack || node.Config.DeploymentInputVersion == 1 && node.Config.ArtifactNodeID == "") {
+		// 父运行可能保存了上一构建产物，独立部署不能把它当作用户选择。
+		run.ArtifactID = ""
+	}
 	result := &executionContext{run: run, node: node, snapshot: *snapshot}
 	result.deploymentPlan = model.DeploymentPlan{
 		ID: plan.ID, Kind: plan.Kind, Script: plan.Script,
@@ -430,6 +439,9 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 	}
 	if result.target.Platform == model.DeploymentSSH {
 		if result.deploymentPlan.Kind == model.DeploymentPlanComposeStack {
+			if snapshot.IndependentDeploymentImages {
+				result.node.Config = independentComposeConfig(result.node.Config)
+			}
 			if err := s.resolveProducedCompose(ctx, result); err != nil {
 				return nil, s.composeSourceError(ctx, "compose_upstream_parse", run.ApplicationID, err)
 			}

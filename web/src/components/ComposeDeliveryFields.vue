@@ -17,7 +17,7 @@ defineExpose({validate})
 </script>
 <template>
 <section class="compose-fields" aria-label="Docker Compose 与 Tag 配置">
- <a-alert type="info" show-icon message="Docker Compose 保存在 EDO。并行构建成功后，部署直接读取这份配置与实际构建 Tag，执行 docker compose up -d。"/>
+ <a-alert type="info" show-icon message="Docker Compose 保存在 EDO，部署按 compose.yaml 中配置的镜像和服务执行 docker compose up -d。"/>
  <div v-if="submitted&&Object.keys(errors).length" ref="summary" role="alert" tabindex="-1" class="error-summary">请修正下方标出的配置。<span v-if="errors.services">{{ errors.services }}</span></div>
  <div class="compose-grid">
   <a-form-item label="构建镜像 Tag" required :validate-status="error('image_tag')?'error':undefined" :help="error('image_tag')||'例如 ${EDO_GIT_TAG}，同一批镜像使用同一版本。'"><a-input v-model:value="form.image_tag" :disabled="disabled" aria-label="构建镜像 Tag" @blur="blur('image_tag')"/></a-form-item>

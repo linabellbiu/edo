@@ -59,19 +59,11 @@ function chooseKind(index: number, kind: DeploymentInput['kind']) { optionReques
 function chooseConfiguration(index: number, id: string) { if (!canRead.value || loading.value || error.value || loadedIdentity.value !== identity()) return; const item = configurations.value.find(item => item.id === id); update(index, { configuration_id: id, ...(item ? { path: item.name } : {}) }) }
 const managesRegistry = computed(() => ['docker','compose','compose_stack'].includes(props.deploymentPlan?.kind || ''))
 const primaryRegistryIndex = computed(() => selected.value.findIndex(input => input.kind === 'registry'))
-const inferredRegistry = computed(() => {
- const ids = new Set((props.buildNodes || []).filter(node=>node.type==='build').map(node=>(node.config.inline_build || props.buildPlans?.find(plan=>plan.id===node.config.build_plan_id))?.image_registry_id).filter(Boolean))
- return ids.size === 1 ? [...ids][0] : undefined
-})
 const savedRegistry = computed(()=>props.config.deployment_registry_id || (primaryRegistryIndex.value>=0 ? selected.value[primaryRegistryIndex.value]?.registry_id : '') || '')
-const deploymentRegistry = computed(() => savedRegistry.value || (canEdit.value ? inferredRegistry.value : undefined))
-// 仅预填当前编辑草稿，用户保存方案或流水线后才会持久化；只读展示不补写。
-watch(()=>[managesRegistry.value,inferredRegistry.value,savedRegistry.value,canEdit.value,canReadRegistry.value,loadedIdentity.value] as const,()=>{
- if(managesRegistry.value&&!savedRegistry.value&&inferredRegistry.value&&canEdit.value&&canReadRegistry.value&&loadedIdentity.value===identity()&&registries.value.some(item=>item.id===inferredRegistry.value))change({deployment_registry_id:inferredRegistry.value})
-},{immediate:true})
+const deploymentRegistry = computed(() => savedRegistry.value || undefined)
 const deploymentRegistryOptions = computed(() => {
  const options=registries.value.map(item=>({value:item.id,label:item.name}))
- if(deploymentRegistry.value&&!options.some(item=>item.value===deploymentRegistry.value))options.push({value:deploymentRegistry.value,label:'上游或已保存的镜像仓库'})
+ if(deploymentRegistry.value&&!options.some(item=>item.value===deploymentRegistry.value))options.push({value:deploymentRegistry.value,label:'已保存的镜像仓库'})
  return options
 })
 async function setDeploymentRegistry(id:string){
@@ -84,7 +76,7 @@ async function setDeploymentRegistry(id:string){
   change({deployment_registry_id:id,deployment_inputs:selected.value.map((item,i)=>i===index?{...item,registry_id:id,image:'',tag:''}:item)})
   await nextTick();await registryOptions(index,false);return
  }
- if(id===inferredRegistry.value){change({deployment_registry_id:id});return}
+ if(['compose','compose_stack'].includes(props.deploymentPlan?.kind||'')){change({deployment_registry_id:id});return}
  const indexToLoad=selected.value.length
  change({deployment_registry_id:id,deployment_inputs:[...selected.value,{kind:'registry',registry_id:id,image:'',tag:''}]})
  await nextTick(); await registryOptions(indexToLoad,false)
@@ -117,7 +109,7 @@ async function registryOptions(index: number, tags: boolean) {
  <section class="deployment-configuration" aria-label="部署文件与脚本">
   <Teleport :to="registryTarget || 'body'" :disabled="!registryTarget">
   <a-form-item v-if="managesRegistry" required :validate-status="!deploymentRegistry&&!loading?'error':undefined" :help="!savedRegistry&&!canEdit?'尚未保存镜像仓库，请修改部署方案并保存。':undefined">
-   <template #label><span>镜像仓库<DeploymentFieldHelp text="Docker 与 Docker Compose 必须选择并保存镜像仓库。上游构建仓库仅作为默认选择，保存后才用于部署；没有上游构建时也可指定镜像与实际 Tag。" label="部署镜像仓库说明" /></span></template>
+   <template #label><span>镜像仓库<DeploymentFieldHelp text="选择并保存部署使用的镜像仓库，镜像名称和 Tag 由部署配置决定，不自动关联上游构建。" label="部署镜像仓库说明" /></span></template>
    <div class="registry-control"><a-select :value="deploymentRegistry" :loading="loading" :disabled="!canEdit||!canReadRegistry" :options="deploymentRegistryOptions" placeholder="选择镜像仓库" aria-label="部署镜像仓库" @update:value="setDeploymentRegistry(String($event))"/>
     <a-button v-if="primaryRegistryIndex&lt;0&amp;&amp;deploymentRegistry" type="link" size="small" :disabled="!canEdit||!canReadRegistry" @click="addRegistryImage">指定镜像与 Tag</a-button>
    </div>

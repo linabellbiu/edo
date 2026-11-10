@@ -23,7 +23,7 @@ func (s *Service) prepareDeploymentInputs(ctx context.Context, prepared *executi
 	if prepared.node.Config.DeploymentInputVersion != 1 {
 		return closers, nil
 	}
-	if referencesPipelineImageTag(prepared.node.Config.DeploymentScript) && prepared.deploymentPlan.Kind != model.DeploymentPlanComposeStack {
+	if !prepared.snapshot.IndependentDeploymentImages && referencesPipelineImageTag(prepared.node.Config.DeploymentScript) && prepared.deploymentPlan.Kind != model.DeploymentPlanComposeStack {
 		prior := []string{}
 		found := false
 		for _, stage := range prepared.snapshot.Stages {
@@ -192,11 +192,14 @@ func deploymentScriptEnvironment(prepared *executionContext) (map[string]string,
 	if ambiguous {
 		tag = ""
 	}
+	if prepared.snapshot.IndependentDeploymentImages {
+		tag = prepared.variables["EDO_IMAGE_TAG"]
+	}
 	if tag != "" {
 		values["EDO_IMAGE_TAG"] = tag
 		// 已保存的脚本及运行快照继续按原变量读取本次制品。
 		values["IMAGE_TAG"] = tag
-		if alias := composeTagName(prepared.node.Config.DeploymentTagReference); alias != "" {
+		if alias := composeTagName(prepared.node.Config.DeploymentTagReference); alias != "" && !prepared.snapshot.IndependentDeploymentImages {
 			values[alias] = tag
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strings"
 
@@ -286,7 +287,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	if err := s.freezeComposeProject(ctx, prepared); err != nil {
 		return s.failDeploymentExecution(ctx, failure, "无法自动确定 Compose 项目名，请检查 compose.yaml 的 name 和部署变量", err)
 	}
-	if len(prepared.node.Config.ComposeImages) == 0 {
+	if !prepared.snapshot.IndependentDeploymentImages && len(prepared.node.Config.ComposeImages) == 0 {
 		config, images, err := autoComposeImages(prepared.deploymentPlan.ComposeYAML, prepared.node.Config, prepared.composeCandidates, prepared.variables)
 		if err != nil {
 			return s.failDeploymentExecution(ctx, failure, "Compose 镜像无法自动匹配，请检查镜像引用及上游构建", err)
@@ -299,7 +300,13 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	}
 	content, tag, err := renderComposeStack(prepared.deploymentPlan.ComposeYAML, prepared.node.Config, prepared.composeArtifacts, prepared.variables)
 	if err != nil {
-		return s.failDeploymentExecution(ctx, failure, "Compose 镜像与本次构建的名称或 Tag 不匹配，请检查部署方案和变量", err)
+		return s.failDeploymentExecution(ctx, failure, "Compose 部署配置无效，请检查镜像引用和变量", err)
+	}
+	if prepared.snapshot.IndependentDeploymentImages {
+		content, err = s.resolveConfiguredComposeImages(ctx, prepared, content)
+		if err != nil {
+			return s.failDeploymentExecution(ctx, failure, "无法拉取部署配置中的镜像，请检查镜像和仓库权限", err)
+		}
 	}
 	content, err = pinRegistryComposeImages(content, prepared.snapshot.RegistryInputs[prepared.node.ID], prepared.variables)
 	if err != nil {
@@ -312,7 +319,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	for _, image := range prepared.composeArtifacts {
 		var registry model.ImageRegistry
 		if err := s.db.WithContext(ctx).First(&registry, "uuid = ? AND is_active = ?", image.ImageRegistryID, true).Error; err != nil {
-			return s.failDeploymentExecution(ctx, failure, "本次构建的镜像仓库已不可用", err)
+			return s.failDeploymentExecution(ctx, failure, "部署镜像仓库已不可用", err)
 		}
 		auth, err := s.registryAuth(registry)
 		if err != nil {
@@ -322,7 +329,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 			return s.failDeploymentExecution(ctx, failure, "流水线执行授权已失效", err)
 		}
 		if err := s.docker.PrepareRegistryImage(ctx, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth); err != nil {
-			return s.failDeploymentExecution(ctx, failure, "目标主机无法拉取本次构建的固定镜像", err)
+			return s.failDeploymentExecution(ctx, failure, "目标主机无法拉取部署配置中的镜像", err)
 		}
 	}
 	message := "正在使用 EDO Compose 配置部署"
@@ -334,7 +341,17 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	}
 	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose", prepared.variableRedactions...)
 	defer output.Close()
-	content, fileWrites, err := composeStackVariables(content, prepared.node.Config.Compose.ProjectName, prepared.target.WorkingDirectory, prepared.run.ID+"/"+prepared.node.ID, prepared.variables, prepared.variableFiles)
+	containerVariables := prepared.variables
+	if prepared.snapshot.IndependentDeploymentImages {
+		containerVariables = maps.Clone(prepared.variables)
+		// 内置上下文用于 Compose 插值，不自动注入每个容器。
+		for key := range containerVariables {
+			if strings.HasPrefix(key, "EDO_") || key == "IMAGE_TAG" {
+				delete(containerVariables, key)
+			}
+		}
+	}
+	content, fileWrites, err := composeStackVariables(content, prepared.node.Config.Compose.ProjectName, prepared.target.WorkingDirectory, prepared.run.ID+"/"+prepared.node.ID, containerVariables, prepared.variableFiles)
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failure, "Compose 部署变量配置无效", err)
 	}

@@ -80,7 +80,7 @@ func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML str
 		slog.Warn("部署方案上游来源数量无效", "operation", "deployment_plan_execution_normalize", "kind", kind, "err", ErrInvalidDeploymentPlan)
 		return ErrInvalidDeploymentPlan
 	}
-	// 多镜像的镜像制品一直由前序构建自动收集；旧收集结果不能成为方案的新约束。
+	// Compose 使用用户填写的镜像；旧自动收集结果不能成为方案的新约束。
 	if kind == model.DeploymentPlanComposeStack {
 		node.Config.ArtifactBuildPlanID = ""
 		node.Config.ArtifactNodeID = ""

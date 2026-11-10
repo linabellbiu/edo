@@ -255,6 +255,9 @@ func parallelUpstreamArtifact(snapshot *workflowSnapshot, node model.WorkflowNod
 		}
 		return state.ArtifactID, nil
 	}
+	if snapshot.IndependentDeploymentImages && node.Config.DeploymentInputVersion == 1 {
+		return "", nil
+	}
 	if node.Config.DeploymentInputVersion == 1 && (node.Config.DeploymentScript != "" || hasRegistryDeploymentInput(node.Config) || snapshot.DeploymentPlans[node.ID].Kind == model.DeploymentPlanScript) && node.Config.ArtifactNodeID == "" {
 		sources, err := artifactSources(snapshot.Stages)
 		if err != nil {
@@ -396,6 +399,14 @@ func (s *Service) resumeNodeAdvance(ctx context.Context, runID string) error {
 }
 
 func artifactSources(stages []model.WorkflowStage) (map[string]string, error) {
+	return collectArtifactSources(stages, false)
+}
+
+func configuredArtifactSources(stages []model.WorkflowStage) (map[string]string, error) {
+	return collectArtifactSources(stages, true)
+}
+
+func collectArtifactSources(stages []model.WorkflowStage, explicitInputs bool) (map[string]string, error) {
 	sources := map[string]string{}
 	available := map[string]bool{}
 	var latest []string
@@ -405,7 +416,7 @@ func artifactSources(stages []model.WorkflowStage) (map[string]string, error) {
 				continue
 			}
 			source := node.Config.ArtifactNodeID
-			if source == "" && (node.Config.Compose != nil || node.Config.DeploymentInputVersion == 1 && len(latest) != 1) {
+			if source == "" && (node.Config.Compose != nil || node.Config.DeploymentInputVersion == 1 && (explicitInputs || len(latest) != 1)) {
 				continue
 			}
 			if source == "" {
