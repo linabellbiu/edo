@@ -130,3 +130,29 @@ test('流水线中的库构建参数阻止旧编辑回调写入，内联参数�
   assert.deepEqual(change.args[0].inline_build.build_args,{VERSION:'1=public'})
  }
 })
+
+
+for (const editing of [false,true]) test(`单 target ${editing?'编辑':'新建'}保存、无效输入阻止提交并保留草稿`,async t=>{
+ const h=harness(t,{editing})
+ h.state.buildForm.kind='dockerfile'
+ h.state.buildForm.target_stage='web,api'
+ await h.state.save()
+ assert.equal(writes(h).length,0)
+ assert.equal(h.state.formOpen.value,true)
+ assert.equal(h.state.buildForm.target_stage,'web,api')
+ assert.match(h.notifications.at(-1).value,/只能填写一个阶段名/)
+ h.state.buildForm.target_stage=' runtime '
+ await h.state.save()
+ assert.equal(writes(h).length,1)
+ assert.equal(writes(h)[0].body.target_stage,'runtime')
+})
+
+test('方案重新打开回显 target，新建不沿用旧方案阶段，脚本保存不发送隐藏 target',async t=>{
+ const h=harness(t)
+ h.state.edit({id:'shared',name:'公共方案',kind:'dockerfile',target_stage:'runtime'})
+ assert.equal(h.state.buildForm.target_stage,'runtime')
+ h.state.create();assert.equal(h.state.buildForm.target_stage,'')
+ Object.assign(h.state.buildForm,{name:'脚本构建',kind:'script',script:'echo ok',target_stage:'web,api'})
+ await h.state.save()
+ assert.equal(writes(h).length,1);assert.equal(writes(h)[0].body.target_stage,'')
+})

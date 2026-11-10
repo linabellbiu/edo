@@ -17,33 +17,35 @@ func TestBuildPlanManagementEndpoints(t *testing.T) {
 	adminCookie := login.Result().Cookies()[0]
 	created := performJSONRequest(t, router, http.MethodPost, "/api/v1/build-plans", map[string]any{
 		"name": "待修改构建", "kind": "dockerfile", "dockerfile_path": "Dockerfile",
-		"context_path": ".", "timeout_seconds": 1800,
+		"context_path": ".", "timeout_seconds": 1800, "target_stage": "runtime",
 	}, adminCookie)
 	var createdPayload struct {
 		BuildPlan struct {
 			ID             string `json:"id"`
 			DockerfilePath string `json:"dockerfile_path"`
 			ContextPath    string `json:"context_path"`
+			TargetStage    string `json:"target_stage"`
 			Pull           bool   `json:"pull"`
 			CacheEnabled   bool   `json:"cache_enabled"`
 		} `json:"build_plan"`
 	}
 	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &createdPayload) != nil ||
 		createdPayload.BuildPlan.DockerfilePath != "Dockerfile" || createdPayload.BuildPlan.ContextPath != "." ||
-		!createdPayload.BuildPlan.Pull || !createdPayload.BuildPlan.CacheEnabled {
+		createdPayload.BuildPlan.TargetStage != "runtime" || !createdPayload.BuildPlan.Pull || !createdPayload.BuildPlan.CacheEnabled {
 		t.Fatalf("创建构建方案失败: status=%d body=%s", created.Code, created.Body.String())
 	}
 
 	updated := performJSONRequest(t, router, http.MethodPut, "/api/v1/build-plans/"+createdPayload.BuildPlan.ID, map[string]any{
 		"name": "正式构建", "kind": "dockerfile", "description": "构建服务镜像",
 		"dockerfile_path": "deploy/Dockerfile", "context_path": "service",
-		"timeout_seconds": 900,
+		"timeout_seconds": 900, "target_stage": "builder",
 	}, adminCookie)
 	var updatedPayload struct {
 		BuildPlan struct {
 			Name           string `json:"name"`
 			DockerfilePath string `json:"dockerfile_path"`
 			ContextPath    string `json:"context_path"`
+			TargetStage    string `json:"target_stage"`
 			Pull           bool   `json:"pull"`
 			CacheEnabled   bool   `json:"cache_enabled"`
 		} `json:"build_plan"`
@@ -52,8 +54,25 @@ func TestBuildPlanManagementEndpoints(t *testing.T) {
 		updatedPayload.BuildPlan.Name != "正式构建" ||
 		updatedPayload.BuildPlan.DockerfilePath != "deploy/Dockerfile" ||
 		updatedPayload.BuildPlan.ContextPath != "service" ||
-		!updatedPayload.BuildPlan.Pull || !updatedPayload.BuildPlan.CacheEnabled {
+		updatedPayload.BuildPlan.TargetStage != "builder" || !updatedPayload.BuildPlan.Pull || !updatedPayload.BuildPlan.CacheEnabled {
 		t.Fatalf("更新构建方案失败: status=%d body=%s", updated.Code, updated.Body.String())
+	}
+
+	for _, target := range []string{"web,api", "web api", "web\napi", strings.Repeat("a", 129)} {
+		for _, method := range []string{http.MethodPost, http.MethodPut} {
+			path := "/api/v1/build-plans"
+			if method == http.MethodPut {
+				path += "/" + createdPayload.BuildPlan.ID
+			}
+			rejected := performJSONRequest(t, router, method, path, map[string]any{"name": "无效阶段", "kind": "dockerfile", "dockerfile_path": "Dockerfile", "target_stage": target}, adminCookie)
+			if rejected.Code != http.StatusBadRequest {
+				t.Fatalf("接口接受多个或无效阶段: %s %q status=%d", method, target, rejected.Code)
+			}
+		}
+	}
+	listed := performJSONRequest(t, router, http.MethodGet, "/api/v1/build-plans", nil, adminCookie)
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"target_stage":"builder"`) || strings.Contains(listed.Body.String(), "无效阶段") {
+		t.Fatalf("拒绝后保存状态被改写: %s", listed.Body.String())
 	}
 
 	disabled := performJSONRequest(t, router, http.MethodPatch, "/api/v1/build-plans/"+createdPayload.BuildPlan.ID+"/status", map[string]any{

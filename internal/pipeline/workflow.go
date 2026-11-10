@@ -928,6 +928,10 @@ func (s *Service) validateWorkflow(
 			issues = append(issues, validateWorkflowNotificationRules(node, stage.ID, activeNotificationChannels)...)
 			switch node.Type {
 			case model.WorkflowNodeBuild:
+				if plan, ok := activeBuildPlans[node.Config.BuildPlanID]; ok && plan.Kind == model.BuildPlanDockerfile && !validBuildTarget(plan.TargetStage) {
+					s.logger.WarnContext(ctx, "构建目标阶段无效", "operation", "workflow_build_target_validate", "node_id", node.ID, "build_plan_id", plan.ID, "err", ErrInvalidBuildTarget)
+					issues = append(issues, WorkflowIssue{Code: "invalid_build_target", Message: ErrInvalidBuildTarget.Error(), NodeID: node.ID, StageID: stage.ID})
+				}
 				if plan, ok := activeBuildPlans[node.Config.BuildPlanID]; ok && plan.Kind == model.BuildPlanDockerfile && (len(node.Config.Reports) > 0 || node.Config.Cache != nil) {
 					issues = append(issues, WorkflowIssue{Code: "unsupported_build_controls", Message: "Dockerfile 构建使用构建方案中的镜像缓存；检查报告和依赖缓存请放在独立脚本任务中", NodeID: node.ID, StageID: stage.ID})
 				}
@@ -1454,6 +1458,10 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 					return nil, ErrInvalidWorkflow
 				}
+				if plan.Kind == model.BuildPlanDockerfile && !validBuildTarget(plan.TargetStage) {
+					s.logger.WarnContext(ctx, "构建目标阶段无效", "operation", "workflow_build_target_resolve", "node_id", current.ID, "build_plan_id", plan.ID, "err", ErrInvalidBuildTarget)
+					return nil, ErrInvalidBuildTarget
+				}
 				buildPlans[current.ID] = buildPlanSnapshot(plan)
 				entry := buildPlans[current.ID]
 				entry.Outputs = current.Config.BuildOutputs
@@ -1793,11 +1801,12 @@ func buildPlanSnapshot(plan model.BuildPlan) workflowBuildPlanSnapshot {
 		ID: plan.ID, Kind: plan.Kind, ConfigVersion: plan.ConfigVersion,
 		Script: plan.Script, DockerfilePath: plan.DockerfilePath, ContextPath: plan.ContextPath,
 		WorkingDirectory: plan.WorkingDirectory, ArtifactPath: plan.ArtifactPath, RuntimeImage: plan.RuntimeImage,
-		ImageRegistryID: plan.ImageRegistryID,
-		Pull:            plan.Pull, CacheEnabled: plan.CacheEnabled, BuildArgs: plan.BuildArgs,
+		ImageRegistryID: plan.ImageRegistryID, TargetStage: strings.TrimSpace(plan.TargetStage),
+		Pull: plan.Pull, CacheEnabled: plan.CacheEnabled, BuildArgs: plan.BuildArgs,
 		EnvironmentVariables: plan.EnvironmentVariables, TimeoutSeconds: plan.TimeoutSeconds,
 	}
 	if plan.Kind == model.BuildPlanScript {
+		snapshot.TargetStage = ""
 		snapshot.Workspace = true
 		snapshot.RuntimeImage, snapshot.WorkingDirectory = "", "."
 	}

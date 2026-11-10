@@ -5,6 +5,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
 import { v4 as uuidv4 } from 'uuid'
+import { loadFrontend } from './acceptanceHarness.mjs'
 
 const source = readFileSync(new URL('../src/views/PipelineEditorView.vue', import.meta.url), 'utf8')
 const descriptor = parse(source).descriptor
@@ -19,6 +20,7 @@ function harness(t, { active = false, publicMode = false, routeGuards = false, c
   const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', permissions: [...permissions], is_superuser: false }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
   let timerID = 0, now = 0
   const modules = {
+    '@/utils/buildTarget': loadFrontend('../src/utils/buildTarget.ts'),
     uuid: { v4: uuidv4 },
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
     'vue-router': {

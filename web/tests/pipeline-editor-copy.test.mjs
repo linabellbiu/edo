@@ -7,6 +7,7 @@ import { Form as AntForm } from 'ant-design-vue'
 import { renderToString } from '@vue/server-renderer'
 import * as vue from 'vue'
 import ts from 'typescript'
+import { loadFrontend } from './acceptanceHarness.mjs'
 
 const template = path => parse(readFileSync(new URL(path, import.meta.url), 'utf8')).descriptor.template.content
 const editorTemplate = template('../src/views/PipelineEditorView.vue')
@@ -18,6 +19,17 @@ function findSection(node) {
   return node.children?.map(findSection).find(Boolean)
 }
 const notificationTemplate = findSection(baseParse(editorTemplate)).loc.source
+function inlineComponent(path, modules = {}) {
+ const descriptor=parse(readFileSync(new URL(path,import.meta.url),'utf8')).descriptor
+ const content=compileScript(descriptor,{id:'advanced-field-test',inlineTemplate:true}).content
+ const output=ts.transpileModule(content,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText
+ const module={exports:{}}
+ new Function('require','module','exports',output)(name=>name==='vue'?vue:modules[name]||{},module,module.exports)
+ return module.exports.default
+}
+const helpComponent=inlineComponent('../src/components/DeploymentFieldHelp.vue')
+const advancedComponent=inlineComponent('../src/components/BuildPlanAdvancedFields.vue',{'@/components/DeploymentFieldHelp.vue':{default:helpComponent},'@/utils/buildTarget':loadFrontend('../src/utils/buildTarget.ts')})
+
 const passthrough = {
   inheritAttrs: false,
   setup(_, { attrs, slots }) {
@@ -90,8 +102,7 @@ test('内联与库镜像构建的 Tag 均位于常规配置，自定义构建不
   const config=inline?{inline_build:{kind},image_tag:'${EDO_GIT_TAG}'}:{build_plan_id:'plan',image_tag:'release-v2'}
   const html=await render(common,{propertyTab:'common',editorApplication:{name:'demo_app'},selectedNode:{id:'build',type:'build',name:'构建',config},selectedBuildPlan:{id:'plan',kind},selectedLibraryBuildPlan:inline?undefined:{id:'plan',name:'通用构建',kind,is_active:true},buildSource:()=>inline?'inline':'plan',canReadBuildPlan:true,canModifyBuildPlan:false,changingBuildPlanNodeID:'',selectedBuildPlanOptions:[],canUpdate:true,canEdit:true,canCreateBuildPlan:false,buildPlanOptions:[],imageTagHelp:'服务端变量说明',updateSelectedNode(){}})
   assert.equal(html.includes('label="镜像 Tag"'),kind==='dockerfile')
-  assert.equal(html.includes('label="镜像名称"'),kind==='dockerfile')
-  if(kind==='dockerfile')assert.match(html,/placeholder="demo_app"/)
+  assert.doesNotMatch(html,/label="镜像名称"/)
   assert.doesNotMatch(html,/Docker target/)
   assert.match(html,/配置来源/);assert.match(html,/当前任务配置/);assert.match(html,/选择构建方案/)
   assert.doesNotMatch(html,/value="inline"[^>]*>自定义构建/)
@@ -110,11 +121,13 @@ test('构建高级配置不重复展示 Tag 或项目变量选择，检查任务
 })
 
 
-test('共享构建参数表单不再提供 Docker target，继续保留 Dockerfile 和 Context',async()=>{
+test('共享构建参数表单将 target 收进高级配置，继续保留 Dockerfile 和 Context',async()=>{
  const html=await render(buildPlanFieldsTemplate,{plan:{kind:'dockerfile',dockerfile_path:'Dockerfile',context_path:'.',timeout_seconds:1800},disabled:false,hideKind:false,registries:[],imageDestination:'registry',saveArtifact:false,buildArgsText:'',environmentText:'',editPermission:'workflow.update',emit(){}})
  assert.match(html,/Dockerfile 路径/)
  assert.match(html,/Context/)
- assert.doesNotMatch(html,/Docker target|例如 web,api/)
+ assert.match(html,/header="高级配置"/)
+ assert.match(html,/BuildPlanAdvancedFields/i)
+ assert.doesNotMatch(html,/例如 web,api/)
 })
 
 test('流水线隐藏重复构建方式，独立方案编辑保留类型选择及对应参数',async()=>{
@@ -156,4 +169,32 @@ test('真实 Form 标签保留镜像 Tag 问号按钮及目录说明，不能被
  const html=await render(`<a-form>${field}</a-form>`,{selectedBuildPlan:{kind:'dockerfile'},selectedNode:{config:{image_tag:'${EDO_GIT_TAG}'}},canEdit:true,imageTagHelp:'服务端目录：没有 Tag 时使用完整 Commit。',updateSelectedNode(){}},{'a-form':AntForm,'a-form-item':AntForm.Item,DeploymentFieldHelp:module.exports.default})
  assert.match(html,/<button[^>]*aria-label="镜像 Tag 说明"[^>]*>\?<\/button>/)
  assert.match(html,/服务端目录：没有 Tag 时使用完整 Commit/)
+})
+
+
+test('镜像名称与单 target 位于高级配置，库方案 target 只读且保留修改入口',async()=>{
+ const find=node=>node.tag==='section'&&node.props?.some(prop=>prop.name==='class'&&prop.value?.content==='build-advanced-fields')?node:node.children?.map(find).find(Boolean)
+ const section=find(baseParse(editorTemplate)).loc.source
+ for(const inline of [false,true])for(const kind of ['dockerfile','script'])for(const canEdit of [false,true]){
+  const html=await render(section,{selectedTask:{},selectedNode:{type:'build',config:{image_name:'custom',...(inline?{inline_build:{kind,target_stage:'runtime'}}:{build_plan_id:'shared'})}},selectedBuildPlan:{kind,target_stage:'runtime'},selectedLibraryBuildPlan:inline?undefined:{id:'shared'},canEdit,canModifyBuildPlan:!inline&&canEdit,editorApplication:{name:'demo_app'},resourceViewHref:()=>'/build-plans?plan=shared',updateSelectedBuildTarget(){},updateSelectedNode(){},modifyLinkedBuildPlan(){}},{BuildPlanAdvancedFields:advancedComponent})
+  if(kind==='script'){assert.doesNotMatch(html,/镜像名称|BuildPlanAdvancedFields/i);continue}
+  assert.match(html,/label="镜像名称"/);assert.match(html,/value="custom"/)
+  assert.match(html,/value="runtime"/)
+  assert.equal(/disabled[^>]*aria-label="Docker target"/.test(html),!canEdit||!inline)
+  assert.equal(html.includes('aria-label="修改构建方案"'),!inline&&canEdit)
+  assert.doesNotMatch(html,/镜像 Tag/)
+ }
+})
+
+
+test('Docker target 使用真实表单显示问号说明和单值诊断',async()=>{
+ for(const target of ['','runtime','web,api','web api','web\napi','a'.repeat(129)]){
+  const error=loadFrontend('../src/utils/buildTarget.ts').dockerTargetError(target)
+  const html=await render('<a-form><BuildPlanAdvancedFields :target="target" :disabled="false" /></a-form>',{target},{'a-form':AntForm,'a-form-item':AntForm.Item,BuildPlanAdvancedFields:advancedComponent})
+  assert.match(html,/<button[^>]*aria-label="Docker target 说明"[^>]*>\?<\/button>/)
+  assert.match(html,/docker build --target runtime/)
+  assert.match(html,/留空时构建 Dockerfile 的最终阶段/)
+  assert.equal(html.includes('ant-form-item-has-error'),!!error)
+  if(error)assert.match(html,/只能填写一个阶段名/)
+ }
 })

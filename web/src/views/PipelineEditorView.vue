@@ -13,6 +13,8 @@ import {
 import client from '@/api/client'
 import { deploymentExecution, clearTaskDeploymentExecution } from '@/utils/deploymentExecution'
 import PipelineTaskControls from '@/components/PipelineTaskControls.vue'
+import { dockerTargetError } from '@/utils/buildTarget'
+import BuildPlanAdvancedFields from '@/components/BuildPlanAdvancedFields.vue'
 import PipelineBuildFields from '@/components/PipelineBuildFields.vue'
 import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
 import PipelineDeployFields from '@/components/PipelineDeployFields.vue'
@@ -654,8 +656,10 @@ function payload(activate: boolean) {
 
 function firstEnvironmentVariableError() {
   for (const task of stages.value.flatMap(stage => stage.tasks)) {
-    const error = environmentVariableErrors[task.id] || buildFieldErrors[task.id]
-    if (error) return { task, error }
+    const plan = task.config.inline_build || buildPlans.value.find(plan => plan.id === task.config.build_plan_id)
+    const targetError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerTargetError(plan.target_stage) : ''
+    const error = targetError || environmentVariableErrors[task.id] || buildFieldErrors[task.id]
+    if (error) return { task, error, tab: targetError || !buildFieldErrors[task.id] ? 'advanced' as const : 'common' as const }
   }
   return null
 }
@@ -665,7 +669,7 @@ function ensureEnvironmentVariablesValid(showMessage: boolean) {
   if (!invalid) return true
   if (showMessage) {
     selectNode(invalid.task.id)
-    propertyTab.value = buildFieldErrors[invalid.task.id] ? 'common' : 'advanced'
+    propertyTab.value = invalid.tab
     message.error(`${invalid.task.name}：${invalid.error}`)
   }
   return false
@@ -815,6 +819,12 @@ function updateSelectedNode(update: Partial<WorkflowNode>, config?: Partial<Work
   if (!selectedNode.value) return
   replaceNode(selectedNode.value.id, update, config)
   if (canEdit.value) initializeBuildImageTag(selectedNode.value)
+}
+
+function updateSelectedBuildTarget(value: string) {
+  const node = selectedNode.value
+  if (!canEdit.value || node?.type !== 'build' || node.config.inline_build?.kind !== 'dockerfile') return
+  updateSelectedNode({}, { inline_build: { ...node.config.inline_build, target_stage: value } })
 }
 
 function appendNotificationRule(
@@ -1793,7 +1803,6 @@ onBeforeRouteLeave(async () => {
                 </a-form-item>
                 <a-alert v-if="!selectedLibraryBuildPlan||!selectedLibraryBuildPlan.is_active" type="warning" show-icon :message="!canReadBuildPlan?'无权查看原构建方案，原关联继续保留':selectedLibraryBuildPlan?'原构建方案已停用，请修改或更换方案':'请选择可用构建方案；原有失效关联会继续保留'"/>
               </template>
-              <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像名称"><a-input :value="selectedNode.config.image_name" :disabled="!canEdit" :placeholder="editorApplication?.name||'留空使用应用名'" aria-label="镜像名称" @update:value="updateSelectedNode({},{image_name:String($event||'')})"/></a-form-item>
               <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'">
                 <template #label><span>镜像 Tag<DeploymentFieldHelp :text="imageTagHelp" label="镜像 Tag 说明" /></span></template>
                 <a-input :value="selectedNode.config.image_tag" :disabled="!canEdit" placeholder="${EDO_GIT_TAG}" aria-label="镜像 Tag" @update:value="updateSelectedNode({}, { image_tag: String($event || '') })" />
@@ -1884,6 +1893,12 @@ onBeforeRouteLeave(async () => {
                 </article>
               </div>
               <div v-else-if="canReadNotificationChannels && activeNotificationChannels.length" class="node-notification-empty">当前任务尚未配置通知；建议至少添加“失败”通知。</div>
+            </section>
+            <section v-if="selectedTask&&selectedNode.type==='build'&&selectedBuildPlan?.kind==='dockerfile'" class="build-advanced-fields">
+              <h3 class="task-section-heading">高级配置</h3>
+              <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像名称"><a-input :value="selectedNode.config.image_name" :disabled="!canEdit" :placeholder="editorApplication?.name||'留空使用应用名'" aria-label="镜像名称" @update:value="updateSelectedNode({},{image_name:String($event||'')})"/></a-form-item>
+              <BuildPlanAdvancedFields :target="selectedBuildPlan.target_stage" :disabled="!canEdit||!selectedNode.config.inline_build" @change="updateSelectedBuildTarget"/>
+              <a-button v-if="canModifyBuildPlan" type="link" :href="resourceViewHref('/build-plans','plan',selectedLibraryBuildPlan!.id)+'&amp;edit=1'" aria-label="修改构建方案" @click.prevent="modifyLinkedBuildPlan">修改构建方案</a-button>
             </section>
             <PipelineTaskControls v-if="selectedTask && !['build','deploy'].includes(selectedNode.type)" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="(selectedNode.config.inline_build||activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id))?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
             <a-divider v-if="selectedTask && !['build','deploy'].includes(selectedNode.type)" class="node-notification-divider" />

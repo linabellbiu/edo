@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -35,6 +36,10 @@ func normalizeInlineBuild(node *model.WorkflowNode) error {
 	}
 	n, err := normalizeBuildPlanInput(BuildPlanInput{Name: node.Name, Kind: p.Kind, Script: p.Script, DockerfilePath: p.DockerfilePath, ContextPath: p.ContextPath, WorkingDirectory: p.WorkingDirectory, ArtifactPath: p.ArtifactPath, RuntimeImage: p.RuntimeImage, ImageRegistryID: p.ImageRegistryID, TargetStage: p.TargetStage, Pull: &p.Pull, CacheEnabled: &p.CacheEnabled, BuildArgs: p.BuildArgs, EnvironmentVariables: p.EnvironmentVariables, TimeoutSeconds: p.TimeoutSeconds})
 	if err != nil {
+		if errors.Is(err, ErrInvalidBuildTarget) {
+			slog.Warn("流水线构建目标阶段无效", "operation", "workflow_inline_build_validate", "node_id", node.ID, "err", err)
+			return fmt.Errorf("%w：%s", ErrInvalidWorkflow, ErrInvalidBuildTarget)
+		}
 		return fail()
 	}
 	if p.Kind == model.BuildPlanScript && len(shellcheck.Check(n.Script)) > 0 {

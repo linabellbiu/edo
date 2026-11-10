@@ -89,6 +89,7 @@ type buildPlanRequest struct {
 	ArtifactPath         string              `json:"artifact_path" binding:"max=512"`
 	RuntimeImage         string              `json:"runtime_image" binding:"max=512"`
 	ImageRegistryID      string              `json:"image_registry_id" binding:"max=36"`
+	TargetStage          string              `json:"target_stage" binding:"max=128"`
 	Pull                 *bool               `json:"pull"`
 	CacheEnabled         *bool               `json:"cache_enabled"`
 	BuildArgs            map[string]string   `json:"build_args" binding:"max=100"`
@@ -505,6 +506,7 @@ func (h pipelineHandler) listBuildPlans(c *gin.Context) {
 func (h pipelineHandler) createBuildPlan(c *gin.Context) {
 	var request buildPlanRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("创建构建方案参数无效", "operation", "build_plan_create_bind", "request_id", requestIDFrom(c), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_build_plan", pipeline.ErrInvalidBuildPlan.Error())
 		return
 	}
@@ -513,8 +515,8 @@ func (h pipelineHandler) createBuildPlan(c *gin.Context) {
 		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
 		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
 		WorkingDirectory: request.WorkingDirectory, ArtifactPath: request.ArtifactPath, RuntimeImage: request.RuntimeImage,
-		ImageRegistryID: request.ImageRegistryID,
-		Pull:            request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
+		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage,
+		Pull: request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
 		EnvironmentVariables: request.EnvironmentVariables, TimeoutSeconds: request.TimeoutSeconds,
 	})
 	if err != nil {
@@ -528,6 +530,7 @@ func (h pipelineHandler) createBuildPlan(c *gin.Context) {
 func (h pipelineHandler) updateBuildPlan(c *gin.Context) {
 	var request buildPlanRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("更新构建方案参数无效", "operation", "build_plan_update_bind", "request_id", requestIDFrom(c), "build_plan_id", c.Param("id"), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_build_plan", pipeline.ErrInvalidBuildPlan.Error())
 		return
 	}
@@ -535,8 +538,8 @@ func (h pipelineHandler) updateBuildPlan(c *gin.Context) {
 		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
 		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
 		WorkingDirectory: request.WorkingDirectory, ArtifactPath: request.ArtifactPath, RuntimeImage: request.RuntimeImage,
-		ImageRegistryID: request.ImageRegistryID,
-		Pull:            request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
+		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage,
+		Pull: request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
 		EnvironmentVariables: request.EnvironmentVariables, TimeoutSeconds: request.TimeoutSeconds,
 	})
 	if err != nil {
@@ -787,6 +790,7 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 	case errors.Is(err, pipeline.ErrDeploymentRegistryUnavailable):
 		writeError(c, http.StatusBadRequest, "deployment_registry_unavailable", pipeline.ErrDeploymentRegistryUnavailable.Error())
 	case errors.Is(err, pipeline.ErrInvalidApplication), errors.Is(err, pipeline.ErrInvalidApplicationName), errors.Is(err, pipeline.ErrInvalidBuildPlan),
+		errors.Is(err, pipeline.ErrInvalidBuildTarget),
 		errors.Is(err, pipeline.ErrInvalidScriptEnvironment),
 		errors.Is(err, pipeline.ErrInvalidRegistry), errors.Is(err, pipeline.ErrInvalidRegistryName),
 		errors.Is(err, pipeline.ErrInvalidRegistryProvider), errors.Is(err, pipeline.ErrInvalidRegistryEndpoint), errors.Is(err, pipeline.ErrRegistryProviderEndpoint),

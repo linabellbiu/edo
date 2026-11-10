@@ -320,3 +320,42 @@ test('原构建方案停用或无权查看时保留关联，不自动改成自�
   assert.equal(writes(h).length,0)
  }
 })
+
+
+test('高级 target 仅修改当前内联方案，跨来源保存与重新打开保留配置',async t=>{
+ const h=await linkedBuildHarness();t.after(h.stop)
+ h.state.updateSelectedBuildTarget('forbidden')
+ assert.equal(h.state.selectedLibraryBuildPlan.value.target_stage,undefined)
+ assert.equal(h.state.selectedNode.value.config.inline_build,undefined)
+ h.state.changeBuildSource('inline')
+ h.state.updateSelectedBuildTarget('runtime')
+ h.state.updateSelectedNode({},{image_name:'custom-image'})
+ h.state.changeBuildSource('plan');h.state.changeBuildSource('inline')
+ assert.equal(h.state.selectedNode.value.config.inline_build.target_stage,'runtime')
+ assert.equal(h.state.selectedNode.value.config.image_name,'custom-image')
+ await h.state.save(false)
+ const saved=writes(h).find(r=>r.method==='put').body.stages[0].tasks[0].config
+ assert.equal(saved.inline_build.target_stage,'runtime')
+ assert.equal(saved.image_name,'custom-image')
+ h.auth.user.permissions=['workflow.read','build_plan.read'];await settle()
+ h.state.stages.value=[{id:'build-stage',name:'构建',tasks:[{id:'build',name:'镜像构建',type:'build',config:saved}]}]
+ h.state.selectNode('build')
+ h.state.updateSelectedBuildTarget('forbidden')
+ assert.equal(h.state.selectedNode.value.config.inline_build.target_stage,'runtime')
+ assert.equal(writes(h).some(r=>r.path.startsWith('/build-plans')),false)
+})
+
+test('无效 target 即使切回常规配置也阻止保存并定位高级配置，修正后可以保存',async t=>{
+ const h=await linkedBuildHarness();t.after(h.stop)
+ h.state.changeBuildSource('inline')
+ h.state.updateSelectedBuildTarget('web,api')
+ h.state.propertyTab.value='common'
+ await h.state.save(false)
+ assert.equal(writes(h).length,0)
+ assert.equal(h.state.propertyTab.value,'advanced')
+ assert.equal(h.state.selectedNode.value.config.inline_build.target_stage,'web,api')
+ assert.match(h.notifications.at(-1).text,/只能填写一个阶段名/)
+ h.state.updateSelectedBuildTarget('')
+ await h.state.save(false)
+ assert.equal(writes(h).find(r=>r.method==='put').body.stages[0].tasks[0].config.inline_build.target_stage,'')
+})

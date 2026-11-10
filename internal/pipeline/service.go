@@ -43,6 +43,7 @@ var (
 	ErrApplicationExists              = errors.New("应用名称已存在")
 	ErrApplicationNotFound            = errors.New("应用不存在")
 	ErrInvalidBuildPlan               = errors.New("构建方案配置无效")
+	ErrInvalidBuildTarget             = errors.New("Docker target 只能填写一个阶段名，最多 128 个字符，只能包含字母、数字、下划线、点或连字符")
 	ErrBuildPlanExists                = errors.New("构建方案名称已存在")
 	ErrBuildPlanNotFound              = errors.New("构建方案不存在")
 	ErrBuildPlanInUse                 = errors.New("构建方案仍被流水线或部署方案使用，请先更换相关引用")
@@ -405,6 +406,7 @@ func (s *Service) ListBuildPlans(ctx context.Context) ([]model.BuildPlan, error)
 func (s *Service) CreateBuildPlan(ctx context.Context, actorID string, input BuildPlanInput) (*model.BuildPlan, error) {
 	input, err := normalizeBuildPlanInput(input)
 	if err != nil {
+		s.logger.WarnContext(ctx, "构建方案参数无效", "operation", "build_plan_create_normalize", "err", err)
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -435,8 +437,7 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 	input.ContextPath, input.WorkingDirectory = strings.TrimSpace(input.ContextPath), strings.TrimSpace(input.WorkingDirectory)
 	input.ArtifactPath, input.RuntimeImage = strings.TrimSpace(input.ArtifactPath), strings.TrimSpace(input.RuntimeImage)
 	input.ImageRegistryID = strings.TrimSpace(input.ImageRegistryID)
-	// 内置镜像构建统一构建 Dockerfile 默认阶段，旧方案字段不参与新运行。
-	input.TargetStage = ""
+	input.TargetStage = strings.TrimSpace(input.TargetStage)
 	if input.ContextPath == "" {
 		input.ContextPath = "."
 	}
@@ -460,6 +461,9 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 	}
 	switch input.Kind {
 	case model.BuildPlanDockerfile:
+		if !validBuildTarget(input.TargetStage) {
+			return input, ErrInvalidBuildTarget
+		}
 		input.Script = ""
 		input.WorkingDirectory = "."
 		input.ArtifactPath, input.RuntimeImage = "", ""
@@ -498,6 +502,12 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 func boolPointer(value bool) *bool { return &value }
 
 var buildVariableNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+var buildTargetPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+
+func validBuildTarget(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || buildTargetPattern.MatchString(value)
+}
 
 // validRuntimeImageReference 只接受固定 tag 或 digest。裸镜像名和 latest 会让
 // 同一份流水线快照在不同时间解析到不同内容，不能作为可审计的执行配置。
@@ -565,6 +575,7 @@ func (s *Service) validateBuildPlanRegistry(ctx context.Context, registryID stri
 func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPlanInput) (*model.BuildPlan, error) {
 	input, err := normalizeBuildPlanInput(input)
 	if err != nil {
+		s.logger.WarnContext(ctx, "构建方案参数无效", "operation", "build_plan_update_normalize", "build_plan_id", id, "err", err)
 		return nil, err
 	}
 	var existing model.BuildPlan
