@@ -342,6 +342,7 @@ function createSourceNode(): WorkflowNode {
 function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): WorkflowNode {
   const config: WorkflowNodeConfig = {}
   if (type === 'build') config.inline_build = {id:'',name:definition?.label||'自定义构建',kind:definition?.id==='image-build'?'dockerfile':'script',script:'set -eu\n# 在这里填写构建命令\n',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',runtime_image:DEFAULT_RUNTIME_IMAGE,cache_enabled:true,pull:true,timeout_seconds:1800,is_active:true}
+  if (config.inline_build?.kind === 'dockerfile') config.image_tag = '${EDO_GIT_TAG}'
   if (type === 'shell') {
     config.script = definition?.presetScript || 'set -eu\n'
     config.runtime_image = DEFAULT_RUNTIME_IMAGE
@@ -808,6 +809,7 @@ function replaceNode(id: string, update: Partial<WorkflowNode>, config?: Partial
 function updateSelectedNode(update: Partial<WorkflowNode>, config?: Partial<WorkflowNodeConfig>) {
   if (!selectedNode.value) return
   replaceNode(selectedNode.value.id, update, config)
+  if (canEdit.value) initializeBuildImageTag(selectedNode.value)
 }
 
 function appendNotificationRule(
@@ -946,6 +948,15 @@ function selectNode(id: string) {
   selectedStageID.value = ''
   propertyTab.value = 'common'
   panelMode.value = 'properties'
+  if (canEdit.value && initializeBuildImageTag(selectedNode.value)) markDirty()
+}
+
+function initializeBuildImageTag(node: WorkflowNode | null | undefined) {
+  if (!node || node.type !== 'build' || node.config.image_tag !== undefined) return false
+  const plan = node.config.inline_build || buildPlans.value.find(item => item.id === node.config.build_plan_id)
+  if (plan?.kind !== 'dockerfile') return false
+  node.config.image_tag = '${EDO_GIT_TAG}'
+  return true
 }
 
 function addStage(afterIndex = stages.value.length - 1) {
@@ -1638,7 +1649,7 @@ onBeforeRouteLeave(async () => {
       </main>
 
       <Transition name="pipeline-panel">
-        <aside v-if="panelMode !== 'closed'" class="pipeline-side-panel vben-card">
+        <aside v-if="panelMode !== 'closed'" class="pipeline-side-panel vben-card" :class="{ 'has-property-actions': panelMode === 'properties' && selectedNode }">
         <template v-if="panelMode === 'library'">
           <header>
             <div>
@@ -1723,6 +1734,7 @@ onBeforeRouteLeave(async () => {
               <a-button type="text" aria-label="关闭任务配置" @click="closePanel"><X :size="17" /></a-button>
             </div>
           </header>
+          <div class="panel-property-body">
           <div class="panel-tabs" role="tablist" aria-label="任务配置分区">
             <button type="button" :class="{ active: propertyTab === 'common' }" role="tab" :aria-selected="propertyTab === 'common'" @click="propertyTab = 'common'">{{ selectedNode.type==='deploy' ? '部署配置' : '常规配置' }}</button>
             <button type="button" :class="{ active: propertyTab === 'advanced' }" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">{{ selectedNode.type==='deploy' ? '通知' : '通知及高级配置' }}</button>
@@ -1774,13 +1786,13 @@ onBeforeRouteLeave(async () => {
                   </div>
                 </a-form-item>
                 <a-alert v-if="!selectedLibraryBuildPlan||!selectedLibraryBuildPlan.is_active" type="warning" show-icon :message="!canReadBuildPlan?'无权查看原构建方案，原关联继续保留':selectedLibraryBuildPlan?'原构建方案已停用，请修改或更换方案':'请选择可用构建方案；原有失效关联会继续保留'"/>
-                <PipelineBuildFields v-if="selectedLibraryBuildPlan" :key="selectedNode.id+':plan:'+selectedLibraryBuildPlan.id" :node="selectedNode" :build-plan="selectedLibraryBuildPlan" disabled/>
               </template>
-              <PipelineBuildFields v-else :key="selectedNode.id+':inline'" :node="selectedNode" :disabled="!canEdit" @change="updateSelectedNode({},$event)" @invalid="buildFieldErrors[selectedNode!.id]=$event"/>
               <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像名称"><a-input :value="selectedNode.config.image_name" :disabled="!canEdit" :placeholder="editorApplication?.name||'留空使用应用名'" aria-label="镜像名称" @update:value="updateSelectedNode({},{image_name:String($event||'')})"/></a-form-item>
               <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'" label="镜像 Tag" help="可用 ${EDO_GIT_TAG} 引用本次 Git Tag，或 ${EDO_COMMIT_SHA} 引用提交；留空自动生成唯一版本。">
                 <a-input :value="selectedNode.config.image_tag" :disabled="!canEdit" placeholder="${EDO_GIT_TAG}" aria-label="镜像 Tag" @update:value="updateSelectedNode({}, { image_tag: String($event || '') })" />
               </a-form-item>
+              <PipelineBuildFields v-if="buildSource(selectedNode)==='plan'&&selectedLibraryBuildPlan" :key="selectedNode.id+':plan:'+selectedLibraryBuildPlan.id" :node="selectedNode" :build-plan="selectedLibraryBuildPlan" disabled/>
+              <PipelineBuildFields v-else-if="buildSource(selectedNode)==='inline'" :key="selectedNode.id+':inline'" :node="selectedNode" :disabled="!canEdit" @change="updateSelectedNode({},$event)" @invalid="buildFieldErrors[selectedNode!.id]=$event"/>
             </template>
 
             <template v-else-if="selectedNode.type === 'shell' && !selectedNode.config.check && !selectedNode.config.migration">
@@ -1892,6 +1904,12 @@ onBeforeRouteLeave(async () => {
             <a-alert v-else-if="!['build','deploy'].includes(selectedNode.type) && !selectedNode.config.check && !selectedNode.config.migration" class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
           </a-form>
           <a-alert v-for="(issue, index) in issues.filter(item => item.node_id === selectedNode?.id)" :key="`${issue.code}-${index}`" type="warning" :message="issue.message" show-icon />
+          </div>
+          <footer v-if="canUpdate" class="panel-property-actions" aria-label="任务配置操作">
+            <span class="panel-save-state" role="status">{{ saveState }}</span>
+            <a-button html-type="button" :disabled="saving" @click="closePanel">关闭</a-button>
+            <a-button type="primary" html-type="button" :loading="saving" @click="requestSave">{{ workflow?.is_active ? '保存并更新' : '保存' }}</a-button>
+          </footer>
         </template>
 
         <div v-else class="panel-empty"><CircleDot :size="28" /><strong>没有可编辑的内容</strong><p>关闭后重新选择阶段或任务。</p></div>
@@ -2051,6 +2069,13 @@ onBeforeRouteLeave(async () => {
 .pipeline-stage-ghost, .pipeline-task-ghost { opacity: .35; }
 .pipeline-stage-chosen, .pipeline-task-chosen .pipeline-task-card { box-shadow: 0 12px 30px rgb(30 45 80 / 16%); }
 .pipeline-side-panel { position: absolute; top: 0; right: 0; bottom: 0; z-index: 20; width: min(560px,calc(100% - 48px)); min-width: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 0; border-radius: 0 10px 10px 0; box-shadow: -12px 0 28px rgb(25 35 55 / 14%); }
+.pipeline-side-panel.has-property-actions { display: flex; flex-direction: column; overflow: hidden; }
+.pipeline-side-panel.has-property-actions > header { flex-shrink: 0; }
+.panel-property-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding-bottom: 16px; }
+.panel-property-body > :deep(.ant-form) { padding: 0 16px; }
+.panel-property-body > :deep(.ant-alert) { margin: 12px 16px 0; }
+.panel-property-actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--edo-border); background: var(--edo-surface); }
+.panel-save-state { flex: 1; min-width: 0; color: var(--edo-muted); font-size: 12px; }
 .pipeline-side-panel :deep(.build-plan-fields .ant-form-item) { margin-bottom: 0; }
 .pipeline-panel-enter-active,.pipeline-panel-leave-active { transition: opacity .18s ease,transform .22s cubic-bezier(.22,.61,.36,1); }
 .pipeline-panel-enter-from,.pipeline-panel-leave-to { opacity: 0; transform: translateX(24px); }

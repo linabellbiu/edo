@@ -12,11 +12,11 @@ const output = ts.transpileModule(compileScript(descriptor, { id: 'pipeline-auto
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText
 
-function harness(t, { active = false, publicMode = false, routeGuards = false, crypto = globalThis.crypto } = {}) {
+function harness(t, { active = false, publicMode = false, routeGuards = false, crypto = globalThis.crypto, permissions = ['workflow.read', 'workflow.update'] } = {}) {
   const requests = [], messages = [], dialogs = [], timers = new Map()
   const navigations = [], storage = { project: 'project-a' }
   const routeUpdates = [], routeLeaves = [], route = { query: publicMode ? { template: 'flow' } : { application: 'api', workflow: 'flow' } }
-  const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', permissions: ['workflow.read', 'workflow.update'], is_superuser: false }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
+  const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', permissions: [...permissions], is_superuser: false }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
   let timerID = 0, now = 0
   const modules = {
     uuid: { v4: uuidv4 },
@@ -519,4 +519,56 @@ test('自动保存不会使编辑区域 inert，应用新建提示与后续发�
   const applications = readFileSync(new URL('../src/views/DevOpsView.vue', import.meta.url), 'utf8')
   assert.ok(applications.includes('不选择则在保存应用后配置发布流程。'))
   assert.ok(!applications.includes('不选择则创建一条空白流水线。'))
+})
+
+test('镜像任务实际默认 Git Tag，库方案与内联切换保留名称及自定义 Tag，显式留空仍可保存', async t => {
+  const h = harness(t, { active: true, permissions: ['workflow.read', 'workflow.update', 'build_plan.read'] })
+  h.state.buildPlans.value = [{ id: 'image-plan', name: '镜像方案', kind: 'dockerfile', is_active: true }]
+  const image = h.state.createTaskNode('build', h.state.taskDefinitions.find(item => item.id === 'image-build'))
+  assert.equal(image.config.image_tag, '${EDO_GIT_TAG}')
+  assert.equal(h.state.createTaskNode('build').config.image_tag, undefined)
+  h.state.stages.value[0].tasks = [{ id: 'build', type: 'build', name: '镜像', config: { build_plan_id: 'image-plan', image_name: 'custom/api' } }]
+  h.state.selectNode('build')
+  assert.equal(h.state.selectedNode.value.config.image_tag, '${EDO_GIT_TAG}')
+  assert.equal(h.state.selectedNode.value.config.image_name, 'custom/api')
+  assert.equal(h.state.dirty.value, true)
+  h.state.updateSelectedNode({}, { image_tag: 'release-v9' })
+  h.state.changeBuildSource('inline')
+  h.state.changeBuildSource('plan')
+  h.state.selectNode('build')
+  assert.equal(h.state.selectedNode.value.config.image_tag, 'release-v9')
+  h.state.updateSelectedNode({}, { image_tag: '' })
+  h.state.selectNode('build')
+  assert.equal(h.state.selectedNode.value.config.image_tag, '')
+  h.state.requestSave()
+  assert.equal(h.state.saveConfirmOpen.value, true)
+  const pending = h.state.confirmSaveUpdate()
+  assert.equal(h.requests[0].payload.stages[0].tasks[0].config.image_tag, '')
+  assert.equal(h.requests[0].payload.stages[0].tasks[0].config.image_name, 'custom/api')
+  h.succeed(0)
+  await pending
+  h.state.selectNode('build')
+  assert.equal(h.state.selectedNode.value.config.image_tag, '')
+})
+
+test('首次选择镜像方案或从自定义构建切换镜像构建时填入 Git Tag，只读不写入默认值', async t => {
+  const h = harness(t, { active: true, permissions: ['workflow.read', 'workflow.update', 'build_plan.read'] })
+  h.state.buildPlans.value = [{ id: 'image-plan', name: '镜像方案', kind: 'dockerfile', is_active: true }]
+  h.state.stages.value[0].tasks = [{ id: 'build', type: 'build', name: '构建', config: {} }]
+  h.state.selectNode('build')
+  h.state.changeBuildSource('plan')
+  h.state.changeLibraryBuildPlan('image-plan')
+  assert.equal(h.state.selectedNode.value.config.image_tag, '${EDO_GIT_TAG}')
+  h.state.stages.value[0].tasks[0] = h.state.createTaskNode('build')
+  h.state.selectNode(h.state.stages.value[0].tasks[0].id)
+  h.state.updateSelectedNode({}, { inline_build: { ...h.state.selectedNode.value.config.inline_build, kind: 'dockerfile' } })
+  assert.equal(h.state.selectedNode.value.config.image_tag, '${EDO_GIT_TAG}')
+  const readonly = harness(t, { permissions: ['workflow.read', 'build_plan.read'] })
+  readonly.state.buildPlans.value = h.state.buildPlans.value
+  readonly.state.stages.value[0].tasks[0] = { id: 'readonly', type: 'build', name: '镜像', config: { build_plan_id: 'image-plan' } }
+  readonly.state.selectNode('readonly')
+  readonly.state.requestSave()
+  assert.equal(readonly.state.selectedNode.value.config.image_tag, undefined)
+  assert.equal(readonly.state.dirty.value, false)
+  assert.equal(readonly.requests.length, 0)
 })
