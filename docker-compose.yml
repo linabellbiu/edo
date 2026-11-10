@@ -233,7 +233,8 @@ services:
   # 绑定仓库时由这里直接 push。
   # privileged 仅授予这个隔离容器，不挂载宿主机 Docker Socket。
   docker-builder:
-    platform: ${EDO_DOCKER_PLATFORM:-linux/amd64}
+    # DinD 必须使用宿主机原生架构，镜像产出平台由流水线另行选择。
+    platform: ${EDO_DOCKER_BUILDER_PLATFORM:-${EDO_DOCKER_PLATFORM:-linux/amd64}}
     image: ${EDO_DOCKER_BUILDER_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/docker:29.8.2-dind}
     privileged: true
     environment:

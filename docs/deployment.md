@@ -13,7 +13,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-复制后的配置无需修改。首次自动构建 Web/API，初始化 PostgreSQL 17、Redis、NATS JetStream 和隔离的 Docker 构建器，迁移成功且 API 健康后启动 Web。首次构建需要能访问官方镜像仓库、Go/npm 依赖源。浏览器访问 `http://服务器IP:8080`，本机使用 `http://localhost:8080`。
+默认配置面向 Linux amd64；ARM64 宿主机（包括 Apple Silicon）首次安装时，上面的复制命令改为 `cp .env.arm64.example .env`，让 EDO、Web 和构建器原生运行。首次自动构建 Web/API，初始化 PostgreSQL 17、Redis、NATS JetStream 和隔离的 Docker 构建器，迁移成功且 API 健康后启动 Web。首次构建需要能访问官方镜像仓库、Go/npm 依赖源。浏览器访问 `http://服务器IP:8080`，本机使用 `http://localhost:8080`。
 
 空账户库自动创建 `admin`，初始密码 `123456`。登录后可通过头像菜单修改密码，不限制最小长度，不能为空；创建与重置本地账户采用相同规则。已有账户不会被覆盖。
 
@@ -40,7 +40,22 @@ PostgreSQL 使用默认名为 `edo_edo-postgres-data` 的 Docker 持久卷（自
 
 ### 默认镜像源
 
-按用户指定的 [docker.aityp.com](https://docker.aityp.com/) 公开索引使用其华为云同步地址，已将运行镜像和构建阶段镜像一起写入 Compose。同步条目默认 `linux/amd64`，macOS Apple Silicon 使用 Docker Desktop 仿真；原生 arm64 部署请把 `.env` 的 `EDO_DOCKER_PLATFORM` 和各镜像覆盖为实际支持该架构的官方或自有镜像。
+按用户指定的 [docker.aityp.com](https://docker.aityp.com/) 公开索引使用其华为云同步地址，已将运行镜像和构建阶段镜像一起写入 Compose。同步条目默认 `linux/amd64`。ARM64 首次安装使用 [.env.arm64.example](../.env.arm64.example)，其中运行镜像与构建阶段镜像均使用同版本的官方多架构源。已有安装不要覆盖 `.env`，只合并该模板中的平台与镜像设置，保留已有密钥、数据库、数据卷和端口配置；运行架构不会改变流水线配置的镜像产出平台。
+
+Apple Silicon 上的 DinD 构建器必须原生运行。amd64 DinD 在 Rosetta 下可能在创建构建容器时失败，日志包含 `rosetta error: failed to open elf at -exec-root=/var/run/docker`。在 `.env` 中单独设置构建器平台和支持 ARM64 的同版本镜像，例如：
+
+```dotenv
+EDO_DOCKER_BUILDER_PLATFORM=linux/arm64
+EDO_DOCKER_BUILDER_IMAGE=docker.io/library/docker:29.8.2-dind
+```
+
+确认没有活动流水线及构建器内的运行容器后，只更新构建器：
+
+```bash
+docker compose up -d --no-deps --wait docker-builder
+```
+
+保留原来的构建缓存和证书卷，不执行 `down -v`、清理缓存或重启宿主 Docker。构建器自身架构与产出镜像架构独立：流水线高级配置中的构建平台仍默认 `linux/amd64`，也可选择 `linux/arm64`。Docker Desktop 可提供跨架构执行支持；原生 Linux ARM64 宿主机需另外具备 amd64 的 binfmt/QEMU 支持，否则目标镜像中的 amd64 `RUN` 指令无法执行。EDO 不自动修改宿主机仿真配置，以实际 Dockerfile 构建结果为准。
 
 | 用途 | 同步的官方镜像版本 |
 | --- | --- |
