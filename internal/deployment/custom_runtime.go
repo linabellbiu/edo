@@ -249,7 +249,7 @@ func (s *Service) controlCustomContainer(ctx context.Context, record *model.Depl
 	script = prefix + script
 	environment["EDO_PIPELINE_RUN_ID"] = run.ID
 	environment["EDO_GIT_REF"] = run.Ref
-	environment["EDO_COMMIT_SHA"] = run.CommitSHA
+	environment["EDO_COMMIT_SHA"] = run.ShortCommitSHA()
 
 	for _, image := range snapshot.RegistryInputs[record.WorkflowNodeID] {
 		if image.Index < 0 || image.Index >= 32 || image.ImageRef == "" {

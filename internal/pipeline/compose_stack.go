@@ -365,7 +365,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 		return s.failDeploymentExecution(ctx, failure, "Compose 部署配置无效", err)
 	}
 	prepared.deploymentPlan.Script = script
-	environment := mergeDeploymentVariables(prepared.variables, map[string]string{"EDO_PIPELINE_RUN_ID": prepared.run.ID, "EDO_APPLICATION_ID": prepared.application.ID, "EDO_APPLICATION_NAME": prepared.application.Name, "EDO_GIT_REF": prepared.run.Ref, "EDO_COMMIT_SHA": prepared.run.CommitSHA, "EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID})
+	environment := mergeDeploymentVariables(prepared.variables, map[string]string{"EDO_PIPELINE_RUN_ID": prepared.run.ID, "EDO_APPLICATION_ID": prepared.application.ID, "EDO_APPLICATION_NAME": prepared.application.Name, "EDO_GIT_REF": prepared.run.Ref, "EDO_COMMIT_SHA": prepared.run.ShortCommitSHA(), "EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID})
 	if tag != "" {
 		environment["EDO_IMAGE_TAG"] = tag
 		environment[composeTagName(prepared.node.Config.Compose.TagVariable)] = tag

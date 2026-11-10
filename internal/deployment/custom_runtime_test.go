@@ -128,6 +128,10 @@ func (r customRuntimeActionRunner) RunHostDeploymentScript(_ context.Context, in
 
 func TestCustomRuntimeActionsUseFrozenCommandsAndVerifyContainerGeneration(t *testing.T) {
 	f := newContainerControlFixture(t)
+	commit := "0123456789abcdef0123456789abcdef01234567"
+	if err := f.db.Model(&model.PipelineRun{}).Where("uuid = ?", f.record.PipelineRunID).Update("commit_sha", commit).Error; err != nil {
+		t.Fatal(err)
+	}
 	image := model.Artifact{ID: uuid.NewString(), ApplicationID: f.record.ApplicationID, ProjectID: f.record.ProjectID, PipelineRunID: f.record.PipelineRunID, Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable, Name: "example/app:release-one", ImageRef: "example/app@sha256:" + strings.Repeat("e", 64)}
 	if err := f.db.Create(&image).Error; err != nil {
 		t.Fatal(err)
@@ -175,6 +179,9 @@ func TestCustomRuntimeActionsUseFrozenCommandsAndVerifyContainerGeneration(t *te
 	}
 	calls := []string{}
 	f.service.ssh = customRuntimeActionRunner{run: func(input sshdeploy.Input) {
+		if input.Environment["EDO_COMMIT_SHA"] != "0123456789ab" {
+			t.Errorf("重启、重建应注入 12 位短 Commit: %q", input.Environment["EDO_COMMIT_SHA"])
+		}
 		if input.Environment["EDO_IMAGE_TAG"] != "release-one" || input.Environment["IMAGE_TAG"] != "release-one" {
 			t.Error("重启、重建没有注入本次部署的镜像 Tag")
 		}
@@ -209,5 +216,9 @@ func TestCustomRuntimeActionsUseFrozenCommandsAndVerifyContainerGeneration(t *te
 	}
 	if len(calls) != 2 || !strings.HasSuffix(calls[0], "printf RESTART") || !strings.HasSuffix(calls[1], "printf RECREATE") {
 		t.Fatal("执行了错误的服务命令", len(calls))
+	}
+	var stored model.PipelineRun
+	if err := f.db.First(&stored, "uuid = ?", f.record.PipelineRunID).Error; err != nil || stored.CommitSHA != commit {
+		t.Fatal("重启、重建改写了完整运行 Commit", err)
 	}
 }

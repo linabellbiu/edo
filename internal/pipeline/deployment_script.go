@@ -159,7 +159,7 @@ func deploymentScriptEnvironment(prepared *executionContext) (map[string]string,
 		"EDO_PIPELINE_RUN_ID": prepared.run.ID, "EDO_APPLICATION_ID": prepared.application.ID,
 		"EDO_APPLICATION_NAME": prepared.application.Name, "EDO_GIT_REF": prepared.run.Ref,
 		"EDO_GIT_TAG":    pipelineGitTag(prepared.run),
-		"EDO_COMMIT_SHA": prepared.run.CommitSHA, "EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID,
+		"EDO_COMMIT_SHA": prepared.run.ShortCommitSHA(), "EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID,
 	})
 	delete(values, "EDO_IMAGE_TAG")
 	delete(values, "IMAGE_TAG")

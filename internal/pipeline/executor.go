@@ -273,7 +273,7 @@ func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionC
 			"EDO_APPLICATION_ID":       prepared.application.ID,
 			"EDO_APPLICATION_NAME":     prepared.application.Name,
 			"EDO_GIT_REF":              prepared.run.Ref,
-			"EDO_COMMIT_SHA":           prepared.run.CommitSHA,
+			"EDO_COMMIT_SHA":           prepared.run.ShortCommitSHA(),
 			"EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID,
 		}),
 		Artifact: artifactFile, ArtifactName: prepared.artifact.Name, ArtifactDigest: prepared.artifact.Digest,
@@ -655,22 +655,19 @@ func executionNodeImageTag(prepared *executionContext) (string, error) {
 }
 
 func expandPipelineImageVariable(value string, run model.PipelineRun, app model.Application) string {
-	return strings.NewReplacer("${EDO_GIT_TAG}", pipelineGitTag(run), "${EDO_COMMIT_SHA}", run.CommitSHA, "${EDO_APPLICATION_NAME}", app.Name, "${EDO_PIPELINE_RUN_ID}", run.ID).Replace(value)
+	return strings.NewReplacer("${EDO_GIT_TAG}", pipelineGitTag(run), "${EDO_COMMIT_SHA}", run.ShortCommitSHA(), "${EDO_APPLICATION_NAME}", app.Name, "${EDO_PIPELINE_RUN_ID}", run.ID).Replace(value)
 }
 
-// 没有 Git Tag 时使用本次运行固定的完整提交，不改变原始 Ref 或 Commit。
+// 没有 Git Tag 时使用本次运行固定的短提交，不改变原始 Ref 或 Commit。
 func pipelineGitTag(run model.PipelineRun) string {
 	if tag, tagged := strings.CutPrefix(run.Ref, "refs/tags/"); tagged && tag != "" {
 		return tag
 	}
-	return run.CommitSHA
+	return run.ShortCommitSHA()
 }
 
 func executionImageTag(run model.PipelineRun) (string, error) {
-	commit := strings.TrimSpace(run.CommitSHA)
-	if len(commit) > 12 {
-		commit = commit[:12]
-	}
+	commit := run.ShortCommitSHA()
 	if commit == "" {
 		return "", ErrPipelineExecutionConfig
 	}

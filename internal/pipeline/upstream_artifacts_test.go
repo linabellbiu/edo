@@ -12,7 +12,7 @@ import (
 func TestBuildArgumentUsesFixedRunIdentityWithoutShellExpansion(t *testing.T) {
 	run := model.PipelineRun{ID: "run-one", ApplicationID: "app-one", CommitSHA: strings.Repeat("a", 40), Ref: "refs/tags/dev-plat-one"}
 	value := "${EDO_COMMIT_SHA}|${EDO_GIT_REF}|${EDO_PIPELINE_RUN_ID}|${EDO_APPLICATION_ID}|${HOME}|$(id)"
-	want := run.CommitSHA + "|" + run.Ref + "|run-one|app-one|${HOME}|$(id)"
+	want := run.CommitSHA[:12] + "|" + run.Ref + "|run-one|app-one|${HOME}|$(id)"
 	if got := expandPipelineBuildArgument(value, run); got != want {
 		t.Fatalf("构建参数未固定运行身份: %s", got)
 	}

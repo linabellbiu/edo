@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -357,6 +358,12 @@ type PipelineRun struct {
 }
 
 func (PipelineRun) TableName() string { return "pipeline_runs" }
+
+// ShortCommitSHA 用于内置环境变量，运行身份和代码检出继续使用完整 CommitSHA。
+func (run PipelineRun) ShortCommitSHA() string {
+	commit := strings.TrimSpace(run.CommitSHA)
+	return commit[:min(len(commit), 12)]
+}
 
 // PipelineRunLog 是流水线运行的追加式日志。自增 ID 同时作为跨数据库兼容的游标，
 // WebSocket 重连时可以从最后一条继续读取，避免重复或遗漏构建输出。

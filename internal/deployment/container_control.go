@@ -271,7 +271,7 @@ func (s *Service) recreateComposeService(ctx context.Context, record *model.Depl
 	environment["EDO_PIPELINE_RUN_ID"] = run.ID
 	environment["EDO_APPLICATION_ID"] = record.ApplicationID
 	environment["EDO_GIT_REF"] = run.Ref
-	environment["EDO_COMMIT_SHA"] = run.CommitSHA
+	environment["EDO_COMMIT_SHA"] = run.ShortCommitSHA()
 	environment["EDO_DEPLOYMENT_ID"] = record.ID
 	environment["EDO_DEPLOYMENT_TARGET_ID"] = record.TargetID
 	var application model.Application

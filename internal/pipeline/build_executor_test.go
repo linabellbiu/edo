@@ -261,7 +261,10 @@ func TestExecuteShellTaskUsesWorkingDirectoryAndEnvironment(t *testing.T) {
 	for i := range logs {
 		output.WriteString(logs[i].Message)
 	}
-	expected := "work|configured|" + run.ID + "|" + run.CommitSHA
+	if updated.CommitSHA != run.CommitSHA || len(updated.CommitSHA) != 40 {
+		t.Fatalf("脚本短版本改写了数据库中的完整运行身份: %q", updated.CommitSHA)
+	}
+	expected := "work|configured|" + run.ID + "|" + run.CommitSHA[:12]
 	if !strings.Contains(output.String(), expected) {
 		t.Fatalf("Shell 任务没有使用快照工作目录或环境变量: output=%q expected=%q", output.String(), expected)
 	}

@@ -609,7 +609,7 @@ func effectiveBuildRuntimeImage(config model.WorkflowNodeConfig, plan workflowBu
 
 func expandPipelineBuildArgument(value string, run model.PipelineRun) string {
 	return strings.NewReplacer(
-		"${EDO_COMMIT_SHA}", run.CommitSHA,
+		"${EDO_COMMIT_SHA}", run.ShortCommitSHA(),
 		"${EDO_GIT_REF}", run.Ref,
 		"${EDO_PIPELINE_RUN_ID}", run.ID,
 		"${EDO_APPLICATION_ID}", run.ApplicationID,
@@ -839,7 +839,7 @@ func pipelineCommandEnvironment(prepared *buildExecutionContext) map[string]stri
 		"EDO_PIPELINE_RUN_ID": prepared.run.ID,
 		"EDO_APPLICATION_ID":  prepared.application.ID,
 		"EDO_GIT_REF":         prepared.run.Ref,
-		"EDO_COMMIT_SHA":      prepared.run.CommitSHA,
+		"EDO_COMMIT_SHA":      prepared.run.ShortCommitSHA(),
 		"EDO_GIT_TAG":         pipelineGitTag(prepared.run),
 	}
 	if prepared.plan.Platform != "" {

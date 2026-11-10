@@ -15,9 +15,9 @@ func TestGitTagFallbackIsConsistentAcrossBuildAndDeployment(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	for _, tc := range []struct{ name, ref, want string }{
 		{"Tag", "refs/tags/v2.3.0", "v2.3.0"},
-		{"分支", "refs/heads/main", commit},
-		{"PR", "refs/pull/12/head", commit},
-		{"固定提交", commit, commit},
+		{"分支", "refs/heads/main", commit[:12]},
+		{"PR", "refs/pull/12/head", commit[:12]},
+		{"固定提交", commit, commit[:12]},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run := model.PipelineRun{ID: "run", Ref: tc.ref, CommitSHA: commit}
@@ -35,7 +35,7 @@ func TestGitTagFallbackIsConsistentAcrossBuildAndDeployment(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, values := range []map[string]string{build, deploy, prepared.variables} {
-				if values["EDO_GIT_TAG"] != tc.want || values["EDO_COMMIT_SHA"] != commit || values["EDO_GIT_REF"] != tc.ref {
+				if values["EDO_GIT_TAG"] != tc.want || values["EDO_COMMIT_SHA"] != commit[:12] || values["EDO_GIT_REF"] != tc.ref {
 					t.Fatalf("执行上下文中的版本变量不一致: %+v", values)
 				}
 			}
@@ -81,7 +81,7 @@ func TestDefaultGitTagAllowsBranchWorkflowRun(t *testing.T) {
 	}
 	node := snapshot.Stages[0].Tasks[0]
 	tag, err := executionNodeImageTag(&executionContext{run: *run, node: node, application: *app})
-	if err != nil || tag != commit || run.Ref != "refs/heads/main" || node.Config.ImageTag != "${EDO_GIT_TAG}" {
+	if err != nil || tag != commit[:12] || run.CommitSHA != commit || run.Ref != "refs/heads/main" || node.Config.ImageTag != "${EDO_GIT_TAG}" {
 		t.Fatalf("默认版本解析错误或原始版本引用被改写: %q %+v %v", tag, node.Config, err)
 	}
 }
@@ -98,13 +98,39 @@ func TestGitTagFallbackReachesRealWorkspaceShell(t *testing.T) {
 				SystemEnvironment: pipelineCommandEnvironment(&buildExecutionContext{run: run}),
 				Stdout:            &output, Stderr: &output,
 			})
-			want := commit
+			want := commit[:12]
 			if ref == "refs/tags/v3.1.0" {
 				want = "v3.1.0"
 			}
-			if err != nil || result.ExitCode != 0 || output.String() != want+"|"+commit+"|"+ref {
+			if err != nil || result.ExitCode != 0 || output.String() != want+"|"+commit[:12]+"|"+ref {
 				t.Fatalf("真实脚本收到的版本不正确: %q %+v %v", output.String(), result, err)
 			}
 		})
+	}
+}
+
+func TestCommitVariableUsesShortHashWithoutChangingRunIdentity(t *testing.T) {
+	for _, tc := range []struct{ commit, want string }{
+		{"0123456789abcdef0123456789abcdef01234567", "0123456789ab"},
+		{strings.Repeat("a", 64), strings.Repeat("a", 12)},
+		{"0123456789ab", "0123456789ab"},
+		{"01234567", "01234567"},
+		{"", ""},
+	} {
+		run := model.PipelineRun{Ref: "refs/heads/main", CommitSHA: tc.commit}
+		prepared := &executionContext{run: run}
+		deploy, err := deploymentScriptEnvironment(prepared)
+		if err != nil {
+			t.Fatal(err)
+		}
+		build := pipelineCommandEnvironment(&buildExecutionContext{run: run})
+		for _, got := range []string{build["EDO_COMMIT_SHA"], deploy["EDO_COMMIT_SHA"], expandPipelineImageVariable("${EDO_COMMIT_SHA}", run, model.Application{}), expandPipelineBuildArgument("${EDO_COMMIT_SHA}", run), pipelineGitTag(run)} {
+			if got != tc.want {
+				t.Fatalf("内置 Commit 未按 12 位短哈希统一提供: 输入=%q 输出=%q 预期=%q", tc.commit, got, tc.want)
+			}
+		}
+		if run.CommitSHA != tc.commit || prepared.run.CommitSHA != tc.commit {
+			t.Fatal("内置变量转换改写了原始运行身份")
+		}
 	}
 }

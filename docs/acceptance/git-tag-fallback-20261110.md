@@ -1,5 +1,7 @@
 # Git Tag 回退与问号说明验收
 
+后续用户已将 `${EDO_COMMIT_SHA}` 改为前 12 位短哈希，`${EDO_GIT_TAG}` 的无 Tag 回退同步改为短哈希。下文保留上一批完整 SHA 规则的历史验收；当前规则及新验证见[短 Commit 内置变量验收](short-commit-environment-20261110.md)。
+
 `${EDO_GIT_TAG}` 有 Git Tag 时使用 Tag 名称，没有时使用本次运行固定的完整 `${EDO_COMMIT_SHA}`。不改写原始 Git Ref、Commit 或用户填写的镜像 Tag 模板。镜像 Tag 展开、构建及部署脚本、Compose 上下文统一使用同一解析函数。输入框标签旁问号读取服务端内置变量目录说明，支持悬停、点击与键盘聚焦。
 
 | ID | 角色与前置 | 操作与预期 | 结果 |

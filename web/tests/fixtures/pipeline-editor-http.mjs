@@ -29,8 +29,8 @@ client.defaults.adapter = async config => {
     else if (path === '/workflow-templates/preview-workflow') data = { workflow_template: clone(saved), issues: [] }
     else if (path === '/build-plans') data = { build_plans: [{ id: 'preview-build', name: '测试构建方案', kind: 'dockerfile', is_active: true }] }
     else if (path === '/settings/builtin-variables') data = { variables: [
-      { id: 'environment.commit_sha', kind: 'environment', name: 'EDO_COMMIT_SHA', syntax: '${EDO_COMMIT_SHA}', label: '完整 Commit SHA', description: '本次运行固定的完整 Commit SHA。', scopes: ['pipeline_script', 'deployment_script'] },
-      { id: 'environment.git_tag', kind: 'environment', name: 'EDO_GIT_TAG', syntax: '${EDO_GIT_TAG}', label: 'Git Tag / Commit', description: '引用 ${EDO_GIT_TAG}：有 Git Tag 时使用 Tag 名称，没有时自动使用 ${EDO_COMMIT_SHA} 的完整提交哈希；EDO_COMMIT_SHA 始终保持原值。可用于镜像 Tag、构建及部署脚本和 Compose 插值。', scopes: ['pipeline_script', 'deployment_script', 'compose_deployment'] },
+      { id: 'environment.commit_sha', kind: 'environment', name: 'EDO_COMMIT_SHA', syntax: '${EDO_COMMIT_SHA}', label: '短 Commit SHA', description: '本次运行固定 Commit SHA 的前 12 位；原始完整 SHA 继续用于代码检出和运行身份校验。', scopes: ['pipeline_script', 'deployment_script'] },
+      { id: 'environment.git_tag', kind: 'environment', name: 'EDO_GIT_TAG', syntax: '${EDO_GIT_TAG}', label: 'Git Tag / Commit', description: '引用 ${EDO_GIT_TAG}：有 Git Tag 时使用 Tag 名称，没有时自动使用 ${EDO_COMMIT_SHA} 的前 12 位短提交哈希。可用于镜像 Tag、构建及部署脚本和 Compose 插值。', scopes: ['pipeline_script', 'deployment_script', 'compose_deployment'] },
     ] }
   } else if (method === 'put' && path === '/workflow-templates/preview-workflow') {
     const payload = typeof config.data === 'string' ? JSON.parse(config.data) : config.data

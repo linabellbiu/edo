@@ -122,8 +122,8 @@ func TestPipelineImageNamesAndGitTagAreConfigurable(t *testing.T) {
 		t.Fatalf("镜像 Tag 未采用运行引用: %s %v", tag, err)
 	}
 	p.run.Ref = "refs/heads/main"
-	if tag, err := executionNodeImageTag(p); err != nil || tag != p.run.CommitSHA {
-		t.Fatalf("分支运行应使用本次完整 Commit 作为默认镜像 Tag: %q %v", tag, err)
+	if tag, err := executionNodeImageTag(p); err != nil || tag != p.run.CommitSHA[:12] {
+		t.Fatalf("分支运行应使用本次短 Commit 作为默认镜像 Tag: %q %v", tag, err)
 	}
 	p.node.Config.ImageName = "https://other.example.com/app"
 	if _, err := executionNodeImageName(p); err == nil {
