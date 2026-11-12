@@ -95,18 +95,17 @@ test('部署任务通知分区只渲染通知，不再渲染部署参数编辑�
  assert.doesNotMatch(html,/task-controls|构建制品来源|部署脚本|额外引用共享变量|部署前下载/)
 })
 
-test('内联与库镜像构建的 Tag 均位于常规配置，自定义构建不显示镜像 Tag',async()=>{
+test('内联与库构建均不显示镜像 Tag 输入，镜像名称仍保留在高级配置',async()=>{
  const find=node=>node.tag==='a-form'&&node.props?.some(prop=>prop.name==='if'&&prop.exp?.content==="propertyTab === 'common'")?node:node.children?.map(find).find(Boolean)
  const common=find(baseParse(editorTemplate)).loc.source
  for(const inline of [false,true])for(const kind of ['dockerfile','script']){
   const config=inline?{inline_build:{kind},image_tag:'${EDO_GIT_TAG}'}:{build_plan_id:'plan',image_tag:'release-v2'}
   const html=await render(common,{propertyTab:'common',editorApplication:{name:'demo_app'},selectedNode:{id:'build',type:'build',name:'构建',config},selectedBuildPlan:{id:'plan',kind},selectedLibraryBuildPlan:inline?undefined:{id:'plan',name:'通用构建',kind,is_active:true},buildSource:()=>inline?'inline':'plan',canReadBuildPlan:true,canModifyBuildPlan:false,changingBuildPlanNodeID:'',selectedBuildPlanOptions:[],canUpdate:true,canEdit:true,canCreateBuildPlan:false,buildPlanOptions:[],imageTagHelp:'服务端变量说明',updateSelectedNode(){}})
-  assert.equal(html.includes('label="镜像 Tag"'),kind==='dockerfile')
+  assert.doesNotMatch(html,/镜像 Tag|aria-label="镜像 Tag"/)
   assert.doesNotMatch(html,/label="镜像名称"/)
   assert.doesNotMatch(html,/Docker target/)
   assert.match(html,/配置来源/);assert.match(html,/当前任务配置/);assert.match(html,/选择构建方案/)
   assert.doesNotMatch(html,/value="inline"[^>]*>自定义构建/)
-  if(kind==='dockerfile')assert.match(html,inline?/value="\$\{EDO_GIT_TAG\}"/:/value="release-v2"/)
  }
 })
 
@@ -158,17 +157,11 @@ test('任务操作区在常规和高级配置外提供保存入口，只读隐�
  assert.doesNotMatch(readonly,/保存|任务配置操作/)
 })
 
-test('真实 Form 标签保留镜像 Tag 问号按钮及目录说明，不能被 label 属性覆盖',async()=>{
- const find=node=>node.tag==='a-form-item'&&node.children?.some(child=>child.tag==='a-input'&&child.props?.some(prop=>prop.name==='aria-label'&&prop.value?.content==='镜像 Tag'))?node:node.children?.map(find).find(Boolean)
- const field=find(baseParse(editorTemplate)).loc.source
- const descriptor=parse(readFileSync(new URL('../src/components/DeploymentFieldHelp.vue',import.meta.url),'utf8')).descriptor
- const script=compileScript(descriptor,{id:'tag-help',inlineTemplate:true}).content
- const output=ts.transpileModule(script,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText
- const module={exports:{}}
- new Function('require','module','exports',output)(name=>name==='vue'?vue:{},module,module.exports)
- const html=await render(`<a-form>${field}</a-form>`,{selectedBuildPlan:{kind:'dockerfile'},selectedNode:{config:{image_tag:'${EDO_GIT_TAG}'}},canEdit:true,imageTagHelp:'服务端目录：没有 Tag 时使用完整 Commit。',updateSelectedNode(){}},{'a-form':AntForm,'a-form-item':AntForm.Item,DeploymentFieldHelp:module.exports.default})
- assert.match(html,/<button[^>]*aria-label="镜像 Tag 说明"[^>]*>\?<\/button>/)
- assert.match(html,/服务端目录：没有 Tag 时使用完整 Commit/)
+test('构建入口均不要求输入 Tag，部署的 Tag 引用入口继续保留',async()=>{
+ const compose=parse(readFileSync(new URL('../src/components/ComposeDeliveryFields.vue',import.meta.url),'utf8')).descriptor.template.content
+ assert.doesNotMatch(editorTemplate,/aria-label="镜像 Tag"/)
+ assert.doesNotMatch(compose,/aria-label="构建镜像 Tag"/)
+ assert.match(compose,/aria-label="镜像 Tag"/)
 })
 
 

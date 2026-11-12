@@ -66,7 +66,7 @@ func TestDefaultGitTagAllowsBranchWorkflowRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := model.WorkflowNode{ID: "source", Name: "代码源", Type: model.WorkflowNodeTrigger, Config: model.WorkflowNodeConfig{Branch: "main", Events: []string{"manual", "push"}}}
-	saved, err := s.SaveWorkflow(ctx, app.ID, "admin", WorkflowInput{SchemaVersion: model.WorkflowSchemaVersion, Name: workflow.Workflow.Name, Revision: workflow.Workflow.Revision, Activate: true, Source: source, Stages: []model.WorkflowStage{{ID: "build", Name: "构建", Tasks: []model.WorkflowNode{{ID: "image", Name: "镜像构建", Type: model.WorkflowNodeBuild, Config: model.WorkflowNodeConfig{BuildPlanID: plan.ID, ImageTag: "${EDO_GIT_TAG}"}}}}}})
+	saved, err := s.SaveWorkflow(ctx, app.ID, "admin", WorkflowInput{SchemaVersion: model.WorkflowSchemaVersion, Name: workflow.Workflow.Name, Revision: workflow.Workflow.Revision, Activate: true, Source: source, Stages: []model.WorkflowStage{{ID: "build", Name: "构建", Tasks: []model.WorkflowNode{{ID: "image", Name: "镜像构建", Type: model.WorkflowNodeBuild, Config: model.WorkflowNodeConfig{BuildPlanID: plan.ID}}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +83,9 @@ func TestDefaultGitTagAllowsBranchWorkflowRun(t *testing.T) {
 	tag, err := executionNodeImageTag(&executionContext{run: *run, node: node, application: *app})
 	if err != nil || tag != commit[:12] || run.CommitSHA != commit || run.Ref != "refs/heads/main" || node.Config.ImageTag != "${EDO_GIT_TAG}" {
 		t.Fatalf("默认版本解析错误或原始版本引用被改写: %q %+v %v", tag, node.Config, err)
+	}
+	if saved.Workflow.Stages[0].Tasks[0].Config.ImageTag != "" {
+		t.Fatal("自动版本不应回写用户工作流")
 	}
 }
 

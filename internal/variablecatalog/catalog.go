@@ -70,7 +70,7 @@ var scopeOptions = []Option{
 }
 
 var definitions = []Definition{
-	environment("image_tag", "EDO_IMAGE_TAG", "当前流水线镜像 Tag", "当前流水线本次构建产物的实际镜像 Tag；使用 ${EDO_IMAGE_TAG} 引用，不能通过用户变量覆盖。", "制品", []Scope{ScopeDeploymentScript, ScopeComposeDeployment, ScopeDockerDeployment}, "上游镜像构建完成后可用；多个镜像必须具有相同 Tag", true),
+	environment("image_tag", "EDO_IMAGE_TAG", "当前流水线镜像 Tag", "由 EDO 自动生成，无须填写：有 Git Tag 时使用 Tag 名称，否则使用 EDO_COMMIT_SHA 的前 12 位短哈希。构建脚本、Dockerfile 构建参数及部署使用 ${EDO_IMAGE_TAG} 引用；它只表示版本，不包含镜像名称和仓库地址。镜像名称以构建任务实际配置为准，留空使用应用名；用户变量不能覆盖。历史运行保留其冻结版本。", "制品", []Scope{ScopePipelineScript, ScopeDockerfileBuild, ScopeDeploymentScript, ScopeComposeDeployment, ScopeDockerDeployment}, "本次运行版本确定后自动提供；部署有上游镜像时采用实际产物 Tag，多个不同 Tag 时不猜测", true),
 	environment("input_image", "EDO_INPUT_IMAGE_1", "所选来源镜像", "部署前选择的镜像仓库来源，值固定为 Digest；序号对应来源列表位置，可引用 ${EDO_INPUT_IMAGE_1}。", "制品", []Scope{ScopeDeploymentScript}, "选择镜像仓库来源并拉取成功后可用", true),
 	environment("app_config_path", "EDO_APP_CONFIG_PATH", "应用配置目录", "应用配置文件所在目录，可用 ${EDO_APP_CONFIG_PATH}/相对路径 引用生成文件；配置名称与生成文件路径独立。", "部署", []Scope{ScopeDockerDeployment, ScopeComposeDeployment, ScopeDeploymentScript}, "部署输入或脚本启用后可用，默认是目标执行用户的 ~/edo/应用名称/config；已有实例采用冻结目录", false),
 	placeholder("configuration_directory", "EDO_CONFIGURATION_DIRECTORY", "历史配置目录", "为已有运行保留的目录变量；新配置请使用 ${EDO_APP_CONFIG_PATH}/相对路径。", []Scope{ScopeComposeDeployment}, "历史运行按部署快照固定的目录解析"),

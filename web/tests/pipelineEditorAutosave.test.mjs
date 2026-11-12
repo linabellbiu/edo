@@ -523,17 +523,17 @@ test('自动保存不会使编辑区域 inert，应用新建提示与后续发�
   assert.ok(!applications.includes('不选择则创建一条空白流水线。'))
 })
 
-test('镜像任务实际默认 Git Tag，库方案与内联切换保留名称及自定义 Tag，显式留空仍可保存', async t => {
+test('镜像任务由后台生成版本，库方案与内联切换保留已有名称及历史 Tag', async t => {
   const h = harness(t, { active: true, permissions: ['workflow.read', 'workflow.update', 'build_plan.read'] })
   h.state.buildPlans.value = [{ id: 'image-plan', name: '镜像方案', kind: 'dockerfile', is_active: true }]
   const image = h.state.createTaskNode('build', h.state.taskDefinitions.find(item => item.id === 'image-build'))
-  assert.equal(image.config.image_tag, '${EDO_GIT_TAG}')
+  assert.equal(image.config.image_tag, undefined)
   assert.equal(h.state.createTaskNode('build').config.image_tag, undefined)
   h.state.stages.value[0].tasks = [{ id: 'build', type: 'build', name: '镜像', config: { build_plan_id: 'image-plan', image_name: 'custom/api' } }]
   h.state.selectNode('build')
-  assert.equal(h.state.selectedNode.value.config.image_tag, '${EDO_GIT_TAG}')
+  assert.equal(h.state.selectedNode.value.config.image_tag, undefined)
   assert.equal(h.state.selectedNode.value.config.image_name, 'custom/api')
-  assert.equal(h.state.dirty.value, true)
+  assert.equal(h.state.dirty.value, false)
   h.state.updateSelectedNode({}, { image_tag: 'release-v9' })
   h.state.changeBuildSource('inline')
   h.state.changeBuildSource('plan')
@@ -553,18 +553,18 @@ test('镜像任务实际默认 Git Tag，库方案与内联切换保留名称及
   assert.equal(h.state.selectedNode.value.config.image_tag, '')
 })
 
-test('首次选择镜像方案或从自定义构建切换镜像构建时填入 Git Tag，只读不写入默认值', async t => {
+test('首次选择镜像方案或切换构建类型不在前端写入版本，只读不写入配置', async t => {
   const h = harness(t, { active: true, permissions: ['workflow.read', 'workflow.update', 'build_plan.read'] })
   h.state.buildPlans.value = [{ id: 'image-plan', name: '镜像方案', kind: 'dockerfile', is_active: true }]
   h.state.stages.value[0].tasks = [{ id: 'build', type: 'build', name: '构建', config: {} }]
   h.state.selectNode('build')
   h.state.changeBuildSource('plan')
   h.state.changeLibraryBuildPlan('image-plan')
-  assert.equal(h.state.selectedNode.value.config.image_tag, '${EDO_GIT_TAG}')
+  assert.equal(h.state.selectedNode.value.config.image_tag, undefined)
   h.state.stages.value[0].tasks[0] = h.state.createTaskNode('build')
   h.state.selectNode(h.state.stages.value[0].tasks[0].id)
   h.state.updateSelectedNode({}, { inline_build: { ...h.state.selectedNode.value.config.inline_build, kind: 'dockerfile' } })
-  assert.equal(h.state.selectedNode.value.config.image_tag, '${EDO_GIT_TAG}')
+  assert.equal(h.state.selectedNode.value.config.image_tag, undefined)
   const readonly = harness(t, { permissions: ['workflow.read', 'build_plan.read'] })
   readonly.state.buildPlans.value = h.state.buildPlans.value
   readonly.state.stages.value[0].tasks[0] = { id: 'readonly', type: 'build', name: '镜像', config: { build_plan_id: 'image-plan' } }
@@ -575,15 +575,14 @@ test('首次选择镜像方案或从自定义构建切换镜像构建时填入 G
   assert.equal(readonly.requests.length, 0)
 })
 
-test('镜像 Tag 问号说明使用服务端目录，目录失败时不展示过期规则', t => {
-  const { state } = harness(t)
-  state.builtinVariables.value = [{ name: 'EDO_GIT_TAG', kind: 'environment', description: '目录说明：无 Git Tag 时采用前 12 位 EDO_COMMIT_SHA。' }]
-  assert.match(state.imageTagHelp.value, /目录说明：无 Git Tag 时采用前 12 位 EDO_COMMIT_SHA/)
-  state.builtinVariables.value[0].description = '更新后的服务端说明'
-  assert.match(state.imageTagHelp.value, /更新后的服务端说明/)
-  state.builtinVariables.value = []
-  state.builtinVariableError.value = '内置变量说明读取失败'
-  assert.equal(state.imageTagHelp.value, '内置变量说明读取失败')
+test('移除 Tag 输入后，打开已有镜像构建不清空保存的镜像名称或版本', t => {
+  const h = harness(t, { permissions: ['workflow.read', 'workflow.update', 'build_plan.read'] })
+  h.state.buildPlans.value = [{ id: 'image-plan', kind: 'dockerfile', is_active: true }]
+  h.state.stages.value[0].tasks[0] = { id: 'build', type: 'build', name: '镜像', config: { build_plan_id: 'image-plan', image_name: 'custom/api', image_tag: 'saved-version' } }
+  h.state.selectNode('build')
+  assert.equal(h.state.selectedNode.value.config.image_name, 'custom/api')
+  assert.equal(h.state.selectedNode.value.config.image_tag, 'saved-version')
+  assert.equal(h.state.dirty.value, false)
 })
 
 

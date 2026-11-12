@@ -1669,6 +1669,10 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	for i := range resolved.Stages {
 		for j := range resolved.Stages[i].Tasks {
 			task := &resolved.Stages[i].Tasks[j]
+			if buildPlans[task.ID].Kind == model.BuildPlanDockerfile && strings.TrimSpace(task.Config.ImageTag) == "" {
+				// 自动版本只冻结到本次运行，保留已保存的工作流及历史运行。
+				task.Config.ImageTag = "${EDO_GIT_TAG}"
+			}
 			if deploymentPlans[task.ID].Kind == model.DeploymentPlanComposeStack {
 				task.Config = independentComposeConfig(task.Config)
 			}
@@ -1745,13 +1749,14 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		return nil, err
 	}
 	outputs := map[string]bool{}
-	for _, stage := range resolved.Stages {
-		for _, task := range stage.Tasks {
+	for i := range resolved.Stages {
+		for j := range resolved.Stages[i].Tasks {
+			task := &resolved.Stages[i].Tasks[j]
 			plan, ok := buildPlans[task.ID]
-			if !ok || plan.Kind != model.BuildPlanDockerfile || (task.Config.ImageName == "" && task.Config.ImageTag == "") {
+			if !ok || plan.Kind != model.BuildPlanDockerfile {
 				continue
 			}
-			prepared := &executionContext{run: *run, application: *application, node: task}
+			prepared := &executionContext{run: *run, application: *application, node: *task}
 			name, nameErr := executionNodeImageName(prepared)
 			tag, tagErr := executionNodeImageTag(prepared)
 			key := plan.ImageRegistryID + "/" + name + ":" + tag
@@ -1761,6 +1766,8 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				}
 				return nil, ErrInvalidWorkflow
 			}
+			// 默认名称与用户变量都在创建运行时解析，应用改名不改变本次构建的镜像身份。
+			task.Config.ImageName = name
 			outputs[key] = true
 		}
 	}

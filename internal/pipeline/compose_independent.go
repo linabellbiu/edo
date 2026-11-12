@@ -25,6 +25,8 @@ func (s *Service) addDeploymentPipelineVariables(ctx context.Context, prepared *
 	if prepared.variables == nil {
 		prepared.variables = map[string]string{}
 	}
+	delete(prepared.variables, "EDO_IMAGE_TAG")
+	delete(prepared.variables, "IMAGE_TAG")
 	for key, value := range pipelineCommandEnvironment(&buildExecutionContext{run: prepared.run, application: prepared.application}) {
 		if strings.HasPrefix(key, "EDO_") {
 			prepared.variables[key] = value
@@ -32,8 +34,6 @@ func (s *Service) addDeploymentPipelineVariables(ctx context.Context, prepared *
 	}
 	prepared.variables["EDO_APPLICATION_NAME"] = prepared.application.Name
 	prepared.variables["EDO_DEPLOYMENT_TARGET_ID"] = prepared.target.ID
-	delete(prepared.variables, "EDO_IMAGE_TAG")
-	delete(prepared.variables, "IMAGE_TAG")
 	variables := composetemplate.ExtractVariables(map[string]any{"compose": prepared.deploymentPlan.ComposeYAML, "script": prepared.node.Config.DeploymentScript, "plan_script": prepared.deploymentPlan.Script}, nil)
 	_, tagReferenced := variables["EDO_IMAGE_TAG"]
 	_, legacyTagReferenced := variables["IMAGE_TAG"]
@@ -83,6 +83,9 @@ func (s *Service) addDeploymentPipelineVariables(ctx context.Context, prepared *
 			prepared.variables["EDO_IMAGE_TAG"] = tag
 			prepared.variables["IMAGE_TAG"] = tag
 		}
+	} else if len(tags) > 1 {
+		delete(prepared.variables, "EDO_IMAGE_TAG")
+		delete(prepared.variables, "IMAGE_TAG")
 	}
 	return nil
 }

@@ -283,10 +283,6 @@ const reservedPipelineEnvironmentNames = computed(() => new Set(['CI','HOME','TM
   .filter(item => item.kind === 'environment' && item.scopes.includes('pipeline_script'))
   .map(item => item.name)]))
 const builtinVariableCatalogReady = computed(() => !builtinVariableLoading.value && !builtinVariableError.value && builtinVariables.value.length > 0)
-const imageTagHelp = computed(() => {
-  const description = builtinVariables.value.find(item => item.name === 'EDO_GIT_TAG' && item.kind === 'environment')?.description
-  return description ? `${description} 镜像 Tag 留空时由 EDO 自动生成。` : builtinVariableLoading.value ? '正在加载内置变量说明…' : builtinVariableError.value || '变量说明暂不可用，请在系统设置的内置变量中查看。'
-})
 const notificationChannelOptions = computed(() => activeNotificationChannels.value.map(item => ({
   value: item.id,
   label: item.name,
@@ -351,7 +347,6 @@ function createSourceNode(): WorkflowNode {
 function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): WorkflowNode {
   const config: WorkflowNodeConfig = {}
   if (type === 'build') config.inline_build = {id:'',name:definition?.label||'自定义构建',kind:definition?.id==='image-build'?'dockerfile':'script',script:'set -eu\n# 在这里填写构建命令\n',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',runtime_image:DEFAULT_RUNTIME_IMAGE,cache_enabled:true,pull:true,timeout_seconds:1800,is_active:true}
-  if (config.inline_build?.kind === 'dockerfile') config.image_tag = '${EDO_GIT_TAG}'
   if (type === 'shell') {
     config.script = definition?.presetScript || 'set -eu\n'
     config.runtime_image = DEFAULT_RUNTIME_IMAGE
@@ -821,7 +816,6 @@ function replaceNode(id: string, update: Partial<WorkflowNode>, config?: Partial
 function updateSelectedNode(update: Partial<WorkflowNode>, config?: Partial<WorkflowNodeConfig>) {
   if (!selectedNode.value) return
   replaceNode(selectedNode.value.id, update, config)
-  if (canEdit.value) initializeBuildImageTag(selectedNode.value)
 }
 
 function updateSelectedBuildTarget(value: string) {
@@ -971,15 +965,6 @@ function selectNode(id: string) {
   selectedStageID.value = ''
   propertyTab.value = 'common'
   panelMode.value = 'properties'
-  if (canEdit.value && initializeBuildImageTag(selectedNode.value)) markDirty()
-}
-
-function initializeBuildImageTag(node: WorkflowNode | null | undefined) {
-  if (!node || node.type !== 'build' || node.config.image_tag !== undefined) return false
-  const plan = node.config.inline_build || buildPlans.value.find(item => item.id === node.config.build_plan_id)
-  if (plan?.kind !== 'dockerfile') return false
-  node.config.image_tag = '${EDO_GIT_TAG}'
-  return true
 }
 
 function addStage(afterIndex = stages.value.length - 1) {
@@ -1811,10 +1796,6 @@ onBeforeRouteLeave(async () => {
                 </a-form-item>
                 <a-alert v-if="!selectedLibraryBuildPlan||!selectedLibraryBuildPlan.is_active" type="warning" show-icon :message="!canReadBuildPlan?'无权查看原构建方案，原关联继续保留':selectedLibraryBuildPlan?'原构建方案已停用，请修改或更换方案':'请选择可用构建方案；原有失效关联会继续保留'"/>
               </template>
-              <a-form-item v-if="selectedBuildPlan?.kind==='dockerfile'">
-                <template #label><span>镜像 Tag<DeploymentFieldHelp :text="imageTagHelp" label="镜像 Tag 说明" /></span></template>
-                <a-input :value="selectedNode.config.image_tag" :disabled="!canEdit" placeholder="${EDO_GIT_TAG}" aria-label="镜像 Tag" @update:value="updateSelectedNode({}, { image_tag: String($event || '') })" />
-              </a-form-item>
               <PipelineBuildFields v-if="buildSource(selectedNode)==='plan'&&selectedLibraryBuildPlan" :key="selectedNode.id+':plan:'+selectedLibraryBuildPlan.id" :node="selectedNode" :build-plan="selectedLibraryBuildPlan" disabled/>
               <PipelineBuildFields v-else-if="buildSource(selectedNode)==='inline'" :key="selectedNode.id+':inline'" :node="selectedNode" :disabled="!canEdit" @change="updateSelectedNode({},$event)" @invalid="buildFieldErrors[selectedNode!.id]=$event"/>
             </template>

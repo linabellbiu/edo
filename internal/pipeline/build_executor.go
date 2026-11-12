@@ -527,8 +527,12 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 				buildArgs[binding.Name] = values[binding.Name]
 			}
 		}
+		imageTag, tagErr := executionNodeImageTag(&executionContext{run: prepared.run, node: prepared.node, application: prepared.application})
+		if tagErr != nil {
+			return nil, tagErr
+		}
 		for key, value := range buildArgs {
-			buildArgs[key] = expandPipelineBuildArgument(value, prepared.run)
+			buildArgs[key] = expandPipelineBuildArgument(strings.ReplaceAll(value, "${EDO_IMAGE_TAG}", imageTag), prepared.run)
 		}
 
 		options := dockerengine.BuildOptions{
@@ -617,6 +621,8 @@ func effectiveBuildRuntimeImage(config model.WorkflowNodeConfig, plan workflowBu
 
 func expandPipelineBuildArgument(value string, run model.PipelineRun) string {
 	return strings.NewReplacer(
+		"${EDO_IMAGE_TAG}", pipelineGitTag(run),
+		"${EDO_GIT_TAG}", pipelineGitTag(run),
 		"${EDO_COMMIT_SHA}", run.ShortCommitSHA(),
 		"${EDO_GIT_REF}", run.Ref,
 		"${EDO_PIPELINE_RUN_ID}", run.ID,
@@ -838,6 +844,13 @@ func pipelineCommandEnvironment(prepared *buildExecutionContext) map[string]stri
 		"EDO_GIT_REF":         prepared.run.Ref,
 		"EDO_COMMIT_SHA":      prepared.run.ShortCommitSHA(),
 		"EDO_GIT_TAG":         pipelineGitTag(prepared.run),
+	}
+	imageTag := pipelineGitTag(prepared.run)
+	if prepared.plan.Kind == model.BuildPlanDockerfile {
+		imageTag, _ = executionNodeImageTag(&executionContext{run: prepared.run, node: prepared.node, application: prepared.application})
+	}
+	if imageTag != "" {
+		environment["EDO_IMAGE_TAG"] = imageTag
 	}
 	if prepared.plan.Platform != "" {
 		environment["EDO_TARGET_PLATFORM"] = prepared.plan.Platform
