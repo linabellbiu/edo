@@ -195,7 +195,9 @@ func deploymentScriptEnvironment(prepared *executionContext) (map[string]string,
 	if tag != "" {
 		values["EDO_IMAGE_TAG"] = tag
 		// 已保存的脚本及运行快照继续按原变量读取本次制品。
-		values["IMAGE_TAG"] = tag
+		if !prepared.snapshot.ImageTagIncludesName {
+			values["IMAGE_TAG"] = tag
+		}
 		if alias := composeTagName(prepared.node.Config.DeploymentTagReference); alias != "" && !prepared.snapshot.IndependentDeploymentImages {
 			values[alias] = tag
 		}

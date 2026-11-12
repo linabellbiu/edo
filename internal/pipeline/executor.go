@@ -41,23 +41,24 @@ type BuildTaskPayload struct {
 }
 
 type executionContext struct {
-	inputFiles         []sshdeploy.FileInput
-	run                model.PipelineRun
-	node               model.WorkflowNode
-	snapshot           workflowSnapshot
-	application        model.Application
-	component          model.PipelineRunRepository
-	deploymentPlan     model.DeploymentPlan
-	registry           model.ImageRegistry
-	target             model.DeploymentTarget
-	artifact           model.Artifact
-	composeCandidates  map[string]model.Artifact
-	composeArtifacts   map[string]model.Artifact
-	variables          map[string]string
-	composeEnvValues   map[string]string
-	configuration      *deployment.ConfigurationSet
-	variableFiles      map[string]string
-	variableRedactions []string
+	inputFiles          []sshdeploy.FileInput
+	run                 model.PipelineRun
+	node                model.WorkflowNode
+	snapshot            workflowSnapshot
+	application         model.Application
+	component           model.PipelineRunRepository
+	deploymentPlan      model.DeploymentPlan
+	registry            model.ImageRegistry
+	target              model.DeploymentTarget
+	artifact            model.Artifact
+	composeCandidates   map[string]model.Artifact
+	composeArtifacts    map[string]model.Artifact
+	selectedBuildImages map[string]model.Artifact
+	variables           map[string]string
+	composeEnvValues    map[string]string
+	configuration       *deployment.ConfigurationSet
+	variableFiles       map[string]string
+	variableRedactions  []string
 }
 
 // executionFailureState 固定产生错误的任务身份。失败落库必须同时匹配任务、节点和状态，
@@ -411,6 +412,19 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		if err := s.freezeSavedDeploymentRegistry(ctx, s.db, &result.node, result.deploymentPlan.Kind, snapshot.AuthorityID); err != nil {
 			return nil, err
 		}
+	}
+	if snapshot.ImageTagIncludesName && node.Config.ImageBuildNodeID != "" && (result.deploymentPlan.Kind == model.DeploymentPlanDocker || result.deploymentPlan.Kind == model.DeploymentPlanCompose) {
+		if err := s.loadSelectedBuildImages(ctx, result); err != nil {
+			return nil, err
+		}
+		result.artifact = result.selectedBuildImages[node.Config.ImageBuildNodeID]
+		if err := s.db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND is_active = ?", result.artifact.ImageRegistryID, run.ProjectID, true).First(&result.registry).Error; err != nil {
+			return nil, err
+		}
+		if !artifact.RegistryImageMatches(result.artifact.ImageRef, result.artifact.Digest, result.registry.Endpoint, result.registry.Namespace) {
+			return nil, ErrPipelineExecutionConfig
+		}
+		return result, nil
 	}
 	if node.Config.DeploymentScript != "" && result.deploymentPlan.Kind != model.DeploymentPlanComposeStack {
 		if run.ArtifactID != "" {

@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"edo/internal/artifact"
 	"edo/internal/model"
+	"edo/internal/pipelineimage"
 	composetemplate "github.com/compose-spec/compose-go/v2/template"
 	"github.com/distribution/reference"
 	regclient "github.com/regclient/regclient"
@@ -34,6 +36,22 @@ func (s *Service) addDeploymentPipelineVariables(ctx context.Context, prepared *
 	}
 	prepared.variables["EDO_APPLICATION_NAME"] = prepared.application.Name
 	prepared.variables["EDO_DEPLOYMENT_TARGET_ID"] = prepared.target.ID
+	if prepared.snapshot.ImageTagIncludesName {
+		delete(prepared.variables, "EDO_IMAGE_TAG")
+		delete(prepared.variables, "IMAGE_TAG")
+		if err := s.loadSelectedBuildImages(ctx, prepared); err != nil {
+			return err
+		}
+		if image, ok := prepared.selectedBuildImages[prepared.node.Config.ImageBuildNodeID]; ok {
+			value, err := pipelineimage.TaggedReference(image)
+			if err != nil {
+				return err
+			}
+			prepared.variables["EDO_IMAGE_TAG"] = value
+			prepared.variables["EDO_IMAGE"] = image.ImageRef
+		}
+		return nil
+	}
 	references := map[string]any{"compose": prepared.deploymentPlan.ComposeYAML, "script": prepared.node.Config.DeploymentScript, "plan_script": prepared.deploymentPlan.Script, "docker_script": prepared.deploymentPlan.DockerConfig.DeploymentScript, "tag_reference": prepared.node.Config.DeploymentTagReference}
 	if prepared.node.Config.Compose != nil {
 		references["compose_tag_reference"] = prepared.node.Config.Compose.TagVariable
@@ -129,10 +147,37 @@ func (s *Service) resolveConfiguredComposeImages(ctx context.Context, prepared *
 	if err != nil {
 		return fail("compose_configured_frozen_images", err)
 	}
+	allServices := doc["services"].(map[string]any)
+	for _, binding := range prepared.node.Config.ComposeBuildBindings {
+		if _, ok := allServices[binding.Service]; !ok {
+			return fail("compose_build_service", pipelineimage.ErrBinding)
+		}
+	}
+	activeServices := map[string]bool{}
 	for _, service := range services {
-		entry := doc["services"].(map[string]any)[service].(map[string]any)
+		activeServices[service] = true
+	}
+	for service, raw := range allServices {
+		entry := raw.(map[string]any)
 		template, _ := entry["image"].(string)
+		selected, bound, bindingErr := selectedComposeBuild(prepared, service, template)
+		if bindingErr != nil {
+			return fail("compose_build_binding", bindingErr)
+		}
+		if !activeServices[service] && !bound {
+			continue
+		}
+		selectedTag := ""
+		if bound {
+			selectedTag, err = pipelineimage.TaggedReference(selected)
+			if err != nil {
+				return fail("compose_build_reference", err)
+			}
+		}
 		expanded, interpolationErr := composetemplate.SubstituteWithOptions(template, func(key string) (string, bool) {
+			if bound && key == "EDO_IMAGE_TAG" {
+				return selectedTag, true
+			}
 			value, ok := interpolation[key]
 			return value, ok
 		}, composetemplate.WithoutLogging)
@@ -142,6 +187,23 @@ func (s *Service) resolveConfiguredComposeImages(ctx context.Context, prepared *
 		name, parseErr := reference.ParseNormalizedNamed(expanded)
 		if parseErr != nil {
 			return fail("compose_configured_image", parseErr)
+		}
+		if bound {
+			if expanded != selectedTag && expanded != selected.ImageRef || selected.ImageRegistryID != registry.ID {
+				return fail("compose_build_image", pipelineimage.ErrBinding)
+			}
+			pinned, parseErr := reference.ParseNormalizedNamed(selected.ImageRef)
+			if parseErr != nil {
+				return fail("compose_build_digest", parseErr)
+			}
+			if _, ok := pinned.(reference.Digested); !ok || !artifact.RegistryImageMatches(selected.ImageRef, selected.Digest, registry.Endpoint, registry.Namespace) || !strings.HasPrefix(reference.TrimNamed(pinned).Name(), strings.TrimSuffix(prefix, "/")+"/") {
+				return fail("compose_build_digest", pipelineimage.ErrBinding)
+			}
+			entry["image"] = selected.ImageRef
+			if activeServices[service] {
+				prepared.composeArtifacts[service] = selected
+			}
+			continue
 		}
 		// 其他仓库的镜像由用户的 Compose 配置处理，不向其传送当前仓库凭据。
 		if !strings.HasPrefix(reference.TrimNamed(name).Name(), strings.TrimSuffix(prefix, "/")+"/") {

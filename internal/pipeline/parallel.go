@@ -416,6 +416,9 @@ func collectArtifactSources(stages []model.WorkflowStage, explicitInputs bool) (
 				continue
 			}
 			source := node.Config.ArtifactNodeID
+			if source == "" && node.Config.ImageBuildNodeID != "" {
+				continue
+			}
 			if source == "" && (node.Config.Compose != nil || node.Config.DeploymentInputVersion == 1 && (explicitInputs || len(latest) != 1)) {
 				continue
 			}

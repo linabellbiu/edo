@@ -18,6 +18,7 @@ import BuildPlanAdvancedFields from '@/components/BuildPlanAdvancedFields.vue'
 import PipelineBuildFields from '@/components/PipelineBuildFields.vue'
 import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
 import PipelineDeployFields from '@/components/PipelineDeployFields.vue'
+import PipelineImageBuildFields from '@/components/PipelineImageBuildFields.vue'
 import DeploymentPlanView from '@/views/DeploymentPlanView.vue'
 import DeploymentPlanReferencePreview from '@/components/DeploymentPlanReferencePreview.vue'
 import { apiErrorMessage } from '@/api/resources'
@@ -1827,6 +1828,7 @@ onBeforeRouteLeave(async () => {
                 <a-form-item><template #label><span class="linked-deployment-label">原部署配置<a v-if="canModifyDeploymentPlan" :href="'/deployment-plans?plan='+encodeURIComponent(selectedLibraryDeploymentPlan?.id||'')+'&amp;edit=1'" aria-label="修改原部署配置" @click.prevent="modifyLinkedDeploymentPlan">修改</a></span></template><a-input :value="selectedLibraryDeploymentPlan?.name||'原部署方案不可用'" disabled/></a-form-item>
                 <DeploymentPlanReferencePreview v-if="selectedLibraryDeploymentPlan" :plan="selectedLibraryDeploymentPlan" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
+              <PipelineImageBuildFields :key="selectedNode.id" :node="selectedNode" :plan="selectedNode.config.inline_deployment_plan||selectedLibraryDeploymentPlan" :build-nodes="priorBuildTasks(selectedNode.id)" :build-plans="buildPlans" :disabled="!canUpdate" :applicationID="applicationID" :branch="sources[0]?.config.branch" @change="updateSelectedNode({},$event)"/>
             </template>
           </a-form>
           <a-form v-else layout="vertical">

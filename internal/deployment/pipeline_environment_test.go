@@ -68,3 +68,42 @@ func TestRecordPipelineEnvironmentFiltersStageProjectAndNodeStatus(t *testing.T)
 		t.Fatal("接受了其他项目的运行上下文")
 	}
 }
+
+func TestRecordPipelineEnvironmentRestoresSelectedFullImage(t *testing.T) {
+	f := newContainerControlFixture(t)
+	var run model.PipelineRun
+	if err := f.db.First(&run, "uuid = ?", f.record.PipelineRunID).Error; err != nil {
+		t.Fatal(err)
+	}
+	image := model.Artifact{ID: uuid.NewString(), ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, PipelineRunID: run.ID, Name: "api:v3", Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable, ImageRef: "registry.example.com/team/custom/api@sha256:" + strings.Repeat("a", 64)}
+	if err := f.db.Create(&image).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Create(&model.PipelineNodeRun{ID: uuid.NewString(), ProjectID: run.ProjectID, PipelineRunID: run.ID, NodeID: "selected-api", ArtifactID: image.ID, Status: model.PipelineRunSucceeded}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, selected := range []string{"selected-api", "", "missing"} {
+		snapshot := map[string]any{"image_tag_includes_name": true, "independent_deployment_images": true, "build_plans": map[string]any{"selected-api": map[string]any{"kind": model.BuildPlanDockerfile}}, "stages": []model.WorkflowStage{{Tasks: []model.WorkflowNode{{ID: "selected-api", Type: model.WorkflowNodeBuild}}}, {Tasks: []model.WorkflowNode{{ID: f.record.WorkflowNodeID, Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{ImageBuildNodeID: selected}}}}}}
+		encoded, _ := json.Marshal(snapshot)
+		run.WorkflowSnapshot = string(encoded)
+		values, independent, err := f.service.recordPipelineEnvironment(f.ctx, &f.record, run)
+		if selected == "missing" {
+			if err == nil {
+				t.Fatal("接受丢失的构建任务")
+			}
+			continue
+		}
+		if err != nil || !independent {
+			t.Fatal(err)
+		}
+		if selected == "" {
+			if values["EDO_IMAGE_TAG"] != "" {
+				t.Fatal("未选择时猜测了镜像")
+			}
+			continue
+		}
+		if values["EDO_IMAGE_TAG"] != "registry.example.com/team/custom/api:v3" || values["EDO_IMAGE"] != image.ImageRef || values["IMAGE_TAG"] != "" {
+			t.Fatal("重建未恢复完整镜像及固定摘要", values)
+		}
+	}
+}

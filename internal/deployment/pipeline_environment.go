@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"edo/internal/model"
+	"edo/internal/pipelineimage"
 	"github.com/distribution/reference"
 )
 
@@ -26,9 +27,10 @@ func (s *Service) recordPipelineEnvironment(ctx context.Context, record *model.D
 		"EDO_DEPLOYMENT_ID": record.ID, "EDO_DEPLOYMENT_TARGET_ID": record.TargetID,
 	}
 	var snapshot struct {
-		Independent bool                  `json:"independent_deployment_images"`
-		Stages      []model.WorkflowStage `json:"stages"`
-		BuildPlans  map[string]struct {
+		ImageTagIncludesName bool                  `json:"image_tag_includes_name"`
+		Independent          bool                  `json:"independent_deployment_images"`
+		Stages               []model.WorkflowStage `json:"stages"`
+		BuildPlans           map[string]struct {
 			Kind model.BuildPlanKind `json:"kind"`
 		} `json:"build_plans"`
 	}
@@ -37,6 +39,46 @@ func (s *Service) recordPipelineEnvironment(ctx context.Context, record *model.D
 	}
 	if !snapshot.Independent {
 		return values, false, nil
+	}
+	if snapshot.ImageTagIncludesName {
+		kinds := map[string]model.BuildPlanKind{}
+		for id, plan := range snapshot.BuildPlans {
+			kinds[id] = plan.Kind
+		}
+		prior := pipelineimage.PriorBuilds(snapshot.Stages, record.WorkflowNodeID, kinds)
+		var selected string
+		found := false
+		for _, stage := range snapshot.Stages {
+			for _, node := range stage.Tasks {
+				if node.ID == record.WorkflowNodeID && node.Type == model.WorkflowNodeDeploy {
+					selected = node.Config.ImageBuildNodeID
+					found = true
+				}
+			}
+		}
+		if !found {
+			return fail("runtime_pipeline_node", pipelineimage.ErrBinding)
+		}
+		if selected == "" {
+			return values, true, nil
+		}
+		if !prior[selected] {
+			return fail("runtime_pipeline_build", pipelineimage.ErrBinding)
+		}
+		images, err := pipelineimage.Load(ctx, s.db, run, []string{selected})
+		if err != nil {
+			return fail("runtime_pipeline_selected_image", err)
+		}
+		image := images[selected]
+		tagged, err := pipelineimage.TaggedReference(image)
+		if err != nil {
+			return fail("runtime_pipeline_image_reference", err)
+		}
+		values["EDO_IMAGE_TAG"], values["EDO_IMAGE"] = tagged, image.ImageRef
+		if image.StorageKind == model.ArtifactStorageKindDockerDaemon {
+			values["EDO_IMAGE"] = image.LocalImageID
+		}
+		return values, true, nil
 	}
 	prior := []string{}
 	found := false

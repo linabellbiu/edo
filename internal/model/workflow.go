@@ -53,6 +53,8 @@ type WorkflowNodeConfig struct {
 	BuildPlanID            string                     `json:"build_plan_id,omitempty"`
 	ImageName              string                     `json:"image_name,omitempty"`
 	ImageTag               string                     `json:"image_tag,omitempty"`
+	ImageBuildNodeID       string                     `json:"image_build_node_id,omitempty"`
+	ComposeBuildBindings   []ComposeBuildBinding      `json:"compose_build_bindings,omitempty"`
 	TargetStage            *string                    `json:"target_stage,omitempty"`   // nil 沿用方案，空字符串明确构建最终阶段。
 	BuildPlatform          string                     `json:"build_platform,omitempty"` // 空值沿用构建方案的平台。
 	DeploymentPlanID       string                     `json:"deployment_plan_id,omitempty"`
@@ -77,6 +79,12 @@ type WorkflowNodeConfig struct {
 	Migration              *WorkflowMigrationConfig   `json:"migration,omitempty"`
 	Description            string                     `json:"description,omitempty"`
 	Notifications          []WorkflowNotificationRule `json:"notifications,omitempty"`
+}
+
+// ComposeBuildBinding 是当前流水线中的显式构建关联，不修改公共部署方案。
+type ComposeBuildBinding struct {
+	Service     string `json:"service"`
+	BuildNodeID string `json:"build_node_id"`
 }
 
 // WorkflowComposeSource 只保存 Compose 来源，部署前读取并解析实际正文。

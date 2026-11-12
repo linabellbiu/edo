@@ -29,6 +29,8 @@ export interface DeploymentInput {
 }
 
 export interface WorkflowNodeConfig {
+ image_build_node_id?: string
+ compose_build_bindings?: Array<{service:string;build_node_id:string}>
  deployment_registry_id?: string
  inline_build?: PipelineBuildPlan
  build_outputs?: Array<{name:string;paths:string[]}>

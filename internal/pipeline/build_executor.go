@@ -527,12 +527,30 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 				buildArgs[binding.Name] = values[binding.Name]
 			}
 		}
-		imageTag, tagErr := executionNodeImageTag(&executionContext{run: prepared.run, node: prepared.node, application: prepared.application})
-		if tagErr != nil {
-			return nil, tagErr
+		execution := &executionContext{run: prepared.run, node: prepared.node, application: prepared.application}
+		var image string
+		var auth dockerengine.RegistryAuth
+		if prepared.plan.ImageRegistryID == "" {
+			image, err = localExecutionImage(execution)
+		} else {
+			if err = s.db.WithContext(ctx).First(&execution.registry, "uuid = ? AND is_active = ?", prepared.plan.ImageRegistryID, true).Error; err != nil {
+				return nil, err
+			}
+			execution.component.ImageRegistryID = execution.registry.ID
+			image, auth, err = s.executionImage(ctx, execution)
+		}
+		if err != nil {
+			return nil, err
+		}
+		imageValue := image
+		if !prepared.snapshot.ImageTagIncludesName {
+			imageValue, err = executionNodeImageTag(execution)
+			if err != nil {
+				return nil, err
+			}
 		}
 		for key, value := range buildArgs {
-			buildArgs[key] = expandPipelineBuildArgument(strings.ReplaceAll(value, "${EDO_IMAGE_TAG}", imageTag), prepared.run)
+			buildArgs[key] = expandPipelineBuildArgument(value, prepared.run, imageValue)
 		}
 
 		options := dockerengine.BuildOptions{
@@ -552,10 +570,6 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		if prepared.plan.ImageRegistryID == "" {
 			output := s.newBuildLogWriter(ctx, prepared.run.ID, "build", append(sensitiveVariableValues(buildArgs), variableRedactions...)...)
 			defer output.Close()
-			image, err := localExecutionImage(&executionContext{run: prepared.run, node: prepared.node, application: prepared.application})
-			if err != nil {
-				return nil, err
-			}
 			if err := s.updateExecutionPhase(ctx, &prepared.run, "build", "正在构建本地 OCI 镜像 "+image); err != nil {
 				return nil, err
 			}
@@ -571,16 +585,6 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 				Digest: builtImage.ImageID, ImageRef: image, RuntimeID: dockerengine.LocalEndpointID,
 				LocalImageID: builtImage.ImageID, SizeBytes: builtImage.SizeBytes,
 			})
-		}
-		var registry model.ImageRegistry
-		if err := s.db.WithContext(ctx).First(&registry, "uuid = ? AND is_active = ?", prepared.plan.ImageRegistryID, true).Error; err != nil {
-			return nil, err
-		}
-		execution := &executionContext{run: prepared.run, node: prepared.node, application: prepared.application, registry: registry}
-		execution.component.ImageRegistryID = registry.ID
-		image, auth, err := s.executionImage(ctx, execution)
-		if err != nil {
-			return nil, err
 		}
 		redactions := append(sensitiveVariableValues(buildArgs), variableRedactions...)
 		if auth.Credential != "" {
@@ -602,7 +606,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		}
 		return s.artifacts.CreateImage(ctx, artifact.ImageInput{
 			BuildMetadata: metadata, Name: image, StorageKind: model.ArtifactStorageKindRegistry,
-			ImageRef: builtImage.ImageRef, ImageRegistryID: registry.ID, SizeBytes: builtImage.SizeBytes,
+			ImageRef: builtImage.ImageRef, ImageRegistryID: execution.registry.ID, SizeBytes: builtImage.SizeBytes,
 		})
 	default:
 		return nil, ErrPipelineExecutionConfig
@@ -619,9 +623,13 @@ func effectiveBuildRuntimeImage(config model.WorkflowNodeConfig, plan workflowBu
 	return plan.RuntimeImage
 }
 
-func expandPipelineBuildArgument(value string, run model.PipelineRun) string {
+func expandPipelineBuildArgument(value string, run model.PipelineRun, imageReference ...string) string {
+	image := pipelineGitTag(run)
+	if len(imageReference) > 0 {
+		image = imageReference[0]
+	}
 	return strings.NewReplacer(
-		"${EDO_IMAGE_TAG}", pipelineGitTag(run),
+		"${EDO_IMAGE_TAG}", image,
 		"${EDO_GIT_TAG}", pipelineGitTag(run),
 		"${EDO_COMMIT_SHA}", run.ShortCommitSHA(),
 		"${EDO_GIT_REF}", run.Ref,
@@ -849,7 +857,7 @@ func pipelineCommandEnvironment(prepared *buildExecutionContext) map[string]stri
 	if prepared.plan.Kind == model.BuildPlanDockerfile {
 		imageTag, _ = executionNodeImageTag(&executionContext{run: prepared.run, node: prepared.node, application: prepared.application})
 	}
-	if imageTag != "" {
+	if imageTag != "" && !prepared.snapshot.ImageTagIncludesName {
 		environment["EDO_IMAGE_TAG"] = imageTag
 	}
 	if prepared.plan.Platform != "" {
