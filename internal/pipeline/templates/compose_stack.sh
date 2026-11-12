@@ -21,7 +21,23 @@ current="$state/current.yml"
 docker_command() { __EDO_DOCKER__ "$@"; }
 dc() { file=$1; shift; docker_command compose __EDO_COMPOSE_ARGS__ --file "$file" "$@"; }
 expected_image() { case "$1" in __EDO_EXPECTED_IMAGES__ *) return 1;; esac; }
-error() { echo "$1；请查看目标主机本次发布目录中的 compose.log" >&2; exit 1; }
+show_error_details() {
+ printf '%s\n' '--- Compose 执行错误详情 ---' >&2
+ if [ -f "$log" ] && [ ! -L "$log" ] && [ -s "$log" ]; then
+  edo_log_size=$(wc -c <"$log") || return 0
+  if [ "$edo_log_size" -gt 65536 ]; then
+   printf '%s\n' '日志较长，仅显示最后 64 KiB 内的最近 80 行，忽略不完整首行。' >&2
+   tail -c 65536 "$log" | sed '1d' | tail -n 80 >&2 || true
+  else
+   tail -n 80 "$log" >&2 || true
+  fi
+ else
+  printf '%s\n' '未取得主机端错误详情。' >&2
+ fi
+ printf '\n%s\n' '--- Compose 错误详情结束 ---' >&2
+ return 0
+}
+error() { edo_command_exit=$?; printf '%s（退出码 %s）\n' "$1" "$edo_command_exit" >&2; show_error_details; exit 1; }
 __EDO_WRITE_ENV_FILES__
 __EDO_WRITE_COMPOSE__
 dc "$release/compose.yml" config --quiet >>"$log" 2>&1 || error 'EDO Compose 配置或变量校验失败'
@@ -59,12 +75,16 @@ echo '正在准备本次 Compose 镜像'
 dc "$release/compose.yml" pull --policy missing --include-deps __EDO_UP_SERVICES__ >>"$log" 2>&1 || error '镜像拉取失败，请检查镜像及主机网络'
 cp "$release/compose.yml" "$current"
 rollback() {
+ edo_command_exit=$?
+ printf '%s（退出码 %s）\n' "${1:-Compose 部署或验收失败}" "$edo_command_exit" >&2
+ show_error_details
  if [ -f "$release/previous.yml" ]; then
   cp "$release/previous.yml" "$current"
   if dc "$current" up -d --no-build --pull never --wait --wait-timeout __EDO_TIMEOUT__ __EDO_UP_SERVICES__ >>"$log" 2>&1; then
    echo '本次发布失败，已恢复上一镜像配置' >&2
   else
    echo '本次发布失败，恢复上一镜像也失败，请检查现场' >&2
+   show_error_details
   fi
  else
   echo '本次发布失败；没有上一版本，已保留现场' >&2
@@ -72,29 +92,29 @@ rollback() {
  exit 1
 }
 echo '正在执行 docker compose up -d'
-dc "$current" up -d --no-build --pull never --wait --wait-timeout __EDO_TIMEOUT__ __EDO_UP_SERVICES__ >>"$log" 2>&1 || rollback
+dc "$current" up -d --no-build --pull never --wait --wait-timeout __EDO_TIMEOUT__ __EDO_UP_SERVICES__ >>"$log" 2>&1 || rollback 'Compose 启动失败'
 for service in __EDO_SERVICES__; do
  expected=$(expected_image "$service") || expected=''
  expected_id=''
- if [ -n "$expected" ]; then expected_id=$(docker_command image inspect --format '{{.Id}}' "$expected" 2>>"$log") || rollback; fi
- ids=$(dc "$current" ps --all --quiet "$service" 2>>"$log") || rollback
- [ -n "$ids" ] || rollback
+ if [ -n "$expected" ]; then expected_id=$(docker_command image inspect --format '{{.Id}}' "$expected" 2>>"$log") || rollback '读取目标镜像失败'; fi
+ ids=$(dc "$current" ps --all --quiet "$service" 2>>"$log") || rollback '读取部署后服务实例失败'
+ [ -n "$ids" ] || rollback '部署后未找到服务实例'
  for id in $ids; do
-  actual=$(docker_command inspect --format '{{.Image}}' "$id" 2>>"$log") || rollback
-  [ -z "$expected_id" ] || [ "$actual" = "$expected_id" ] || rollback
-  restarts=$(docker_command inspect --format '{{.RestartCount}}' "$id" 2>>"$log") || rollback
+  actual=$(docker_command inspect --format '{{.Image}}' "$id" 2>>"$log") || rollback '读取部署后容器镜像失败'
+  [ -z "$expected_id" ] || [ "$actual" = "$expected_id" ] || rollback '部署后容器镜像与目标镜像不一致'
+  restarts=$(docker_command inspect --format '{{.RestartCount}}' "$id" 2>>"$log") || rollback '读取部署后容器重启次数失败'
   previous_restarts=$(awk -v id="$id" '$1 == id {print $2}' "$release/old-restarts")
-  [ "$restarts" = "${previous_restarts:-0}" ] || rollback
+  [ "$restarts" = "${previous_restarts:-0}" ] || rollback '部署后容器发生异常重启'
   printf '%s %s\n' "$id" "$restarts" >>"$release/verified-instances"
  done
 done
 sleep 2
 while read -r id previous_restarts; do
- restarts=$(docker_command inspect --format '{{.RestartCount}}' "$id" 2>>"$log") || rollback
- [ "$restarts" = "$previous_restarts" ] || rollback
- status=$(docker_command inspect --format '{{.State.Status}} {{.State.ExitCode}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id" 2>>"$log") || rollback
- case "$status" in 'running 0 '| 'running 0 healthy' | 'exited 0 ') ;; *) rollback;; esac
+ restarts=$(docker_command inspect --format '{{.RestartCount}}' "$id" 2>>"$log") || rollback '读取验收时容器重启次数失败'
+ [ "$restarts" = "$previous_restarts" ] || rollback '验收期间容器发生异常重启'
+ status=$(docker_command inspect --format '{{.State.Status}} {{.State.ExitCode}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id" 2>>"$log") || rollback '读取容器运行状态失败'
+ case "$status" in 'running 0 '| 'running 0 healthy' | 'exited 0 ') ;; *) rollback '容器运行状态或健康检查未通过';; esac
 done <"$release/verified-instances"
-__EDO_HEALTH_CHECK__ >>"$log" 2>&1 || rollback
+__EDO_HEALTH_CHECK__ >>"$log" 2>&1 || rollback '健康检查地址访问失败'
 printf '%s\n' "$EDO_COMMIT_SHA" >"$release/commit"
 echo 'Compose 部署与镜像验收完成'

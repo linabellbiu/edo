@@ -326,10 +326,12 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 		if err != nil {
 			return s.failDeploymentExecution(ctx, failure, "镜像仓库认证不可用", err)
 		}
+		prepared.variableRedactions = append(prepared.variableRedactions, composeRegistryLogRedactions(auth)...)
 		if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
 			return s.failDeploymentExecution(ctx, failure, "流水线执行授权已失效", err)
 		}
 		if err := s.docker.PrepareRegistryImage(ctx, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth); err != nil {
+			s.logComposeImageFailure(ctx, prepared, err)
 			return s.failDeploymentExecution(ctx, failure, "目标主机无法拉取部署配置中的镜像", err)
 		}
 	}
@@ -340,7 +342,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", message); err != nil {
 		return s.failDeploymentExecution(ctx, failure, "更新 Compose 发布状态失败", err)
 	}
-	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose", prepared.variableRedactions...)
+	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose", composeExecutionLogRedactions(prepared)...)
 	defer output.Close()
 	containerVariables := prepared.variables
 	if prepared.snapshot.IndependentDeploymentImages {

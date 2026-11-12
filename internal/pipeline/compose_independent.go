@@ -91,7 +91,7 @@ func (s *Service) addDeploymentPipelineVariables(ctx context.Context, prepared *
 func (s *Service) resolveConfiguredComposeImages(ctx context.Context, prepared *executionContext, source string) (string, error) {
 	fail := func(operation string, err error) (string, error) {
 		// 插值结果可能包含密钥，诊断信息复用流水线日志的脱敏规则。
-		diagnostic := string(redactLogBytes([]byte(err.Error()), normalizeLogRedactions(prepared.variableRedactions)))
+		diagnostic := s.logComposeImageFailure(ctx, prepared, err)
 		return "", s.deploymentInputError(prepared.node.ID, operation, errors.New(diagnostic))
 	}
 	doc, err := parseComposeStack(source)
@@ -108,6 +108,11 @@ func (s *Service) resolveConfiguredComposeImages(ctx context.Context, prepared *
 		s.logger.WarnContext(ctx, "读取部署配置的镜像仓库失败", "operation", "compose_configured_registry", "node_id", prepared.node.ID, "err", err)
 		return "", ErrDeploymentRegistryUnavailable
 	}
+	auth, err := s.registryAuth(registry)
+	if err != nil {
+		return fail("compose_configured_registry_auth", err)
+	}
+	prepared.variableRedactions = append(prepared.variableRedactions, composeRegistryLogRedactions(auth)...)
 	client, prefix, err := s.deploymentRegistryClient(registry)
 	if err != nil {
 		return fail("compose_configured_registry_client", err)
