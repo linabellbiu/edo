@@ -138,6 +138,7 @@ func (s *Service) resolveConfiguredComposeImages(ctx context.Context, prepared *
 		}
 		// 其他仓库的镜像由用户的 Compose 配置处理，不向其传送当前仓库凭据。
 		if !strings.HasPrefix(reference.TrimNamed(name).Name(), strings.TrimSuffix(prefix, "/")+"/") {
+			s.logComposeImageRegistryMismatch(ctx, prepared, service, expanded, reference.Domain(name), prefix)
 			continue
 		}
 		// 显式镜像来源已在运行创建时冻结；Tag 后续变化不能覆盖该次选择。

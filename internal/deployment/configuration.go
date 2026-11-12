@@ -103,7 +103,9 @@ func (s *Service) ResolveDeploymentConfiguration(ctx context.Context, record *mo
 	set := &ConfigurationSet{Bindings: bindings, Files: files, Values: map[string]string{}, Redactions: redactions, Directory: directory, EnvFiles: envFiles, FilesOnly: config.DeploymentInputVersion == 1}
 	// 显式 --env-file 按参数顺序覆盖，未指定时所选 ENV 按选择顺序注入。
 	paths := []string{}
+	secretPaths := map[string]bool{}
 	for _, b := range bindings {
+		secretPaths[b.Path] = b.IsSecret
 		if b.Kind == "config_env" {
 			if !set.FilesOnly {
 				paths = append(paths, b.Path)
@@ -135,10 +137,11 @@ func (s *Service) ResolveDeploymentConfiguration(ctx context.Context, record *mo
 		}
 		for key, value := range values {
 			set.Values[key] = value
-			if value != "" {
+			if secretPaths[name] && value != "" {
 				set.Redactions = append(set.Redactions, value)
 			}
 		}
+		set.Redactions = append(set.Redactions, envtext.SensitiveValues(values)...)
 	}
 	// 配置正文永不作为日志输出，即使配置未标为密钥。
 	for _, value := range files {

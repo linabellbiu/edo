@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,7 +16,7 @@ import (
 	"edo/internal/secret"
 )
 
-func attachConfigurationFixture(t *testing.T, f *containerControlFixture) (*cicd.VariableView, cicd.VariableInput) {
+func attachConfigurationFixture(t *testing.T, f *containerControlFixture, custom ...cicd.VariableInput) (*cicd.VariableView, cicd.VariableInput) {
 	t.Helper()
 	manager, err := secret.New(base64.StdEncoding.EncodeToString([]byte(strings.Repeat("c", 32))))
 	if err != nil {
@@ -29,6 +30,9 @@ func attachConfigurationFixture(t *testing.T, f *containerControlFixture) (*cicd
 	configureDeploymentAuthorizationTestActor(t, f.db, f.record.ProjectID, f.record.DepartmentID, "operator", access.PermissionContainerRestart, access.PermissionContainerRecreate, "delivery_variable.execute")
 	value := "TOKEN=original$token\nREMOVED=true\n"
 	input := cicd.VariableInput{Name: ".prod.env", Kind: "config_env", Usage: "deploy", Value: &value, IsSecret: true, IsActive: true}
+	if len(custom) > 0 {
+		input = custom[0]
+	}
 	saved, err := f.service.variables.service.SaveVariable(f.ctx, "operator", "", input)
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +71,31 @@ func attachConfigurationFixture(t *testing.T, f *containerControlFixture) (*cicd
 	}
 	return saved, input
 }
+
+func TestConfigurationLogRedactionsDistinguishOrdinaryValuesAndSecrets(t *testing.T) {
+	for _, isSecret := range []bool{false, true} {
+		name := "ordinary"
+		if isSecret {
+			name = "secret"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newContainerControlFixture(t)
+			content := "IMAGE_NAMESPACE=edo-demo\nIMAGE_VERSION=v0.0.1\nDB_PASSWORD=configuration-private-value\n"
+			attachConfigurationFixture(t, f, cicd.VariableInput{Name: ".prod.env", Kind: "config_env", Usage: "deploy", Value: &content, IsSecret: isSecret, IsActive: true})
+			set, err := f.service.ResolveDeploymentConfiguration(f.ctx, &f.record, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(set.Redactions, "edo-demo") != isSecret || slices.Contains(set.Redactions, "v0.0.1") != isSecret {
+				t.Fatal("普通镜像信息与显式密钥未区分")
+			}
+			if !slices.Contains(set.Redactions, "configuration-private-value") || !slices.Contains(set.Redactions, content) || !slices.Contains(set.Redactions, "IMAGE_NAMESPACE=edo-demo") {
+				t.Fatal("敏感变量或配置正文未纳入脱敏")
+			}
+		})
+	}
+}
+
 func TestConfigurationRestartUsesLatestContentsAndInvalidatesConfirmation(t *testing.T) {
 	f := newContainerControlFixture(t)
 	saved, input := attachConfigurationFixture(t, f)

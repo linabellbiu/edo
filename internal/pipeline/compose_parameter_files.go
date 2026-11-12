@@ -104,11 +104,7 @@ func (s *Service) prepareComposeParameterFiles(ctx context.Context, prepared *ex
 		maps.Copy(prepared.composeEnvValues, values)
 		prepared.variableRedactions = append(prepared.variableRedactions, content)
 		prepared.variableRedactions = append(prepared.variableRedactions, strings.Split(content, "\n")...)
-		for _, value := range values {
-			if value != "" {
-				prepared.variableRedactions = append(prepared.variableRedactions, value)
-			}
-		}
+		prepared.variableRedactions = append(prepared.variableRedactions, sensitiveVariableValues(values)...)
 	}
 	return nil
 }

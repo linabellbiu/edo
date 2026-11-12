@@ -15,6 +15,23 @@ var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
 var envFileName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
+// SensitiveValues 识别可能含凭据的变量；普通镜像地址、名称和 Tag 不作为秘密。
+// 用户明确标记的密钥由调用方另外加入，不因变量名普通而解除保护。
+func SensitiveValues(values map[string]string) []string {
+	result := make([]string, 0)
+	for name, value := range values {
+		upper := strings.ToUpper(name)
+		if value != "" && (strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") ||
+			strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "CREDENTIAL") ||
+			strings.HasSuffix(upper, "_PASS") || strings.HasSuffix(upper, "_KEY") ||
+			strings.HasSuffix(upper, "_AUTH")) {
+			result = append(result, value)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
 // ValidReference 同时支持变量名称和不带目录的 env 文件名。
 func ValidReference(name string) bool {
 	return variableName.MatchString(name) || ValidFileName(name)

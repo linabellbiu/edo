@@ -30,7 +30,7 @@ func newComposeParameterTest(t *testing.T, files map[string]string) (*Service, *
 		files = map[string]string{"README.md": "隔离仓库\n"}
 	}
 	node := model.WorkflowNode{ID: "compose-parameters", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{DeploymentParameters: "--env-file .env"}}
-	snapshot := workflowSnapshot{SchemaVersion: model.WorkflowSchemaVersion, AuthorityID: "admin"}
+	snapshot := workflowSnapshot{SchemaVersion: model.WorkflowSchemaVersion, AuthorityID: "admin", Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger}, Stages: []model.WorkflowStage{{ID: "deploy", Tasks: []model.WorkflowNode{node}}}}
 	s, db, _, run := newBuildExecutorTestRun(t, node, snapshot, files)
 	s.repositories = repository.NewService(db, s.secrets, nil, buildExecutorCheckoutStub{files: files}, 4, repository.WithCheckoutDirectory(t.TempDir()))
 	directory, err := filepath.EvalSymlinks(t.TempDir())
@@ -67,6 +67,53 @@ func TestComposeParameterFilesStageReferencedFilesAndRespectPrecedence(t *testin
 	// 普通配置文件不会因为参与插值而自动注入每个容器。
 	if _, exists := prepared.variables["PRIVATE"]; exists {
 		t.Fatal("仓库 ENV 被错误提升为容器共享环境变量")
+	}
+}
+
+func TestComposeParameterLogsPreserveImagesAndRedactCredentials(t *testing.T) {
+	content := "IMAGE_NAMESPACE=edo-demo\nIMAGE_TAG=v0.0.1\nREGISTRY_PASSWORD=registry-private-value\nPRIVATE_KEY=\"key-fragment-one\nkey-fragment-two\"\n"
+	for _, generated := range []bool{false, true} {
+		name := "repository"
+		if generated {
+			name = "configuration"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, prepared, ctx := newComposeParameterTest(t, map[string]string{".env": content})
+			if generated {
+				prepared.node.Config.DeploymentParameters = `--env-file "${EDO_APP_CONFIG_PATH}/generated.env"`
+				prepared.configuration = &deployment.ConfigurationSet{Files: map[string]string{"generated.env": content}}
+			}
+			if err := s.prepareComposeParameterFiles(ctx, prepared); err != nil {
+				t.Fatal(err)
+			}
+			ctx = withPipelineNodeLog(ctx, prepared.node.ID, prepared.node.Name)
+			output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose", composeExecutionLogRedactions(prepared)...)
+			image := "edo-demo/edo-demo-web:v0.0.1"
+			for _, chunk := range []string{"Image " + image + " Error pull access denied\nregistry-pri", "vate-value key-fragment-one key-fragment-two\n", content} {
+				if _, err := io.WriteString(output, chunk); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := output.Close(); err != nil {
+				t.Fatal(err)
+			}
+			logs, _, err := s.ListNodeRunLogs(ctx, prepared.run.ID, prepared.node.ID, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var text strings.Builder
+			for _, line := range logs {
+				text.WriteString(line.Message)
+			}
+			if !strings.Contains(text.String(), image+" Error pull access denied") {
+				t.Fatal("镜像地址或拉取错误被误脱敏")
+			}
+			for _, secret := range []string{"registry-private-value", "key-fragment-one", "key-fragment-two", "IMAGE_NAMESPACE=edo-demo"} {
+				if strings.Contains(text.String(), secret) {
+					t.Fatal("凭据、多行密钥或文件正文进入任务日志")
+				}
+			}
+		})
 	}
 }
 

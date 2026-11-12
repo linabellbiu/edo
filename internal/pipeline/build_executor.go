@@ -19,6 +19,7 @@ import (
 	"edo/internal/artifact"
 	"edo/internal/cicd"
 	"edo/internal/dockerengine"
+	"edo/internal/envtext"
 	"edo/internal/model"
 	"edo/internal/repository"
 )
@@ -827,18 +828,7 @@ func (s *Service) executePipelineShell(
 }
 
 func sensitiveVariableValues(values map[string]string) []string {
-	result := make([]string, 0)
-	for name, value := range values {
-		upper := strings.ToUpper(name)
-		if value != "" && (strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") ||
-			strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "CREDENTIAL") ||
-			strings.HasSuffix(upper, "_PASS") || strings.HasSuffix(upper, "_KEY") ||
-			strings.HasSuffix(upper, "_AUTH")) {
-			result = append(result, value)
-		}
-	}
-	sort.Strings(result)
-	return result
+	return envtext.SensitiveValues(values)
 }
 
 func pipelineCommandEnvironment(prepared *buildExecutionContext) map[string]string {

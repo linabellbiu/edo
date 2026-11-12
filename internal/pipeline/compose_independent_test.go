@@ -81,8 +81,16 @@ func TestIndependentComposePullsConfiguredImageAndPreservesUnrelatedRegistry(t *
 	s, db, _, _ := newPipelineTestService(t)
 	project := database.DefaultProjectID(database.DefaultDepartmentID)
 	var requested atomic.Int32
+	var authenticated atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requested.Add(1)
+		user, password, ok := r.BasicAuth()
+		if !ok || user != "selected-user" || password != "selected-private-password" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="selected-registry"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		authenticated.Add(1)
 		if r.URL.Path == "/v2/" {
 			w.WriteHeader(200)
 			return
@@ -99,6 +107,12 @@ func TestIndependentComposePullsConfiguredImageAndPreservesUnrelatedRegistry(t *
 	}))
 	defer server.Close()
 	registry := model.ImageRegistry{ID: "selected", Name: "部署仓库", ProjectID: project, DepartmentID: database.DefaultDepartmentID, Endpoint: server.URL, Namespace: "team", Provider: model.RegistryGeneric, AllowInsecureHTTP: true, IsActive: true}
+	var err error
+	registry.Username = "selected-user"
+	registry.CredentialCiphertext, err = s.secrets.Encrypt("selected-private-password", []byte("image_registry:"+registry.Name+":credential"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Create(&registry).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +126,8 @@ func TestIndependentComposePullsConfiguredImageAndPreservesUnrelatedRegistry(t *
 	if !strings.Contains(content, "deployed-b@sha256:"+strings.Repeat("b", 64)) || !strings.Contains(content, "other.example.com/public/web:v3") || len(p.composeArtifacts) != 1 {
 		t.Fatalf("未严格使用用户配置的镜像: %s %+v", content, p.composeArtifacts)
 	}
-	if requested.Load() == 0 {
-		t.Fatal("没有从用户选择的仓库解析实际镜像")
+	if requested.Load() == 0 || authenticated.Load() == 0 {
+		t.Fatal("没有使用所选仓库认证解析实际镜像")
 	}
 	if _, injected := p.variables["DEPLOY_TAG"]; injected {
 		t.Fatal("env-file 插值被错误注入所有容器")
@@ -128,6 +142,40 @@ func TestIndependentComposePullsConfiguredImageAndPreservesUnrelatedRegistry(t *
 	p.run.ProjectID = "another-project"
 	if _, err := s.resolveConfiguredComposeImages(context.Background(), p, source); err == nil || requested.Load() != before {
 		t.Fatal("使用了其他项目的部署仓库")
+	}
+}
+
+func TestIndependentComposeWarnsAboutOtherRegistryWithoutRewritingOrSendingCredentials(t *testing.T) {
+	s, prepared, ctx := newComposeParameterTest(t, map[string]string{".env": "IMAGE_NAMESPACE=edo-demo\nREGISTRY_PASSWORD=registry-private-value\n"})
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	registry := model.ImageRegistry{ID: "selected-registry", Name: "所选仓库", ProjectID: prepared.run.ProjectID, DepartmentID: prepared.run.DepartmentID, Endpoint: server.URL, Namespace: "team", Provider: model.RegistryGeneric, AllowInsecureHTTP: true, IsActive: true}
+	registry.Username = "selected-user"
+	var err error
+	registry.CredentialCiphertext, err = s.secrets.Encrypt("registry-private-value", []byte("image_registry:"+registry.Name+":credential"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Create(&registry).Error; err != nil {
+		t.Fatal(err)
+	}
+	prepared.node.Config.DeploymentRegistryID = registry.ID
+	prepared.node.Config.Compose = &model.ComposeDeploymentSettings{}
+	if err := s.prepareComposeParameterFiles(ctx, prepared); err != nil {
+		t.Fatal(err)
+	}
+	source := "services:\n  web:\n    image: ${IMAGE_NAMESPACE}/edo-demo-web:v0.0.1\n"
+	result, err := s.resolveConfiguredComposeImages(ctx, prepared, source)
+	if err != nil || requests.Load() != 0 || len(prepared.composeArtifacts) != 0 || !strings.Contains(result, "${IMAGE_NAMESPACE}/edo-demo-web:v0.0.1") {
+		t.Fatal("其他仓库镜像被改写或使用了所选仓库认证", err)
+	}
+	logs, _, err := s.ListNodeRunLogs(ctx, prepared.run.ID, prepared.node.ID, 0, 100)
+	if err != nil || len(logs) != 1 || logs[0].Level != "warning" || !strings.Contains(logs[0].Message, "edo-demo/edo-demo-web:v0.0.1 将从 docker.io 拉取") || !strings.Contains(logs[0].Message, strings.TrimPrefix(server.URL, "http://")+"/team") || strings.Contains(logs[0].Message, "registry-private-value") {
+		t.Fatal("任务日志未准确解释镜像实际仓库和认证范围", err)
 	}
 }
 
