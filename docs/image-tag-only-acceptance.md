@@ -10,3 +10,5 @@
 | TAG-04 | 曾保存完整镜像关联的任务或已完成运行 | 创建新运行、读取原配置、恢复历史重建上下文 | 新运行使用纯 Tag 并忽略旧关联；不回写或删除已保存关联与不可变历史运行 |
 
 继续复用现有 compose-go、Distribution reference 及流水线制品查询，无新增依赖或组件。执行结果见本次交付与本地发布回执。
+
+部署镜像的最新执行与日志规则见[Compose 镜像与执行日志验收](compose-execution-transparency-acceptance.md)：新运行保留用户 Tag，不自动替换为摘要。

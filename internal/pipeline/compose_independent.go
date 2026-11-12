@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -143,6 +145,9 @@ func (s *Service) resolveConfiguredComposeImages(ctx context.Context, prepared *
 		return fail("compose_configured_registry_client", err)
 	}
 	prepared.composeArtifacts = map[string]model.Artifact{}
+	if prepared.snapshot.PreserveComposeImageReferences {
+		return s.preserveConfiguredComposeImages(ctx, prepared, doc, services, interpolation, registry, prefix)
+	}
 	frozen, err := registryInputImageBindings(prepared.snapshot.RegistryInputs[prepared.node.ID])
 	if err != nil {
 		return fail("compose_configured_frozen_images", err)
@@ -234,6 +239,48 @@ func (s *Service) resolveConfiguredComposeImages(ctx context.Context, prepared *
 		}
 		entry["image"] = ref.CommonName()
 		prepared.composeArtifacts[service] = model.Artifact{ImageRef: ref.CommonName(), ImageRegistryID: registry.ID}
+	}
+	encoded, err := yaml.Marshal(doc)
+	if err != nil || len(encoded) > maximumComposeStackBytes {
+		return "", ErrInvalidComposeDelivery
+	}
+	return string(encoded), nil
+}
+
+// 新部署只展开变量，保留用户填写的名称、Tag 或 Digest；仓库选择只提供匹配范围的认证。
+func (s *Service) preserveConfiguredComposeImages(ctx context.Context, prepared *executionContext, doc map[string]any, scope []string, values map[string]string, registry model.ImageRegistry, prefix string) (string, error) {
+	active := map[string]bool{}
+	for _, service := range scope {
+		active[service] = true
+	}
+	names := []string{}
+	for service := range doc["services"].(map[string]any) {
+		names = append(names, service)
+	}
+	sort.Strings(names)
+	for _, service := range names {
+		entry := doc["services"].(map[string]any)[service].(map[string]any)
+		template, _ := entry["image"].(string)
+		expanded, err := composetemplate.SubstituteWithOptions(template, func(key string) (string, bool) { value, exists := values[key]; return value, exists }, composetemplate.WithoutLogging)
+		if err != nil {
+			s.logComposeImageFailure(ctx, prepared, ErrDeploymentInputs)
+			return "", ErrDeploymentInputs
+		}
+		name, err := reference.ParseNormalizedNamed(expanded)
+		if err != nil {
+			diagnostic := s.logComposeImageFailure(ctx, prepared, err)
+			return "", s.deploymentInputError(prepared.node.ID, "compose_image_reference", errors.New(diagnostic))
+		}
+		entry["image"] = expanded
+		if !active[service] {
+			continue
+		}
+		s.logComposeOperation(ctx, prepared, fmt.Sprintf("服务 %s 镜像：%s → %s", service, template, expanded))
+		if !strings.HasPrefix(reference.TrimNamed(name).Name(), strings.TrimSuffix(prefix, "/")+"/") {
+			s.logComposeImageRegistryMismatch(ctx, prepared, service, expanded, reference.Domain(name), prefix)
+			continue
+		}
+		prepared.composeArtifacts[service] = model.Artifact{ImageRef: expanded, ImageRegistryID: registry.ID}
 	}
 	encoded, err := yaml.Marshal(doc)
 	if err != nil || len(encoded) > maximumComposeStackBytes {

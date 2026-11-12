@@ -57,6 +57,7 @@ func TestComposeFailureDetailsReachTaskLogsWithoutChangingFailureFlow(t *testing
 	for _, tc := range []struct {
 		phase, diagnostic, summary string
 	}{
+		{"success", "Compose 部署与镜像验收完成", "开始启动 Compose 服务"},
 		{"config", "invalid compose configuration", "EDO Compose 配置或变量校验失败（退出码 17）"},
 		{"pull", "pull access denied for registry.example.com/web:fixture", "镜像拉取失败，请检查镜像及主机网络（退出码 18）"},
 		{"large", "pull access denied for registry.example.com/web:fixture", "仅显示最后 64 KiB"},
@@ -68,6 +69,12 @@ func TestComposeFailureDetailsReachTaskLogsWithoutChangingFailureFlow(t *testing
 			directory, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.phase == "success" {
+				directory = filepath.Join(directory, "path with 'quotes'")
+				if err := os.Mkdir(directory, 0700); err != nil {
+					t.Fatal(err)
+				}
 			}
 			bin := filepath.Join(directory, "bin")
 			if err := os.Mkdir(bin, 0700); err != nil {
@@ -133,8 +140,15 @@ exit 99
 				}
 			}
 			text, result, err := executeComposeLogFailure(t, directory, content, settings)
-			if !errors.Is(err, sshdeploy.ErrCommandFailed) || result.ExitCode != 1 || !strings.Contains(text, tc.diagnostic) || !strings.Contains(text, tc.summary) {
+			failed := tc.phase != "success"
+			if failed && (!errors.Is(err, sshdeploy.ErrCommandFailed) || result.ExitCode != 1) || !failed && (err != nil || result.ExitCode != 0) || !strings.Contains(text, tc.diagnostic) || !strings.Contains(text, tc.summary) {
 				t.Fatalf("执行失败详情或原失败状态未保留: result=%+v err=%v logs=%s", result, err, text)
+			}
+			if !strings.Contains(text, "执行命令： 'docker' 'compose' '--ansi' 'never' '--project-name' 'failure-logs'") || !strings.Contains(text, "'--project-directory' "+composeShellLiteral(directory)) || !strings.Contains(text, "'--file' '.edo/compose/failure-logs/failure-detail/compose.yml' 'config' '--quiet'") {
+				t.Fatal("日志没有显示实际完整的配置校验命令", text)
+			}
+			if tc.phase == "success" && (!strings.Contains(text, "'up' '-d' '--no-build' '--pull' 'never' '--wait' '--wait-timeout' '60'") || !strings.Contains(text, "生成 Compose 文件：")) {
+				t.Fatal("实际部署命令或生成文件未进入日志", text)
 			}
 			for _, secret := range []string{"deployment-private-value", "registry-private-value", "inline-private-value", "first-private-key-line", "second-private-key-line", basic, "discarded-private-noise"} {
 				if strings.Contains(text, secret) {

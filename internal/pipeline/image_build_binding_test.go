@@ -56,6 +56,9 @@ func TestNewDeploymentUsesTagOnlyAndPreservesStoredLegacyBindings(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !snapshot.PreserveComposeImageReferences {
+		t.Fatal("新运行未保留用户镜像引用")
+	}
 	if snapshot.ImageTagIncludesName || snapshot.Stages[1].Tasks[0].Config.ImageBuildNodeID != "" || len(snapshot.Stages[1].Tasks[0].Config.ComposeBuildBindings) != 0 {
 		t.Fatal("新运行仍使用完整镜像变量或要求构建关联")
 	}

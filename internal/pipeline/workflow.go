@@ -77,24 +77,25 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
-	ImageTagIncludesName         bool                                        `json:"image_tag_includes_name,omitempty"` // 仅恢复曾使用完整镜像引用的历史运行。
-	IndependentDeploymentImages  bool                                        `json:"independent_deployment_images,omitempty"`
-	ExplicitDeploymentRegistries bool                                        `json:"explicit_deployment_registries,omitempty"`
-	RegistryInputs               map[string][]workflowRegistryInput          `json:"registry_inputs,omitempty"`
-	ApplicationConfigDirectory   string                                      `json:"application_config_directory,omitempty"`
-	DirectConfigurationPaths     bool                                        `json:"direct_configuration_paths,omitempty"`
-	ConfigurationBindings        map[string][]model.DeploymentConfigBinding  `json:"configuration_bindings,omitempty"`
-	ExecutionVersion             int                                         `json:"execution_version,omitempty"`
-	VariableBindings             map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
-	ReleasePolicies              map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
-	AuthorityID                  string                                      `json:"authority_id,omitempty"`
-	SchemaVersion                uint16                                      `json:"schema_version"`
-	Source                       model.WorkflowNode                          `json:"source"`
-	Stages                       []model.WorkflowStage                       `json:"stages"`
-	BuildPlans                   map[string]workflowBuildPlanSnapshot        `json:"build_plans,omitempty"`
-	DeploymentPlans              map[string]workflowDeploymentPlanSnapshot   `json:"deployment_plans,omitempty"`
-	DeploymentTargets            map[string]workflowDeploymentTargetSnapshot `json:"deployment_targets,omitempty"`
-	ApprovalEnabled              bool                                        `json:"approval_enabled"`
+	PreserveComposeImageReferences bool                                        `json:"preserve_compose_image_references,omitempty"`
+	ImageTagIncludesName           bool                                        `json:"image_tag_includes_name,omitempty"` // 仅恢复曾使用完整镜像引用的历史运行。
+	IndependentDeploymentImages    bool                                        `json:"independent_deployment_images,omitempty"`
+	ExplicitDeploymentRegistries   bool                                        `json:"explicit_deployment_registries,omitempty"`
+	RegistryInputs                 map[string][]workflowRegistryInput          `json:"registry_inputs,omitempty"`
+	ApplicationConfigDirectory     string                                      `json:"application_config_directory,omitempty"`
+	DirectConfigurationPaths       bool                                        `json:"direct_configuration_paths,omitempty"`
+	ConfigurationBindings          map[string][]model.DeploymentConfigBinding  `json:"configuration_bindings,omitempty"`
+	ExecutionVersion               int                                         `json:"execution_version,omitempty"`
+	VariableBindings               map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
+	ReleasePolicies                map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
+	AuthorityID                    string                                      `json:"authority_id,omitempty"`
+	SchemaVersion                  uint16                                      `json:"schema_version"`
+	Source                         model.WorkflowNode                          `json:"source"`
+	Stages                         []model.WorkflowStage                       `json:"stages"`
+	BuildPlans                     map[string]workflowBuildPlanSnapshot        `json:"build_plans,omitempty"`
+	DeploymentPlans                map[string]workflowDeploymentPlanSnapshot   `json:"deployment_plans,omitempty"`
+	DeploymentTargets              map[string]workflowDeploymentTargetSnapshot `json:"deployment_targets,omitempty"`
+	ApprovalEnabled                bool                                        `json:"approval_enabled"`
 }
 
 type workflowBuildPlanSnapshot struct {
@@ -1808,12 +1809,13 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		}
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
-		IndependentDeploymentImages:  true,
-		RegistryInputs:               registryInputs,
-		ApplicationConfigDirectory:   configurationDirectory,
-		DirectConfigurationPaths:     true,
-		ExplicitDeploymentRegistries: true,
-		SchemaVersion:                resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
+		PreserveComposeImageReferences: true,
+		IndependentDeploymentImages:    true,
+		RegistryInputs:                 registryInputs,
+		ApplicationConfigDirectory:     configurationDirectory,
+		DirectConfigurationPaths:       true,
+		ExplicitDeploymentRegistries:   true,
+		SchemaVersion:                  resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
 		ExecutionVersion: 2, VariableBindings: variableBindings, ConfigurationBindings: configurationBindings, ReleasePolicies: policies, AuthorityID: authorityID,
 		BuildPlans:      buildPlans,
 		DeploymentPlans: deploymentPlans, DeploymentTargets: deploymentTargets,

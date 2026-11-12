@@ -9,6 +9,11 @@ import (
 	"edo/internal/dockerengine"
 )
 
+func (s *Service) logComposeOperation(ctx context.Context, prepared *executionContext, message string) {
+	message = string(redactLogBytes([]byte(message), normalizeLogRedactions(composeExecutionLogRedactions(prepared))))
+	s.appendRunLog(withPipelineNodeLog(ctx, prepared.node.ID, prepared.node.Name), prepared.run.ID, "deploy", "info", message)
+}
+
 func (s *Service) logComposeImageFailure(ctx context.Context, prepared *executionContext, err error) string {
 	diagnostic := string(redactLogBytes([]byte(err.Error()), normalizeLogRedactions(composeExecutionLogRedactions(prepared))))
 	diagnostic = truncateUTF8Bytes(diagnostic, 64*1024)

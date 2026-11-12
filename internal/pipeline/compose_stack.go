@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"sort"
 	"strings"
 
 	distributionreference "github.com/distribution/reference"
@@ -285,6 +286,10 @@ func renderComposeStack(value string, config model.WorkflowNodeConfig, images ma
 func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *executionContext, approvedBy string) error {
 	failure := failureStateForRun(prepared.run)
 	interpolation := composeInterpolationValues(prepared)
+	s.logComposeOperation(ctx, prepared, fmt.Sprintf("执行目标：%s；工作目录：%s", prepared.target.Name, prepared.target.WorkingDirectory))
+	if value := prepared.variables["EDO_IMAGE_TAG"]; value != "" {
+		s.logComposeOperation(ctx, prepared, "EDO_IMAGE_TAG="+value)
+	}
 	if err := s.freezeComposeProject(ctx, prepared); err != nil {
 		return s.failDeploymentExecution(ctx, failure, "无法自动确定 Compose 项目名，请检查 compose.yaml 的 name 和部署变量", err)
 	}
@@ -306,18 +311,29 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	if prepared.snapshot.IndependentDeploymentImages {
 		content, err = s.resolveConfiguredComposeImages(ctx, prepared, content)
 		if err != nil {
+			if prepared.snapshot.PreserveComposeImageReferences {
+				return s.failDeploymentExecution(ctx, failure, "无法解析部署配置中的镜像，请检查镜像引用和变量", err)
+			}
 			return s.failDeploymentExecution(ctx, failure, "无法拉取部署配置中的镜像，请检查镜像和仓库权限", err)
 		}
 	}
-	content, err = pinRegistryComposeImages(content, prepared.snapshot.RegistryInputs[prepared.node.ID], interpolation)
-	if err != nil {
-		return s.failDeploymentExecution(ctx, failure, "无法固定所选镜像仓库的镜像，请检查镜像和 Tag", err)
+	if !prepared.snapshot.PreserveComposeImageReferences {
+		content, err = pinRegistryComposeImages(content, prepared.snapshot.RegistryInputs[prepared.node.ID], interpolation)
+		if err != nil {
+			return s.failDeploymentExecution(ctx, failure, "无法固定所选镜像仓库的镜像，请检查镜像和 Tag", err)
+		}
 	}
 	var capability model.HostCapability
 	if err := s.db.WithContext(ctx).First(&capability, "host_id = ? AND kind = ? AND status = ?", prepared.target.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).Error; err != nil {
 		return s.failDeploymentExecution(ctx, failure, "目标主机的 Docker 能力不可用", err)
 	}
-	for _, image := range prepared.composeArtifacts {
+	imageServices := []string{}
+	for service := range prepared.composeArtifacts {
+		imageServices = append(imageServices, service)
+	}
+	sort.Strings(imageServices)
+	for _, service := range imageServices {
+		image := prepared.composeArtifacts[service]
 		var registry model.ImageRegistry
 		if err := s.db.WithContext(ctx).First(&registry, "uuid = ? AND is_active = ?", image.ImageRegistryID, true).Error; err != nil {
 			return s.failDeploymentExecution(ctx, failure, "部署镜像仓库已不可用", err)
@@ -330,10 +346,19 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 		if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
 			return s.failDeploymentExecution(ctx, failure, "流水线执行授权已失效", err)
 		}
-		if err := s.docker.PrepareRegistryImage(ctx, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth); err != nil {
+		var prepareErr error
+		if prepared.snapshot.PreserveComposeImageReferences {
+			s.logComposeOperation(ctx, prepared, fmt.Sprintf("拉取服务 %s 镜像 %s（使用仓库 %s 的认证）", service, image.ImageRef, registry.Name))
+			prepareErr = s.docker.PrepareConfiguredRegistryImage(ctx, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth)
+		} else {
+			s.logComposeOperation(ctx, prepared, "检查或拉取历史运行的固定镜像："+image.ImageRef)
+			prepareErr = s.docker.PrepareRegistryImage(ctx, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth)
+		}
+		if err := prepareErr; err != nil {
 			s.logComposeImageFailure(ctx, prepared, err)
 			return s.failDeploymentExecution(ctx, failure, "目标主机无法拉取部署配置中的镜像", err)
 		}
+		s.logComposeOperation(ctx, prepared, "镜像准备完成："+image.ImageRef)
 	}
 	message := "正在使用 EDO Compose 配置部署"
 	if tag != "" {
@@ -435,7 +460,7 @@ func composeStackScript(content string, config model.WorkflowNodeConfig, directo
 	}
 	health := ":"
 	if settings.HealthURL != "" {
-		health = "curl --fail --silent --show-error --max-time 10 --output /dev/null " + composeShellLiteral(settings.HealthURL)
+		health = "run_command curl --fail --silent --show-error --max-time 10 --output /dev/null " + composeShellLiteral(settings.HealthURL)
 	}
 	script := strings.NewReplacer("__EDO_UP_SERVICES__", strings.Join(explicit, " "), "__EDO_WRITE_ENV_FILES__", fileWrites, "__EDO_DOCKER__", docker, "__EDO_COMPOSE_ARGS__", args, "__EDO_PROJECT_NAME__", composeShellLiteral(settings.ProjectName), "__EDO_EXPECTED_IMAGES__", strings.Join(expected, " "), "__EDO_SERVICES__", strings.Join(services, " "), "__EDO_TIMEOUT__", fmt.Sprint(timeout-30), "__EDO_HEALTH_CHECK__", health, "__EDO_ADOPT_EXISTING__", fmt.Sprint(settings.AdoptExisting), "__EDO_WRITE_COMPOSE__", "cat >\"$release/compose.yml\" <<'"+marker+"'\n"+content+"\n"+marker+"\n").Replace(composeStackTemplate)
 	return script, nil

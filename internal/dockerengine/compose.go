@@ -725,6 +725,10 @@ func (s *Service) prepareComposeImage(
 	} else if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("检查目标主机 Docker Compose 镜像失败: %w", err)
 	}
+	return s.pullComposeImage(ctx, apiClient, endpoint, image, registry)
+}
+
+func (s *Service) pullComposeImage(ctx context.Context, apiClient *client.Client, endpoint *model.DockerEndpoint, image string, registry RegistryAuth) error {
 	pulledWithSSH, err := s.pullImageWithSSH(ctx, endpoint.ID, image, registry)
 	if err != nil {
 		return err
@@ -765,6 +769,25 @@ func (s *Service) PrepareRegistryImage(ctx context.Context, endpointID, hostID, 
 		return err
 	}
 	return s.prepareComposeImage(ctx, apiClient, endpoint, image, "", registry)
+}
+
+// PrepareConfiguredRegistryImage 按用户的原始引用拉取，Tag 已存在也刷新，不转换为 Digest。
+func (s *Service) PrepareConfiguredRegistryImage(ctx context.Context, endpointID, hostID, image string, registry RegistryAuth) error {
+	if _, err := reference.ParseNormalizedNamed(image); err != nil {
+		return errors.New("部署镜像地址无效")
+	}
+	endpoint, err := s.Find(ctx, endpointID)
+	if err != nil {
+		return err
+	}
+	if endpoint.HostID != hostID || !endpoint.IsActive {
+		return ErrInvalidEndpoint
+	}
+	apiClient, err := s.executionClient(ctx, endpointID)
+	if err != nil {
+		return err
+	}
+	return s.pullComposeImage(ctx, apiClient, endpoint, image, registry)
 }
 
 func composeProjectName(targetID string) string {

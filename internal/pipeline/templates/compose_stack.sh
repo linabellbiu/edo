@@ -1,6 +1,8 @@
-# Compose 正文由 EDO 保存并冻结；镜像由本次并行构建提供，不读取主机 Compose 文件。
+# Compose 正文来自本次冻结配置；按其中的镜像引用执行，不读取主机其他 Compose 文件。
 set -eu
 umask 077
+exec 3>&2
+printf '执行目录：%s\n' "$(pwd -P)" >&3
 : "${EDO_DEPLOYMENT_ID:?缺少部署记录}"
 : "${EDO_DEPLOYMENT_TARGET_ID:?缺少部署目标}"
 case "$EDO_DEPLOYMENT_ID:$EDO_DEPLOYMENT_TARGET_ID" in *[!a-zA-Z0-9:-]*) echo '部署标识无效' >&2; exit 1;; esac
@@ -18,7 +20,17 @@ mkdir "$release"
 log="$release/compose.log"
 current="$state/current.yml"
 [ ! -L "$current" ] || { echo 'Compose 状态文件不能是符号链接' >&2; exit 1; }
-docker_command() { __EDO_DOCKER__ "$@"; }
+# 仅记录受控命令的参数，不能使用 set -x 输出配置正文或凭据。
+trace_command() {
+ printf '执行命令：' >&3
+ for argument do
+  quoted=$(printf '%s' "$argument" | sed "s/'/'\"'\"'/g")
+  printf " '%s'" "$quoted" >&3
+ done
+ printf '\n' >&3
+}
+run_command() { trace_command "$@"; "$@"; }
+docker_command() { run_command __EDO_DOCKER__ "$@"; }
 dc() { file=$1; shift; docker_command compose __EDO_COMPOSE_ARGS__ --file "$file" "$@"; }
 expected_image() { case "$1" in __EDO_EXPECTED_IMAGES__ *) return 1;; esac; }
 show_error_details() {
@@ -40,6 +52,7 @@ show_error_details() {
 error() { edo_command_exit=$?; printf '%s（退出码 %s）\n' "$1" "$edo_command_exit" >&2; show_error_details; exit 1; }
 __EDO_WRITE_ENV_FILES__
 __EDO_WRITE_COMPOSE__
+printf '生成 Compose 文件：%s\n' "$release/compose.yml" >&3
 dc "$release/compose.yml" config --quiet >>"$log" 2>&1 || error 'EDO Compose 配置或变量校验失败'
 printf 'services:\n' >"$release/old-images.yml"
 : >"$release/old-restarts"
@@ -67,7 +80,12 @@ for service in __EDO_SERVICES__; do
  printf '  "%s":\n    image: "%s"\n' "$service" "$previous" >>"$release/old-images.yml"
 done
 if [ -f "$current" ]; then
- cp "$current" "$release/previous.yml"
+ if [ "$existing" = true ]; then
+  dc "$current" --file "$release/old-images.yml" config --no-interpolate --no-env-resolution --no-path-resolution --format json >"$release/previous.yml" 2>>"$log" || error '无法记录上一镜像配置'
+  printf '%s\n' '回滚配置已记录原容器的实际镜像 ID。' >&3
+ else
+  cp "$current" "$release/previous.yml"
+ fi
 elif [ "$existing" = true ]; then
  dc "$release/compose.yml" --file "$release/old-images.yml" config --no-interpolate --no-env-resolution --no-path-resolution --format json >"$release/previous.yml" 2>>"$log" || error '无法记录上一镜像配置'
 fi
@@ -79,6 +97,7 @@ rollback() {
  printf '%s（退出码 %s）\n' "${1:-Compose 部署或验收失败}" "$edo_command_exit" >&2
  show_error_details
  if [ -f "$release/previous.yml" ]; then
+  printf '恢复上一 Compose 配置：%s\n' "$release/previous.yml" >&3
   cp "$release/previous.yml" "$current"
   if dc "$current" up -d --no-build --pull never --wait --wait-timeout __EDO_TIMEOUT__ __EDO_UP_SERVICES__ >>"$log" 2>&1; then
    echo '本次发布失败，已恢复上一镜像配置' >&2
@@ -91,7 +110,8 @@ rollback() {
  fi
  exit 1
 }
-echo '正在执行 docker compose up -d'
+printf '使用 Compose 文件：%s\n' "$current" >&3
+echo '开始启动 Compose 服务'
 dc "$current" up -d --no-build --pull never --wait --wait-timeout __EDO_TIMEOUT__ __EDO_UP_SERVICES__ >>"$log" 2>&1 || rollback 'Compose 启动失败'
 for service in __EDO_SERVICES__; do
  expected=$(expected_image "$service") || expected=''
