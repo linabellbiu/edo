@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import client from '@/api/client'
 import { openLiveSocket } from '@/utils/liveSocket'
+import { pipelineLogLines } from '@/utils/pipelineLogHighlight'
 
 interface PipelineLog{id:number;node_id?:string;stage:string;level:string;message:string;created_at:string}
 const props=defineProps<{open:boolean;runID:string;nodeID?:string;title:string;initialStatus:string}>(),emit=defineEmits<{'update:open':[value:boolean]}>()
 const logs=ref<PipelineLog[]>([]),status=ref(''),connection=ref<'connecting'|'connected'|'complete'|'error'>('connecting'),error=ref(''),viewport=ref<HTMLDivElement|null>(null)
+const highlightedLogs=computed(()=>logs.value.map(log=>({...log,lines:pipelineLogLines(log.message,log.level)})))
 let dispose:undefined|(()=>void)
 let focusOrigin: HTMLElement | null = null
 watch(() => props.open, open => {
@@ -74,7 +76,7 @@ async function connect() {
 watch(()=>[props.open,props.runID,props.nodeID],()=>{if(props.open&&props.runID)void connect();else{dispose?.();dispose=undefined}},{immediate:true})
 onBeforeUnmount(()=>{focusOrigin=null;dispose?.()})
 </script>
-<template><a-drawer :open="open" :title="title" width="min(920px,94vw)" root-class-name="pipeline-log-drawer" :body-style="{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }" @close="emit('update:open',false)" @after-open-change="afterOpenChange"><template #extra><a-tag :color="connection==='connected'?'processing':connection==='complete'?'success':'error'">{{ connection==='connected'?'实时连接':connection==='complete'?'执行结束':connection==='connecting'?'连接中':'连接异常' }}</a-tag></template><div class="log-meta"><span>运行 ID：<code>{{ runID }}</code></span><span>状态：{{ status }}</span><span>{{ logs.length }} 条</span><b v-if="error">{{ error }}</b></div><div ref="viewport" class="log-viewport" role="region" :aria-label="title" tabindex="0"><div v-for="log in logs" :key="log.id" :class="`log-line level-${log.level}`"><time>{{ new Date(log.created_at).toLocaleTimeString('zh-CN',{hour12:false}) }}</time><span>{{ log.stage||'pipeline' }}</span><code>{{ log.message }}</code></div><a-empty v-if="!logs.length" :description="connection==='complete'?(nodeID?'该任务暂无日志':'本次运行暂无日志'):(nodeID?'等待该任务输出日志…':'等待流水线输出日志…')"/></div></a-drawer></template>
+<template><a-drawer :open="open" :title="title" width="min(920px,94vw)" root-class-name="pipeline-log-drawer" :body-style="{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }" @close="emit('update:open',false)" @after-open-change="afterOpenChange"><template #extra><a-tag :color="connection==='connected'?'processing':connection==='complete'?'success':'error'">{{ connection==='connected'?'实时连接':connection==='complete'?'执行结束':connection==='connecting'?'连接中':'连接异常' }}</a-tag></template><div class="log-meta"><span>运行 ID：<code>{{ runID }}</code></span><span>状态：{{ status }}</span><span>{{ logs.length }} 条</span><b v-if="error">{{ error }}</b></div><div ref="viewport" class="log-viewport" role="region" :aria-label="title" tabindex="0"><div v-for="log in highlightedLogs" :key="log.id" :class="`log-line level-${log.level}`"><time>{{ new Date(log.created_at).toLocaleTimeString('zh-CN',{hour12:false}) }}</time><span>{{ log.stage||'pipeline' }}</span><code><span v-for="(line,index) in log.lines" :key="index" class="log-text-line" :class="`tone-${line.tone}`">{{ line.text }}</span></code></div><a-empty v-if="!logs.length" :description="connection==='complete'?(nodeID?'该任务暂无日志':'本次运行暂无日志'):(nodeID?'等待该任务输出日志…':'等待流水线输出日志…')"/></div></a-drawer></template>
 <style scoped>
 .log-meta{flex:none;display:flex;flex-wrap:wrap;gap:14px;margin-bottom:10px;color:var(--edo-muted);font-size:12px}
 .log-meta > span{min-width:0}
@@ -84,10 +86,14 @@ onBeforeUnmount(()=>{focusOrigin=null;dispose?.()})
 .log-viewport:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
 .log-line{display:grid;grid-template-columns:75px 90px minmax(0,1fr);gap:8px;padding:3px 12px;border-bottom:1px solid rgb(255 255 255 / 4%)}
 .log-line code{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
-.log-line time,.log-line span{min-width:0;color:#7890a3;overflow-wrap:anywhere}
+.log-line time,.log-line > span{min-width:0;color:#7890a3;overflow-wrap:anywhere}
 .log-line.level-error code{color:#ff8792}
 .log-line.level-warning code{color:#f1c169}
 .log-line.level-success code{color:#6dd6a3}
+.log-text-line.tone-error{color:#ff8792;background:rgb(255 83 105 / 12%);font-weight:600}
+.log-text-line.tone-warning{color:#f1c169;background:rgb(241 193 105 / 9%);font-weight:600}
+.log-text-line.tone-success{color:#6dd6a3}
+.log-text-line.tone-command{color:#8bd8f7}
 .ant-empty{margin-top:120px}
 @media(max-width:640px){
   .log-line{grid-template-columns:75px minmax(0,1fr);gap:2px 8px;padding:8px 12px}

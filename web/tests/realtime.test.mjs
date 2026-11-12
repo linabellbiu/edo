@@ -7,6 +7,8 @@ import ts from 'typescript'
 import * as vue from 'vue'
 
 function loadSource(path, modules = {}, globals = {}) {
+  const storage = new Map()
+  globals = {localStorage: {getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)), removeItem: key => storage.delete(key)}, ...globals}
   const source = readFileSync(new URL(path, import.meta.url), 'utf8')
   const code = path.endsWith('.vue') ? compileScript(parse(source).descriptor, {id: 'realtime-test'}).content : source
   const compiled = ts.transpileModule(code, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}}).outputText
