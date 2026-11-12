@@ -664,10 +664,7 @@ func expandPipelineImageVariable(value string, run model.PipelineRun, app model.
 
 // 没有 Git Tag 时使用本次运行固定的短提交，不改变原始 Ref 或 Commit。
 func pipelineGitTag(run model.PipelineRun) string {
-	if tag, tagged := strings.CutPrefix(run.Ref, "refs/tags/"); tagged && tag != "" {
-		return tag
-	}
-	return run.ShortCommitSHA()
+	return run.GitTag()
 }
 
 func executionImageTag(run model.PipelineRun) (string, error) {

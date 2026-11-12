@@ -1,8 +1,7 @@
 package pipeline
 
 import (
-	"os"
-
+	composetemplate "github.com/compose-spec/compose-go/v2/template"
 	"github.com/distribution/reference"
 	"go.yaml.in/yaml/v3"
 )
@@ -26,12 +25,19 @@ func pinRegistryComposeImages(source string, inputs []workflowRegistryInput, var
 			return "", ErrDeploymentInputs
 		}
 		template, _ := service["image"].(string)
-		expanded := os.Expand(template, func(name string) string { return variables[name] })
+		expanded, err := composetemplate.SubstituteWithOptions(template, func(name string) (string, bool) {
+			value, exists := variables[name]
+			return value, exists
+		}, composetemplate.WithoutLogging)
+		if err != nil {
+			// 必填变量的原始诊断可能包含配置正文，交给调用方记录安全的失败分类。
+			return "", ErrDeploymentInputs
+		}
 		image, err := reference.ParseNormalizedNamed(expanded)
 		if err != nil {
 			continue
 		}
-		if pinned := images[image.String()]; pinned != "" {
+		if pinned := images[reference.TagNameOnly(image).String()]; pinned != "" {
 			service["image"] = pinned
 		}
 	}

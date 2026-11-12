@@ -247,9 +247,16 @@ func (s *Service) controlCustomContainer(ctx context.Context, record *model.Depl
 		}
 	}
 	script = prefix + script
-	environment["EDO_PIPELINE_RUN_ID"] = run.ID
-	environment["EDO_GIT_REF"] = run.Ref
-	environment["EDO_COMMIT_SHA"] = run.ShortCommitSHA()
+	pipelineValues, independent, err := s.recordPipelineEnvironment(ctx, record, run)
+	if err != nil {
+		return dockerengine.RuntimeState{}, err
+	}
+	delete(environment, "EDO_IMAGE_TAG")
+	delete(environment, "IMAGE_TAG")
+	delete(environment, "EDO_IMAGE")
+	for name, value := range pipelineValues {
+		environment[name] = value
+	}
 
 	for _, image := range snapshot.RegistryInputs[record.WorkflowNodeID] {
 		if image.Index < 0 || image.Index >= 32 || image.ImageRef == "" {
@@ -259,44 +266,56 @@ func (s *Service) controlCustomContainer(ctx context.Context, record *model.Depl
 	}
 	environment["EDO_APPLICATION_ID"] = record.ApplicationID
 	environment["EDO_DEPLOYMENT_ID"] = record.ID
-	delete(environment, "EDO_IMAGE_TAG")
-	delete(environment, "IMAGE_TAG")
-	var images []model.Artifact
-	query := s.db.WithContext(ctx).Where("project_id = ? AND application_id = ? AND kind = ? AND status = ?", record.ProjectID, record.ApplicationID, model.ArtifactKindOCIImage, model.ArtifactStatusAvailable)
-	if record.ArtifactID != "" {
-		query = query.Where("pipeline_run_id = ? OR uuid = ?", run.ID, record.ArtifactID)
-	} else {
-		query = query.Where("pipeline_run_id = ?", run.ID)
-	}
-	if err = query.Limit(65).Find(&images).Error; err != nil {
-		return dockerengine.RuntimeState{}, err
-	}
-	tag := ""
-	imageRef := ""
-	ambiguous := false
-	for _, image := range images {
-		named, parseErr := reference.ParseNormalizedNamed(image.Name)
-		if parseErr != nil {
-			continue
-		}
-		if tagged, ok := named.(reference.Tagged); ok {
-			if tag != "" && tag != tagged.Tag() {
-				ambiguous = true
+	if !independent {
+		var images []model.Artifact
+		query := s.db.WithContext(ctx).Where("project_id = ? AND application_id = ? AND kind = ? AND status = ?", record.ProjectID, record.ApplicationID, model.ArtifactKindOCIImage, model.ArtifactStatusAvailable)
+		if record.ArtifactID != "" {
+			var bound model.Artifact
+			if err = s.db.WithContext(ctx).Select("kind").Where("uuid = ? AND project_id = ? AND application_id = ?", record.ArtifactID, record.ProjectID, record.ApplicationID).First(&bound).Error; err != nil {
+				s.logger.ErrorContext(ctx, "读取部署绑定制品失败", "operation", "runtime_bound_artifact", "deployment_id", record.ID, "artifact_id", record.ArtifactID, "err", err)
+				return dockerengine.RuntimeState{}, ErrRuntimeControlInvalid
 			}
-			tag = tagged.Tag()
+			if bound.Kind == model.ArtifactKindOCIImage {
+				query = query.Where("uuid = ?", record.ArtifactID)
+			} else {
+				query = query.Where("pipeline_run_id = ?", run.ID)
+			}
+		} else {
+			query = query.Where("pipeline_run_id = ?", run.ID)
 		}
-		if imageRef == "" {
-			imageRef = image.ImageRef
-		} else if imageRef != image.ImageRef {
-			imageRef = ""
+		if err = query.Limit(65).Find(&images).Error; err != nil {
+			return dockerengine.RuntimeState{}, err
 		}
-	}
-	if !ambiguous && len(images) <= 64 && tag != "" {
-		environment["EDO_IMAGE_TAG"] = tag
-		environment["IMAGE_TAG"] = tag
-	}
-	if len(images) == 1 {
-		environment["EDO_IMAGE"] = imageRef
+		tag := ""
+		imageRef := ""
+		ambiguous := false
+		for _, image := range images {
+			named, parseErr := reference.ParseNormalizedNamed(image.Name)
+			if parseErr != nil {
+				continue
+			}
+			if tagged, ok := named.(reference.Tagged); ok {
+				if tag != "" && tag != tagged.Tag() {
+					ambiguous = true
+				}
+				tag = tagged.Tag()
+			}
+			if imageRef == "" {
+				imageRef = image.ImageRef
+			} else if imageRef != image.ImageRef {
+				imageRef = ""
+			}
+		}
+		if !ambiguous && len(images) <= 64 && tag != "" {
+			environment["EDO_IMAGE_TAG"] = tag
+			environment["IMAGE_TAG"] = tag
+		}
+		if len(images) == 1 {
+			environment["EDO_IMAGE"] = imageRef
+			if images[0].StorageKind == model.ArtifactStorageKindDockerDaemon {
+				environment["EDO_IMAGE"] = images[0].LocalImageID
+			}
+		}
 	}
 	var app model.Application
 	if err = s.db.WithContext(ctx).Select("name").Where("uuid = ?", record.ApplicationID).First(&app).Error; err != nil {

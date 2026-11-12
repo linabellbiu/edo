@@ -67,6 +67,11 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 	if settings == nil || !composeconfig.ValidProjectName(settings.ProjectName) || len(plan.ComposeYAML) == 0 || len(plan.ComposeYAML) > 128*1024 {
 		return "", dockerengine.ComposeProjectScope{}, invalid
 	}
+	tagVariable := composeconfig.TagVariableName(settings.TagVariable)
+	if settings.TagVariable != "" && tagVariable == "" {
+		s.logger.WarnContext(ctx, "发布快照的镜像 Tag 变量引用无效", "operation", "compose_runtime_tag_variable", "deployment_id", record.ID, "err", invalid)
+		return "", dockerengine.ComposeProjectScope{}, invalid
+	}
 	var document map[string]any
 	if err := yaml.Unmarshal([]byte(plan.ComposeYAML), &document); err != nil {
 		return "", dockerengine.ComposeProjectScope{}, invalid
@@ -99,5 +104,5 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 		}
 		configurationDirectory = snapshot.ApplicationConfigDirectory
 	}
-	return capability.RuntimeID, dockerengine.ComposeProjectScope{ConfigurationDirectory: configurationDirectory, ConfigurationParameters: configuration.DeploymentParameters, ConfigurationFiles: configuration.ConfigurationFiles, HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services, CompletionServices: completedServices, UseSudo: settings.UseSudo, EnvFile: settings.EnvFile, TagVariable: settings.TagVariable}, nil
+	return capability.RuntimeID, dockerengine.ComposeProjectScope{ConfigurationDirectory: configurationDirectory, ConfigurationParameters: configuration.DeploymentParameters, ConfigurationFiles: configuration.ConfigurationFiles, HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services, CompletionServices: completedServices, UseSudo: settings.UseSudo, EnvFile: settings.EnvFile, TagVariable: tagVariable}, nil
 }

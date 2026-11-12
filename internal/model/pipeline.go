@@ -366,6 +366,14 @@ func (run PipelineRun) ShortCommitSHA() string {
 	return commit[:min(len(commit), 12)]
 }
 
+// GitTag 返回固定运行版本，不读取当前仓库或已修改的流水线。
+func (run PipelineRun) GitTag() string {
+	if tag, tagged := strings.CutPrefix(run.Ref, "refs/tags/"); tagged && tag != "" {
+		return tag
+	}
+	return run.ShortCommitSHA()
+}
+
 // PipelineRunLog 是流水线运行的追加式日志。自增 ID 同时作为跨数据库兼容的游标，
 // WebSocket 重连时可以从最后一条继续读取，避免重复或遗漏构建输出。
 type PipelineRunLog struct {

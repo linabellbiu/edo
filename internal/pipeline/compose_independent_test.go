@@ -276,6 +276,20 @@ func TestIndependentComposeTagContextDoesNotBindImageOrRegistry(t *testing.T) {
 	if err := s.addDeploymentPipelineVariables(context.Background(), p); err != nil || p.variables["EDO_IMAGE_TAG"] != "" {
 		t.Fatalf("不同 Tag 时不能猜测上游镜像: %+v %v", p.variables, err)
 	}
+	if err := db.Model(&model.Artifact{}).Where("uuid = ?", "foreign").Update("project_id", "other").Error; err != nil {
+		t.Fatal(err)
+	}
+	p.run.Ref = "refs/tags/git-version"
+	p.deploymentPlan = model.DeploymentPlan{Kind: model.DeploymentPlanDocker}
+	p.node.Config.DeploymentTagReference = "${EDO_IMAGE_TAG}"
+	if err := s.addDeploymentPipelineVariables(context.Background(), p); err != nil || p.variables["EDO_IMAGE_TAG"] != "v1" {
+		t.Fatal("仅在部署 Tag 字段引用时退回了 Git Tag", err)
+	}
+	p.node.Config.DeploymentTagReference = ""
+	p.deploymentPlan.DockerConfig.DeploymentScript = "printf '%s' \"${EDO_IMAGE_TAG}\""
+	if err := s.addDeploymentPipelineVariables(context.Background(), p); err != nil || p.variables["EDO_IMAGE_TAG"] != "v1" {
+		t.Fatal("Docker 方案中的 Tag 引用未采用实际产物", err)
+	}
 }
 
 func TestIndependentDeploymentDoesNotAutomaticallyConsumeLastImage(t *testing.T) {

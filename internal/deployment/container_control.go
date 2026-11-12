@@ -268,20 +268,23 @@ func (s *Service) recreateComposeService(ctx context.Context, record *model.Depl
 	if err = s.db.WithContext(ctx).First(&run, "uuid = ?", record.PipelineRunID).Error; err != nil {
 		return dockerengine.RuntimeState{}, err
 	}
-	environment["EDO_PIPELINE_RUN_ID"] = run.ID
-	environment["EDO_APPLICATION_ID"] = record.ApplicationID
-	environment["EDO_GIT_REF"] = run.Ref
-	environment["EDO_COMMIT_SHA"] = run.ShortCommitSHA()
-	environment["EDO_DEPLOYMENT_ID"] = record.ID
-	environment["EDO_DEPLOYMENT_TARGET_ID"] = record.TargetID
+	pipelineValues, independent, err := s.recordPipelineEnvironment(ctx, record, run)
+	if err != nil {
+		return dockerengine.RuntimeState{}, err
+	}
+	delete(environment, "EDO_IMAGE_TAG")
+	delete(environment, "IMAGE_TAG")
+	for name, value := range pipelineValues {
+		environment[name] = value
+	}
 	var application model.Application
 	if err = s.db.WithContext(ctx).Select("name").First(&application, "uuid = ?", record.ApplicationID).Error; err != nil {
 		return dockerengine.RuntimeState{}, err
 	}
 	environment["EDO_APPLICATION_NAME"] = application.Name
-	if scope.TagVariable != "" && record.ArtifactID != "" {
+	if !independent && record.ArtifactID != "" {
 		var artifact model.Artifact
-		if err = s.db.WithContext(ctx).First(&artifact, "uuid = ?", record.ArtifactID).Error; err != nil {
+		if err = s.db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND application_id = ?", record.ArtifactID, record.ProjectID, record.ApplicationID).First(&artifact).Error; err != nil {
 			return dockerengine.RuntimeState{}, err
 		}
 		name, parseErr := reference.ParseNormalizedNamed(artifact.Name)
@@ -289,7 +292,10 @@ func (s *Service) recreateComposeService(ctx context.Context, record *model.Depl
 			return dockerengine.RuntimeState{}, parseErr
 		}
 		if tagged, ok := name.(reference.NamedTagged); ok {
-			environment[scope.TagVariable] = tagged.Tag()
+			environment["EDO_IMAGE_TAG"], environment["IMAGE_TAG"] = tagged.Tag(), tagged.Tag()
+			if scope.TagVariable != "" {
+				environment[scope.TagVariable] = tagged.Tag()
+			}
 		}
 	}
 	if configuration != nil {

@@ -34,7 +34,11 @@ func (s *Service) addDeploymentPipelineVariables(ctx context.Context, prepared *
 	}
 	prepared.variables["EDO_APPLICATION_NAME"] = prepared.application.Name
 	prepared.variables["EDO_DEPLOYMENT_TARGET_ID"] = prepared.target.ID
-	variables := composetemplate.ExtractVariables(map[string]any{"compose": prepared.deploymentPlan.ComposeYAML, "script": prepared.node.Config.DeploymentScript, "plan_script": prepared.deploymentPlan.Script}, nil)
+	references := map[string]any{"compose": prepared.deploymentPlan.ComposeYAML, "script": prepared.node.Config.DeploymentScript, "plan_script": prepared.deploymentPlan.Script, "docker_script": prepared.deploymentPlan.DockerConfig.DeploymentScript, "tag_reference": prepared.node.Config.DeploymentTagReference}
+	if prepared.node.Config.Compose != nil {
+		references["compose_tag_reference"] = prepared.node.Config.Compose.TagVariable
+	}
+	variables := composetemplate.ExtractVariables(references, nil)
 	_, tagReferenced := variables["EDO_IMAGE_TAG"]
 	_, legacyTagReferenced := variables["IMAGE_TAG"]
 	if !tagReferenced && !legacyTagReferenced && prepared.node.Config.DeploymentParameters == "" {

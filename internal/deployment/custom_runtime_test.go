@@ -127,9 +127,17 @@ func (r customRuntimeActionRunner) RunHostDeploymentScript(_ context.Context, in
 }
 
 func TestCustomRuntimeActionsUseFrozenCommandsAndVerifyContainerGeneration(t *testing.T) {
+	for _, independent := range []bool{false, true} {
+		t.Run(fmt.Sprint(independent), func(t *testing.T) { testCustomRuntimeFrozenActions(t, independent, false) })
+	}
+	t.Run("legacy-file-input", func(t *testing.T) { testCustomRuntimeFrozenActions(t, false, true) })
+}
+
+func testCustomRuntimeFrozenActions(t *testing.T, independent, fileInput bool) {
+	t.Helper()
 	f := newContainerControlFixture(t)
 	commit := "0123456789abcdef0123456789abcdef01234567"
-	if err := f.db.Model(&model.PipelineRun{}).Where("uuid = ?", f.record.PipelineRunID).Update("commit_sha", commit).Error; err != nil {
+	if err := f.db.Model(&model.PipelineRun{}).Where("uuid = ?", f.record.PipelineRunID).Updates(map[string]any{"commit_sha": commit, "ref": "refs/tags/git-version"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	image := model.Artifact{ID: uuid.NewString(), ApplicationID: f.record.ApplicationID, ProjectID: f.record.ProjectID, PipelineRunID: f.record.PipelineRunID, Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable, Name: "example/app:release-one", ImageRef: "example/app@sha256:" + strings.Repeat("e", 64)}
@@ -137,6 +145,13 @@ func TestCustomRuntimeActionsUseFrozenCommandsAndVerifyContainerGeneration(t *te
 		t.Fatal(err)
 	}
 	f.record.ArtifactID = image.ID
+	if fileInput {
+		file := model.Artifact{ID: uuid.NewString(), ProjectID: f.record.ProjectID, ApplicationID: f.record.ApplicationID, PipelineRunID: f.record.PipelineRunID, Kind: model.ArtifactKindFileBundle, Status: model.ArtifactStatusAvailable, Name: "files.tar.gz"}
+		if err := f.db.Create(&file).Error; err != nil {
+			t.Fatal(err)
+		}
+		f.record.ArtifactID = file.ID
+	}
 	f.record.DeploymentPlanKind = model.DeploymentPlanScript
 	f.record.CommandScript = "# EDO 用户部署脚本 v1\nprintf deployed"
 	if err := f.db.Save(&f.record).Error; err != nil {
@@ -144,6 +159,21 @@ func TestCustomRuntimeActionsUseFrozenCommandsAndVerifyContainerGeneration(t *te
 	}
 	binding := model.WorkflowRuntimeService{Name: "owned_api", RestartScript: "printf RESTART", RecreateScript: "printf RECREATE"}
 	snapshot := map[string]any{"application_config_directory": "~/edo/container_control/config", "stages": []model.WorkflowStage{{ID: "release", Tasks: []model.WorkflowNode{{ID: f.record.WorkflowNodeID, Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{DeploymentPlanID: f.record.DeploymentPlanID, RuntimeServices: []model.WorkflowRuntimeService{binding}}}}}}}
+	if independent {
+		snapshot["independent_deployment_images"] = true
+		snapshot["build_plans"] = map[string]any{"before": map[string]any{"kind": model.BuildPlanDockerfile}, "later": map[string]any{"kind": model.BuildPlanDockerfile}}
+		stages := snapshot["stages"].([]model.WorkflowStage)
+		snapshot["stages"] = append([]model.WorkflowStage{{ID: "before", Tasks: []model.WorkflowNode{{ID: "before", Type: model.WorkflowNodeBuild}}}}, append(stages, model.WorkflowStage{ID: "later", Tasks: []model.WorkflowNode{{ID: "later", Type: model.WorkflowNodeBuild}}})...)
+		later := model.Artifact{ID: uuid.NewString(), ApplicationID: f.record.ApplicationID, ProjectID: f.record.ProjectID, PipelineRunID: f.record.PipelineRunID, Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable, Name: "example/app:future-version", ImageRef: "example/app@sha256:" + strings.Repeat("d", 64)}
+		if err := f.db.Create(&later).Error; err != nil {
+			t.Fatal(err)
+		}
+		for _, node := range []model.PipelineNodeRun{{ID: uuid.NewString(), PipelineRunID: f.record.PipelineRunID, ProjectID: f.record.ProjectID, NodeID: "before", ArtifactID: image.ID, Status: model.PipelineRunSucceeded}, {ID: uuid.NewString(), PipelineRunID: f.record.PipelineRunID, ProjectID: f.record.ProjectID, NodeID: "later", ArtifactID: later.ID, Status: model.PipelineRunSucceeded}} {
+			if err := f.db.Create(&node).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	encoded, _ := json.Marshal(snapshot)
 	if err := f.db.Model(&model.PipelineRun{}).Where("uuid = ?", f.record.PipelineRunID).Update("workflow_snapshot", string(encoded)).Error; err != nil {
 		t.Fatal(err)
@@ -179,6 +209,9 @@ func TestCustomRuntimeActionsUseFrozenCommandsAndVerifyContainerGeneration(t *te
 	}
 	calls := []string{}
 	f.service.ssh = customRuntimeActionRunner{run: func(input sshdeploy.Input) {
+		if input.Environment["EDO_GIT_TAG"] != "git-version" {
+			t.Error("重启、重建缺少首次部署的 Git Tag")
+		}
 		if input.Environment["EDO_COMMIT_SHA"] != "0123456789ab" {
 			t.Errorf("重启、重建应注入 12 位短 Commit: %q", input.Environment["EDO_COMMIT_SHA"])
 		}
@@ -220,5 +253,70 @@ func TestCustomRuntimeActionsUseFrozenCommandsAndVerifyContainerGeneration(t *te
 	var stored model.PipelineRun
 	if err := f.db.First(&stored, "uuid = ?", f.record.PipelineRunID).Error; err != nil || stored.CommitSHA != commit {
 		t.Fatal("重启、重建改写了完整运行 Commit", err)
+	}
+}
+
+func TestComposeRecreateRestoresBuiltinImageContext(t *testing.T) {
+	for _, independent := range []bool{false, true} {
+		t.Run(fmt.Sprint(independent), func(t *testing.T) { testComposeRecreateBuiltinContext(t, independent) })
+	}
+}
+
+func testComposeRecreateBuiltinContext(t *testing.T, independent bool) {
+	t.Helper()
+	f := newContainerControlFixture(t)
+	var run model.PipelineRun
+	if err := f.db.First(&run, "uuid = ?", f.record.PipelineRunID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot["independent_deployment_images"] = independent
+	wantTag := "v2"
+	if !independent {
+		image := model.Artifact{ID: uuid.NewString(), ProjectID: f.record.ProjectID, ApplicationID: f.record.ApplicationID, PipelineRunID: run.ID, Name: "example/api:built-version", Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable, ImageRef: "example/api@sha256:" + strings.Repeat("e", 64)}
+		if err := f.db.Create(&image).Error; err != nil {
+			t.Fatal(err)
+		}
+		f.record.ArtifactID = image.ID
+		if err := f.db.Save(&f.record).Error; err != nil {
+			t.Fatal(err)
+		}
+		encodedStages, _ := json.Marshal(snapshot["stages"])
+		var stages []model.WorkflowStage
+		if err := json.Unmarshal(encodedStages, &stages); err != nil {
+			t.Fatal(err)
+		}
+		stages[0].Tasks[0].Config.Compose.TagVariable = "${RELEASE_TAG}"
+		snapshot["stages"] = stages
+		wantTag = "built-version"
+	}
+	encoded, _ := json.Marshal(snapshot)
+	if err := f.db.Model(&run).Updates(map[string]any{"workflow_snapshot": string(encoded), "ref": "refs/tags/v2", "commit_sha": strings.Repeat("a", 40)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	f.service.ssh = customRuntimeActionRunner{run: func(input sshdeploy.Input) {
+		if input.Environment["EDO_GIT_TAG"] != "v2" || input.Environment["EDO_IMAGE_TAG"] != wantTag || input.Environment["EDO_COMMIT_SHA"] != strings.Repeat("a", 12) {
+			t.Error("Compose 重建没有恢复与首次部署相同的内置版本")
+		}
+		if !sshdeploy.ValidEnvironmentVariables(input.Environment) || !independent && input.Environment["RELEASE_TAG"] != wantTag {
+			t.Error("镜像 Tag 引用未转换为可传给执行主机的变量名")
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		delete(f.states, strings.Repeat("a", 64))
+		delete(f.states, strings.Repeat("b", 64))
+		f.states[strings.Repeat("e", 64)] = "running"
+		f.states[strings.Repeat("f", 64)] = "running"
+	}}
+	configureDeploymentAuthorizationTestActor(t, f.db, f.record.ProjectID, f.record.DepartmentID, "operator", access.PermissionDeploymentRead, access.PermissionContainerRecreate)
+	plan, err := f.service.ContainerControlPreview(f.ctx, f.record.ID, strings.Repeat("a", 64), "operator", "recreate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.ControlContainer(f.ctx, f.record.ID, strings.Repeat("a", 64), "operator", "recreate", ContainerControlConfirmation{Digest: plan.Digest}); err != nil {
+		t.Fatal(err)
 	}
 }

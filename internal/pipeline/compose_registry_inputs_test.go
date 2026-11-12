@@ -35,6 +35,33 @@ func TestComposeDeploymentOnlyPinsSelectedRegistryImages(t *testing.T) {
 	}
 }
 
+func TestRegistryImagePinningUsesComposeDefaultAndRequiredExpressions(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("b", 64)
+	for _, image := range []string{"registry.example.com/team/app:${VERSION:-v1}", "${REGISTRY:-registry.example.com}/team/app:${VERSION-v1}", "registry.example.com/team/app:${VERSION:?版本缺失}"} {
+		inputs := []workflowRegistryInput{{ImageRef: "registry.example.com/team/app@" + digest, Tag: "v1"}}
+		text, err := pinRegistryComposeImages("services:\n  api:\n    image: "+image+"\n", inputs, map[string]string{"VERSION": "v1"})
+		if err != nil || !strings.Contains(text, inputs[0].ImageRef) {
+			t.Fatal("Compose 表达式没有使用已冻结的镜像摘要", image, err)
+		}
+	}
+	for _, values := range []map[string]string{nil, {"VERSION": ""}} {
+		inputs := []workflowRegistryInput{{ImageRef: "registry.example.com/team/app@" + digest, Tag: "v1"}}
+		text, err := pinRegistryComposeImages("services:\n  api:\n    image: registry.example.com/team/app:${VERSION:-v1}\n", inputs, values)
+		if err != nil || !strings.Contains(text, inputs[0].ImageRef) {
+			t.Fatal("未设置或空变量没有按 Compose 默认值固定摘要", err)
+		}
+	}
+	inputs := []workflowRegistryInput{{ImageRef: "docker.io/library/alpine@" + digest, Tag: "latest"}}
+	text, err := pinRegistryComposeImages("services:\n  api:\n    image: alpine\n", inputs, nil)
+	if err != nil || !strings.Contains(text, inputs[0].ImageRef) {
+		t.Fatal("省略 latest 的镜像没有固定摘要", err)
+	}
+	_, err = pinRegistryComposeImages("services:\n  api:\n    image: registry.example.com/app:${VERSION:?private-canary}\n", inputs, nil)
+	if err == nil || strings.Contains(err.Error(), "private-canary") {
+		t.Fatal("必填变量没有安全拒绝")
+	}
+}
+
 func TestDockerDeploymentLoadsRegistryImageWithoutAnyBuildArtifact(t *testing.T) {
 	input := workflowRegistryInput{Index: 0, RegistryID: "registry", ImageRef: "registry.example.com/team/app@sha256:" + strings.Repeat("a", 64), Tag: "v1"}
 	node := model.WorkflowNode{ID: "deploy", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{DeploymentPlanID: "plan", DeploymentInputVersion: 1, DeploymentInputs: []model.DeploymentInput{{Kind: "registry", RegistryID: input.RegistryID, Image: "app", Tag: "v1"}}}}
