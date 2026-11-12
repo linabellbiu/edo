@@ -13,7 +13,7 @@ import (
 	"edo/internal/pipelineimage"
 )
 
-func TestSelectedImageBuildSurvivesLibraryPlanAndRunSnapshot(t *testing.T) {
+func TestNewDeploymentUsesTagOnlyAndPreservesStoredLegacyBindings(t *testing.T) {
 	s, db, _, repo := newPipelineTestService(t)
 	ctx := deliveryTestContext()
 	authorizeRegistryTestActors(t, s, "admin")
@@ -27,7 +27,7 @@ func TestSelectedImageBuildSurvivesLibraryPlanAndRunSnapshot(t *testing.T) {
 	}
 	execution := savedRegistryExecutionForTest(t, s, "")
 	execution.Compose = &model.ComposeDeploymentSettings{TagVariable: "${EDO_IMAGE_TAG}"}
-	plan, err := s.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{Name: "通用部署", Kind: model.DeploymentPlanComposeStack, ComposeYAML: "services:\n  api:\n    image: ${EDO_IMAGE_TAG}\n", ExecutionConfig: execution, DeploymentTarget: target})
+	plan, err := s.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{Name: "通用部署", Kind: model.DeploymentPlanComposeStack, ComposeYAML: "services:\n  api:\n    image: registry.example.com/team/api:${EDO_IMAGE_TAG}\n", ExecutionConfig: execution, DeploymentTarget: target})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,13 +40,13 @@ func TestSelectedImageBuildSurvivesLibraryPlanAndRunSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := model.WorkflowNode{ID: "source", Name: "代码源", Type: model.WorkflowNodeTrigger, Config: model.WorkflowNodeConfig{Events: []string{"manual"}, Branch: "main"}}
-	config := model.WorkflowNodeConfig{DeploymentPlanID: plan.ID, ImageBuildNodeID: "api-build", ComposeBuildBindings: []model.ComposeBuildBinding{{Service: "api", BuildNodeID: "api-build"}}}
+	config := model.WorkflowNodeConfig{DeploymentPlanID: plan.ID, ImageBuildNodeID: "removed-build", ComposeBuildBindings: []model.ComposeBuildBinding{{Service: "removed-service", BuildNodeID: "removed-build"}}}
 	saved, err := s.SaveWorkflow(ctx, app.ID, "admin", WorkflowInput{Name: current.Workflow.Name, Revision: current.Workflow.Revision, SchemaVersion: model.WorkflowSchemaVersion, Activate: true, Source: source, Stages: []model.WorkflowStage{{ID: "build", Name: "构建", Tasks: []model.WorkflowNode{{ID: "api-build", Name: "API", Type: model.WorkflowNodeBuild, Config: model.WorkflowNodeConfig{BuildPlanID: build.ID, ImageName: "custom/api"}}}}, {ID: "deploy", Name: "部署", Tasks: []model.WorkflowNode{{ID: "deploy", Name: "部署", Type: model.WorkflowNodeDeploy, Config: config}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := saved.Workflow.Stages[1].Tasks[0].Config; got.ImageBuildNodeID != "api-build" || len(got.ComposeBuildBindings) != 1 {
-		t.Fatal("保存后丢失构建关联")
+	if got := saved.Workflow.Stages[1].Tasks[0].Config; got.ImageBuildNodeID != "removed-build" || len(got.ComposeBuildBindings) != 1 {
+		t.Fatal("保存时丢失已有历史关联数据")
 	}
 	run, err := s.newResolvedWorkflowRun(ctx, app, saved.Workflow, source, "manual", "refs/tags/v3", strings.Repeat("a", 40), "admin", "", time.Now())
 	if err != nil {
@@ -56,8 +56,15 @@ func TestSelectedImageBuildSurvivesLibraryPlanAndRunSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.ImageTagIncludesName || snapshot.Stages[1].Tasks[0].Config.ImageBuildNodeID != "api-build" || snapshot.Stages[1].Tasks[0].Config.ComposeBuildBindings[0].BuildNodeID != "api-build" {
-		t.Fatal("应用库方案时丢失显式来源")
+	if snapshot.ImageTagIncludesName || snapshot.Stages[1].Tasks[0].Config.ImageBuildNodeID != "" || len(snapshot.Stages[1].Tasks[0].Config.ComposeBuildBindings) != 0 {
+		t.Fatal("新运行仍使用完整镜像变量或要求构建关联")
+	}
+	var storedWorkflow model.ReleaseWorkflow
+	if err := db.First(&storedWorkflow, "uuid = ?", saved.Workflow.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if storedWorkflow.Stages[1].Tasks[0].Config.ImageBuildNodeID != "removed-build" || storedWorkflow.Stages[1].Tasks[0].Config.ComposeBuildBindings[0].Service != "removed-service" {
+		t.Fatal("创建新运行回写了已保存历史数据")
 	}
 	var stored model.DeploymentPlan
 	if err = db.WithContext(context.Background()).First(&stored, "uuid = ?", plan.ID).Error; err != nil {
@@ -68,7 +75,7 @@ func TestSelectedImageBuildSurvivesLibraryPlanAndRunSnapshot(t *testing.T) {
 	}
 }
 
-func TestSelectedBuildImagesUseActualNamesAndFrozenDigests(t *testing.T) {
+func TestHistoricalSelectedBuildImagesUseActualNamesAndFrozenDigests(t *testing.T) {
 	s, db, _, _ := newPipelineTestService(t)
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++; w.WriteHeader(500) }))

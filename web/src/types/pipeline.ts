@@ -29,6 +29,7 @@ export interface DeploymentInput {
 }
 
 export interface WorkflowNodeConfig {
+ // 仅保留历史任务关联，新运行不读取。
  image_build_node_id?: string
  compose_build_bindings?: Array<{service:string;build_node_id:string}>
  deployment_registry_id?: string

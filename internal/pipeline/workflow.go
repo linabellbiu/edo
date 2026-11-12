@@ -77,7 +77,7 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
-	ImageTagIncludesName         bool                                        `json:"image_tag_includes_name,omitempty"`
+	ImageTagIncludesName         bool                                        `json:"image_tag_includes_name,omitempty"` // 仅恢复曾使用完整镜像引用的历史运行。
 	IndependentDeploymentImages  bool                                        `json:"independent_deployment_images,omitempty"`
 	ExplicitDeploymentRegistries bool                                        `json:"explicit_deployment_registries,omitempty"`
 	RegistryInputs               map[string][]workflowRegistryInput          `json:"registry_inputs,omitempty"`
@@ -540,10 +540,6 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 }
 
 func sanitizeWorkflowNode(node *model.WorkflowNode) error {
-	if !validImageBuildBindingShape(*node) {
-		slog.Warn("镜像构建关联格式无效", "node_id", node.ID, "err", ErrInvalidWorkflow)
-		return ErrInvalidWorkflow
-	}
 	node.Config.ExecutionHostID = ""
 	node.Config.BuildPlatform = strings.TrimSpace(node.Config.BuildPlatform)
 	if node.Config.BuildPlatform != "" {
@@ -741,7 +737,7 @@ func (s *Service) validateWorkflow(
 	source model.WorkflowNode,
 	stages []model.WorkflowStage,
 ) []WorkflowIssue {
-	stages = cloneWorkflowStages(stages)
+	stages = tagOnlyWorkflowStages(stages)
 	issues := make([]WorkflowIssue, 0)
 	if schemaVersion != model.WorkflowSchemaVersion {
 		return []WorkflowIssue{{Code: "unsupported_schema_version", Message: "流水线结构版本无效"}}
@@ -1032,30 +1028,6 @@ func (s *Service) validateWorkflow(
 	}
 	issues = append(issues, validateWorkflowArtifactFlow(tasks, activeBuildPlans, activeDeploymentPlans, activeTargets)...)
 	issues = append(issues, validateUpstreamArtifactStages(stages)...)
-	buildKinds := map[string]model.BuildPlanKind{}
-	for _, task := range tasks {
-		if task.Type == model.WorkflowNodeBuild {
-			if task.Config.InlineBuild != nil {
-				buildKinds[task.ID] = task.Config.InlineBuild.Kind
-			} else {
-				buildKinds[task.ID] = activeBuildPlans[task.Config.BuildPlanID].Kind
-			}
-		}
-	}
-	issues = append(issues, validateImageBuildBindings(stages, buildKinds)...)
-	for _, task := range tasks {
-		if task.Type != model.WorkflowNodeDeploy {
-			continue
-		}
-		plan := activeDeploymentPlans[task.Config.DeploymentPlanID]
-		content := plan.ComposeYAML
-		if task.Config.ComposeSource != nil {
-			content = ""
-		}
-		if err := validateSelectedImageReferences(task, plan.Kind, content, task.Config.DeploymentScript+"\n"+plan.Script); err != nil {
-			issues = append(issues, WorkflowIssue{Code: "missing_image_build_reference", Message: "请为内置镜像引用选择对应的前序构建任务，并检查服务关联", NodeID: task.ID})
-		}
-	}
 	return uniqueIssues(issues)
 }
 
@@ -1134,7 +1106,7 @@ func validateWorkflowArtifactFlow(
 			}
 		case model.WorkflowNodeDeploy:
 			kind := deploymentPlans[next.Config.DeploymentPlanID].Kind
-			if next.Config.DeploymentInputVersion == 1 && next.Config.DeploymentScript == "" && (kind == model.DeploymentPlanDocker || kind == model.DeploymentPlanCompose) && !hasRegistryDeploymentInput(next.Config) && next.Config.ArtifactNodeID == "" && next.Config.ImageBuildNodeID == "" {
+			if next.Config.DeploymentInputVersion == 1 && next.Config.DeploymentScript == "" && (kind == model.DeploymentPlanDocker || kind == model.DeploymentPlanCompose) && !hasRegistryDeploymentInput(next.Config) && next.Config.ArtifactNodeID == "" {
 				issues = append(issues, WorkflowIssue{Code: "missing_deployment_image", Message: "请在部署文件来源中选择镜像仓库、镜像与 Tag", NodeID: next.ID})
 			}
 			for _, input := range next.Config.DeploymentInputs {
@@ -1150,9 +1122,6 @@ func validateWorkflowArtifactFlow(
 						issues = append(issues, WorkflowIssue{Code: "invalid_deployment_input_source", Message: "上游文件来源必须是前序已保存文件产物的构建任务", NodeID: next.ID})
 					}
 				}
-			}
-			if next.Config.ImageBuildNodeID != "" && (kind == model.DeploymentPlanDocker || kind == model.DeploymentPlanCompose) {
-				continue
 			}
 			if next.Config.DeploymentScript != "" || next.Config.DeploymentInputVersion == 1 && (hasRegistryDeploymentInput(next.Config) && deploymentPlans[next.Config.DeploymentPlanID].Kind != model.DeploymentPlanComposeStack || deploymentPlans[next.Config.DeploymentPlanID].Kind == model.DeploymentPlanScript) {
 				continue
@@ -1442,7 +1411,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		return nil, ErrInvalidWorkflow
 	}
 	resolved := *workflow
-	resolved.Stages = cloneWorkflowStages(workflow.Stages)
+	resolved.Stages = tagOnlyWorkflowStages(workflow.Stages)
 	for i := range resolved.Stages {
 		for j := range resolved.Stages[i].Tasks {
 			resolved.Stages[i].Tasks[j].Config.ConfigurationDirectory = ""
@@ -1722,27 +1691,6 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			}
 		}
 	}
-	buildKinds := map[string]model.BuildPlanKind{}
-	for id, plan := range buildPlans {
-		buildKinds[id] = plan.Kind
-	}
-	if issues := validateImageBuildBindings(resolved.Stages, buildKinds); len(issues) > 0 {
-		s.logger.Error("镜像构建关联无效", "workflow_id", workflow.ID, "node_id", issues[0].NodeID, "err", ErrInvalidWorkflow)
-		return nil, ErrInvalidWorkflow
-	}
-
-	for _, stage := range resolved.Stages {
-		for _, task := range stage.Tasks {
-			if task.Type != model.WorkflowNodeDeploy {
-				continue
-			}
-			plan := deploymentPlans[task.ID]
-			if err := validateSelectedImageReferences(task, plan.Kind, plan.ComposeYAML, task.Config.DeploymentScript+"\n"+plan.Script); err != nil {
-				s.logger.Error("部署镜像引用缺少明确构建来源", "workflow_id", workflow.ID, "node_id", task.ID, "err", err)
-				return nil, ErrInvalidWorkflow
-			}
-		}
-	}
 	// 方案是独立可编辑资源，流水线启用后其类型或镜像仓库仍可能改变。
 	// 每次创建运行快照前都重新校验完整制品链，避免先执行昂贵构建，
 	// 到部署节点才发现文件/镜像类型已不匹配。
@@ -1860,7 +1808,6 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		}
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
-		ImageTagIncludesName:         true,
 		IndependentDeploymentImages:  true,
 		RegistryInputs:               registryInputs,
 		ApplicationConfigDirectory:   configurationDirectory,

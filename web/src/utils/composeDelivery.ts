@@ -10,7 +10,7 @@ export interface ComposeDeliveryForm {
  timeout_seconds:number
  services:Array<{service:string;build_plan_id:string;image_name:string}>
 }
-export function newComposeDeliveryForm():ComposeDeliveryForm{return {compose_yaml:'services:\n  app:\n    image: ${EDO_IMAGE_TAG}\n    restart: unless-stopped\n',image_tag:'${EDO_GIT_TAG}',tag_variable:'${EDO_IMAGE_TAG}',health_url:'',use_sudo:false,adopt_existing:true,timeout_seconds:600,services:[{service:'app',build_plan_id:'',image_name:'my-app'}]}}
+export function newComposeDeliveryForm():ComposeDeliveryForm{return {compose_yaml:'services:\n  app:\n    image: registry.example.com/my-app:${EDO_IMAGE_TAG}\n    restart: unless-stopped\n',image_tag:'${EDO_GIT_TAG}',tag_variable:'${EDO_IMAGE_TAG}',health_url:'',use_sudo:false,adopt_existing:true,timeout_seconds:600,services:[{service:'app',build_plan_id:'',image_name:'my-app'}]}}
 export function composeDeliveryErrors(form:ComposeDeliveryForm):Record<string,string>{
  const errors:Record<string,string>={}
  if(!form.image_tag.trim()||form.image_tag.length>512)errors.image_tag='请配置构建镜像 Tag，例如 ${EDO_GIT_TAG}'

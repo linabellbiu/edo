@@ -10,6 +10,19 @@ import (
 	composetemplate "github.com/compose-spec/compose-go/v2/template"
 )
 
+// 新运行只提供 Tag，不应用历史的服务与构建任务关联；已保存配置及运行快照不回写。
+func tagOnlyWorkflowStages(stages []model.WorkflowStage) []model.WorkflowStage {
+	result := cloneWorkflowStages(stages)
+	for i := range result {
+		for j := range result[i].Tasks {
+			config := &result[i].Tasks[j].Config
+			config.ImageBuildNodeID = ""
+			config.ComposeBuildBindings = nil
+		}
+	}
+	return result
+}
+
 func validateSelectedImageReferences(node model.WorkflowNode, kind model.DeploymentPlanKind, source, script string) error {
 	if len(node.Config.ComposeBuildBindings) > 0 && kind != model.DeploymentPlanComposeStack {
 		return pipelineimage.ErrBinding

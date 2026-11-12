@@ -53,10 +53,10 @@ type WorkflowNodeConfig struct {
 	BuildPlanID            string                     `json:"build_plan_id,omitempty"`
 	ImageName              string                     `json:"image_name,omitempty"`
 	ImageTag               string                     `json:"image_tag,omitempty"`
-	ImageBuildNodeID       string                     `json:"image_build_node_id,omitempty"`
-	ComposeBuildBindings   []ComposeBuildBinding      `json:"compose_build_bindings,omitempty"`
-	TargetStage            *string                    `json:"target_stage,omitempty"`   // nil 沿用方案，空字符串明确构建最终阶段。
-	BuildPlatform          string                     `json:"build_platform,omitempty"` // 空值沿用构建方案的平台。
+	ImageBuildNodeID       string                     `json:"image_build_node_id,omitempty"`    // 仅保留历史配置与运行快照。
+	ComposeBuildBindings   []ComposeBuildBinding      `json:"compose_build_bindings,omitempty"` // 仅保留历史配置与运行快照。
+	TargetStage            *string                    `json:"target_stage,omitempty"`           // nil 沿用方案，空字符串明确构建最终阶段。
+	BuildPlatform          string                     `json:"build_platform,omitempty"`         // 空值沿用构建方案的平台。
 	DeploymentPlanID       string                     `json:"deployment_plan_id,omitempty"`
 	InlineDeploymentPlan   *WorkflowDeploymentPlan    `json:"inline_deployment_plan,omitempty"`
 	DeploymentSource       string                     `json:"deployment_source,omitempty"`

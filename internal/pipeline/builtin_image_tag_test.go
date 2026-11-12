@@ -44,6 +44,9 @@ func TestAutomaticImageTagFreezesDefaultAndConfiguredNames(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if snapshot.ImageTagIncludesName {
+					t.Fatal("新构建仍把内置变量定义为完整镜像引用")
+				}
 				node := snapshot.Stages[0].Tasks[0]
 				wantName := strings.ReplaceAll(name, "${EDO_APPLICATION_NAME}", app.Name)
 				if name == "" {
@@ -68,7 +71,7 @@ func TestAutomaticImageTagFreezesDefaultAndConfiguredNames(t *testing.T) {
 				if err != nil || local != "edo.local/"+wantName+":"+wantTag {
 					t.Fatal("本地镜像与仓库镜像的名称或版本不一致", local, err)
 				}
-				environment := pipelineCommandEnvironment(&buildExecutionContext{run: *run, node: node, application: *app, plan: snapshot.BuildPlans[node.ID]})
+				environment := pipelineCommandEnvironment(&buildExecutionContext{run: *run, node: node, application: *app, plan: snapshot.BuildPlans[node.ID], snapshot: *snapshot})
 				if environment["EDO_IMAGE_TAG"] != wantTag || expandPipelineBuildArgument("${EDO_IMAGE_TAG}", *run) != wantTag {
 					t.Fatal("构建环境或参数中的内置版本与实际输出不一致")
 				}

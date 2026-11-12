@@ -28,7 +28,7 @@ const scriptExample = computed(() => {
     'docker compose \\',
     '  -f compose.yaml \\',
     '  --env-file runtime.env up -d',
-    '# 所选构建的完整镜像引用使用 ${EDO_IMAGE_TAG}，纯版本使用 ${EDO_GIT_TAG}',
+    '# 镜像 Tag 使用 ${EDO_IMAGE_TAG}',
   ].join('\n')
   if (props.kind === 'docker') return introduction + [
     '# 使用本次流水线镜像与 ENV 文件',

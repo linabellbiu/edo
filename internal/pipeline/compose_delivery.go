@@ -144,7 +144,6 @@ func (s *Service) CreateComposeDeliveryWorkflow(ctx context.Context, application
 		nodes, dependencies := []model.WorkflowNode{}, []string{}
 		byOutput := map[string]string{}
 		bindings := []model.ComposeImageBinding{}
-		buildBindings := []model.ComposeBuildBinding{}
 		for _, binding := range input.Services {
 			key := binding.BuildPlanID + "\x00" + binding.ImageName
 			nodeID := byOutput[key]
@@ -165,9 +164,6 @@ func (s *Service) CreateComposeDeliveryWorkflow(ctx context.Context, application
 				nodes = append(nodes, model.WorkflowNode{ID: nodeID, Type: model.WorkflowNodeBuild, Name: binding.ImageName, Config: model.WorkflowNodeConfig{BuildPlanID: build.ID, ImageName: binding.ImageName, ImageTag: input.ImageTag}})
 			}
 			bindings = append(bindings, model.ComposeImageBinding{Service: binding.Service, ArtifactNodeID: nodeID})
-			if input.TagVariable == "${EDO_IMAGE_TAG}" {
-				buildBindings = append(buildBindings, model.ComposeBuildBinding{Service: binding.Service, BuildNodeID: nodeID})
-			}
 		}
 		input.Target.Name, input.Target.RolloutTimeout = base, input.TimeoutSeconds
 		plan, err := service.CreateDeploymentPlan(ctx, actorID, DeploymentPlanInput{Name: base, Kind: model.DeploymentPlanComposeStack, Description: "EDO 保存 Compose 正文；部署直接读取并行构建的镜像 Tag，并固定其摘要执行。", DeploymentTarget: &input.Target, ComposeYAML: input.ComposeYAML, TimeoutSeconds: input.TimeoutSeconds})
@@ -187,7 +183,7 @@ func (s *Service) CreateComposeDeliveryWorkflow(ctx context.Context, application
 		}
 		now := time.Now().UTC()
 		settings := &model.ComposeDeploymentSettings{EnvFile: input.EnvFile, TagVariable: input.TagVariable, UseSudo: input.UseSudo, HealthURL: input.HealthURL, AdoptExisting: input.AdoptExisting}
-		workflow := model.ReleaseWorkflow{ID: id, ApplicationID: app.ID, Name: name, SchemaVersion: model.WorkflowSchemaVersion, Revision: 1, IsActive: false, Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger, Name: "代码源", Config: model.WorkflowNodeConfig{Branch: "*", Events: []string{"manual"}, TagPattern: defaultWorkflowTagPattern}}, Stages: []model.WorkflowStage{{ID: "images", Name: "构建与推送镜像", Tasks: nodes}, {ID: "deploy", Name: "部署", Tasks: []model.WorkflowNode{{ID: "deploy", Type: model.WorkflowNodeDeploy, Name: "Compose 部署", Config: model.WorkflowNodeConfig{DeploymentPlanID: plan.ID, ArtifactNodeID: dependencies[0], ArtifactNodeIDs: dependencies, ComposeImages: bindings, ComposeBuildBindings: buildBindings, Compose: settings}}}}}, CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now}
+		workflow := model.ReleaseWorkflow{ID: id, ApplicationID: app.ID, Name: name, SchemaVersion: model.WorkflowSchemaVersion, Revision: 1, IsActive: false, Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger, Name: "代码源", Config: model.WorkflowNodeConfig{Branch: "*", Events: []string{"manual"}, TagPattern: defaultWorkflowTagPattern}}, Stages: []model.WorkflowStage{{ID: "images", Name: "构建与推送镜像", Tasks: nodes}, {ID: "deploy", Name: "部署", Tasks: []model.WorkflowNode{{ID: "deploy", Type: model.WorkflowNodeDeploy, Name: "Compose 部署", Config: model.WorkflowNodeConfig{DeploymentPlanID: plan.ID, ArtifactNodeID: dependencies[0], ArtifactNodeIDs: dependencies, ComposeImages: bindings, Compose: settings}}}}}, CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now}
 		if err := tx.Create(&workflow).Error; err != nil {
 			return err
 		}

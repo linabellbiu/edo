@@ -1,6 +1,6 @@
 # 内置环境变量前缀验收
 
-> 本文保留当时的验收记录。2026-11-12 起新运行的 `${EDO_IMAGE_TAG}` 改为所选构建的完整镜像名:版本号，部署需显式选择构建任务；最新规则见[镜像构建关联验收](image-build-binding-acceptance.md)。历史运行继续使用原快照语义。
+> 最新规则：`${EDO_IMAGE_TAG}` 只表示 Tag，部署不需要关联构建任务。版本自动使用 Git Tag 或 12 位短 Commit SHA；镜像名称由用户配置。详见[镜像 Tag 语义修正验收](image-tag-only-acceptance.md)。历史运行继续按原快照执行。
 
 EDO 内置 Shell 环境变量统一使用 `EDO_` 前缀，页面、脚本示例及 Compose 默认引用使用 `${EDO_IMAGE_TAG}`。本次镜像 Tag 仍来自当前流水线的实际构建产物，不能由用户变量或外部镜像来源覆盖。
 
