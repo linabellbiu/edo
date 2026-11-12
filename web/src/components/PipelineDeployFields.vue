@@ -33,7 +33,29 @@ function change(patch:Partial<WorkflowNodeConfig>){if(!props.disabled)emit('chan
 function update(patch:Partial<WorkflowDeploymentPlan>){if(plan.value)change({inline_deployment_plan:{...plan.value,...patch,name:props.node.name}})}
 function updateExecution(patch:Partial<DeploymentExecutionConfig>){update({execution_config:{...execution.value,...patch}})}
 function target(patch:Record<string,unknown>){if(plan.value?.deployment_target)update({deployment_target:{...plan.value.deployment_target,...patch}})}
-function source(kind:string){services.value=[];serviceError.value='';change({compose_source:kind==='editor'?undefined:{kind:kind as 'repository',path:kind==='repository'?'compose.yaml':undefined}})}
+function source(kind:string){services.value=[];serviceError.value='';change({compose_source:kind==='editor'?undefined:{kind:kind as 'repository',path:kind==='repository'?'':undefined}})}
+const repositoryDetecting=ref(false),repositoryDetectionMessage=ref('')
+let detectionController:AbortController|undefined,detectionRevision=0
+const detectionScope=()=>JSON.stringify([identity(),props.applicationID,props.branch,props.node.id,sourceKind.value,plan.value?.kind,props.disabled,auth.canAny(['workflow.update'])])
+function stopRepositoryDetection(){detectionRevision++;detectionController?.abort();repositoryDetecting.value=false;repositoryDetectionMessage.value=''}
+function repositoryPath(value:string){stopRepositoryDetection();change({compose_source:{kind:'repository',path:value}})}
+async function detectRepositoryPath(){
+ stopRepositoryDetection()
+ if(props.disabled||!auth.canAny(['workflow.update'])||plan.value?.kind!=='compose_stack'||sourceKind.value!=='repository'||!props.applicationID||props.node.config.compose_source?.path)return
+ const revision=detectionRevision,scope=detectionScope(),appID=props.applicationID
+ detectionController=new AbortController()
+ const signal=detectionController.signal
+ const current=()=>!signal.aborted&&revision===detectionRevision&&scope===detectionScope()&&!props.node.config.compose_source?.path
+ repositoryDetecting.value=true
+ try{
+  const {data}=await client.post<{path:string;commit_sha:string}>(`/applications/${encodeURIComponent(appID)}/compose-file`,{ref:props.branch},{signal,timeout:35_000})
+  if(!current())return
+  if(data.path)change({compose_source:{kind:'repository',path:data.path}})
+  else repositoryDetectionMessage.value='仓库根目录未找到 Compose 文件，请手动填写相对路径'
+ }catch(e){if(current())repositoryDetectionMessage.value=apiErrorMessage(e)}
+ finally{if(!signal.aborted&&revision===detectionRevision)repositoryDetecting.value=false}
+}
+watch(detectionScope,detectRepositoryPath,{immediate:true})
 function yaml(value:string){update({compose_yaml:value})}
 async function upload(file:File){if(file.size>128*1024){serviceError.value='compose.yaml 不能超过 128 KiB';return false}const scope=identity(),nodeID=props.node.id,value=await file.text();if(!props.disabled&&scope===identity()&&nodeID===props.node.id){source('editor');yaml(value)}return false}
 async function preview(){
@@ -64,7 +86,7 @@ async function preview(){
 }
 
 watch(()=>JSON.stringify([identity(),props.node.id,props.node.config.compose_source,plan.value?.compose_yaml,plan.value?.deployment_target?.environment_id,props.applicationID,props.branch]),()=>{clearTimeout(timer);previewController?.abort();services.value=[];serviceLoading.value=false;timer=setTimeout(preview,500)},{immediate:true})
-onBeforeUnmount(()=>{controller?.abort();previewController?.abort();clearTimeout(timer)})
+onBeforeUnmount(()=>{stopRepositoryDetection();controller?.abort();previewController?.abort();clearTimeout(timer)})
 function binding(index:number,patch:Partial<{name:string;restart_script:string;recreate_script:string}>){change({runtime_services:runtimeServices.value.map((v,i)=>i===index?{...v,...patch}:v)})}
 </script>
 <template>
@@ -74,7 +96,7 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
   <div ref="registryHost"/>
   <template v-if="plan.kind==='compose_stack'">
    <a-form-item label="compose.yaml 来源" required><a-radio-group :value="sourceKind" :disabled="disabled" :options="[{value:'repository',label:'仓库文件'},{value:'editor',label:'上传 / 编辑'},{value:'configuration',label:'配置文件'},{value:'upstream',label:'上游产物'}]" @update:value="source(String($event))"/></a-form-item>
-   <a-form-item v-if="sourceKind==='repository'" required><template #label><span>仓库内文件路径 <a-tooltip title="相对于代码仓库根目录；预览读取当前分支，实际部署读取本次运行固定 Commit。所有来源都要解析 services，读取或解析失败会阻断部署。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="仓库 Compose 文件说明">?</button></a-tooltip></span></template><a-input :value="node.config.compose_source?.path" :disabled="disabled" placeholder="deploy/compose.yaml" @update:value="change({compose_source:{kind:'repository',path:String($event)}})"/></a-form-item>
+   <a-form-item v-if="sourceKind==='repository'" required :help="repositoryDetecting?'正在检测仓库根目录…':repositoryDetectionMessage||undefined" :validate-status="repositoryDetectionMessage?'warning':undefined"><template #label><span>仓库内文件路径 <a-tooltip title="自动检测根目录中的 compose.yaml、compose.yml、docker-compose.yml 或 docker-compose.yaml；也可手动填写仓库相对路径。预览读取当前分支，实际部署读取本次运行固定 Commit。所有来源都要解析 services，读取或解析失败会阻断部署。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="仓库 Compose 文件说明">?</button></a-tooltip></span></template><a-input :value="node.config.compose_source?.path" :disabled="disabled" placeholder="自动检测根目录，也可输入 deploy/compose.yaml" @update:value="repositoryPath(String($event))"/></a-form-item>
    <template v-else-if="sourceKind==='editor'"><a-form-item required><YamlCodeEditor :model-value="plan.compose_yaml||''" :readonly="disabled" label="compose.yaml" fullscreen collapsible default-collapsed @update:model-value="yaml($event)"><template #toolbar><a-upload :show-upload-list="false" accept=".yaml,.yml" :before-upload="upload" :disabled="disabled"><a-button :disabled="disabled">上传compose.yaml</a-button></a-upload></template></YamlCodeEditor></a-form-item></template>
    <a-form-item v-else-if="sourceKind==='configuration'" required><template #label><span>配置文件 <a-tooltip title="选择 YAML 配置，EDO 只返回解析后的服务名。部署时固定所用版本；敏感值请放在单独的 ENV 配置或密钥变量中。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="Compose 配置来源说明">?</button></a-tooltip></span></template><a-select :value="node.config.compose_source?.configuration_id||undefined" :disabled="disabled" :options="configs.map(v=>({value:v.id,label:v.name}))" placeholder="选择 YAML 配置，自动解析服务" @update:value="change({compose_source:{kind:'configuration',configuration_id:String($event)}})"/></a-form-item>
    <template v-else><a-form-item label="上游构建产出环境变量" required><a-input :value="node.config.compose_source?.artifact_reference || (node.config.compose_source?.artifact_name?'${'+node.config.compose_source.artifact_name+'}':'')" :disabled="disabled" placeholder="例如 ${BUILD_ARTIFACT}" @update:value="change({compose_source:{kind:'upstream',artifact_reference:String($event),path:node.config.compose_source?.path||'compose.yaml'}})"/></a-form-item><a-form-item label="产物内文件路径" required><a-input :value="node.config.compose_source?.path" :disabled="disabled" placeholder="deploy/compose.yaml" @update:value="change({compose_source:{...node.config.compose_source!,path:String($event)}})"/></a-form-item></template>

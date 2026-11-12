@@ -585,3 +585,10 @@ test('镜像 Tag 问号说明使用服务端目录，目录失败时不展示过
   state.builtinVariableError.value = '内置变量说明读取失败'
   assert.equal(state.imageTagHelp.value, '内置变量说明读取失败')
 })
+
+
+test('新建 Docker Compose 任务不猜测文件名，留空由仓库根目录检测填入',t=>{
+ const h=harness(t)
+ const node=h.state.createTaskNode('deploy',h.state.taskDefinitions.find(item=>item.id==='compose-deploy'))
+ assert.deepEqual(node.config.compose_source,{kind:'repository',path:''})
+})

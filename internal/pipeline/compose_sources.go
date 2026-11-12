@@ -87,37 +87,14 @@ func (s *Service) PreviewComposeServices(ctx context.Context, applicationID stri
 		if err = s.requireDeliveryPermission(ctx, scope.UserID, permission); err != nil {
 			return nil, err
 		}
-		ref := input.Ref
-		if ref == "" || strings.ContainsAny(ref, "*?[") {
-			ref = app.Repository.DefaultBranch
-		}
-		if !strings.HasPrefix(ref, "refs/") {
-			ref = "refs/heads/" + ref
-		}
+		ref := composePreviewRef(*app, input.Ref)
 		if input.Source.Kind == "repository" {
-			refs, readErr := s.repositories.TestConnection(ctx, app.RepositoryID)
-			if readErr != nil {
-				return nil, s.composeSourceError(ctx, "compose_preview_refs", applicationID, readErr)
-			}
-			for _, candidate := range refs.Branches {
-				if "refs/heads/"+strings.TrimPrefix(candidate.Name, "refs/heads/") == ref {
-					commit = candidate.SHA
-					break
-				}
-			}
-			if commit == "" {
-				for _, candidate := range refs.Tags {
-					if "refs/tags/"+strings.TrimPrefix(candidate.Name, "refs/tags/") == ref {
-						commit = candidate.SHA
-						break
-					}
-				}
-			}
-
-			if commit == "" {
-				return nil, s.composeSourceError(ctx, "compose_preview_ref", applicationID, ErrComposeSource)
+			ref, commit, err = s.composeRepositoryVersion(ctx, *app, input.Ref)
+			if err != nil {
+				return nil, s.composeSourceError(ctx, "compose_preview_ref", applicationID, err)
 			}
 		}
+
 		content, err = s.readComposeSource(ctx, *app, input.EnvironmentID, ref, commit, input.Source)
 		if err != nil {
 			return nil, s.composeSourceError(ctx, "compose_preview_read", applicationID, err)

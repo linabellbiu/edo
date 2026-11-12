@@ -245,6 +245,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/applications/:id/artifacts", requirePermission(deps.Access, deps.Logger, "artifact.read"), artifactAPI.list)
 	protected.POST("/applications/:id/artifacts/upload", auditAction(deps.Audits, deps.Logger, "artifact.upload", "artifact"), requirePermission(deps.Access, deps.Logger, "artifact.create"), artifactAPI.upload)
 	protected.POST("/workflows/compose-services", requirePermission(deps.Access, deps.Logger, "workflow.read"), pipelineAPI.composeServices)
+	protected.POST("/applications/:id/compose-file", requirePermission(deps.Access, deps.Logger, "workflow.read"), requirePermission(deps.Access, deps.Logger, "repository.read"), pipelineAPI.detectComposeFile)
 	protected.POST("/applications/:id/compose-services", requirePermission(deps.Access, deps.Logger, "workflow.read"), pipelineAPI.composeServices)
 	protected.GET("/applications/:id/workflows", requirePermission(deps.Access, deps.Logger, "workflow.read"), pipelineAPI.listWorkflows)
 	protected.POST("/applications/:id/workflows", auditAction(deps.Audits, deps.Logger, "workflow.create", "release_workflow"), requirePermission(deps.Access, deps.Logger, "workflow.create"), pipelineAPI.createWorkflow)

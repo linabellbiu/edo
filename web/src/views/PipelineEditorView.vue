@@ -363,7 +363,7 @@ function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): Workfl
   if (type === 'manual') config.description = '人工确认后继续执行'
   if (type === 'deploy') {
     const kind=definition?.id==='compose-deploy'?'compose_stack':definition?.id==='kubernetes-deploy'?'kubernetes':'script'
-    if(kind==='compose_stack')config.compose_source={kind:'repository',path:'compose.yaml'}
+    if(kind==='compose_stack')config.compose_source={kind:'repository',path:''}
     config.deployment_source='inline'
     config.inline_deployment_plan={name:definition?.label||'自定义部署',kind,script:kind==='script'?'set -eu\n# 在这里填写部署命令\n':undefined,compose_yaml:'',timeout_seconds:600,deployment_target:{platform:kind==='kubernetes'?'kubernetes':'ssh',environment_id:'',working_directory:kind==='script'?'/tmp':undefined},execution_config:kind==='kubernetes'?undefined:{deployment_input_version:1,deployment_inputs:[],compose:kind==='compose_stack'?{tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}:undefined}}
   }

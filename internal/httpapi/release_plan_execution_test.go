@@ -365,7 +365,11 @@ type releasePlanExecutionHTTPFixture struct {
 	close        func()
 }
 
-func newReleasePlanExecutionHTTPFixture(t *testing.T, commitSHA string) releasePlanExecutionHTTPFixture {
+type releasePlanExecutionRepositoryClient interface {
+	ListRefs(context.Context, model.GitRepository, string) (repository.RefResult, error)
+}
+
+func newReleasePlanExecutionHTTPFixture(t *testing.T, commitSHA string, clients ...releasePlanExecutionRepositoryClient) releasePlanExecutionHTTPFixture {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testutil.NewDatabase(t)
@@ -381,8 +385,12 @@ func newReleasePlanExecutionHTTPFixture(t *testing.T, commitSHA string) releaseP
 	}
 	credentialService := credential.NewService(db, secretManager)
 	configurationService := configuration.NewService(db, secretManager)
+	var gitClient releasePlanExecutionRepositoryClient = releasePlanExecutionRefLister{commitSHA: commitSHA}
+	if len(clients) > 0 {
+		gitClient = clients[0]
+	}
 	repositoryService := repository.NewService(
-		db, secretManager, credentialService, releasePlanExecutionRefLister{commitSHA: commitSHA}, 4,
+		db, secretManager, credentialService, gitClient, 4,
 		repository.WithWebhookGate(configurationService),
 	)
 	pipelineService := pipeline.NewService(db, repositoryService, secretManager)
