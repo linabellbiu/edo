@@ -112,6 +112,9 @@ func (s *Service) ResolveDeploymentConfiguration(ctx context.Context, record *mo
 	}
 	paths = append(paths, envFiles...)
 	for _, name := range paths {
+		if _, selected := files[name]; !selected {
+			continue
+		}
 		values, parseErr := envtext.Parse(files[name])
 		if parseErr != nil {
 			// 空文件或只有注释表示清除该文件原先提供的全部变量。

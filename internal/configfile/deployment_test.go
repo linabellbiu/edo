@@ -11,7 +11,7 @@ import (
 	"edo/internal/model"
 )
 
-func TestConfigurationParametersOnlySelectedFilesAndNoShellExecution(t *testing.T) {
+func TestConfigurationParametersSupportRepositoryFilesWithoutShellExecution(t *testing.T) {
 	refs := []model.DeploymentConfigFile{{ID: "a", Path: ".prod.env"}, {ID: "b", Path: "config/vars.env"}}
 	for _, input := range []string{"", `--env-file .prod.env`, `--env-file='.prod.env' --env-file "config/vars.env"`, `--env-file $EDO_APP_CONFIG_PATH/.prod.env`, `--env-file "${EDO_APP_CONFIG_PATH}/.prod.env"`, `--env-file '${EDO_APP_CONFIG_PATH}/.prod.env'`} {
 		paths, err := EnvFileParameters(input, refs)
@@ -22,12 +22,12 @@ func TestConfigurationParametersOnlySelectedFilesAndNoShellExecution(t *testing.
 			t.Fatal(paths)
 		}
 	}
-	for _, input := range []string{`--env_file .prod.env`, `--env-file /etc/passwd`, `--env-file ../secret`, `--env-file unknown.env`, `--file .prod.env`, `--env-file $HOME`, `--env-file $(touch marker)`, `--env-file .prod.env; touch marker`, `--env-file .prod.env > marker`, `--env-file .prod.env #hidden`, "--env-file .prod.env\n", `--env-file`} {
+	for _, input := range []string{`--env_file .prod.env`, `--env-file /etc/passwd`, `--env-file ../secret`, `--file .prod.env`, `--env-file $HOME`, `--env-file $(touch marker)`, `--env-file .prod.env; touch marker`, `--env-file .prod.env > marker`, `--env-file .prod.env #hidden`, "--env-file .prod.env\n", `--env-file`} {
 		if _, err := EnvFileParameters(input, refs); err == nil {
 			t.Fatal("接受不安全参数", input)
 		}
 	}
-	for _, input := range []string{`--env-file ${EDO_APP_CONFIG_PATH:-/etc}/passwd`, `--env-file ${EDO_APP_CONFIG_PATH%/}/.prod.env`, `--env-file ${#EDO_APP_CONFIG_PATH}/.prod.env`, `--env-file $EDO_APP_CONFIG_PATH/../escape`, `--env-file $EDO_APP_CONFIG_PATH/unknown.env`} {
+	for _, input := range []string{`--env-file ${EDO_APP_CONFIG_PATH:-/etc}/passwd`, `--env-file ${EDO_APP_CONFIG_PATH%/}/.prod.env`, `--env-file ${#EDO_APP_CONFIG_PATH}/.prod.env`, `--env-file $EDO_APP_CONFIG_PATH/../escape`} {
 		if _, err := EnvFileParameters(input, refs); err == nil {
 			t.Fatal("内置变量绕过了配置边界", input)
 		}
@@ -223,15 +223,25 @@ func TestConfigurationAbsoluteAndHomePathsRejectSymlinkParents(t *testing.T) {
 	}
 }
 
-func TestEnvFileParametersDistinguishesMissingSelectedFile(t *testing.T) {
-	_, err := EnvFileParameters("--env-file .env", nil)
-	if !errors.Is(err, ErrParameters) || !errors.Is(err, ErrParameterFileNotSelected) || !strings.Contains(err.Error(), "添加对应配置文件") {
-		t.Fatalf("未选择文件应明确说明修复方式: %v", err)
+func TestEnvFileParametersDistinguishWorkingAndConfigurationPaths(t *testing.T) {
+	refs := []model.DeploymentConfigFile{{ID: "config", Path: "generated.env"}}
+	parameters, err := ParseEnvFileParameters(`--env-file .env --env-file ./.env --env-file generated.env --env-file "${EDO_APP_CONFIG_PATH}/other.env"`, refs)
+	if err != nil || len(parameters) != 4 {
+		t.Fatal(parameters, err)
 	}
-	if _, err := EnvFileParameters("--env-file /etc/passwd", nil); !errors.Is(err, ErrParameters) || errors.Is(err, ErrParameterFileNotSelected) {
-		t.Fatalf("非法路径不能误报为待添加文件: %v", err)
+	for i, want := range []struct {
+		path          string
+		configuration bool
+	}{{".env", false}, {".env", false}, {"generated.env", true}, {"other.env", true}} {
+		if parameters[i].Path != want.path || parameters[i].Configuration != want.configuration {
+			t.Fatalf("路径用途被改写: %+v", parameters[i])
+		}
+		argument, err := parameters[i].Argument()
+		if err != nil || strings.Contains(argument, "EDO_APP_CONFIG_PATH") != want.configuration {
+			t.Fatalf("参数路径前缀不正确: %s %v", argument, err)
+		}
 	}
-	if _, err := EnvFileParameters("--env-file .env", []model.DeploymentConfigFile{{ID: "config", Path: ".env"}}); err != nil {
-		t.Fatal(err)
+	if _, err := ParseEnvFileParameters("--env-file /etc/passwd", nil); !errors.Is(err, ErrParameters) {
+		t.Fatal("未拒绝任意主机绝对路径", err)
 	}
 }

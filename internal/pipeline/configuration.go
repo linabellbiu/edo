@@ -90,13 +90,13 @@ func composeConfiguration(content string, set *deployment.ConfigurationSet) (str
 }
 
 func configurationComposeArguments(config model.WorkflowNodeConfig) (string, error) {
-	paths, err := configfile.EnvFileParameters(config.DeploymentParameters, config.ConfigurationFiles)
+	parameters, err := configfile.ParseEnvFileParameters(config.DeploymentParameters, config.ConfigurationFiles)
 	if err != nil {
 		return "", err
 	}
 	var out strings.Builder
-	for _, name := range paths {
-		argument, err := configfile.FileArgument(name)
+	for _, parameter := range parameters {
+		argument, err := parameter.Argument()
 		if err != nil {
 			return "", err
 		}

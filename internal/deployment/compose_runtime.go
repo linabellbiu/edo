@@ -8,6 +8,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"edo/internal/composeconfig"
+	"edo/internal/configfile"
 	"edo/internal/dockerengine"
 	"edo/internal/model"
 )
@@ -23,9 +24,10 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 		return "", dockerengine.ComposeProjectScope{}, err
 	}
 	var snapshot struct {
-		SchemaVersion   uint16                `json:"schema_version"`
-		Stages          []model.WorkflowStage `json:"stages"`
-		DeploymentPlans map[string]struct {
+		ApplicationConfigDirectory string                `json:"application_config_directory"`
+		SchemaVersion              uint16                `json:"schema_version"`
+		Stages                     []model.WorkflowStage `json:"stages"`
+		DeploymentPlans            map[string]struct {
 			ID          string                   `json:"id"`
 			Kind        model.DeploymentPlanKind `json:"kind"`
 			ComposeYAML string                   `json:"compose_yaml"`
@@ -90,5 +92,12 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 	if err := s.db.WithContext(ctx).Where("host_id = ? AND kind = ? AND status = ?", record.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).First(&capability).Error; err != nil {
 		return "", dockerengine.ComposeProjectScope{}, err
 	}
-	return capability.RuntimeID, dockerengine.ComposeProjectScope{ConfigurationDirectory: record.WorkingDirectory, ConfigurationParameters: configuration.DeploymentParameters, ConfigurationFiles: configuration.ConfigurationFiles, HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services, CompletionServices: completedServices, UseSudo: settings.UseSudo, EnvFile: settings.EnvFile, TagVariable: settings.TagVariable}, nil
+	configurationDirectory := record.WorkingDirectory
+	if snapshot.ApplicationConfigDirectory != "" {
+		if !configfile.ValidDirectory(snapshot.ApplicationConfigDirectory) {
+			return "", dockerengine.ComposeProjectScope{}, invalid
+		}
+		configurationDirectory = snapshot.ApplicationConfigDirectory
+	}
+	return capability.RuntimeID, dockerengine.ComposeProjectScope{ConfigurationDirectory: configurationDirectory, ConfigurationParameters: configuration.DeploymentParameters, ConfigurationFiles: configuration.ConfigurationFiles, HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services, CompletionServices: completedServices, UseSudo: settings.UseSudo, EnvFile: settings.EnvFile, TagVariable: settings.TagVariable}, nil
 }

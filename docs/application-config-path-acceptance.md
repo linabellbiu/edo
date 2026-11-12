@@ -4,7 +4,7 @@
 
 SSH 目标使用登录用户的 HOME；本地 Docker 目标使用 EDO 当前执行环境的 HOME，正式 Compose 下由已有 data 卷持久化，不把容器路径冒充宿主机任意路径。已有正式 Compose 安装升级时，可先执行 `docker compose run --rm --no-deps bootstrap sh /usr/local/bin/edo-compose-init.sh --deployment-directory-only` 初始化应用目录的上级权限；此模式不生成或修改数据库、密钥和初始化标记，只接管 EDO 自身的顶层目录。
 
-后端继续复用现有 `mvdan.cc/sh/v3` 解析参数，只允许所选配置与无附加操作的 `EDO_APP_CONFIG_PATH` 引用，不执行用户表达式。前端预览仅识别产品允许的 `--env-file` 语法，最终校验在后端；未引入新的 Shell 解释器或运行依赖。
+2026-11-12 更新：后端继续复用现有 `mvdan.cc/sh/v3` 解析参数，允许仓库或执行工作目录中的相对路径，以及无附加操作的 `EDO_APP_CONFIG_PATH` 引用，不要求先选择生成配置，不执行用户表达式。最新验收见 `docs/deployment-parameter-errors-acceptance.md`。前端预览仅识别产品允许的 `--env-file` 语法，最终校验在后端；未引入新的 Shell 解释器或运行依赖。
 
 | ID | 角色与前置 | 操作 | 预期 |
 | --- | --- | --- | --- |

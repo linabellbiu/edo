@@ -29,6 +29,7 @@ createApp({setup(){const config=computed(()=>node.config.inline_deployment_plan.
  h(Button,{onClick:()=>preferences.toggleTheme()},()=> '切换主题'),
  h(Form,{layout:'vertical'},{default:()=>h(PipelineDeployFields,{node,disabled:false,buildNodes:[],applicationName:'演示应用',onChange:patch=>Object.assign(node.config,patch)})}),
  h(Button,{onClick:()=>{config.value.deployment_inputs=[{kind:'configuration',configuration_id:'configuration',path:'.env'}]}},()=> '补充 .env 文件'),
- h(Button,{onClick:()=>{config.value.deployment_inputs=[];config.value.deployment_parameters='--env-file .env'}},()=> '恢复缺失文件'),
+ h(Button,{onClick:()=>{config.value.deployment_inputs=[];config.value.deployment_parameters='--env-file .env'}},()=> '使用仓库 .env'),
+ h(Button,{onClick:()=>{config.value.deployment_parameters='--env-file ../secret'}},()=> '模拟非法路径'),
  h(Button,{onClick:()=>{config.value.deployment_parameters=''}},()=> '移除参数')
  ])})}}).use(pinia).use(i18n).mount('#root')

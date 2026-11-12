@@ -54,6 +54,7 @@ type executionContext struct {
 	composeCandidates  map[string]model.Artifact
 	composeArtifacts   map[string]model.Artifact
 	variables          map[string]string
+	composeEnvValues   map[string]string
 	configuration      *deployment.ConfigurationSet
 	variableFiles      map[string]string
 	variableRedactions []string
@@ -146,12 +147,15 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 	if prepareErr != nil {
 		return s.failDeploymentExecution(ctx, failureState, "准备部署输入失败，请检查文件来源与使用权限", prepareErr)
 	}
-	ctx = deployment.WithPreparedFiles(ctx, prepared.inputFiles)
 	if prepared.snapshot.IndependentDeploymentImages {
 		if err := s.addDeploymentPipelineVariables(ctx, prepared); err != nil {
 			return s.failDeploymentExecution(ctx, failureState, "读取流水线变量失败", err)
 		}
 	}
+	if err := s.prepareComposeParameterFiles(ctx, prepared); err != nil {
+		return s.failDeploymentExecution(ctx, failureState, "无法准备 --env-file 文件，请检查本次代码中的相对路径及文件格式", err)
+	}
+	ctx = deployment.WithPreparedFiles(ctx, prepared.inputFiles)
 	if strings.TrimSpace(prepared.node.Config.DeploymentScript) != "" || prepared.deploymentPlan.Kind == model.DeploymentPlanScript && prepared.node.Config.DeploymentInputVersion == 1 {
 		return s.executeCustomDeployment(ctx, prepared, approvedBy)
 	}

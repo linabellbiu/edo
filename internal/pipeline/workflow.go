@@ -1771,6 +1771,12 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			if node.Config.DeploymentInputVersion == 1 {
 				hasDeploymentInputs = true
 			}
+			parameters, _ := configfile.ParseEnvFileParameters(node.Config.DeploymentParameters, node.Config.ConfigurationFiles)
+			for _, parameter := range parameters {
+				if parameter.Configuration {
+					hasDeploymentInputs = true
+				}
+			}
 		}
 	}
 	if len(configurationBindings) > 0 || hasDeploymentInputs {

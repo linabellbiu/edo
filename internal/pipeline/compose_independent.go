@@ -37,7 +37,7 @@ func (s *Service) addDeploymentPipelineVariables(ctx context.Context, prepared *
 	variables := composetemplate.ExtractVariables(map[string]any{"compose": prepared.deploymentPlan.ComposeYAML, "script": prepared.node.Config.DeploymentScript, "plan_script": prepared.deploymentPlan.Script}, nil)
 	_, tagReferenced := variables["EDO_IMAGE_TAG"]
 	_, legacyTagReferenced := variables["IMAGE_TAG"]
-	if !tagReferenced && !legacyTagReferenced {
+	if !tagReferenced && !legacyTagReferenced && prepared.node.Config.DeploymentParameters == "" {
 		return nil
 	}
 	var prior []string
@@ -102,6 +102,7 @@ func (s *Service) resolveConfiguredComposeImages(ctx context.Context, prepared *
 	if err != nil {
 		return "", err
 	}
+	interpolation := composeInterpolationValues(prepared)
 	var registry model.ImageRegistry
 	if err = s.db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND is_active = ?", prepared.node.Config.DeploymentRegistryID, prepared.run.ProjectID, true).First(&registry).Error; err != nil {
 		s.logger.WarnContext(ctx, "读取部署配置的镜像仓库失败", "operation", "compose_configured_registry", "node_id", prepared.node.ID, "err", err)
@@ -120,14 +121,8 @@ func (s *Service) resolveConfiguredComposeImages(ctx context.Context, prepared *
 		entry := doc["services"].(map[string]any)[service].(map[string]any)
 		template, _ := entry["image"].(string)
 		expanded, interpolationErr := composetemplate.SubstituteWithOptions(template, func(key string) (string, bool) {
-			if value, ok := prepared.variables[key]; ok {
-				return value, true
-			}
-			if prepared.configuration != nil {
-				value, ok := prepared.configuration.Values[key]
-				return value, ok
-			}
-			return "", false
+			value, ok := interpolation[key]
+			return value, ok
 		}, composetemplate.WithoutLogging)
 		if interpolationErr != nil {
 			return fail("compose_configured_interpolation", ErrDeploymentInputs)

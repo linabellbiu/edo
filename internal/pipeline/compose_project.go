@@ -26,9 +26,13 @@ func (s *Service) freezeComposeProject(ctx context.Context, prepared *executionC
 	if err != nil {
 		return err
 	}
+	interpolation := composeInterpolationValues(prepared)
 	secretUsed := false
 	project, err := composeconfig.ResolveProjectName(document, prepared.application.ID, prepared.target.ID, func(name string) (string, bool) {
 		value, exists := values[name]
+		if !exists {
+			value, exists = interpolation[name]
+		}
 		for _, secret := range prepared.variableRedactions {
 			if exists && secret != "" && value == secret {
 				secretUsed = true

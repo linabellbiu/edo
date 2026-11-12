@@ -79,11 +79,14 @@ test('未找到和读取失败明确提示且允许手填；只读或无编辑�
 })
 
 
-test('流水线部署参数框响应缺失文件，补文件或移除参数后清除错误且保留草稿',async t=>{
+test('流水线部署参数允许仓库文件，只对非法路径提示且保留草稿',async t=>{
  const h=harness();t.after(h.close);await settle()
  h.props.node.config.inline_deployment_plan.execution_config={deployment_input_version:1,deployment_inputs:[],deployment_parameters:'--env-file .env'}
  const config=h.props.node.config.inline_deployment_plan.execution_config
- assert.match(h.state.parametersError.value,/配置文件“.env”/)
+ assert.equal(h.state.parametersError.value,'')
+ config.deployment_parameters='--env-file ../secret'
+ assert.match(h.state.parametersError.value,/路径无效/)
+ config.deployment_parameters='--env-file .env'
  config.deployment_inputs=[{kind:'configuration',configuration_id:'config',path:'.env'}]
  assert.equal(h.state.parametersError.value,'')
  config.deployment_inputs=[];config.deployment_parameters=''

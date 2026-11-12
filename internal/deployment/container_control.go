@@ -354,12 +354,14 @@ func composeRecreateScript(deploymentID string, scope dockerengine.ComposeProjec
 	if scope.EnvFile != "" {
 		args += " --env-file " + quote(scope.EnvFile)
 	}
-	extra, err := configfile.EnvFileParameters(scope.ConfigurationParameters, scope.ConfigurationFiles)
+	extra, err := configfile.ParseEnvFileParameters(scope.ConfigurationParameters, scope.ConfigurationFiles)
 	if err != nil {
 		return "", err
 	}
-	for _, name := range extra {
-		argument, err := configfile.FileArgument(name)
+	usesConfigurationDirectory := len(scope.ConfigurationFiles) > 0
+	for _, parameter := range extra {
+		usesConfigurationDirectory = usesConfigurationDirectory || parameter.Configuration
+		argument, err := parameter.Argument()
 		if err != nil {
 			return "", err
 		}
@@ -379,7 +381,7 @@ func composeRecreateScript(deploymentID string, scope dockerengine.ComposeProjec
 	sort.Strings(ids)
 	var script strings.Builder
 	fmt.Fprintf(&script, "set -eu\numask 077\nstate=%s\nfile_hash() { if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$1\"; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 \"$1\"; else return 1; fi | cut -d ' ' -f 1; }\nfor dir in .edo .edo/compose \"$state\" %s; do [ -d \"$dir\" ] && [ ! -L \"$dir\" ] || exit 20; done\n[ -f %s ] && [ ! -L %s ] || exit 21\n[ \"$(file_hash %s)\" = %s ] || exit 22\nlock=\"$state/active.lock\"\nmkdir \"$lock\" 2>/dev/null || exit 23\ntrap 'rmdir \"$lock\" 2>/dev/null || true' EXIT\ndocker_command() { %s \"$@\"; }\ndc() { docker_command compose %s \"$@\"; }\nservice=%s\nlog=%s\n", quote(".edo/compose/"+scope.ProjectName), quote(".edo/compose/"+scope.ProjectName+"/"+deploymentID), quote(file), quote(file), quote(file), quote(hex.EncodeToString(sum[:])), docker, args, quote(plan.Service), quote(".edo/compose/"+scope.ProjectName+"/"+deploymentID+"/container-recreate.log"))
-	if len(scope.ConfigurationFiles) > 0 {
+	if usesConfigurationDirectory {
 		// 目录来自冻结发布；HOME 在目标登录用户的 Shell 内展开。
 		directory := scope.ConfigurationDirectory
 		if directory == "" {

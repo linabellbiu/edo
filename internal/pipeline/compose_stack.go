@@ -284,11 +284,12 @@ func renderComposeStack(value string, config model.WorkflowNodeConfig, images ma
 
 func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *executionContext, approvedBy string) error {
 	failure := failureStateForRun(prepared.run)
+	interpolation := composeInterpolationValues(prepared)
 	if err := s.freezeComposeProject(ctx, prepared); err != nil {
 		return s.failDeploymentExecution(ctx, failure, "无法自动确定 Compose 项目名，请检查 compose.yaml 的 name 和部署变量", err)
 	}
 	if !prepared.snapshot.IndependentDeploymentImages && len(prepared.node.Config.ComposeImages) == 0 {
-		config, images, err := autoComposeImages(prepared.deploymentPlan.ComposeYAML, prepared.node.Config, prepared.composeCandidates, prepared.variables)
+		config, images, err := autoComposeImages(prepared.deploymentPlan.ComposeYAML, prepared.node.Config, prepared.composeCandidates, interpolation)
 		if err != nil {
 			return s.failDeploymentExecution(ctx, failure, "Compose 镜像无法自动匹配，请检查镜像引用及上游构建", err)
 		}
@@ -298,7 +299,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 			prepared.artifact = images[config.ComposeImages[0].Service]
 		}
 	}
-	content, tag, err := renderComposeStack(prepared.deploymentPlan.ComposeYAML, prepared.node.Config, prepared.composeArtifacts, prepared.variables)
+	content, tag, err := renderComposeStack(prepared.deploymentPlan.ComposeYAML, prepared.node.Config, prepared.composeArtifacts, interpolation)
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failure, "Compose 部署配置无效，请检查镜像引用和变量", err)
 	}
@@ -308,7 +309,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 			return s.failDeploymentExecution(ctx, failure, "无法拉取部署配置中的镜像，请检查镜像和仓库权限", err)
 		}
 	}
-	content, err = pinRegistryComposeImages(content, prepared.snapshot.RegistryInputs[prepared.node.ID], prepared.variables)
+	content, err = pinRegistryComposeImages(content, prepared.snapshot.RegistryInputs[prepared.node.ID], interpolation)
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failure, "无法固定所选镜像仓库的镜像，请检查镜像和 Tag", err)
 	}
@@ -360,6 +361,11 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 		return s.failDeploymentExecution(ctx, failure, "Compose 配置文件无效", err)
 	}
 	fileWrites += configurationWrites
+	configurationPrefix, err := composeParameterConfigurationPrefix(prepared)
+	if err != nil {
+		return s.failDeploymentExecution(ctx, failure, "应用配置路径不可用", err)
+	}
+	fileWrites += configurationPrefix
 	script, err := composeStackScript(content, prepared.node.Config, prepared.target.WorkingDirectory, prepared.deploymentPlan.TimeoutSeconds, fileWrites)
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failure, "Compose 部署配置无效", err)

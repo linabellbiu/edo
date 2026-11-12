@@ -200,15 +200,19 @@ func TestComposePlanExecutionKeepsAutomaticArtifactSources(t *testing.T) {
 func TestInlineDeploymentPreservesActionableParameterError(t *testing.T) {
 	for _, repositorySource := range []bool{true, false} {
 		for _, version := range []int{0, 1} {
-			config := &model.DeploymentExecutionConfig{DeploymentInputVersion: version, DeploymentParameters: "--env-file .env", Compose: &model.ComposeDeploymentSettings{TagVariable: "${EDO_IMAGE_TAG}"}}
+			config := &model.DeploymentExecutionConfig{DeploymentInputVersion: version, DeploymentParameters: "--env-file ../secret", Compose: &model.ComposeDeploymentSettings{TagVariable: "${EDO_IMAGE_TAG}"}}
 			input := &model.WorkflowDeploymentPlan{Name: "Compose 部署", Kind: model.DeploymentPlanComposeStack, TimeoutSeconds: 600, ComposeYAML: "services:\n  api:\n    image: alpine:3.22\n", DeploymentTarget: &model.DeploymentTarget{Platform: model.DeploymentSSH}, ExecutionConfig: config}
 			var source *model.WorkflowComposeSource
 			if repositorySource {
 				source = &model.WorkflowComposeSource{Kind: "repository", Path: "docker-compose.yaml"}
 			}
 			err := normalizeInlineDeploymentPlan(input, source)
-			if !errors.Is(err, configfile.ErrParameterFileNotSelected) || !strings.Contains(err.Error(), "添加对应配置文件") {
+			if !errors.Is(err, configfile.ErrParameters) || !strings.Contains(err.Error(), "部署参数无效") {
 				t.Fatalf("具体参数错误被吞掉: repository=%v version=%d err=%v", repositorySource, version, err)
+			}
+			config.DeploymentParameters = "--env-file .env"
+			if err := normalizeInlineDeploymentPlan(input, source); err != nil {
+				t.Fatalf("仓库文件不要求生成配置引用: %v", err)
 			}
 			if version == 1 {
 				config.DeploymentInputs = []model.DeploymentInput{{Kind: "configuration", ConfigurationID: "config", Path: ".env"}}

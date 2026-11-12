@@ -41,7 +41,7 @@ test('单服务 Compose 参数支持内置配置路径，未知路径和变量�
   assert.ok(preview.command.includes('--env-file '+argument('.prod.env')+' --file - up '))
   assert.ok(preview.command.endsWith('--wait-timeout 120 api'))
  }
- for(const parameters of ['--env-file /srv/app/.prod.env','--env-file unknown.env','--env-file ${EDO_APP_CONFIG_PATH:-/etc}/passwd','--env-file $(id)']){
+ for(const parameters of ['--env-file /srv/app/.prod.env','--env-file ${EDO_APP_CONFIG_PATH:-/etc}/passwd','--env-file $(id)']){
   assert.match(deploymentCommandPreview(plan,{configuration_files:references('.prod.env'),deployment_parameters:parameters},[]).warning,/只支持 --env-file/)
  }
 })
@@ -66,18 +66,24 @@ test('自定义 Docker 命令不伪装成支持后端已禁止的配置文件参
 })
 
 
-test('自定义参数即时指出未生成的ENV文件，按当前文件来源校验且不读取正文',()=>{
- const config={deployment_input_version:1,deployment_inputs:[],deployment_parameters:'--env-file .env'}
- assert.match(deploymentParametersError(config),/添加并生成配置文件“.env”/)
- config.configuration_files=[{id:'old',path:'.env'}]
- assert.match(deploymentParametersError(config),/添加并生成/,'旧派生列表不能复活已删除来源')
- config.deployment_inputs=[{kind:'configuration',configuration_id:'',path:'.env'}]
- assert.match(deploymentParametersError(config),/添加并生成/,'只填路径但未选择配置不能清除错误')
+test('仓库相对路径不要求选择配置，显式配置目录和同名配置简写仍保留',()=>{
+ const plan={id:'plan',kind:'compose_stack',deployment_target:{working_directory:'/srv/app'}}
+ const config={deployment_input_version:1,deployment_inputs:[],deployment_parameters:'--env-file .env',compose:{resolved_project_name:'demo'}}
+ assert.equal(deploymentParametersError(config),'')
+ let preview=deploymentCommandPreview(plan,config,[])
+ assert.equal(preview.warning,undefined)
+ assert.match(preview.command,/--env-file \.env --file/)
+ assert.ok(!preview.command.includes('EDO_APP_CONFIG_PATH'))
+ config.deployment_parameters='--env-file "${EDO_APP_CONFIG_PATH}/settings.env"'
+ preview=deploymentCommandPreview(plan,config,[])
+ assert.ok(preview.command.includes('--env-file '+argument('settings.env')))
+ config.deployment_parameters='--env-file .env';config.configuration_files=[{id:'stale',path:'.env'}]
+ assert.match(deploymentCommandPreview(plan,config,[]).command,/--env-file \.env --file/)
  config.deployment_inputs=[{kind:'configuration',configuration_id:'config',path:'.env'}]
- assert.equal(deploymentParametersError(config),'')
- config.deployment_parameters='--env-file "${EDO_APP_CONFIG_PATH}/.env"'
- assert.equal(deploymentParametersError(config),'')
+ preview=deploymentCommandPreview(plan,config,[])
+ assert.ok(preview.command.includes('--env-file '+argument('.env')))
+ config.deployment_parameters='--env-file ../secret'
+ assert.match(deploymentParametersError(config),/路径无效/)
  config.deployment_parameters=''
  assert.equal(deploymentParametersError(config),'')
- assert.equal(deploymentParametersError({configuration_files:[{id:'config',path:'.env'}],deployment_parameters:'--env-file .env'}),'')
 })

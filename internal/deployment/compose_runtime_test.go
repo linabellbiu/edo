@@ -84,6 +84,14 @@ func TestComposeStackRuntimeUsesFrozenHostScope(t *testing.T) {
 	if err != nil || state.RuntimeID != endpoint || state.Kind != "compose" || !state.Running || state.Name != "frozen-project" || len(state.Services) != 2 || state.Services[0].Name != "api" || state.Services[1].State != "completed" || !state.Services[1].RunToCompletion || len(state.Services[0].Containers) != 1 || state.Services[0].Containers[0].ID != "api-id" {
 		t.Fatal("未从冻结的主机和服务范围读取状态", state, err)
 	}
+	snapshot["application_config_directory"] = "~/edo/frozen-app/config"
+	encoded, _ = json.Marshal(snapshot)
+	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", run.ID).Update("workflow_snapshot", string(encoded)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, scope, err := s.composeRuntimeScope(ctx, &record); err != nil || scope.ConfigurationDirectory != "~/edo/frozen-app/config" {
+		t.Fatal("无生成文件引用时丢失冻结应用配置目录", err)
+	}
 	if _, err = s.RuntimeConfiguration(ctx, record.ID); !errors.Is(err, ErrRuntimeControlUnsupported) {
 		t.Fatal("Compose 被当成 Shell 配置命令", err)
 	}
