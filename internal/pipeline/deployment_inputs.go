@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/url"
 	"path"
 	"strings"
@@ -92,7 +94,8 @@ func sanitizeDeploymentInputs(node *model.WorkflowNode) error {
 	}
 	c.ConfigurationFiles = files
 	if _, err := configfile.EnvFileParameters(c.DeploymentParameters, files); err != nil {
-		return ErrDeploymentInputs
+		slog.Warn("部署自定义参数校验失败", "operation", "deployment_parameters_validate", "node_id", node.ID, "err", err)
+		return fmt.Errorf("%w：%w", ErrDeploymentInputs, err)
 	}
 	// 参数和所选文件一起保存，重启、重建复用成功部署快照。
 	return nil

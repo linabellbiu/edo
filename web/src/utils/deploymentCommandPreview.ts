@@ -32,18 +32,35 @@ function configurationArgument(value: string) {
 }
 
 // 这里只识别产品支持的 --env-file 参数，不解释任意 Shell 语法；实际校验仍由后端完成。
-function configurationParameters(value: string, selected: string[]) {
+function configurationParameterPaths(value: string): string[] | undefined {
   let remaining = value.trim()
-  const arguments_: string[] = []
+  const paths: string[] = []
   while (remaining) {
     const match = /^--env-file(?:=|\s+)(?:'([^']*)'|"([^"]*)"|([^\s'"]+))(?:\s+|$)/.exec(remaining)
     if (!match) return undefined
     const path = (match[1] ?? match[2] ?? match[3] ?? '').replace(/^\$(?:\{EDO_APP_CONFIG_PATH\}|EDO_APP_CONFIG_PATH)\//, '')
-    if (!validConfigurationPath(path) || !selected.includes(path)) return undefined
-    arguments_.push('--env-file', configurationArgument(path))
+    if (!validConfigurationPath(path)) return undefined
+    paths.push(path)
     remaining = remaining.slice(match[0].length).trim()
   }
-  return arguments_.join(' ')
+  return paths
+}
+
+function configurationParameters(value: string, selected: string[]) {
+  const paths = configurationParameterPaths(value)
+  if (!paths || paths.some(path => !selected.includes(path))) return undefined
+  return paths.flatMap(path => ['--env-file', configurationArgument(path)]).join(' ')
+}
+
+// 复用已有参数预览的有限语法，只提前提示可准确定位的缺失文件；完整 Shell 校验仍由后端处理。
+export function deploymentParametersError(config: WorkflowNodeConfig): string {
+  const paths = configurationParameterPaths(config.deployment_parameters || '')
+  if (!paths) return ''
+  const selected = config.deployment_input_version === 1
+    ? (config.deployment_inputs || []).filter(input => input.kind === 'configuration' && input.configuration_id).map(input => input.path)
+    : (config.configuration_files || []).filter(file => file.id).map(file => file.path)
+  const missing = paths.find(path => !selected.includes(path))
+  return missing ? `请先在“部署前下载上游产出文件或制品到主机”中添加并生成配置文件“${missing}”，或删除对应的 --env-file 参数` : ''
 }
 
 // 仅生成展示文本，不读取配置正文，也不执行用户输入的命令。

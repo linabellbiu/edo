@@ -9,6 +9,7 @@ import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vu
 import DeploymentHostSelection from '@/components/DeploymentHostSelection.vue'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
+import {deploymentParametersError} from '@/utils/deploymentCommandPreview'
 import {readKubeYaml} from '@/utils/kubernetesYaml'
 import type {WorkflowNode,WorkflowNodeConfig,WorkflowDeploymentPlan,DeploymentExecutionConfig,PipelineBuildPlan} from '@/types/pipeline'
 const props=defineProps<{node:WorkflowNode;disabled:boolean;applicationID?:string;applicationName?:string;branch?:string;buildNodes:WorkflowNode[];buildPlans?:PipelineBuildPlan[]}>()
@@ -21,6 +22,7 @@ const availableHosts=computed(()=>allHosts.value.filter(host=>host.is_active&&ho
 const hostOptions=computed(()=>Object.fromEntries(environments.value.filter(group=>group.is_active).map(group=>[group.id,availableHosts.value.filter(host=>environmentIDsOf(host).includes(group.id))])))
 const groupHosts=computed(()=>hostOptions.value[plan.value?.deployment_target?.environment_id||'']||[])
 const execution=computed(()=>plan.value?.execution_config||{})
+const parametersError=computed(()=>deploymentParametersError(execution.value))
 const sourceKind=computed(()=>props.node.config.compose_source?.kind||'editor')
 const runtimeServices=computed(()=>props.node.config.runtime_services||[])
 const buildPlanFor=(node:WorkflowNode)=>node.config.inline_build||props.buildPlans?.find(plan=>plan.id===node.config.build_plan_id)
@@ -112,7 +114,11 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
   </template>
   <DeploymentExecutionFields v-if="plan.kind!=='kubernetes'" :model-value="execution" :plan="plan" :disabled="disabled" edit-permission="workflow.update" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" hide-script hide-compose-settings :registry-target="registryHost" :timeout-min="60" @update:timeout-seconds="update({timeout_seconds:$event})" @update:model-value="update({execution_config:$event})">
    <template #before-advanced>
-  <a-form-item v-if="plan.kind==='compose_stack'"><template #label><span>自定义参数 <a-tooltip title="可重复填写 --env-file 相对路径，只能引用已选择的配置文件；参数随成功部署保存，后续重启或重建沿用。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="Docker Compose 自定义参数说明">?</button></a-tooltip></span></template><a-input :value="execution.deployment_parameters" :disabled="disabled" placeholder="例如 --env-file .prod.env" @update:value="updateExecution({deployment_parameters:String($event)})"/></a-form-item>
+  <a-form-item v-if="plan.kind==='compose_stack'" :html-for="`deployment-parameters-${node.id}`" :validate-status="parametersError?'error':undefined">
+   <template #label><span>自定义参数 <a-tooltip title="可重复填写 --env-file 相对路径，只能引用已选择的配置文件；参数随成功部署保存，后续重启或重建沿用。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="Docker Compose 自定义参数说明">?</button></a-tooltip></span></template>
+   <a-input :id="`deployment-parameters-${node.id}`" :value="execution.deployment_parameters" :disabled="disabled" :aria-invalid="Boolean(parametersError)" :aria-describedby="parametersError?`deployment-parameters-error-${node.id}`:undefined" placeholder="例如 --env-file .prod.env" @update:value="updateExecution({deployment_parameters:String($event)})"/>
+   <template v-if="parametersError" #help><span :id="`deployment-parameters-error-${node.id}`">{{ parametersError }}</span></template>
+  </a-form-item>
    </template>
   </DeploymentExecutionFields>
   <a-collapse v-if="plan.kind==='kubernetes'" class="deployment-advanced-options"><a-collapse-panel key="advanced" header="高级选项"><a-form-item label="超时（秒）"><a-input-number :value="plan.timeout_seconds" :disabled="disabled" :min="60" :max="3600" @update:value="update({timeout_seconds:Number($event)})"/></a-form-item></a-collapse-panel></a-collapse>

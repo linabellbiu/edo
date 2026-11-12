@@ -2,10 +2,12 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"gorm.io/gorm"
 
+	"edo/internal/configfile"
 	"edo/internal/deployment"
 	"edo/internal/model"
 )
@@ -34,6 +36,9 @@ func normalizeInlineDeploymentPlan(input *model.WorkflowDeploymentPlan, sources 
 	normalized, err := normalizeDeploymentPlanInput(DeploymentPlanInput{Name: input.Name, Kind: input.Kind, Description: input.Description,
 		ExecutionConfig: input.ExecutionConfig, Script: input.Script, ComposeYAML: input.ComposeYAML, ServiceName: input.ServiceName, DockerConfig: input.DockerConfig, TimeoutSeconds: input.TimeoutSeconds, DeploymentTarget: target})
 	if err != nil {
+		if errors.Is(err, ErrDeploymentInputs) || errors.Is(err, configfile.ErrParameters) {
+			return err
+		}
 		return fmt.Errorf("%w：自定义部署方案无效，请检查执行方式和参数", ErrInvalidWorkflow)
 	}
 	input.Name, input.Kind, input.Description = normalized.Name, normalized.Kind, normalized.Description

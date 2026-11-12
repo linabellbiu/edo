@@ -10,7 +10,7 @@ export function loadFrontend(path, modules = {}, globals = {}) {
   const script = path.endsWith('.vue') ? compileScript(parse(source).descriptor, {id:'acceptance-test'}).content : source
   const output = ts.transpileModule(script, {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText
   const module = {exports:{}}
-  new Function('require','module','exports',...Object.keys(globals),output)(name => modules[name] ?? (name === 'uuid' ? uuid : name === '@/utils/buildTarget' ? loadFrontend('../src/utils/buildTarget.ts') : name === '@/utils/pipelineRunFilters' ? runFilterModule : {}),module,module.exports,...Object.values(globals))
+  new Function('require','module','exports',...Object.keys(globals),output)(name => modules[name] ?? (name === 'uuid' ? uuid : name === '@/utils/deploymentCommandPreview' ? loadFrontend('../src/utils/deploymentCommandPreview.ts') : name === '@/utils/buildTarget' ? loadFrontend('../src/utils/buildTarget.ts') : name === '@/utils/pipelineRunFilters' ? runFilterModule : {}),module,module.exports,...Object.values(globals))
   return module.exports
 }
 

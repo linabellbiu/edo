@@ -2,9 +2,12 @@ package pipeline
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"edo/internal/configfile"
 	"edo/internal/model"
 )
 
@@ -191,5 +194,30 @@ func TestComposePlanExecutionKeepsAutomaticArtifactSources(t *testing.T) {
 	}
 	if config.ArtifactNodeID != "" || len(config.ArtifactNodeIDs) != 0 || config.Compose.TagVariable != "${IMAGE_TAG}" {
 		t.Fatal("旧的自动收集结果不应变成新约束")
+	}
+}
+
+func TestInlineDeploymentPreservesActionableParameterError(t *testing.T) {
+	for _, repositorySource := range []bool{true, false} {
+		for _, version := range []int{0, 1} {
+			config := &model.DeploymentExecutionConfig{DeploymentInputVersion: version, DeploymentParameters: "--env-file .env", Compose: &model.ComposeDeploymentSettings{TagVariable: "${EDO_IMAGE_TAG}"}}
+			input := &model.WorkflowDeploymentPlan{Name: "Compose 部署", Kind: model.DeploymentPlanComposeStack, TimeoutSeconds: 600, ComposeYAML: "services:\n  api:\n    image: alpine:3.22\n", DeploymentTarget: &model.DeploymentTarget{Platform: model.DeploymentSSH}, ExecutionConfig: config}
+			var source *model.WorkflowComposeSource
+			if repositorySource {
+				source = &model.WorkflowComposeSource{Kind: "repository", Path: "docker-compose.yaml"}
+			}
+			err := normalizeInlineDeploymentPlan(input, source)
+			if !errors.Is(err, configfile.ErrParameterFileNotSelected) || !strings.Contains(err.Error(), "添加对应配置文件") {
+				t.Fatalf("具体参数错误被吞掉: repository=%v version=%d err=%v", repositorySource, version, err)
+			}
+			if version == 1 {
+				config.DeploymentInputs = []model.DeploymentInput{{Kind: "configuration", ConfigurationID: "config", Path: ".env"}}
+			} else {
+				config.ConfigurationFiles = []model.DeploymentConfigFile{{ID: "config", Path: ".env"}}
+			}
+			if err := normalizeInlineDeploymentPlan(input, source); err != nil {
+				t.Fatalf("正确选择文件后仍不能保存: %v", err)
+			}
+		}
 	}
 }

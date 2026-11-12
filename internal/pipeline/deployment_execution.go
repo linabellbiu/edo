@@ -2,9 +2,11 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 
+	"edo/internal/configfile"
 	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/shellcheck"
@@ -106,6 +108,9 @@ func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML str
 	}
 	if err != nil {
 		slog.Warn("部署方案执行配置无效", "operation", "deployment_plan_execution_normalize", "kind", kind, "err", err)
+		if errors.Is(err, ErrDeploymentInputs) || errors.Is(err, configfile.ErrParameters) {
+			return err
+		}
 		return ErrInvalidDeploymentPlan
 	}
 	if node.Config.Compose != nil {

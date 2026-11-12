@@ -587,7 +587,8 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 			return ErrInvalidWorkflow
 		}
 		if _, err := configfile.EnvFileParameters(node.Config.DeploymentParameters, node.Config.ConfigurationFiles); err != nil {
-			return fmt.Errorf("%w：%s", ErrInvalidWorkflow, configfile.ErrParameters.Error())
+			slog.Warn("部署自定义参数校验失败", "operation", "deployment_parameters_validate", "node_id", node.ID, "err", err)
+			return fmt.Errorf("%w：%w", ErrInvalidWorkflow, err)
 		}
 		paths := map[string]bool{}
 		ids := map[string]bool{}

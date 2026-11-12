@@ -17,6 +17,7 @@ import (
 )
 
 var ErrParameters = errors.New("部署参数无效；只支持 --env-file 引用所选配置文件")
+var ErrParameterFileNotSelected = errors.New("请先在“部署前下载上游产出文件或制品到主机”中添加对应配置文件，或删除该 --env-file 参数")
 
 // EnvFileParameters 使用现有 Shell 解析库识别引号，但不执行展开、命令或重定向。
 // 只能读取本次明确选择的配置，不能借参数读取任意主机文件。
@@ -76,8 +77,14 @@ func EnvFileParameters(value string, refs []model.DeploymentConfigFile) ([]strin
 			path = args[i]
 		}
 		path = strings.TrimPrefix(strings.TrimPrefix(path, "${EDO_APP_CONFIG_PATH}/"), "$EDO_APP_CONFIG_PATH/")
-		if !ValidFilePath(path) || !selected[path] {
+		if !ValidFilePath(path) {
 			return nil, ErrParameters
+		}
+		if !selected[path] {
+			if !ValidPath(path) {
+				return nil, ErrParameters
+			}
+			return nil, fmt.Errorf("%w：%w", ErrParameters, ErrParameterFileNotSelected)
 		}
 		paths = append(paths, path)
 	}

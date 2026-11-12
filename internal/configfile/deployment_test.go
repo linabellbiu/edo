@@ -1,6 +1,7 @@
 package configfile
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -219,5 +220,18 @@ func TestConfigurationAbsoluteAndHomePathsRejectSymlinkParents(t *testing.T) {
 				t.Fatal("符号链接目标被改写", err)
 			}
 		})
+	}
+}
+
+func TestEnvFileParametersDistinguishesMissingSelectedFile(t *testing.T) {
+	_, err := EnvFileParameters("--env-file .env", nil)
+	if !errors.Is(err, ErrParameters) || !errors.Is(err, ErrParameterFileNotSelected) || !strings.Contains(err.Error(), "添加对应配置文件") {
+		t.Fatalf("未选择文件应明确说明修复方式: %v", err)
+	}
+	if _, err := EnvFileParameters("--env-file /etc/passwd", nil); !errors.Is(err, ErrParameters) || errors.Is(err, ErrParameterFileNotSelected) {
+		t.Fatalf("非法路径不能误报为待添加文件: %v", err)
+	}
+	if _, err := EnvFileParameters("--env-file .env", []model.DeploymentConfigFile{{ID: "config", Path: ".env"}}); err != nil {
+		t.Fatal(err)
 	}
 }

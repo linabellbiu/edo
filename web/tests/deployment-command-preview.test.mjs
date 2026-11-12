@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {test} from 'node:test'
 import {spawnSync} from 'node:child_process'
 import {loadFrontend} from './acceptanceHarness.mjs'
-const {deploymentCommandPreview}=loadFrontend('../src/utils/deploymentCommandPreview.ts')
+const {deploymentCommandPreview,deploymentParametersError}=loadFrontend('../src/utils/deploymentCommandPreview.ts')
 const references=(...paths)=>paths.map((path,index)=>({id:`config-${index}`,path}))
 const argument=path=>'"${EDO_APP_CONFIG_PATH:?缺少应用配置目录}/"\''+path+'\''
 
@@ -63,4 +63,21 @@ test('自定义 Docker 命令不伪装成支持后端已禁止的配置文件参
  const preview=deploymentCommandPreview({id:'plan',kind:'docker',docker_config:{deployment_script:command}},{deployment_parameters:'--env-file .prod.env'},[])
  assert.equal(preview.command,command)
  assert.match(preview.warning,/不能混用配置文件参数/)
+})
+
+
+test('自定义参数即时指出未生成的ENV文件，按当前文件来源校验且不读取正文',()=>{
+ const config={deployment_input_version:1,deployment_inputs:[],deployment_parameters:'--env-file .env'}
+ assert.match(deploymentParametersError(config),/添加并生成配置文件“.env”/)
+ config.configuration_files=[{id:'old',path:'.env'}]
+ assert.match(deploymentParametersError(config),/添加并生成/,'旧派生列表不能复活已删除来源')
+ config.deployment_inputs=[{kind:'configuration',configuration_id:'',path:'.env'}]
+ assert.match(deploymentParametersError(config),/添加并生成/,'只填路径但未选择配置不能清除错误')
+ config.deployment_inputs=[{kind:'configuration',configuration_id:'config',path:'.env'}]
+ assert.equal(deploymentParametersError(config),'')
+ config.deployment_parameters='--env-file "${EDO_APP_CONFIG_PATH}/.env"'
+ assert.equal(deploymentParametersError(config),'')
+ config.deployment_parameters=''
+ assert.equal(deploymentParametersError(config),'')
+ assert.equal(deploymentParametersError({configuration_files:[{id:'config',path:'.env'}],deployment_parameters:'--env-file .env'}),'')
 })

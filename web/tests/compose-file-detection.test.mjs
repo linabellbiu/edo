@@ -77,3 +77,16 @@ test('未找到和读取失败明确提示且允许手填；只读或无编辑�
   const h=harness(patch);t.after(h.close);await settle();assert.equal(h.detections().length,0);assert.deepEqual(h.events,[])
  }
 })
+
+
+test('流水线部署参数框响应缺失文件，补文件或移除参数后清除错误且保留草稿',async t=>{
+ const h=harness();t.after(h.close);await settle()
+ h.props.node.config.inline_deployment_plan.execution_config={deployment_input_version:1,deployment_inputs:[],deployment_parameters:'--env-file .env'}
+ const config=h.props.node.config.inline_deployment_plan.execution_config
+ assert.match(h.state.parametersError.value,/配置文件“.env”/)
+ config.deployment_inputs=[{kind:'configuration',configuration_id:'config',path:'.env'}]
+ assert.equal(h.state.parametersError.value,'')
+ config.deployment_inputs=[];config.deployment_parameters=''
+ assert.equal(h.state.parametersError.value,'')
+ assert.equal(h.props.node.config.inline_deployment_plan.name,'Docker Compose')
+})
