@@ -25,6 +25,7 @@
     "@vueuse/motion": "3.0.3",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
+    "anser": "2.3.5",
     "ant-design-vue": "4.2.6",
     "axios": "1.20.0",
     "echarts": "6.1.0",

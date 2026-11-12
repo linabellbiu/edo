@@ -30,13 +30,17 @@ func executeComposeLogFailure(t *testing.T, directory, content string, settings 
 	prepared.variableRedactions = append(prepared.variableRedactions, composeRegistryLogRedactions(dockerengine.RegistryAuth{Username: "registry-user", Credential: "registry-private-value"})...)
 	ctx := withPipelineNodeLog(t.Context(), node.ID, node.Name)
 	output := s.newExecutionLogWriter(ctx, run.ID, "deploy", "Docker Compose", composeExecutionLogRedactions(prepared)...)
+	errorOutput := s.newLeveledExecutionLogWriter(ctx, run.ID, "deploy", "Docker Compose", "error", composeExecutionLogRedactions(prepared)...)
 	script, err := composeStackScript(content, settings, directory, 90, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	runner := sshdeploy.NewService(db, s.secrets, config.Runtime{})
-	result, executionErr := runner.RunHostDeploymentScript(ctx, sshdeploy.Input{HostID: model.BuiltinLocalHostID, WorkingDirectory: directory, Script: script, Timeout: 30 * time.Second, Environment: map[string]string{"EDO_DEPLOYMENT_ID": "failure-detail", "EDO_DEPLOYMENT_TARGET_ID": "log-target", "EDO_COMMIT_SHA": strings.Repeat("a", 40)}, Stdout: output, Stderr: output})
+	result, executionErr := runner.RunHostDeploymentScript(ctx, sshdeploy.Input{HostID: model.BuiltinLocalHostID, WorkingDirectory: directory, Script: script, Timeout: 30 * time.Second, Environment: map[string]string{"EDO_DEPLOYMENT_ID": "failure-detail", "EDO_DEPLOYMENT_TARGET_ID": "log-target", "EDO_COMMIT_SHA": strings.Repeat("a", 40)}, Stdout: output, Stderr: errorOutput})
 	if err := output.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := errorOutput.Close(); err != nil {
 		t.Fatal(err)
 	}
 	logs, _, err := s.ListNodeRunLogs(ctx, run.ID, node.ID, 0, 200)
@@ -44,11 +48,21 @@ func executeComposeLogFailure(t *testing.T, directory, content string, settings 
 		t.Fatal("失败详情未进入任务持久日志", err)
 	}
 	var text strings.Builder
+	errorLevels := 0
 	for _, line := range logs {
 		if line.NodeID != node.ID || line.Stage != "deploy" {
 			t.Fatal("失败日志归属错误")
 		}
 		text.WriteString(line.Message)
+		if line.Level == "error" {
+			errorLevels++
+			if strings.Contains(line.Message, "\x1b[36m") {
+				t.Fatal("命令日志混入了失败错误流")
+			}
+		}
+	}
+	if executionErr != nil && errorLevels == 0 || executionErr == nil && errorLevels > 0 {
+		t.Fatal("错误详情未依据真实执行结果登记级别", logs)
 	}
 	return text.String(), result, executionErr
 }

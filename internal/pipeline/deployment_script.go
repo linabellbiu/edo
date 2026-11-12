@@ -274,7 +274,7 @@ func (s *Service) executeCustomDeployment(ctx context.Context, prepared *executi
 	}
 	script = "# EDO 用户部署脚本 v1\n" + prefix + script
 	prepared.deploymentPlan.Script = script
-	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "部署脚本", prepared.variableRedactions...)
+	output := s.newExecutionLogStreams(ctx, prepared.run.ID, "deploy", "部署脚本", prepared.variableRedactions...)
 	defer output.Close()
 	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", "正在执行部署脚本"); err != nil {
 		return s.failDeploymentExecution(ctx, failure, "更新部署状态失败", err)
@@ -289,8 +289,9 @@ func (s *Service) executeCustomDeployment(ctx context.Context, prepared *executi
 		PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy,
 		DeploymentPlanID: prepared.deploymentPlan.ID, PlanKind: prepared.deploymentPlan.Kind, Script: script,
 		ScriptDigest:   model.DeploymentPlanExecutionDigest(prepared.deploymentPlan.Kind, script, prepared.deploymentPlan.TimeoutSeconds),
-		TimeoutSeconds: prepared.deploymentPlan.TimeoutSeconds, Environment: environment, Stdout: output, Stderr: output,
+		TimeoutSeconds: prepared.deploymentPlan.TimeoutSeconds, Environment: environment, Stdout: output, Stderr: output.Stderr(),
 	})
+	_ = output.Close()
 	if err != nil {
 		return s.handleDeploymentExecutionError(ctx, failure, deploymentFailureLogMessage(record, "部署脚本执行失败，请查看任务日志"), err)
 	}

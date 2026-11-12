@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"errors"
-	"io"
 	"net/url"
 	"path"
 	"regexp"
@@ -187,9 +186,9 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 			return s.failDeploymentExecution(ctx, failureState, "读取镜像仓库认证失败，请检查构建方案使用的镜像仓库", err)
 		}
 	}
-	var output io.WriteCloser
+	var output *executionLogStreams
 	if prepared.deploymentPlan.Kind == model.DeploymentPlanCompose {
-		output = s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose", prepared.variableRedactions...)
+		output = s.newExecutionLogStreams(ctx, prepared.run.ID, "deploy", "Docker Compose", prepared.variableRedactions...)
 		defer output.Close()
 		request.ComposeYAML = prepared.deploymentPlan.ComposeYAML
 		request.ComposeService = prepared.deploymentPlan.ServiceName
@@ -197,15 +196,18 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		request.ComposeDigest = model.DeploymentPlanComposeExecutionDigest(
 			request.ComposeYAML, request.ComposeService, request.TimeoutSeconds,
 		)
-		request.Stdout, request.Stderr = output, output
+		request.Stdout, request.Stderr = output, output.Stderr()
 	} else if prepared.deploymentPlan.Kind == model.DeploymentPlanDocker {
-		output = s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker", prepared.variableRedactions...)
+		output = s.newExecutionLogStreams(ctx, prepared.run.ID, "deploy", "Docker", prepared.variableRedactions...)
 		defer output.Close()
 		request.DockerConfig = prepared.deploymentPlan.DockerConfig
 		request.DockerConfigDigest = model.DockerContainerConfigDigest(request.DockerConfig)
-		request.Stdout, request.Stderr = output, output
+		request.Stdout, request.Stderr = output, output.Stderr()
 	}
 	record, err := s.deployments.RequestSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, request)
+	if output != nil {
+		_ = output.Close()
+	}
 	if err != nil {
 		return s.handleDeploymentExecutionError(ctx, failureState,
 			deploymentFailureLogMessage(record, "发布执行失败，请检查目标环境和发布记录"), err)
@@ -254,7 +256,7 @@ func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionC
 	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", "正在执行命令脚本并发布到“"+prepared.target.Name+"”"); err != nil {
 		return s.failDeploymentExecution(ctx, failureState, "更新流水线部署状态失败，请稍后重试", err)
 	}
-	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "命令部署", prepared.variableRedactions...)
+	output := s.newExecutionLogStreams(ctx, prepared.run.ID, "deploy", "命令部署", prepared.variableRedactions...)
 	defer output.Close()
 	if prepared.artifact.ID == "" || prepared.artifact.Kind != model.ArtifactKindFileBundle || s.artifacts == nil {
 		return s.failDeploymentExecution(ctx, failureState, "主机脚本部署失败：当前流水线没有可用的上游文件制品", ErrPipelineExecutionConfig)
@@ -282,8 +284,9 @@ func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionC
 			"EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID,
 		}),
 		Artifact: artifactFile, ArtifactName: prepared.artifact.Name, ArtifactDigest: prepared.artifact.Digest,
-		Stdout: output, Stderr: output,
+		Stdout: output, Stderr: output.Stderr(),
 	})
+	_ = output.Close()
 	if err != nil {
 		return s.handleDeploymentExecutionError(ctx, failureState,
 			deploymentFailureLogMessage(record, "命令脚本部署失败，请查看流水线日志"), err)

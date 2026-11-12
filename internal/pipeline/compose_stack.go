@@ -368,6 +368,9 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 		return s.failDeploymentExecution(ctx, failure, "更新 Compose 发布状态失败", err)
 	}
 	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose", composeExecutionLogRedactions(prepared)...)
+	// 内置脚本仅在真实命令失败后向 stderr 输出错误详情，直接登记错误级别。
+	errorOutput := s.newLeveledExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose", "error", composeExecutionLogRedactions(prepared)...)
+	defer errorOutput.Close()
 	defer output.Close()
 	containerVariables := prepared.variables
 	if prepared.snapshot.IndependentDeploymentImages {
@@ -406,7 +409,10 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	for name, value := range prepared.variableFiles {
 		environment[envtext.TransportKey(name)] = value
 	}
-	record, err := s.deployments.RequestCommandSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, deployment.CommandRequestInput{UsesDeliveryVariables: len(prepared.snapshot.VariableBindings[prepared.node.ID]) > 0 || prepared.configuration != nil, TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ArtifactID: prepared.artifact.ID, Image: prepared.artifact.ImageRef, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy, DeploymentPlanID: prepared.deploymentPlan.ID, PlanKind: model.DeploymentPlanComposeStack, Script: script, ScriptDigest: model.DeploymentPlanExecutionDigest(model.DeploymentPlanComposeStack, script, prepared.deploymentPlan.TimeoutSeconds), TimeoutSeconds: prepared.deploymentPlan.TimeoutSeconds, Environment: environment, Stdout: output, Stderr: output})
+	record, err := s.deployments.RequestCommandSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, deployment.CommandRequestInput{UsesDeliveryVariables: len(prepared.snapshot.VariableBindings[prepared.node.ID]) > 0 || prepared.configuration != nil, TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ArtifactID: prepared.artifact.ID, Image: prepared.artifact.ImageRef, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy, DeploymentPlanID: prepared.deploymentPlan.ID, PlanKind: model.DeploymentPlanComposeStack, Script: script, ScriptDigest: model.DeploymentPlanExecutionDigest(model.DeploymentPlanComposeStack, script, prepared.deploymentPlan.TimeoutSeconds), TimeoutSeconds: prepared.deploymentPlan.TimeoutSeconds, Environment: environment, Stdout: output, Stderr: errorOutput})
+	// 先落库最后一段输出，再发布终态，避免实时日志连接先结束。
+	_ = output.Close()
+	_ = errorOutput.Close()
 	if err != nil {
 		return s.handleDeploymentExecutionError(ctx, failure, deploymentFailureLogMessage(record, "Compose 部署失败，请查看运行日志"), err)
 	}

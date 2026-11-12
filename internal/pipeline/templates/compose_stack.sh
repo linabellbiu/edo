@@ -1,7 +1,7 @@
 # Compose 正文来自本次冻结配置；按其中的镜像引用执行，不读取主机其他 Compose 文件。
 set -eu
 umask 077
-exec 3>&2
+exec 3>&1
 printf '执行目录：%s\n' "$(pwd -P)" >&3
 : "${EDO_DEPLOYMENT_ID:?缺少部署记录}"
 : "${EDO_DEPLOYMENT_TARGET_ID:?缺少部署目标}"
@@ -22,12 +22,12 @@ current="$state/current.yml"
 [ ! -L "$current" ] || { echo 'Compose 状态文件不能是符号链接' >&2; exit 1; }
 # 仅记录受控命令的参数，不能使用 set -x 输出配置正文或凭据。
 trace_command() {
- printf '执行命令：' >&3
+ printf '\033[36m执行命令：' >&3
  for argument do
   quoted=$(printf '%s' "$argument" | sed "s/'/'\"'\"'/g")
   printf " '%s'" "$quoted" >&3
  done
- printf '\n' >&3
+ printf '\033[0m\n' >&3
 }
 run_command() { trace_command "$@"; "$@"; }
 docker_command() { run_command __EDO_DOCKER__ "$@"; }

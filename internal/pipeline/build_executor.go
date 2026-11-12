@@ -762,7 +762,7 @@ func (s *Service) executePipelineShell(
 			s.appendRunLog(ctx, prepared.run.ID, stage, "info", "未命中依赖缓存，将在任务成功后保存")
 		}
 	}
-	output := s.newExecutionLogWriter(ctx, prepared.run.ID, stage, outputName, redactions...)
+	output := s.newExecutionLogStreams(ctx, prepared.run.ID, stage, outputName, redactions...)
 	defer output.Close()
 	// 变量、依赖缓存和运行环境准备结束后，不沿用开始检出时的授权。
 	if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
@@ -817,7 +817,7 @@ func (s *Service) executePipelineShell(
 		},
 		Timeout: time.Duration(timeoutSeconds) * time.Second,
 		Stdout:  output,
-		Stderr:  output,
+		Stderr:  output.Stderr(),
 	})
 	if err == nil && cacheKey != "" {
 		if cacheErr := cicd.SaveCache(cacheRoot, cacheKey, result.CachePaths); cacheErr != nil {

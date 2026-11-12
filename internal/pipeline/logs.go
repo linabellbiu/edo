@@ -55,7 +55,7 @@ func (s *Service) ListExecutionLogs(ctx context.Context, filter ExecutionLogFilt
 	}
 	filter.Level = strings.ToLower(strings.TrimSpace(filter.Level))
 	if filter.Level != "" && filter.Level != "info" && filter.Level != "output" &&
-		filter.Level != "warning" && filter.Level != "error" && filter.Level != "success" {
+		filter.Level != "warning" && filter.Level != "error" && filter.Level != "success" && filter.Level != "stderr" && filter.Level != "command" {
 		return nil, fmt.Errorf("%w：日志级别无效", ErrInvalidExecutionLogFilter)
 	}
 	filter.Query = strings.TrimSpace(filter.Query)
@@ -250,6 +250,22 @@ type buildLogWriter struct {
 	truncated  bool
 	lastFlush  time.Time
 	redactions [][]byte
+	level      string
+	flushLines bool
+}
+
+type executionLogStreams struct{ stdout, stderr io.WriteCloser }
+
+func (s *executionLogStreams) Write(value []byte) (int, error) { return s.stdout.Write(value) }
+func (s *executionLogStreams) Stderr() io.Writer               { return s.stderr }
+func (s *executionLogStreams) Close() error                    { return errors.Join(s.stdout.Close(), s.stderr.Close()) }
+
+// stderr 记录输出来源；任务是否失败仍由真实退出结果决定，不猜测文本含义。
+func (s *Service) newExecutionLogStreams(ctx context.Context, runID, stage, name string, redactions ...string) *executionLogStreams {
+	stdout := s.newLeveledExecutionLogWriter(ctx, runID, stage, name, "output", redactions...)
+	stderr := s.newLeveledExecutionLogWriter(ctx, runID, stage, name, "stderr", redactions...)
+	stdout.flushLines, stderr.flushLines = true, true
+	return &executionLogStreams{stdout: stdout, stderr: stderr}
 }
 
 func (s *Service) newBuildLogWriter(ctx context.Context, runID, stage string, redactions ...string) io.WriteCloser {
@@ -261,6 +277,10 @@ func (s *Service) newExecutionLogWriter(
 	runID, stage, outputName string,
 	redactions ...string,
 ) io.WriteCloser {
+	return s.newLeveledExecutionLogWriter(ctx, runID, stage, outputName, "output", redactions...)
+}
+
+func (s *Service) newLeveledExecutionLogWriter(ctx context.Context, runID, stage, outputName, level string, redactions ...string) *buildLogWriter {
 	outputName = strings.TrimSpace(outputName)
 	if outputName == "" {
 		outputName = "任务"
@@ -268,6 +288,7 @@ func (s *Service) newExecutionLogWriter(
 	return &buildLogWriter{
 		service: s, ctx: ctx, runID: runID, stage: stage,
 		outputName: outputName, lastFlush: time.Now(), redactions: normalizeLogRedactions(redactions),
+		level: level,
 	}
 }
 
@@ -318,7 +339,7 @@ func (w *buildLogWriter) flushCompleteChunks() {
 		}
 		w.flush(cut)
 	}
-	if len(w.pending) > 0 && bytes.IndexByte(w.pending, '\n') >= 0 && time.Since(w.lastFlush) >= 250*time.Millisecond {
+	if len(w.pending) > 0 && bytes.IndexByte(w.pending, '\n') >= 0 && (w.flushLines || time.Since(w.lastFlush) >= 250*time.Millisecond) {
 		cut := bytes.LastIndexByte(w.pending, '\n') + 1
 		if cut = w.safeFlushLength(cut); cut > 0 {
 			w.flush(cut)
@@ -334,8 +355,11 @@ func (w *buildLogWriter) flushFinal() {
 	w.pending = nil
 	for len(message) > 0 {
 		cut := min(len(message), buildLogChunkBytes)
+		if safe := ansiFrameBoundary(message, cut); safe > 0 {
+			cut = safe
+		}
 		w.lastFlush = time.Now()
-		w.service.appendRunLog(w.ctx, w.runID, w.stage, "output", string(message[:cut]))
+		w.service.appendRunLog(w.ctx, w.runID, w.stage, w.logLevel(), string(message[:cut]))
 		message = message[cut:]
 	}
 }
@@ -344,7 +368,14 @@ func (w *buildLogWriter) flush(length int) {
 	message := string(redactLogBytes(w.pending[:length], w.redactions))
 	w.pending = w.pending[length:]
 	w.lastFlush = time.Now()
-	w.service.appendRunLog(w.ctx, w.runID, w.stage, "output", message)
+	w.service.appendRunLog(w.ctx, w.runID, w.stage, w.logLevel(), message)
+}
+
+func (w *buildLogWriter) logLevel() string {
+	if w.level == "" {
+		return "output"
+	}
+	return w.level
 }
 
 func (w *buildLogWriter) markTruncated() {
@@ -353,6 +384,7 @@ func (w *buildLogWriter) markTruncated() {
 }
 
 func (w *buildLogWriter) safeFlushLength(length int) int {
+	length = ansiFrameBoundary(w.pending, length)
 	if length <= 0 || len(w.redactions) == 0 {
 		return length
 	}
@@ -368,10 +400,34 @@ func (w *buildLogWriter) safeFlushLength(length int) int {
 				}
 			}
 		}
+		length = ansiFrameBoundary(w.pending, length)
 		if length == original || length == 0 {
 			return length
 		}
 	}
+}
+
+// 日志记录边界不得切开 CSI 帧；颜色及装饰的语义由前端标准 ANSI 库解析。
+func ansiFrameBoundary(value []byte, limit int) int {
+	if limit <= 0 {
+		return limit
+	}
+	start := bytes.LastIndexByte(value[:limit], 0x1b)
+	if start < 0 {
+		return limit
+	}
+	if start+1 == limit {
+		return start
+	}
+	if value[start+1] != '[' {
+		return limit
+	}
+	for _, code := range value[start+2 : limit] {
+		if code >= 0x40 && code <= 0x7e {
+			return limit
+		}
+	}
+	return start
 }
 
 func normalizeLogRedactions(values []string) [][]byte {
