@@ -19,6 +19,9 @@ var (
 )
 
 type RunQueryOptions struct {
+	ApplicationID          string
+	WorkflowID             string
+	StatusGroup            string
 	ReleasePlanExecutionID string
 	Status                 model.PipelineRunStatus
 	From                   *time.Time
@@ -43,6 +46,9 @@ func (s *Service) QueryRuns(ctx context.Context, options RunQueryOptions) (RunQu
 	}
 	options.Status = model.PipelineRunStatus(strings.TrimSpace(string(options.Status)))
 	options.ReleasePlanExecutionID = strings.TrimSpace(options.ReleasePlanExecutionID)
+	options.ApplicationID = strings.TrimSpace(options.ApplicationID)
+	options.WorkflowID = strings.TrimSpace(options.WorkflowID)
+	options.StatusGroup = strings.TrimSpace(options.StatusGroup)
 	options.Order = strings.TrimSpace(options.Order)
 	if options.Order == "" {
 		options.Order = "desc"
@@ -56,6 +62,12 @@ func (s *Service) QueryRuns(ctx context.Context, options RunQueryOptions) (RunQu
 	invalidField := ""
 	if len(options.ReleasePlanExecutionID) > 36 {
 		invalidField = "release_plan_execution_id"
+	}
+	if len(options.ApplicationID) > 36 || len(options.WorkflowID) > 36 {
+		invalidField = "workflow"
+	}
+	if options.StatusGroup != "" && options.StatusGroup != "active" && options.StatusGroup != "finished" {
+		invalidField = "status_group"
 	}
 	switch options.Status {
 	case "", model.PipelineRunDetected, model.PipelineRunReady, model.PipelineRunBlocked,
@@ -81,6 +93,18 @@ func (s *Service) QueryRuns(ctx context.Context, options RunQueryOptions) (RunQu
 	}
 
 	query := s.db.WithContext(ctx).Model(&model.PipelineRun{})
+	if options.ApplicationID != "" {
+		query = query.Where("application_id = ?", options.ApplicationID)
+	}
+	if options.WorkflowID != "" {
+		query = query.Where("workflow_id = ?", options.WorkflowID)
+	}
+	finished := []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunFailed, model.PipelineRunSkipped, model.PipelineRunCanceled}
+	if options.StatusGroup == "finished" {
+		query = query.Where("status IN ?", finished)
+	} else if options.StatusGroup == "active" {
+		query = query.Where("status IN ?", []model.PipelineRunStatus{model.PipelineRunDetected, model.PipelineRunReady, model.PipelineRunBlocked, model.PipelineRunAwaitingApproval, model.PipelineRunRunning})
+	}
 	if options.ReleasePlanExecutionID != "" {
 		query = query.Where("release_plan_execution_id = ?", options.ReleasePlanExecutionID)
 	}

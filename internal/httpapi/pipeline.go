@@ -702,6 +702,7 @@ func (h pipelineHandler) deleteDeploymentPlan(c *gin.Context) {
 func (h pipelineHandler) listRuns(c *gin.Context) {
 	options := pipeline.RunQueryOptions{Status: model.PipelineRunStatus(c.Query("status")), Order: c.Query("order"), Page: 1, PageSize: 50}
 	options.ReleasePlanExecutionID = c.Query("release_plan_execution_id")
+	options.ApplicationID, options.WorkflowID, options.StatusGroup = c.Query("application_id"), c.Query("workflow_id"), c.Query("status_group")
 	invalid := func(field string, err error) {
 		h.logger.WarnContext(c.Request.Context(), "流水线运行筛选参数无效", "operation", "pipeline_run_list", "request_id", requestIDFrom(c), "field", field, "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_run_query", pipeline.ErrInvalidRunQuery.Error())

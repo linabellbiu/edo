@@ -24,6 +24,45 @@ type cachedCommitMessageClient interface {
 	CommitMessageCachedAt(context.Context, model.GitRepository, string, string, string, string, bool) (string, error)
 }
 
+type cachedCommitAuthorClient interface {
+	CachedCommitAuthorAt(context.Context, string, string) (string, error)
+}
+
+// CachedCommitAuthorAt 只读取固定对象的作者，不访问远端，也不创建缓存。
+func (c *GitClient) CachedCommitAuthorAt(ctx context.Context, directory, commitSHA string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if directory == "" || !plumbing.IsHash(commitSHA) || plumbing.NewHash(commitSHA).IsZero() {
+		return "", nil
+	}
+	opened, err := git.PlainOpen(directory)
+	if errors.Is(err, git.ErrRepositoryNotExists) || errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	storage, ok := opened.Storer.(*filesystem.Storage)
+	if !ok {
+		return "", errors.New("Git 元数据缓存存储类型不可用")
+	}
+	bounded := filesystem.NewStorageWithOptions(storage.Filesystem(), cache.NewObjectLRU(metadataObjectCacheBytes), filesystem.Options{LargeObjectThreshold: 1 << 20})
+	defer bounded.Close()
+	objects, err := git.Open(bounded, nil)
+	if err != nil {
+		return "", err
+	}
+	commit, err := pinnedCommitObject(objects, plumbing.NewHash(commitSHA))
+	if errors.Is(err, plumbing.ErrObjectNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return commitSubject(commit.Author.Name), nil
+}
+
 type cachedTagCommitClient interface {
 	ResolveTagCommitCachedAt(context.Context, model.GitRepository, string, string, string, string) (string, error)
 }

@@ -79,6 +79,48 @@ func TestGitCommitMetadataReusesCheckoutObjectsWithoutRemote(t *testing.T) {
 	}
 }
 
+func TestCachedCommitAuthorUsesFixedObjectWithoutNetworkOrCreatingCache(t *testing.T) {
+	remote, _ := newMetadataGitFixture(t, 32)
+	opened, err := git.PlainOpen(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := opened.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := worktree.Commit("固定作者", &git.CommitOptions{AllowEmptyCommits: true,
+		Author:    &object.Signature{Name: "代码作者", Email: "author@example.invalid", When: time.Now()},
+		Committer: &object.Signature{Name: "发布机器人", Email: "bot@example.invalid", When: time.Now()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewGitClient(config.Git{Timeout: time.Second})
+	directory := filepath.Join(t.TempDir(), "objects")
+	if _, err := client.CheckoutCachedAt(context.Background(), model.GitRepository{CloneURL: remote, AuthType: model.GitAuthNone}, "", "refs/heads/master", hash.String(), filepath.Join(t.TempDir(), "workspace"), directory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(remote, remote+"-offline"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Rename(remote+"-offline", remote) })
+	author, err := client.CachedCommitAuthorAt(context.Background(), directory, hash.String())
+	if err != nil || author != "代码作者" {
+		t.Fatalf("必须读取固定对象的 Author，而不是 Committer 或触发人: author=%q err=%v", author, err)
+	}
+	if author, err := client.CachedCommitAuthorAt(context.Background(), directory, strings.Repeat("f", 40)); err != nil || author != "" {
+		t.Fatalf("未缓存对象不得发起下载: author=%q err=%v", author, err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	if author, err := client.CachedCommitAuthorAt(context.Background(), missing, hash.String()); err != nil || author != "" {
+		t.Fatalf("缓存缺失应保持未知: author=%q err=%v", author, err)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("只读作者查询创建了缓存: %v", err)
+	}
+}
+
 func TestGitCommitMetadataKeepsFixedVersionWhenBranchAdvances(t *testing.T) {
 	remote, first := newMetadataGitFixture(t, 64)
 	client := NewGitClient(config.Git{Timeout: 10 * time.Second})

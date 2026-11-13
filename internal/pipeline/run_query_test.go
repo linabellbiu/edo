@@ -3,9 +3,11 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,6 +154,7 @@ func TestQueryRunsRejectsInvalidFiltersAndHidesDatabaseErrors(t *testing.T) {
 		{Status: "failed' OR 1=1"}, {Order: "desc; DROP TABLE pipeline_runs"}, {Order: "random"},
 		{Page: -1}, {PageSize: -1}, {PageSize: 201}, {Page: int(^uint(0) >> 1), PageSize: 200},
 		{From: &from, To: &to}, {From: &from, To: &from}, {From: new(time.Time)},
+		{ApplicationID: strings.Repeat("a", 37)}, {WorkflowID: strings.Repeat("b", 37)}, {StatusGroup: "unknown"},
 	} {
 		if _, err := service.QueryRuns(context.Background(), options); !errors.Is(err, ErrInvalidRunQuery) {
 			t.Fatalf("无效筛选条件未在查询前拒绝: options=%+v err=%v", options, err)
@@ -164,6 +167,51 @@ func TestQueryRunsRejectsInvalidFiltersAndHidesDatabaseErrors(t *testing.T) {
 	}
 	if _, err := service.QueryRuns(context.Background(), RunQueryOptions{}); !errors.Is(err, ErrRunQueryFailed) || err.Error() != "查询运行记录失败，请稍后重试" {
 		t.Fatalf("数据库细节不得进入查询错误: %v", err)
+	}
+}
+
+func TestQueryWorkflowRunsKeepsCurrentAndFiftyFinishedRecords(t *testing.T) {
+	db := testutil.NewDatabase(t)
+	service := NewService(db, nil, nil)
+	base := time.Now().UTC()
+	for _, value := range []any{&model.GitRepository{ID: "query-repository", Name: "query-repository"}, &model.Application{ID: "query-application", Name: "query-app", RepositoryID: "query-repository"}, &model.Application{ID: "other-app", Name: "other-app", RepositoryID: "query-repository"}} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	active := queryRunFixture("old-active", base.Add(-24*time.Hour), model.PipelineRunRunning)
+	active.WorkflowID = "selected-workflow"
+	if err := db.Create(&active).Error; err != nil {
+		t.Fatal(err)
+	}
+	var records []model.PipelineRun
+	for i := range 65 {
+		run := queryRunFixture(fmt.Sprintf("history-%02d", i), base, model.PipelineRunSucceeded)
+		run.WorkflowID = "selected-workflow"
+		records = append(records, run)
+	}
+	other := queryRunFixture("other-workflow", base, model.PipelineRunSucceeded)
+	other.WorkflowID = "other-workflow"
+	records = append(records, other)
+	other.ID, other.ApplicationID, other.WorkflowID = "other-app", "other-app", "selected-workflow"
+	records = append(records, other)
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	options := RunQueryOptions{ApplicationID: "query-application", WorkflowID: "selected-workflow", StatusGroup: "finished", PageSize: 50}
+	history, err := service.QueryRuns(context.Background(), options)
+	if err != nil || history.Total != 65 || len(history.Runs) != 50 || history.Runs[0].ID != "history-64" || history.Runs[49].ID != "history-15" {
+		t.Fatalf("历史必须先按应用和流水线筛选，再取最新 50 条: result=%+v err=%v", history, err)
+	}
+	options.StatusGroup = "active"
+	current, err := service.QueryRuns(context.Background(), options)
+	if err != nil || current.Total != 1 || len(current.Runs) != 1 || current.Runs[0].ID != active.ID {
+		t.Fatalf("运行中的旧记录不能被最新历史分页挤掉: result=%+v err=%v", current, err)
+	}
+	ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{UserID: "reader", DepartmentID: "other-department", ProjectID: "other-project"})
+	isolated, err := service.QueryRuns(ctx, options)
+	if err != nil || isolated.Total != 0 || len(isolated.Runs) != 0 {
+		t.Fatalf("应用和流水线筛选不能绕过项目范围: %+v %v", isolated, err)
 	}
 }
 

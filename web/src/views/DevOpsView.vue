@@ -29,6 +29,7 @@ import PageToolbar from '@/components/PageToolbar.vue'
 import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
 import PipelineTaskHistory from '@/components/PipelineTaskHistory.vue'
 import PipelineRunProgress from '@/components/PipelineRunProgress.vue'
+import ApplicationWorkflowRuns from '@/components/ApplicationWorkflowRuns.vue'
 import type { PipelineRunProgressRecord } from '@/utils/pipelineRunProgress'
 import ReleasePlanEditorDrawer from '@/components/ReleasePlanEditorDrawer.vue'
 import ReleasePlanExecuteModal from '@/components/ReleasePlanExecuteModal.vue'
@@ -95,6 +96,7 @@ interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:s
 const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),workflowTemplates=ref<WorkflowTemplate[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),deploymentPlans=ref<DeploymentPlan[]>([]),artifacts=ref<Artifact[]>([])
 const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualApplicationID=ref(''),manualWorkflowID=ref(''),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),manualArtifacts=ref<ManualArtifact[]>([]),manualExecutionMode=ref<'code'|'artifact'>('code'),selectedArtifactID=ref(''),manualReferenceError=ref(''),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',nodeID:'',title:'',status:''})
 const expandedApplications=ref<Record<string,boolean>>({}),expandedDeployments=ref<Record<string,boolean>>({}),dockerRuntimeContainers=ref<Record<string,DockerContainerRecord[]>>({}),dockerRuntimeLoading=ref<Record<string,boolean>>({}),dockerRuntimeLoaded=ref<Record<string,boolean>>({}),dockerRuntimeErrors=ref<Record<string,string>>({})
+const expandedWorkflowIDs=ref<string[]>([])
 type ApplicationFilter='all'|'running'|'attention'|'inactive'
 type ApplicationDetailTab='workflows'|'deployments'|'environment'
 const applicationSearch=ref(''),applicationFilter=ref<ApplicationFilter>('all')
@@ -451,7 +453,8 @@ const applicationDrawerOpen=computed({get:()=>Boolean(applicationDrawerCard.valu
 const applicationPageState=reactive({current:1,pageSize:10})
 const applicationPagination=computed(()=>({...applicationPageState,showSizeChanger:true,pageSizeOptions:['10','20','50','100'],showTotal:(count:number)=>t('planList.total',{count})}))
 function changeApplicationPage(page:{current?:number;pageSize?:number}){const size=page.pageSize||applicationPageState.pageSize;applicationPageState.current=size===applicationPageState.pageSize?page.current||1:1;applicationPageState.pageSize=size}
-function closeApplicationDetails(){expandedApplications.value={};applicationDrawerID.value=''}
+function closeApplicationDetails(){expandedApplications.value={};applicationDrawerID.value='';expandedWorkflowIDs.value=[]}
+function expandWorkflowRuns(expanded:boolean,item:ApplicationCard['workflowSummaries'][number]){expandedWorkflowIDs.value=expanded?[...new Set([...expandedWorkflowIDs.value,item.workflow.id])]:expandedWorkflowIDs.value.filter(id=>id!==item.workflow.id)}
 watch(()=>visibleApplicationCards.value.map(card=>card.application.id).join(','),()=>{applicationPageState.current=Math.min(applicationPageState.current,Math.max(1,Math.ceil(visibleApplicationCards.value.length/applicationPageState.pageSize)))})
 watch([applicationSearch,applicationFilter],()=>{applicationPageState.current=1})
 watch(()=>applicationCards.value.map(card=>card.application.id).join(','),()=>{if(applicationDrawerID.value&&!applicationDrawerCard.value)closeApplicationDetails()})
@@ -466,13 +469,11 @@ const applicationColumns=computed(()=>[
  {key:'actions',title:t('applicationWorkspace.columns.actions'),width:165,fixed:'right' as const,align:'right' as const},
 ])
 const applicationWorkflowColumns=computed(()=>[
- {key:'name',title:t('applicationCard.workflow'),width:270},
- {key:'enabled',title:t('applicationWorkspace.columns.status'),width:85},
- {key:'source',title:t('applicationWorkspace.columns.source'),width:265},
- {key:'template',title:t('applicationWorkspace.columns.template'),width:195},
- {key:'tasks',title:t('applicationWorkspace.columns.tasks'),width:210},
- {key:'status',title:t('applicationCard.latestRun'),width:100},
- {key:'time',title:t('applicationWorkspace.columns.runTime'),width:175},
+ {key:'name',title:t('applicationCard.workflow'),width:300},
+ {key:'enabled',title:t('applicationWorkspace.columns.status'),width:75},
+ {key:'source',title:t('applicationWorkspace.columns.source'),width:200},
+ {key:'template',title:t('applicationWorkspace.columns.template'),width:160},
+ {key:'tasks',title:t('applicationWorkspace.columns.tasks'),width:175},
  {key:'actions',title:t('applicationWorkspace.columns.actions'),width:132,fixed:'right' as const,align:'right' as const},
 ])
 function applicationTableRow(card:ApplicationCard){return {id:`application-${card.application.id}`}}
@@ -2220,9 +2221,11 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
       <section v-if="applicationDetailsOpen(card.application.id)" :id="`application-details-${card.application.id}`" class="apps-details-content resource-detail-section" :aria-label="card.application.name+' · '+(applicationDetailTab(card.application.id)==='environment'?'环境配置':applicationDetailTab(card.application.id)==='workflows'?t('applicationCard.linkedWorkflows'):t('applicationCard.deploymentInstances'))">
         <template v-if="applicationDetailTab(card.application.id)==='workflows'">
           <a-table v-if="card.workflowSummaries.length" class="apps-workflow-table" size="small" table-layout="fixed"
-            :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:1567}">
+            :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:1080}" :expanded-row-keys="expandedWorkflowIDs" @expand="expandWorkflowRuns">
+            <template #expandIcon="{expanded,record:item}"><button type="button" class="apps-workflow-expand" :aria-expanded="expanded" :aria-label="`${expanded?'收起':'展开'}执行记录：${workflowDisplayName(item.workflow)}`" :aria-controls="expanded?`workflow-runs-${item.workflow.id}`:undefined" @click="expandWorkflowRuns(!expanded,item)"><ChevronRight :size="15" :class="{'is-expanded':expanded}"/></button></template>
+            <template #expandedRowRender="{record:item}"><div v-if="expandedWorkflowIDs.includes(item.workflow.id)" :id="`workflow-runs-${item.workflow.id}`"><ApplicationWorkflowRuns :application-id="card.application.id" :workflow-id="item.workflow.id" :scope-key="resourceScopeKey()" @logs="run=>openLogs(run as Run)"/></div></template>
             <template #bodyCell="{column:workflowColumn,record:item}">
-              <a-tooltip v-if="workflowColumn.key==='name'" :title="workflowDisplayName(item.workflow)" :mouse-enter-delay="0.1"><button type="button" class="apps-workflow-name" @click="openApplicationWorkflow(card.application.id,item.workflow.id)"><Workflow :size="15"/><span>{{ workflowDisplayName(item.workflow) }}</span></button></a-tooltip>
+              <template v-if="workflowColumn.key==='name'"><a-tooltip :title="workflowDisplayName(item.workflow)" :mouse-enter-delay="0.1"><button type="button" class="apps-workflow-name" @click="openApplicationWorkflow(card.application.id,item.workflow.id)"><Workflow :size="15"/><span>{{ workflowDisplayName(item.workflow) }}</span></button></a-tooltip><span v-if="auth.canAny(['pipeline_run.read'])" class="apps-workflow-latest"><span class="apps-status" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/>{{ item.state.label }}</span><time>{{ formatApplicationTime(item.latestRun?.created_at) }}</time></span><span v-else class="apps-workflow-latest">无权查看运行记录</span></template>
               <span v-else-if="workflowColumn.key==='enabled'" class="apps-enabled" :class="{'is-inactive':!item.workflow.is_active}">{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</span>
               <a-tooltip v-else-if="workflowColumn.key==='source'" :title="item.source" :mouse-enter-delay="0.1"><span class="apps-cell-ellipsis">{{ item.source }}</span></a-tooltip>
               <a-tooltip v-else-if="workflowColumn.key==='template'" :title="item.workflow.workflow_template?.name||t('applicationCard.customWorkflow')" :mouse-enter-delay="0.1"><span class="apps-cell-ellipsis">{{ item.workflow.workflow_template?.name||t('applicationCard.customWorkflow') }}</span></a-tooltip>

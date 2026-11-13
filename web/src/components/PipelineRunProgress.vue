@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { pipelineRunProgress, type PipelineRunProgressRecord } from '@/utils/pipelineRunProgress'
 import { formatPipelineDuration } from '@/utils/pipelineStageTiming'
 
-const props = defineProps<{ run: PipelineRunProgressRecord }>()
+const props = defineProps<{ run: PipelineRunProgressRecord; durationOnly?: boolean }>()
 const elapsed = ref(0)
 let timer: ReturnType<typeof setInterval> | undefined
 function stop() { clearInterval(timer); timer = undefined }
@@ -25,7 +25,7 @@ const duration = computed(() => {
 <template>
   <div class="run-progress" :data-state="progress.state">
     <span class="run-progress-duration" :aria-label="`总耗时：${duration}`">{{ duration }}</span>
-    <span class="run-progress-stage" :title="progress.stageName">
+    <span v-if="!durationOnly" class="run-progress-stage" :title="progress.stageName">
       <i class="run-progress-dot" :class="{ 'is-breathing': progress.breathing }" aria-hidden="true" />
       <span>{{ progress.stageName }}{{ progress.stageName ? ' · ' : '' }}{{ progress.label }}</span>
     </span>

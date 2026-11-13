@@ -1167,6 +1167,7 @@ func pipelineRunQuery(db *gorm.DB) *gorm.DB {
 }
 
 func (s *Service) enrichPipelineRuns(ctx context.Context, runs []model.PipelineRun) error {
+	s.attachRunCommitAuthors(ctx, runs)
 	if err := s.attachRunRetryEligibility(ctx, runs); err != nil {
 		return err
 	}
@@ -1221,6 +1222,32 @@ func (s *Service) enrichPipelineRuns(ctx context.Context, runs []model.PipelineR
 		}
 	}
 	return s.attachRunStageTimings(ctx, runs)
+}
+
+func (s *Service) attachRunCommitAuthors(ctx context.Context, runs []model.PipelineRun) {
+	if s.repositories == nil {
+		return
+	}
+	cache := make(map[string]string)
+	for i := range runs {
+		if ctx.Err() != nil {
+			return
+		}
+		if len(runs[i].Repositories) == 0 || runs[i].CommitSHA == "" {
+			continue
+		}
+		repositoryID := runs[i].Repositories[0].RepositoryID
+		if repositoryID == "" {
+			continue
+		}
+		key := repositoryID + ":" + runs[i].CommitSHA
+		author, seen := cache[key]
+		if !seen {
+			author, _ = s.repositories.CachedCommitAuthor(ctx, repositoryID, runs[i].CommitSHA)
+			cache[key] = author
+		}
+		runs[i].CommitAuthor = author
+	}
 }
 
 func (s *Service) attachRunSelectedArtifacts(ctx context.Context, runs []model.PipelineRun) error {

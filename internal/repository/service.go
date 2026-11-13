@@ -665,6 +665,32 @@ func (s *Service) CommitMessage(ctx context.Context, id, ref, commitSHA string) 
 	return s.commitMessage(ctx, id, ref, commitSHA, false)
 }
 
+// CachedCommitAuthor 查询运行来源的固定提交，不解析凭据或为历史列表发起 Git 下载。
+func (s *Service) CachedCommitAuthor(ctx context.Context, id, commitSHA string) (string, error) {
+	client, ok := s.git.(cachedCommitAuthorClient)
+	if !ok {
+		return "", nil
+	}
+	read := func() (string, error) {
+		repository, err := s.Find(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		directory, release, err := s.acquireMetadataCache(ctx, repository.CloneURL)
+		if err != nil {
+			return "", err
+		}
+		defer release()
+		return client.CachedCommitAuthorAt(ctx, directory, commitSHA)
+	}
+	author, err := read()
+	if err != nil {
+		slog.WarnContext(ctx, "读取流水线固定提交作者失败", "operation", "repository_cached_commit_author", "repository_id", id, "commit_sha", commitSHA, "err", err)
+		return "", errors.New("暂时无法读取代码提交人")
+	}
+	return author, nil
+}
+
 func (s *Service) HistoricalCommitMessage(ctx context.Context, id, ref, commitSHA string) (string, error) {
 	return s.commitMessage(ctx, id, ref, commitSHA, true)
 }
