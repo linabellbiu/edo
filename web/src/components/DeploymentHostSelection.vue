@@ -14,7 +14,10 @@ const missing=computed(()=>selected.value.filter(id=>!available.value.some(host=
 const groupKey=(id:string)=>`group:${id}`
 const hostKey=(groupID:string,id:string)=>`host:${groupID}:${id}`
 const groupName=computed(()=>props.groups?.find(group=>group.id===props.groupID)?.name||'原主机组不可用')
-const summary=computed(()=>`已选 ${selected.value.length} 台主机`)
+const summary=computed(()=>{
+ const names=new Map(available.value.map(host=>[host.id,host.name]))
+ return [...new Set(selected.value)].map(id=>names.get(id)||'原执行主机不可用').join('、')
+})
 const treeData=computed(()=>{
  const groups=[...(props.groups||[])]
  if(props.groupOnly&&props.groupID&&!groups.some(group=>group.id===props.groupID))groups.push({id:props.groupID,name:'原主机组不可用'})
@@ -91,6 +94,6 @@ const error=computed(()=>!props.ready?'':props.groupOnly?(props.groupID&&!props.
  </a-form-item>
 </template>
 <style scoped>
-.host-target-control{display:flex;align-items:center;gap:8px;min-width:0}.host-target-control>.ant-select{flex:1;min-width:0}.host-target-control :deep(.ant-select-selection-overflow-item-rest){max-width:100%}.host-target-control :deep(.ant-select-selection-item){max-width:100%}.host-tree-title{display:inline-flex;align-items:center;gap:8px;max-width:100%;min-width:0;vertical-align:middle}.host-tree-title>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-tree-title small{flex-shrink:0;color:var(--edo-muted);font-size:12px}
+.host-target-control{display:flex;align-items:center;gap:8px;min-width:0}.host-target-control>.ant-select{flex:1;min-width:0}.host-target-control :deep(.ant-select-selection-overflow-item-rest){min-width:0;max-width:calc(100% - 8px)}.host-target-control :deep(.ant-select-selection-item){max-width:100%}.host-target-control :deep(.ant-select-selection-item-content){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-tree-title{display:inline-flex;align-items:center;gap:8px;max-width:100%;min-width:0;vertical-align:middle}.host-tree-title>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-tree-title small{flex-shrink:0;color:var(--edo-muted);font-size:12px}
 :global(.deployment-host-tree-dropdown .ant-select-tree-treenode){padding-block:2px}:global(.deployment-host-tree-dropdown .ant-select-tree-node-content-wrapper){min-width:0}:global(.deployment-host-tree-dropdown .ant-select-tree-title){display:block;min-width:0}@media(max-width:480px){.host-tree-title{display:flex;flex-wrap:wrap;gap:0 6px}.host-tree-title small{font-size:11px}}
 </style>
