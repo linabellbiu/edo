@@ -205,6 +205,16 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 				s.appendRunLog(ctx, prepared.run.ID, "deploy", "info", "为服务启用默认 init："+strings.Join(services, "、"))
 			}
 		}
+		if prepared.snapshot.DefaultTerminalTools {
+			var services []string
+			request.ComposeYAML, services, err = composeconfig.WithTerminalTools(request.ComposeYAML)
+			if err != nil {
+				return s.failDeploymentExecution(ctx, failureState, "Compose 终端工具挂载准备失败", err)
+			}
+			if len(services) > 0 {
+				s.appendRunLog(ctx, prepared.run.ID, "deploy", "info", "为服务挂载 EDO 只读终端工具卷："+strings.Join(services, "、"))
+			}
+		}
 		request.ComposeService = prepared.deploymentPlan.ServiceName
 		request.TimeoutSeconds = prepared.deploymentPlan.TimeoutSeconds
 		request.ComposeDigest = model.DeploymentPlanComposeExecutionDigest(

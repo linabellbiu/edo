@@ -318,6 +318,16 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 			s.logComposeOperation(ctx, prepared, "为服务启用默认 init："+strings.Join(services, "、"))
 		}
 	}
+	if prepared.snapshot.DefaultTerminalTools {
+		var services []string
+		content, services, err = composeconfig.WithTerminalTools(content)
+		if err != nil {
+			return s.failDeploymentExecution(ctx, failure, "Compose 终端工具挂载准备失败", err)
+		}
+		if len(services) > 0 {
+			s.logComposeOperation(ctx, prepared, "为服务挂载 EDO 只读终端工具卷："+strings.Join(services, "、"))
+		}
+	}
 	if prepared.snapshot.IndependentDeploymentImages {
 		content, err = s.resolveConfiguredComposeImages(ctx, prepared, content)
 		if err != nil {

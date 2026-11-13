@@ -26,7 +26,13 @@ Docker 容器与 Kubernetes Pod 仍在当前终端抽屉中打开，不提供最
 
 Docker Engine 的 Exec API 提供创建、启动、尺寸调整和检查，没有单个 Exec 的停止接口；关闭 attach 或 TTY 的写方向不等于 Shell 及其后台进程退出。因此 Docker 终端使用 `edo-terminal-session` v1 维护会话。EDO API 镜像和 Mage 构建默认携带 Linux amd64、arm64 的静态工具；具有当前项目 `terminal.open` 权限的用户首次连接时，EDO 根据目标镜像真实架构，通过官方 Moby API 复制到容器内的 `/usr/local/libexec/edo-terminal-session-<摘要>`，完整校验摘要后才启动。匹配随包摘要的预装工具或已安装工具直接复用；不覆盖业务文件，不从外部下载脚本，实际安装单独记录操作者、项目、目标、架构、摘要和结果。查看或日志权限不能触发安装，已有普通角色不自动增加权限；准备前后、Exec 启动前和会话期间均复核授权与目标身份。
 
-目标容器仍须启用 Docker 官方 `--init`，并使用独立 PID 命名空间。EDO 新运行的 Compose 配置自动给未指定 `init` 且未共享 PID 的服务补充 `init: true`；内置 Docker 部署也默认启用 init，用户的显式关闭设置保留，实际操作写入任务日志。升级 EDO 不会自动重建已有业务容器，已有容器须在下一次部署后采用新条件。只读文件系统需已有匹配工具；架构不支持、工具校验或运行条件不满足时明确拒绝。不会加 `SYS_PTRACE` 或 privileged、关闭 seccomp 或退回裸 Shell。主机、Pod 和文件能力不受此工具前置影响。
+目标容器仍须启用 Docker 官方 `--init`，并使用独立 PID 命名空间。EDO 新运行的 Compose 配置自动给未指定 `init` 且未共享 PID 的服务补充 `init: true`；内置 Docker 部署也默认启用 init，用户的显式关闭设置保留，实际操作写入任务日志。升级 EDO 不会自动重建已有业务容器，已有容器须在下一次部署后采用新条件。架构不支持、工具校验或运行条件不满足时明确拒绝。不会加 `SYS_PTRACE` 或 privileged、关闭 seccomp 或退回裸 Shell。主机、Pod 和文件能力不受此工具前置影响。
+
+新运行的 Compose 为可使用终端的服务预留 `/run/edo-terminal` 只读工具卷，保留业务 `read_only`、用户和安全配置。卷由 Compose 的项目名前缀隔离，不指定全局卷名，不复用外部卷；部署只挂载空卷，不安装工具，也不额外要求部署者具有 Exec 权限。首次授权打开终端时，EDO 校验卷的本地驱动、归属标签和挂载选项，用目标已有的固定 Image ID 创建一个永不启动的临时容器，仅将这个工具卷以可写方式挂入，通过官方 Moby 归档 API 写入固定摘要的静态工具。业务容器始终只读挂载；EDO 从业务容器视角完整校验摘要，核实并删除准确的准备容器后才启动终端。准备失败、撤权和清理失败均不登记安装成功。工具卷中的匹配工具直接复用。
+
+已有只读容器没有工具卷且未预装匹配工具时，需在更新 EDO 后发起一次新的部署。流水线“重新执行”按当前配置创建新运行，可以采用新挂载；恢复旧快照、普通重启或按旧实例配置重建不会补充挂载。Docker 不支持给现有容器热添加挂载，EDO 不会自动重建或关闭只读设置。部署时生成的挂载进入运行快照及实例配置，后续重建继续采用；旧快照保留原执行语义。
+
+挂载短格式解析复用项目已采用的官方 `compose-go/v2/format`（Apache-2.0），不自行拆分冒号，以保留 Compose 变量表达式语义。启用该子包带入其固定版本的 mapstructure、go-shellwords、str2duration 和 yaml/v4 间接依赖；维护方与 Compose 相同，跨平台运行且不引入常驻组件，包版本与校验和锁定。现有业务 YAML 校验仍使用 yaml/v3，未切换到间接依赖的 yaml/v4 预发布版本。长期成本主要为 Compose 语义变化与这些间接依赖的升级、安全跟踪；替换边界仅为挂载解析，保留冲突与隔离回归。
 
 源码运行使用 `mage build` 或 `mage start` 会准备 `bin/terminal-tools/linux-amd64`、`linux-arm64`，随 API 二进制分发时保留同级 `terminal-tools`。单独执行 `go build ./cmd/edo` 不生成工具资源，只能连接已预装受控工具的目标。
 

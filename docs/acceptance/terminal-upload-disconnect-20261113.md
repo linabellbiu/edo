@@ -7,8 +7,10 @@
 | TUR-03 | 持续断连、上传中撤权、目标变化或拒绝写入 | 准备工具 | 有界失败、撤权和身份变化阻止重传；拒绝写入不重试 | 通过：持续 EOF 限制为 2 次尝试，撤权和目标身份变化均止于首次，写入拒绝不重试 |
 | TUR-04 | 网络中断、超时、写入拒绝或工具包错误 | 打开失败 | 对外安全区分类别，不把 EOF 说成文件系统不可写；原始错误只进入必要系统日志 | 通过：连接中断、超时、写入拒绝及其他准备错误分别返回固定中文，不回显原始地址或内部诊断 |
 | TUR-05 | 隔离真实 Docker、固定主机指纹的本机 SSH 字节流 | root / 非 root 的安装、收发和关闭 | 真实工具在 SSH 传输后可进入终端，关闭回收不影响容器 | 通过：本机 SSH 字节流转发到真实 Docker，root/非 root 的工具安装、终端收发、尺寸和回收通过；该项不是公网穿透链路验收 |
-| TUR-06 | 用户实际失败目标 | 正常页面打开原容器终端 | 沿用当前 RBAC、安装审计和真实回收，确认实际结果；不重建容器或触发流水线 | 待测 |
+| TUR-06 | 用户实际失败目标 | 正常页面打开原容器终端 | 沿用当前 RBAC、安装审计和真实回收，确认实际结果；不重建容器或触发流水线 | 前提未满足：更新上传修复后，原目标明确返回 rootfs 只读；尚未重新部署挂载工具卷，原容器终端未恢复 |
 
 原始故障：本机 API `8492c9c` 在准备“ci穿透”容器终端时，Docker archive PUT 返回 `HTTP/1.x transport connection broken: EOF`。该错误不构成目标文件系统只读的证据。不会为修复终端而更改 FRP、SSH 或 Docker 服务配置。
+
+更新本机 API 至 `624a7f8` 后，通过正常页面和 Exec 权限重新打开原 `edo-multi-image-demo-api-1`，底层 Docker 返回 `container rootfs is marked read-only`。业务 Compose 的 api、web 均配置 `read_only: true` 且没有可写挂载。前序 EOF 和此次明确的只读拒绝是不同阶段的实际证据，不把传输修复当成原目标已恢复。
 
 验证：定向 `go test -race` 覆盖工具准备、Exec 权限、资源条件及已建立连接撤权；`go vet` 通过。SSH 真实集成显式设置 `EDO_TEST_DOCKER_INTEGRATION=1`、`EDO_TEST_TERMINAL_SSH_PROXY=1` 和随包工具目录。只创建随机名称、无网络、128 MiB / 0.5 CPU 的测试容器，测试完成清理；SSH 仅转发固定 `docker system dial-stdio` 字节流，不执行宿主机 Shell。

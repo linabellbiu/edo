@@ -68,7 +68,7 @@ func (s *Service) OpenDocker(ctx context.Context, endpointID, containerID, shell
 		return nil
 	}
 	preparation, cancelPreparation := context.WithTimeout(ctx, 30*time.Second)
-	helperPath, err := s.prepareDockerHelper(preparation, api, containerID, initial.Container.Image, checkPreparation)
+	helperPath, err := s.prepareDockerHelper(preparation, api, containerID, initial.Container.Image, checkPreparation, initial.Container)
 	cancelPreparation()
 	if err != nil {
 		api.Close()

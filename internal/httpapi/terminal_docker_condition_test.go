@@ -9,7 +9,7 @@ import (
 
 func TestTerminalDockerConditionMessageNeverExposesInternalError(t *testing.T) {
 	private := errors.New("private infrastructure fixture")
-	for _, diagnostic := range []error{terminalservice.ErrDockerHelperConnection, terminalservice.ErrDockerHelperTimeout, terminalservice.ErrDockerHelperWriteDenied, terminalservice.ErrDockerHelperUnavailable} {
+	for _, diagnostic := range []error{terminalservice.ErrDockerHelperConnection, terminalservice.ErrDockerHelperTimeout, terminalservice.ErrDockerHelperWriteDenied, terminalservice.ErrDockerHelperReadOnly, terminalservice.ErrDockerHelperUnavailable} {
 		if got := terminalOpenErrorMessage(errors.Join(diagnostic, private)); got != diagnostic.Error() {
 			t.Fatal("终端准备错误未安全区分诊断类别", got)
 		}

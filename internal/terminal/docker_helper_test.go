@@ -20,8 +20,10 @@ import (
 	"time"
 
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
 
+	"edo/internal/terminalassets"
 	"edo/internal/terminalwire"
 )
 
@@ -53,6 +55,14 @@ type helperInstallFixture struct {
 	disconnects                        int
 	disconnectAfterCopy                bool
 	revokeOnDisconnect                 bool
+	target                             container.InspectResponse
+	volume                             volume.Volume
+	preparer                           container.InspectResponse
+	creates, removes                   int
+	cleanupDenied, changePreparer      bool
+	revokeOnCreate                     bool
+	createDisconnect                   bool
+	preparationName                    string
 }
 
 func newHelperInstallFixture(t *testing.T, architecture string) *helperInstallFixture {
@@ -81,12 +91,65 @@ func newHelperInstallFixture(t *testing.T, architecture string) *helperInstallFi
 			_ = json.NewEncoder(w).Encode(map[string]any{"Os": "linux", "Architecture": architecture})
 			return
 		}
+		if strings.Contains(r.URL.Path, "/volumes/") {
+			_ = json.NewEncoder(w).Encode(f.volume)
+			return
+		}
+		preparerID := strings.Repeat("b", 64)
+		if strings.HasSuffix(r.URL.Path, "/containers/create") {
+			f.creates++
+			f.preparationName = r.URL.Query().Get("name")
+			var input struct {
+				container.Config
+				HostConfig container.HostConfig
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Error(err)
+			}
+			if input.Image != "sha256:test" || !input.HostConfig.ReadonlyRootfs || input.HostConfig.NetworkMode != "none" || len(input.HostConfig.Mounts) != 1 || input.HostConfig.Mounts[0].Source != f.volume.Name || input.HostConfig.Mounts[0].ReadOnly || !input.HostConfig.Mounts[0].VolumeOptions.NoCopy || len(input.Entrypoint) != 1 || input.Labels[helperPreparationLabel] == "" {
+				t.Error("准备容器未保持固定镜像、隔离或工具卷边界")
+			}
+			f.preparer = container.InspectResponse{ID: preparerID, Image: input.Image, Config: &input.Config, State: &container.State{Status: container.StateCreated}}
+			if f.changePreparer {
+				f.preparer.Config.Labels[helperPreparationLabel] = "changed"
+			}
+			if f.revokeOnCreate {
+				f.allowed = false
+			}
+			if f.createDisconnect {
+				connection, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				_ = connection.Close()
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": preparerID})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/containers/"+preparerID+"/json") || (f.preparationName != "" && strings.HasSuffix(r.URL.Path, "/containers/"+f.preparationName+"/json")) {
+			_ = json.NewEncoder(w).Encode(f.preparer)
+			return
+		}
+		if r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/containers/"+preparerID) {
+			f.removes++
+			if r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true" {
+				t.Error("清理准备容器不允许强制删除")
+			}
+			if f.cleanupDenied {
+				http.Error(w, "cleanup denied", 403)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
 		file := r.URL.Query().Get("path")
 		switch r.Method {
 		case http.MethodHead, http.MethodGet:
 			stat := container.PathStat{Name: path.Base(file), Mode: os.ModeDir | 0755}
 			content, exists := f.files[file]
-			if strings.HasPrefix(file, terminalwire.HelperPath) {
+			if strings.HasPrefix(file, terminalwire.HelperPath) || strings.HasPrefix(file, terminalassets.Directory+"/edo-terminal-session") {
 				if !exists {
 					http.Error(w, "missing", 404)
 					return
@@ -120,7 +183,7 @@ func newHelperInstallFixture(t *testing.T, architecture string) *helperInstallFi
 				_ = connection.Close()
 				return
 			}
-			if f.readonly {
+			if f.readonly && !strings.Contains(r.URL.Path, preparerID) {
 				http.Error(w, "read-only filesystem", 403)
 				return
 			}
@@ -137,14 +200,23 @@ func newHelperInstallFixture(t *testing.T, architecture string) *helperInstallFi
 				if header.Typeflag == tar.TypeDir {
 					continue
 				}
-				if header.Mode != 0555 || !strings.HasPrefix("/"+header.Name, terminalwire.HelperPath+"-") {
+				destination := "/" + header.Name
+				if strings.Contains(r.URL.Path, preparerID) {
+					if file != terminalassets.Directory || header.Name != path.Base(header.Name) {
+						t.Error("工具卷归档超出了固定安装目录")
+					}
+					destination = path.Join(file, header.Name)
+				} else if f.volume.Name != "" {
+					t.Error("直接写入了只读业务容器")
+				}
+				if header.Mode != 0555 || !strings.HasPrefix(path.Base(header.Name), "edo-terminal-session-") {
 					t.Error("工具写入了约定路径以外的位置或模式错误")
 				}
 				body, _ := io.ReadAll(reader)
 				if f.corrupt {
 					body[0] = 0
 				}
-				f.files["/"+header.Name] = body
+				f.files[destination] = body
 			}
 			if f.revoke {
 				f.allowed = false
@@ -183,7 +255,7 @@ func TestDockerHelperReusesMatchingPreinstalledToolOnReadOnlyTarget(t *testing.T
 }
 
 func (f *helperInstallFixture) prepare() (string, error) {
-	return f.service.prepareDockerHelper(f.ctx, f.api, strings.Repeat("a", 64), "sha256:test", func(ctx context.Context) error { return executionAuthorized(ctx, true) })
+	return f.service.prepareDockerHelper(f.ctx, f.api, strings.Repeat("a", 64), "sha256:test", func(ctx context.Context) error { return executionAuthorized(ctx, true) }, f.target)
 }
 
 func (f *helperInstallFixture) copyCount() int {
@@ -355,7 +427,7 @@ func TestDockerHelperDoesNotRetryChangedContainerIdentity(t *testing.T) {
 			return ErrTargetNotReady
 		}
 		return nil
-	})
+	}, f.target)
 	if !errors.Is(err, ErrTargetNotReady) || f.copyCount() != 1 {
 		t.Fatal("容器身份变化后仍然重传", err)
 	}
@@ -367,6 +439,7 @@ func TestDockerHelperErrorKeepsTransportFailureDistinctFromWriteDenied(t *testin
 		{io.EOF, ErrDockerHelperConnection},
 		{context.DeadlineExceeded, ErrDockerHelperTimeout},
 		{ErrDockerHelperWriteDenied, ErrDockerHelperWriteDenied},
+		{ErrDockerHelperReadOnly, ErrDockerHelperReadOnly},
 		{errors.Join(ErrDockerHelperWriteDenied, io.EOF), ErrDockerHelperWriteDenied},
 		{errors.New("随包工具校验失败"), ErrDockerHelperUnavailable},
 	} {

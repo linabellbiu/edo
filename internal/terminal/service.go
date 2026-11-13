@@ -18,6 +18,7 @@ var (
 	ErrDockerHelperConnection    = errors.New("准备终端工具时 Docker 连接中断，请重新连接；详情请查看系统日志")
 	ErrDockerHelperTimeout       = errors.New("准备终端工具超时，请检查目标连接后重试")
 	ErrDockerHelperWriteDenied   = errors.New("目标 Docker 拒绝写入终端工具，请检查容器只读设置及写入权限")
+	ErrDockerHelperReadOnly      = errors.New("容器根文件系统只读且未挂载 EDO 终端工具卷，请重新部署后进入终端；无需关闭只读设置")
 	ErrExecAuthorization         = errors.New("终端 Exec 授权已失效")
 	ErrDockerTerminalRelease     = errors.New("终端会话回收未确认，请联系管理员")
 )

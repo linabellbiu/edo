@@ -141,6 +141,9 @@ func (h terminalHandler) open(
 	}
 	sessionContext = terminalservice.WithDockerPreparationObserver(sessionContext, func(prepared terminalservice.DockerPreparation) {
 		fields := map[string]any{"target_type": targetType, "architecture": prepared.Architecture, "path": prepared.Path, "digest": prepared.Digest, "attempts": prepared.Attempts}
+		if prepared.Volume != "" {
+			fields["tools_volume"] = prepared.Volume
+		}
 		result := model.AuditFailed
 		if prepared.Succeeded {
 			result = model.AuditSucceeded
@@ -416,7 +419,7 @@ func requestedSubprotocol(request *http.Request) bool {
 }
 
 func terminalOpenErrorMessage(err error) string {
-	for _, diagnostic := range []error{terminalservice.ErrDockerHelperConnection, terminalservice.ErrDockerHelperTimeout, terminalservice.ErrDockerHelperWriteDenied} {
+	for _, diagnostic := range []error{terminalservice.ErrDockerHelperConnection, terminalservice.ErrDockerHelperTimeout, terminalservice.ErrDockerHelperWriteDenied, terminalservice.ErrDockerHelperReadOnly} {
 		if errors.Is(err, diagnostic) {
 			return diagnostic.Error()
 		}

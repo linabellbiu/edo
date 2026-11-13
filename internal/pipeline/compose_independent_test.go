@@ -69,6 +69,9 @@ func TestIndependentComposeRunDoesNotBindUpstreamImages(t *testing.T) {
 			if !snapshot.DefaultContainerInit {
 				t.Fatal("新运行未启用默认容器 init")
 			}
+			if !snapshot.DefaultTerminalTools {
+				t.Fatal("新运行未预留只读终端工具卷")
+			}
 			node := snapshot.Stages[len(snapshot.Stages)-1].Tasks[0]
 			if len(node.Config.ComposeImages) != 0 || len(node.Config.ArtifactNodeIDs) != 0 || node.Config.ArtifactNodeID != "" {
 				t.Fatalf("仍然绑定上游镜像: %+v", node.Config)
@@ -222,7 +225,7 @@ func TestIndependentComposeBuildPlatformStillUsesDeploymentHosts(t *testing.T) {
 		t.Fatalf("文件构建不应被当作 Compose 镜像来源: %q %v", platform, err)
 	}
 	var historical workflowSnapshot
-	if err := json.Unmarshal([]byte(`{"execution_version":2}`), &historical); err != nil || historical.IndependentDeploymentImages || historical.DefaultContainerInit {
+	if err := json.Unmarshal([]byte(`{"execution_version":2}`), &historical); err != nil || historical.IndependentDeploymentImages || historical.DefaultContainerInit || historical.DefaultTerminalTools {
 		t.Fatal("历史快照不应启用新部署规则", err)
 	}
 }

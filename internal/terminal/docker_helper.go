@@ -17,8 +17,10 @@ import (
 	"syscall"
 
 	"github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 
+	"edo/internal/terminalassets"
 	"edo/internal/terminalwire"
 )
 
@@ -33,6 +35,7 @@ type DockerPreparation struct {
 	Digest       string
 	Succeeded    bool
 	Attempts     int
+	Volume       string
 }
 
 // 准备工具与 Exec 使用同一个当前权限检查，不能从查看或日志权限推导。
@@ -149,7 +152,7 @@ func dockerHelperMatches(ctx context.Context, api *client.Client, id, file, dige
 	return hex.EncodeToString(hash.Sum(nil)) == digest, nil
 }
 
-func (s *Service) prepareDockerHelper(ctx context.Context, api *client.Client, id, imageID string, check func(context.Context) error) (string, error) {
+func (s *Service) prepareDockerHelper(ctx context.Context, api *client.Client, id, imageID string, check func(context.Context) error, target container.InspectResponse) (string, error) {
 	if err := executionAuthorized(ctx, true); err != nil {
 		return "", err
 	}
@@ -181,13 +184,29 @@ func (s *Service) prepareDockerHelper(ctx context.Context, api *client.Client, i
 		return terminalwire.HelperPath, err
 	}
 	file := terminalwire.HelperPath + "-" + digest[:24]
+	toolsVolume, err := dockerHelperVolume(ctx, api, target)
+	if err != nil {
+		return "", err
+	}
+	if toolsVolume != "" {
+		file = path.Join(terminalassets.Directory, path.Base(file))
+	}
 	matches, err := dockerHelperMatches(ctx, api, id, file, digest)
 	if err != nil || matches {
 		return file, err
 	}
+	if toolsVolume == "" && target.HostConfig != nil && target.HostConfig.ReadonlyRootfs && !helperPathOnWritableMount(target, file) {
+		return "", ErrDockerHelperReadOnly
+	}
 	var buffer bytes.Buffer
 	writer := tar.NewWriter(&buffer)
-	for _, parent := range []string{"/usr", "/usr/local", "/usr/local/libexec"} {
+	parents := []string{"/usr", "/usr/local", "/usr/local/libexec"}
+	archiveFile := strings.TrimPrefix(file, "/")
+	if toolsVolume != "" {
+		parents = []string{"/run", terminalassets.Directory}
+		archiveFile = path.Base(file)
+	}
+	for _, parent := range parents {
 		stat, err := api.ContainerStatPath(ctx, id, client.ContainerStatPathOptions{Path: parent})
 		if err == nil {
 			if !stat.Stat.Mode.IsDir() || stat.Stat.LinkTarget != "" {
@@ -198,11 +217,14 @@ func (s *Service) prepareDockerHelper(ctx context.Context, api *client.Client, i
 		if !errdefs.IsNotFound(err) {
 			return "", err
 		}
+		if toolsVolume != "" {
+			return "", errors.New("终端工具卷挂载目录不存在")
+		}
 		if err := writer.WriteHeader(&tar.Header{Name: strings.TrimPrefix(parent, "/"), Typeflag: tar.TypeDir, Mode: 0755}); err != nil {
 			return "", err
 		}
 	}
-	if err := writer.WriteHeader(&tar.Header{Name: strings.TrimPrefix(file, "/"), Typeflag: tar.TypeReg, Mode: 0555, Size: int64(len(content))}); err != nil {
+	if err := writer.WriteHeader(&tar.Header{Name: archiveFile, Typeflag: tar.TypeReg, Mode: 0555, Size: int64(len(content))}); err != nil {
 		return "", err
 	}
 	if _, err := writer.Write(content); err != nil {
@@ -214,12 +236,28 @@ func (s *Service) prepareDockerHelper(ctx context.Context, api *client.Client, i
 	if err := check(ctx); err != nil {
 		return "", err
 	}
-	event := DockerPreparation{Architecture: image.Architecture, Path: file, Digest: digest}
+	event := DockerPreparation{Architecture: image.Architecture, Path: file, Digest: digest, Volume: toolsVolume}
 	defer func() {
 		if observer, ok := ctx.Value(dockerPreparationObserverKey{}).(func(DockerPreparation)); ok {
 			observer(event)
 		}
 	}()
+	copyID, destination := id, "/"
+	var cleanup func() error
+	if toolsVolume != "" {
+		copyID, cleanup, err = prepareDockerHelperVolume(ctx, api, imageID, toolsVolume, check)
+		if err != nil {
+			return "", err
+		}
+		destination = terminalassets.Directory
+		defer func() {
+			if cleanup != nil {
+				if err := cleanup(); err != nil {
+					slog.ErrorContext(context.WithoutCancel(ctx), "清理终端工具准备容器失败", "operation", "terminal_helper_prepare_cleanup", "container_id", id, "err", err)
+				}
+			}
+		}()
+	}
 	for attempt := 1; attempt <= 2; attempt++ {
 		if err := check(ctx); err != nil {
 			return "", err
@@ -227,7 +265,7 @@ func (s *Service) prepareDockerHelper(ctx context.Context, api *client.Client, i
 		event.Attempts = attempt
 		// 上传使用新连接，避免复用已被 SSH/转发端关闭的空闲字节流。
 		_ = api.Close()
-		_, err := api.CopyToContainer(ctx, id, client.CopyToContainerOptions{DestinationPath: "/", Content: bytes.NewReader(buffer.Bytes())})
+		_, err := api.CopyToContainer(ctx, copyID, client.CopyToContainerOptions{DestinationPath: destination, Content: bytes.NewReader(buffer.Bytes())})
 		if err == nil {
 			break
 		}
@@ -259,6 +297,16 @@ func (s *Service) prepareDockerHelper(ctx context.Context, api *client.Client, i
 	if err != nil || !matches {
 		return "", errors.Join(err, errors.New("安装后的终端工具校验失败"))
 	}
+	if cleanup != nil {
+		remove := cleanup
+		cleanup = nil
+		if err := remove(); err != nil {
+			return "", err
+		}
+		if err := check(ctx); err != nil {
+			return "", err
+		}
+	}
 	event.Succeeded = true
 	slog.InfoContext(ctx, "已自动准备容器终端工具", "operation", "terminal_helper_install", "container_id", id, "architecture", image.Architecture, "digest", digest, "attempts", event.Attempts)
 	return file, nil
@@ -272,6 +320,9 @@ func (s *Service) dockerPreparationError(ctx context.Context, id string, err err
 	slog.ErrorContext(ctx, "自动准备容器终端工具失败", "operation", "terminal_helper_install", "container_id", id, "err", err)
 	if errors.Is(err, ErrExecAuthorization) || errors.Is(err, ErrTargetNotReady) {
 		return err
+	}
+	if errors.Is(err, ErrDockerHelperReadOnly) {
+		return ErrDockerHelperReadOnly
 	}
 	if errors.Is(err, ErrDockerHelperWriteDenied) {
 		return ErrDockerHelperWriteDenied

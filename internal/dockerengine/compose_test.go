@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"edo/internal/composeconfig"
 	"edo/internal/config"
 	"edo/internal/model"
 )
@@ -22,6 +23,16 @@ const validComposeYAML = `services:
     healthcheck:
       test: ["CMD-SHELL", "test -n \"$${HOSTNAME}\""]
 `
+
+func TestComposeReadOnlyTerminalToolsRemainWithinManagedVolumePolicy(t *testing.T) {
+	content, _, err := composeconfig.WithTerminalTools(validComposeYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateComposeYAML(content, "api"); err != nil {
+		t.Fatal("EDO 工具卷未通过原有 Compose 隔离规则", err)
+	}
+}
 
 func TestValidateComposeYAMLAcceptsManagedUpstreamImage(t *testing.T) {
 	if err := ValidateComposeYAML(validComposeYAML, "api"); err != nil {
