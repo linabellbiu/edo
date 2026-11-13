@@ -9,7 +9,7 @@ const dark = parameters.get('theme') === 'dark'
 const scenario = normalizeHostPreviewScenario(parameters.get('scenario'))
 preferences.theme = dark ? 'dark' : 'light'
 document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-const labels = { ready: '完整数据', empty: '空主机', error: '主机读取失败', readonly: '只读权限', 'no-resources': '无运行资源权限', 'docker-empty': '空容器', 'docker-error': '容器读取失败', 'metadata-error': '运行时读取失败' }
+const labels = { ready: '完整数据', ungrouped: '未分组主机', empty: '空主机', error: '主机读取失败', readonly: '只读权限', 'no-resources': '无运行资源权限', 'docker-empty': '空容器', 'docker-error': '容器读取失败', 'metadata-error': '运行时读取失败' }
 function selectScenario(event) { const url = new URL(location.href); url.searchParams.set('scenario', event.target.value); location.assign(url) }
 function toggleTheme() { const url = new URL(location.href); url.searchParams.set('theme', dark ? 'light' : 'dark'); location.assign(url) }
 </script>

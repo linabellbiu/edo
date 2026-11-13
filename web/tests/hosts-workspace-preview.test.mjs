@@ -15,7 +15,7 @@ function hostView(scenario = 'ready', query = {}, references) {
   const get = (url, config = {}) => url==='/hosts/workflows'&&references!==undefined ? (references instanceof Error?Promise.reject(references):Promise.resolve({data:{host_workflows:references}})) : request(adapter, url, config)
   const infrastructure = loadFrontend('../src/api/infrastructure.ts', { '@/api/client': { __esModule: true, default: { get } } })
   const list = loadFrontend('../src/utils/resourceList.ts', { vue, 'vue-i18n': { useI18n: () => ({ t: key => key }) } })
-  const h = componentHarness('../src/views/HostView.vue', { codes: data.permissions, query, api: { get }, globals:{localStorage:{getItem:()=> 'host-preview'}}, modules: { '@/api/infrastructure': infrastructure, '@/utils/resourceList': list, '@/utils/infrastructureRelations': loadFrontend('../src/utils/infrastructureRelations.ts'), '@/utils/time': loadFrontend('../src/utils/time.ts') } })
+  const h = componentHarness('../src/views/HostView.vue', { codes: data.permissions, query, api: { get }, globals:{localStorage:{getItem:()=> 'host-preview'}}, modules: { '@/api/infrastructure': infrastructure, '@/utils/hostGroups': loadFrontend('../src/utils/hostGroups.ts'), '@/utils/resourceList': list, '@/utils/infrastructureRelations': loadFrontend('../src/utils/infrastructureRelations.ts'), '@/utils/time': loadFrontend('../src/utils/time.ts') } })
   return { ...h, data, calls }
 }
 
@@ -34,6 +34,42 @@ test('主机夹具独立使用测试地址和关联ID，容量保留二进制字
   assert.equal(data.clusters[0].hosts[0].id, data.hosts[1].id)
   assert.deepEqual(data.topology.hosts[0].node_uids, [data.topology.nodes[0].node.metadata.uid])
   assert.equal('password' in data.hosts[1], false)
+})
+
+test('未分组目录包含本地和远程主机，搜索状态筛选联动，刷新及移组不隐藏主机', async t => {
+  const h = hostView('ungrouped'); t.after(h.stop)
+  await h.state.refresh()
+  h.state.selectGroup('ungrouped')
+  assert.equal(h.state.selectedGroupTitle.value, '未分组')
+  assert.deepEqual(h.state.filteredHosts.value.map(host => host.id), ['preview-local', 'preview-offline'])
+  assert.equal(h.state.ungroupedHostCount.value, 2)
+  h.state.searchQuery.value = '归档'
+  assert.deepEqual(h.state.filteredHosts.value.map(host => host.id), ['preview-offline'])
+  assert.equal(h.state.ungroupedHostCount.value, 1)
+  h.state.searchQuery.value = ''
+  h.state.statusFilter.value = 'inactive'
+  assert.deepEqual(h.state.filteredHosts.value.map(host => host.id), ['preview-offline'])
+  h.state.statusFilter.value = 'all'
+  h.data.hosts[0].environment_ids = ['preview-testing']
+  await h.state.refresh()
+  assert.equal(h.state.selectedGroupKey.value, 'ungrouped')
+  assert.deepEqual(h.state.filteredHosts.value.map(host => host.id), ['preview-offline'])
+  h.state.selectGroup('all')
+  assert.equal(h.state.filteredHosts.value.length, 3)
+  h.state.selectGroup('preview-testing')
+  assert.ok(h.state.filteredHosts.value.some(host => host.id === 'preview-local'))
+  assert.equal(h.requests.some(request => request.method !== 'get'), false)
+})
+
+test('旧版本地环境不占用用户分组，未知分组关联不误判为未分组', async t => {
+  const h = hostView('ungrouped'); t.after(h.stop)
+  h.data.hosts[0].environment_ids = ['edo-local-environment']
+  h.data.hosts[2].environment_ids = ['inaccessible-group']
+  await h.state.refresh()
+  h.state.selectGroup('ungrouped')
+  assert.deepEqual(h.state.filteredHosts.value.map(host => host.id), ['preview-local'])
+  h.state.groupQuery.value = '未分组'
+  assert.deepEqual(h.state.groupTree.value.map(node => node.title), ['未分组'])
 })
 
 test('预览适配器只读且不透传未知路径、外部接口或取消的请求；返回副本不污染其他场景', async () => {

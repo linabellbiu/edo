@@ -1,6 +1,6 @@
 const MiB = 1024 ** 2
 const GiB = 1024 ** 3
-export const hostPreviewScenarios = ['ready', 'empty', 'error', 'readonly', 'no-resources', 'docker-empty', 'docker-error', 'metadata-error']
+export const hostPreviewScenarios = ['ready', 'ungrouped', 'empty', 'error', 'readonly', 'no-resources', 'docker-empty', 'docker-error', 'metadata-error']
 export const normalizeHostPreviewScenario = value => hostPreviewScenarios.includes(value) ? value : 'ready'
 
 // 仅用于本地 UI 验收；地址使用文档保留网段，不包含真实主机、凭据或业务记录。
@@ -17,6 +17,11 @@ export function createHostsPreviewData(scenario = 'ready', now = Date.now()) {
     { id: 'preview-production', name: '生产环境', description: '本地预览分组', is_active: true, hosts: hosts.slice(0, 2) },
     { id: 'preview-testing', name: '测试环境与较长的分组名称', description: '本地预览分组', is_active: true, hosts: hosts.slice(1) },
   ]
+  if (scenario === 'ungrouped') {
+    hosts[0].environment_ids = []
+    hosts[2].environment_ids = []
+    for (const group of environments) group.hosts = group.hosts.filter(host => host.environment_ids.includes(group.id))
+  }
   const clusters = [{ id: 'preview-k3s', name: '预览 K3s 集群', api_server: 'https://192.0.2.41:6443', default_namespace: 'preview', is_active: true, hosts: [hosts[1]], created_at: at(1440), updated_at: at(2) }]
   const endpoints = [
     { id: 'preview-docker-local', name: '本地 Docker', local: true, is_active: true, host_id: hosts[0].id },

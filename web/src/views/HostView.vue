@@ -128,6 +128,7 @@ const statusPollInterval = 5000
 const statusRefreshDeduplicationWindow = 1000
 // 旧版自动环境仅供已有部署兼容，不作为用户创建的主机分组展示。
 const legacyLocalEnvironmentID = 'edo-local-environment'
+const ungroupedGroupKey = 'ungrouped'
 const canReadGroups = computed(() => auth.canAny(['deployment.read']))
 const canReadHosts = computed(() => auth.canAny(['cluster.read', 'deployment.read']))
 const canReadResources = computed(() => auth.canAny(['cluster.read']))
@@ -151,6 +152,7 @@ const selected = computed(() => hosts.value.find(host => host.id === selectedID.
 const selectedCluster = computed(() => selected.value ? clusterForHost(selected.value, clusters.value) : undefined)
 const hostGroups = computed(() => environments.value.filter(environment => environment.id !== legacyLocalEnvironmentID))
 const selectedGroup = computed(() => hostGroups.value.find(environment => environment.id === selectedGroupKey.value))
+const selectedGroupTitle = computed(() => selectedGroupKey.value === ungroupedGroupKey ? '未分组' : selectedGroup.value?.name || '全部主机')
 const environmentNames = computed(() => new Map(hostGroups.value.map(environment => [environment.id, environment.name])))
 const normalizedSearch = computed(() => searchQuery.value.trim().toLocaleLowerCase())
 const tableColumns = [
@@ -196,13 +198,19 @@ const searchAndStatusHosts = computed(() => hosts.value.filter(host => {
 
 const filteredHosts = computed(() => {
   if (!canReadGroups.value || selectedGroupKey.value === 'all') return searchAndStatusHosts.value
+  if (selectedGroupKey.value === ungroupedGroupKey) return searchAndStatusHosts.value.filter(isUngroupedHost)
   const ids = hostGroupDescendants(hostGroups.value, selectedGroupKey.value)
   return searchAndStatusHosts.value.filter(host => environmentIDsOf(host).some(id => ids.has(id)))
 })
 
 const { pagination: hostPagination, changePage: changeHostPage } = useResourceList(() => filteredHosts.value)
 
-const groupTree = computed(() => hostGroupTree(hostGroups.value, groupQuery.value))
+const ungroupedHostCount = computed(() => searchAndStatusHosts.value.filter(isUngroupedHost).length)
+const groupTree = computed(() => {
+  const groups = hostGroupTree(hostGroups.value, groupQuery.value)
+  if ('未分组'.includes(groupQuery.value.trim())) groups.push({ key: ungroupedGroupKey, title: '未分组', children: [] })
+  return groups
+})
 const parentGroupOptions = computed(() => [{ value: '', label: '顶层主机组' }, ...hostGroupOptions(hostGroups.value, editingGroupID.value)])
 const expandedGroups = computed(() => groupQuery.value.trim() ? hostGroups.value.map(group => group.id) : expandedGroupKeys.value)
 watch(hostGroups, (groups, previous) => {
@@ -226,6 +234,10 @@ const groupHostOptions = computed(() => hosts.value.map(host => ({
 
 function groupHostCount(environmentID: string) {
   return searchAndStatusHosts.value.filter(host => environmentIDsOf(host).includes(environmentID)).length
+}
+
+function isUngroupedHost(host: InfrastructureHost) {
+  return !environmentIDsOf(host).some(id => id !== legacyLocalEnvironmentID)
 }
 
 function groupNamesOf(host: InfrastructureHost) {
@@ -321,7 +333,7 @@ async function refresh() {
     clusters.value = clusterResult.status === 'fulfilled' ? clusterResult.value : []
     clusterLoadError.value = clusterResult.status === 'rejected' ? apiErrorMessage(clusterResult.reason) : ''
     if (!canReadGroups.value) selectedGroupKey.value = 'all'
-    else if (selectedGroupKey.value !== 'all' && !hostGroups.value.some(item => item.id === selectedGroupKey.value)) {
+    else if (selectedGroupKey.value !== 'all' && selectedGroupKey.value !== ungroupedGroupKey && !hostGroups.value.some(item => item.id === selectedGroupKey.value)) {
       selectedGroupKey.value = 'all'
     }
     initialized = true
@@ -802,8 +814,9 @@ onBeforeUnmount(() => {
         <a-tree v-else block-node :show-line="false" :tree-data="groupTree" :selected-keys="[selectedGroupKey]" :expanded-keys="expandedGroups" :auto-expand-parent="false" @select="selectGroupNode" @expand="expandedGroupKeys = $event.map(String)">
           <template #title="{ key, title }">
             <span class="host-group-node"><Folder :size="15" aria-hidden="true"/><span :title="title">{{ title }}</span>
-              <a-button v-if="auth.canAny(['deployment.create'])" type="text" size="small" :aria-label="`为${title}添加下级主机组`" @click.stop="createGroup(String(key))"><Plus :size="13"/></a-button>
-              <a-dropdown v-if="auth.canAny(['deployment.update', 'deployment.delete'])" :trigger="['click']"><a-button type="text" size="small" :aria-label="`${title}主机组操作`" @click.stop><MoreHorizontal :size="14"/></a-button><template #overlay><a-menu @click="groupByID(String(key)) && handleGroupAction(groupByID(String(key))!, String($event.key))"><a-menu-item v-if="auth.canAny(['deployment.update'])" key="details">编辑信息</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.update'])" key="hosts">调整主机</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.delete'])" key="delete" danger>删除主机组</a-menu-item></a-menu></template></a-dropdown>
+              <small v-if="key === ungroupedGroupKey" class="host-group-count">{{ hostLoadError ? '—' : ungroupedHostCount }}</small>
+              <a-button v-if="key !== ungroupedGroupKey && auth.canAny(['deployment.create'])" type="text" size="small" :aria-label="`为${title}添加下级主机组`" @click.stop="createGroup(String(key))"><Plus :size="13"/></a-button>
+              <a-dropdown v-if="key !== ungroupedGroupKey && auth.canAny(['deployment.update', 'deployment.delete'])" :trigger="['click']"><a-button type="text" size="small" :aria-label="`${title}主机组操作`" @click.stop><MoreHorizontal :size="14"/></a-button><template #overlay><a-menu @click="groupByID(String(key)) && handleGroupAction(groupByID(String(key))!, String($event.key))"><a-menu-item v-if="auth.canAny(['deployment.update'])" key="details">编辑信息</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.update'])" key="hosts">调整主机</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.delete'])" key="delete" danger>删除主机组</a-menu-item></a-menu></template></a-dropdown>
             </span>
           </template>
         </a-tree>
@@ -813,7 +826,7 @@ onBeforeUnmount(() => {
         <a-alert v-if="hostLoadError || environmentLoadError || clusterLoadError" class="inventory-error" type="error" show-icon :message="hostLoadError ? '主机列表加载失败' : clusterLoadError ? '集群关联加载失败' : '主机分组加载失败'" :description="hostLoadError || clusterLoadError || environmentLoadError"><template #action><a-button size="small" @click="refresh">重试</a-button></template></a-alert>
         <header class="table-toolbar">
           <div class="table-toolbar-copy">
-            <strong>{{ selectedGroup ? selectedGroup.name : '全部主机' }}</strong>
+            <strong>{{ selectedGroupTitle }}</strong>
             <small>显示 {{ filteredHosts.length }} / {{ hosts.length }} 台主机</small>
           </div>
           <div class="table-filters">
@@ -1083,6 +1096,7 @@ onBeforeUnmount(() => {
 .host-group-tree :deep(.ant-tree-treenode:not([aria-hidden="true"])){width:100%;align-items:center}
 .host-group-tree :deep(.ant-tree-title){display:block}.host-group-tree :deep(.ant-tree-node-selected){background:var(--edo-primary-soft)!important;color:var(--edo-primary)}
 .host-group-node{display:flex;min-width:0;align-items:center;gap:6px}.host-group-node>svg{flex-shrink:0}.host-group-node>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.host-group-count{flex-shrink:0;margin-left:auto;color:var(--edo-muted);font-size:12px;font-variant-numeric:tabular-nums}
 .host-group-node :deep(.ant-btn){padding:0 3px;flex-shrink:0}.all-hosts{display:flex;align-items:center;gap:8px;width:100%;margin-top:12px;padding:8px;border:0;border-radius:4px;background:transparent;color:var(--edo-text);text-align:left;cursor:pointer}.all-hosts span{margin-left:auto;color:var(--edo-muted)}.all-hosts.active,.all-hosts:hover{background:var(--edo-primary-soft);color:var(--edo-primary)}.all-hosts:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
 @media(max-width:1000px){.host-workspace:has(.host-group-tree){grid-template-columns:210px minmax(0,1fr)}}
 @media(max-width:720px){.host-workspace:has(.host-group-tree){grid-template-columns:1fr}.host-group-tree{border-right:0;border-bottom:1px solid var(--edo-border);max-height:280px;overflow:auto}}
