@@ -67,7 +67,6 @@
 .apps-workflow-table :deep(.ant-table-tbody > tr > td) { height: 48px; padding: 9px 12px; border-bottom-color: var(--edo-border); white-space: nowrap; }
 .apps-workflow-table :deep(.ant-table-tbody > tr:last-child > td) { border-bottom: 0; }
 .apps-workflow-table :deep(.ant-table-expanded-row>td){padding:0!important;background:var(--edo-surface)}
-.apps-workflow-expand{display:inline-flex;width:28px;height:28px;align-items:center;justify-content:center;padding:0;border:0;border-radius:4px;color:var(--edo-muted);background:transparent;cursor:pointer}.apps-workflow-expand:hover{color:var(--edo-primary);background:var(--edo-primary-soft)}.apps-workflow-expand:focus-visible{outline:2px solid var(--edo-primary);outline-offset:1px}.apps-workflow-expand svg{transition:transform 160ms ease}.apps-workflow-expand svg.is-expanded{transform:rotate(90deg)}
 .apps-workflow-name { display: inline-flex; width: 100%; min-width: 0; align-items: center; gap: 8px; padding: 3px 0; border: 0; color: var(--edo-primary); background: transparent; cursor: pointer; font-size: 13px; font-weight: 500; text-align: left; }
 .apps-workflow-name svg { flex-shrink: 0; }
 .apps-workflow-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
