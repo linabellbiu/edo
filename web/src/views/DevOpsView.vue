@@ -68,7 +68,7 @@ interface ApplicationWorkflow extends PipelineWorkflow{workflow_template?:{id:st
 interface WorkflowTemplate extends PipelineWorkflow{description?:string}
 interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:ApplicationWorkflow[]}
 interface Run extends ResourceRecord,PipelineRunProgressRecord{retry_allowed?:boolean;approval?:PipelineRunApproval;row_id?:number;id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
-interface DeploymentTarget extends ResourceRecord{id:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace?:string;workload_name?:string;container_name?:string}
+interface DeploymentTarget extends ResourceRecord{id:string;platform:string;environment_id:string;host_ids?:string[]|null;host_id:string;runtime_id:string;namespace?:string;workload_name?:string;container_name?:string}
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
 interface DockerContainerRecord extends ResourceRecord{id:string;names:string[];state:string;status:string}
@@ -374,18 +374,34 @@ const activeReleasePlanID=computed(()=>props.section==='release-plans'&&typeof r
 const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook'},{key:'is_active',label:'状态'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
 
 function applicationInstanceScope(application:Application){
- const plans=[...deploymentPlans.value]
+ const plans:DeploymentPlan[]=[]
  const ids=new Set<string>()
+ const namespace='6ba7b812-9dad-11d1-80b4-00c04fd430c8'
+ const latest=(planID:string,targetID:string,hostID?:string)=>deployments.value.filter(record=>record.application_id===application.id&&record.deployment_plan_id===planID&&record.target_id===targetID&&record.status==='succeeded'&&(!hostID||record.host_id===hostID)).sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at))[0]
  for(const workflow of application.workflows||[])for(const stage of workflow.stages)for(const task of stage.tasks){
   if(task.type!=='deploy')continue
   if(task.config.inline_deployment_plan){
-   const base=`edo.workflow.deployment:${workflow.id}:${task.id}`
-   const planID=uuidv5(base+':plan','6ba7b812-9dad-11d1-80b4-00c04fd430c8')
-   const targetID=uuidv5(base+':target','6ba7b812-9dad-11d1-80b4-00c04fd430c8')
-   ids.add(planID)
-   const current=deployments.value.filter(record=>record.application_id===application.id&&record.deployment_plan_id===planID&&record.target_id===targetID&&record.status==='succeeded').sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at))[0]
-   if(current)plans.push({id:planID,kind:task.config.inline_deployment_plan.kind,deployment_target_id:targetID,deployment_target:{id:targetID,platform:current.platform,environment_id:current.environment_id,host_id:current.host_id,runtime_id:current.runtime_id,namespace:current.namespace,workload_name:current.workload_name,container_name:current.container_name} as DeploymentTarget})
-  }else if(task.config.deployment_plan_id)ids.add(task.config.deployment_plan_id)
+   const hostIDs=task.config.inline_deployment_plan.deployment_target?.host_ids
+   const targets=hostIDs==null?[{nodeID:task.id,hostID:undefined}]:[...new Set(hostIDs)].map(hostID=>({nodeID:uuidv5(`edo.deployment.host:${task.id}:${hostID}`,namespace),hostID}))
+   for(const {nodeID,hostID} of targets){
+    const base=`edo.workflow.deployment:${workflow.id}:${nodeID}`
+    const planID=uuidv5(base+':plan',namespace),targetID=uuidv5(base+':target',namespace)
+    ids.add(planID)
+    const current=latest(planID,targetID,hostID)
+    if(current)plans.push({id:planID,kind:task.config.inline_deployment_plan.kind,deployment_target_id:targetID,deployment_target:{id:targetID,platform:current.platform,environment_id:current.environment_id,host_id:current.host_id,runtime_id:current.runtime_id,namespace:current.namespace,workload_name:current.workload_name,container_name:current.container_name} as DeploymentTarget})
+   }
+  }else if(task.config.deployment_plan_id){
+   ids.add(task.config.deployment_plan_id)
+   const plan=deploymentPlans.value.find(plan=>plan.id===task.config.deployment_plan_id)
+   if(!plan)continue
+   const target=plan.deployment_target
+   if(target?.host_ids==null){plans.push(plan);continue}
+   for(const hostID of new Set(target.host_ids)){
+    const targetID=uuidv5(`edo.deployment.host:${target.id}:${hostID}`,namespace)
+    const current=latest(plan.id,targetID,hostID)
+    if(current)plans.push({...plan,deployment_target_id:targetID,deployment_target:{...target,id:targetID,host_id:hostID,runtime_id:current.runtime_id}})
+   }
+  }
  }
  return {plans,ids}
 }

@@ -49,7 +49,7 @@ export function selectCurrentDeploymentInstances<T extends InstanceRecord>(
   currentPlanIDs: Set<string>,
   plans: InstancePlan[],
 ): T[] {
-  const plansByID = new Map(plans.map(plan => [plan.id, plan]))
+  const plansByTarget = new Map(plans.map(plan => [JSON.stringify([plan.id, plan.deployment_target?.id]), plan]))
   const seen = new Set<string>()
   return [...records].sort(compareNewestFirst).filter(record => {
     // 优先读取 application_id，旧记录通过流水线运行查找应用。
@@ -62,7 +62,7 @@ export function selectCurrentDeploymentInstances<T extends InstanceRecord>(
     if (seen.has(key)) return false
     seen.add(key)
     if (record.runtime_deleted_at) return false
-    const plan = plansByID.get(planID)
+    const plan = plansByTarget.get(JSON.stringify([planID, record.target_id]))
     const target = plan?.deployment_target
     if (!target || record.target_id !== target.id || record.platform !== target.platform ||
       (record.host_id || '') !== (target.host_id || '') || (record.environment_id || '') !== (target.environment_id || '')) return false
@@ -82,7 +82,7 @@ export function selectLatestFailedDeploymentAttempts<T extends InstanceRecord>(
   currentPlanIDs: Set<string>,
   plans: InstancePlan[],
 ): T[] {
-  const plansByID = new Map(plans.map(plan => [plan.id, plan]))
+  const plansByTarget = new Map(plans.map(plan => [JSON.stringify([plan.id, plan.deployment_target?.id]), plan]))
   const seen = new Set<string>()
   return [...records].sort(compareNewestFirst).filter(record => {
     const related = record.application_id ? record.application_id === applicationID : relatedRunIDs.has(record.pipeline_run_id || '')
@@ -91,7 +91,7 @@ export function selectLatestFailedDeploymentAttempts<T extends InstanceRecord>(
     const key = JSON.stringify([applicationID, planID, record.target_id])
     if (seen.has(key)) return false
     seen.add(key)
-    const target = plansByID.get(planID)?.deployment_target
+    const target = plansByTarget.get(JSON.stringify([planID, record.target_id]))?.deployment_target
     return record.platform === 'kubernetes' && record.status === 'failed' && !record.runtime_deleted_at && Boolean(target) &&
       record.target_id === target?.id && record.platform === target.platform && record.runtime_id === target.runtime_id &&
       (record.host_id || '') === (target.host_id || '') && (record.environment_id || '') === (target.environment_id || '') &&
