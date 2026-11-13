@@ -3,6 +3,7 @@ package terminal
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/subtle"
 	"errors"
 	"io"
 	"net"
@@ -15,7 +16,7 @@ import (
 )
 
 // 仅为隔离测试转发固定 Docker API 字节流，不执行任何宿主机 Shell。
-func terminalDockerSSHProxy(t *testing.T, dockerHost string) (string, string) {
+func terminalDockerSSHProxy(t *testing.T, dockerHost string) (string, string, string) {
 	t.Helper()
 	target, err := url.Parse(dockerHost)
 	if err != nil || (target.Scheme != "unix" && target.Scheme != "tcp") {
@@ -33,8 +34,9 @@ func terminalDockerSSHProxy(t *testing.T, dockerHost string) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	authPassword := rand.Text()
 	configuration := &ssh.ServerConfig{PasswordCallback: func(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-		if meta.User() != "fixture" || string(password) != "isolated-test" {
+		if meta.User() != "fixture" || subtle.ConstantTimeCompare(password, []byte(authPassword)) != 1 {
 			return nil, errors.New("隔离 SSH 认证失败")
 		}
 		return nil, nil
@@ -116,5 +118,5 @@ func terminalDockerSSHProxy(t *testing.T, dockerHost string) (string, string) {
 			})
 		}
 	})
-	return listener.Addr().String(), ssh.FingerprintSHA256(signer.PublicKey())
+	return listener.Addr().String(), ssh.FingerprintSHA256(signer.PublicKey()), authPassword
 }

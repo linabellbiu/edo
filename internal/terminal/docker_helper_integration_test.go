@@ -62,8 +62,8 @@ func TestDockerHelperRealInstallationAndControlledRelease(t *testing.T) {
 			})
 			service, endpoint := dockerSDKService(t, host)
 			if os.Getenv("EDO_TEST_TERMINAL_SSH_PROXY") == "1" {
-				address, fingerprint := terminalDockerSSHProxy(t, host)
-				remote, err := service.docker.Create(t.Context(), "fixture", dockerengine.Input{Name: "终端 SSH 隔离目标", Host: "ssh://fixture@" + address, SSH: &dockerengine.SSHBundle{Password: "isolated-test"}, SSHHostKeyFingerprint: fingerprint})
+				address, fingerprint, password := terminalDockerSSHProxy(t, host)
+				remote, err := service.docker.Create(t.Context(), "fixture", dockerengine.Input{Name: "终端 SSH 隔离目标", Host: "ssh://fixture@" + address, SSH: &dockerengine.SSHBundle{Password: password}, SSHHostKeyFingerprint: fingerprint})
 				if err != nil {
 					t.Fatal("创建隔离 SSH 目标失败", err)
 				}
