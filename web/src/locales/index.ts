@@ -9,9 +9,11 @@ import { deliveryZh, deliveryEn } from './delivery'
 import { yamlZh, yamlEn } from './yaml'
 import { assistantZh, assistantEn } from './assistant'
 import { sqlChangesZh, sqlChangesEn } from './sqlChanges'
+import { deploymentResourcesZh, deploymentResourcesEn } from './deploymentResources'
 
 export const messages = {
   'zh-CN': {
+    deploymentResources: deploymentResourcesZh,
     sqlChanges: sqlChangesZh,
     assistant: assistantZh,
 	delivery: deliveryZh,
@@ -252,6 +254,7 @@ export const messages = {
     },
   },
   'en-US': {
+    deploymentResources: deploymentResourcesEn,
     sqlChanges: sqlChangesEn,
     assistant: assistantEn,
 	delivery: deliveryEn,

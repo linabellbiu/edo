@@ -12,6 +12,7 @@ import i18n from '/src/locales'
 
 // 真实组件配合合成接口，只验收展示及确认交互，不连接业务 API 或控制实际容器。
 const project='compose-preview',appID='compose-app',recordID='compose-record',mode=ref(new URL(location.href).searchParams.get('state')||'running')
+const runResources=new URL(location.href).searchParams.has('resources')
 const reader=new URL(location.href).searchParams.get('role')==='reader'
 const controlRole=new URL(location.href).searchParams.get('control')||'all'
 let generation=0
@@ -20,6 +21,7 @@ const target={id:'target',platform:'ssh',host_id:'host',environment_id:'env',run
 const plan={id:'plan',kind:'compose_stack',deployment_target:target,is_active:true}
 const workflow={id:'flow',name:'多镜像发布',is_active:true,source:{id:'source',config:{branch:'main',events:['manual']}},stages:[{id:'release',tasks:[{id:'deploy',type:'deploy',config:{deployment_plan_id:'plan'}}]}]}
 const app={id:appID,name:'多镜像示例应用',repository_id:'repo',description:'Compose 运行状态验收',is_active:true,sync_status:'synced',workflows:[workflow]}
+const run={id:'run',application_id:appID,workflow_id:workflow.id,application:app,status:'succeeded',stage:'completed',commit_message:'Compose 部署资源展示验收',ref:'refs/heads/main',commit_sha:'a'.repeat(40),created_at:'2026-11-13T06:00:00Z'}
 const record={...target,id:recordID,row_id:1,target_id:target.id,target_name:'示例 Compose 项目',application_id:appID,pipeline_run_id:'run',workflow_node_id:'deploy',deployment_plan_id:plan.id,deployment_plan_kind:'compose_stack',operation:'release',status:'succeeded',created_at:'2026-11-06T06:00:00Z',finished_at:'2026-11-06T06:00:10Z'}
 const container=(key,name,state,restarts=0)=>({id:name.startsWith('example-api-')?key.repeat(60)+generation.toString(16).padStart(4,'0'):key.repeat(64),name,state:containerStates[name]||state,running:(containerStates[name]||state)==='running',image:'registry.example/team/service:20261106.1',image_display:'service:20261106.1',image_id:`sha256:${key.repeat(64)}`,created_at:'2026-11-06T06:00:00Z',started_at:'2026-11-06T06:00:01Z',...(state==='completed'?{finished_at:'2026-11-06T06:00:02Z'}:{}),restart_count:restarts,restart_policy:'unless-stopped',exit_code:0,ports:[{container_port:'8080/tcp',host_ip:'0.0.0.0',host_port:'18080'}],networks:[{name:'example_default',ip_address:'172.20.0.2'}]})
 const runtime=()=>{
@@ -38,7 +40,10 @@ client.defaults.adapter=async config=>{
   else {if(action==='recreate'){generation++;for(const container of service.containers)delete containerStates[container.name]}else containerStates[selected.name]=action==='stop'?'exited':'running';data={runtime:runtime()}}
   return {data,status:200,statusText:'OK',headers:{},config}
  }
- if(config.method==='get')data=({'/applications':{applications:[app]},'/deployment-plans':{deployment_plans:[plan]},'/deployments?limit=200':{deployments:[record]},'/workflow-templates':{workflow_templates:[]},[`/deployments/${recordID}/runtime`]:{runtime:runtime()}})[path]
+ if(config.method==='get'&&path.endsWith('/tasks'))data={tasks:[]}
+ else if(config.method==='get'&&path.endsWith('/check-reports'))data={reports:[]}
+ else if(config.method==='get'&&path.endsWith('/check-deliveries'))data={deliveries:[]}
+ else if(config.method==='get')data=({'/pipeline-runs':{pipeline_runs:[run],total:1},'/pipeline-runs/run':{pipeline_run:run},'/deployments?pipeline_run_id=run&limit=200':{deployments:[record]},'/applications':{applications:[app]},'/deployment-plans':{deployment_plans:[plan]},'/deployments?limit=200':{deployments:[record]},'/workflow-templates':{workflow_templates:[]},[`/deployments/${recordID}/runtime`]:{runtime:runtime()}})[path]
  else if(config.method==='post'&&(path.endsWith('/runtime/stop')||path.endsWith('/runtime/restart'))){mode.value=path.endsWith('/stop')?'exited':'running';data={runtime:runtime()}}
  if(!data)throw new Error(`未登记合成接口：${config.method} ${path}`)
  return {data,status:200,statusText:'OK',headers:{},config}
@@ -47,8 +52,8 @@ window.fetch=()=>Promise.reject(new Error('验收页不连接实际服务'))
 window.WebSocket=class extends EventTarget{readyState=0;close(){this.readyState=3}}
 localStorage.setItem('edo.project',project)
 const pinia=createPinia(),auth=useAuthStore(pinia)
-auth.user={id:'preview-user',username:'preview',project_id:project,department_id:'preview-department',is_superuser:false,permissions:['application.read','deployment.read','workflow.read','deployment_plan.read',...(!reader?['cluster.read','terminal.open','deployment.execute','deployment.update',...(['restart','stop','recreate'].filter(action=>controlRole==='all'||controlRole===action).map(action=>`deployment.container.${action}`))]:[])]}
+auth.user={id:'preview-user',username:'preview',project_id:project,department_id:'preview-department',is_superuser:false,permissions:['pipeline_run.read','application.read','deployment.read','workflow.read','deployment_plan.read',...(!reader?['cluster.read','terminal.open','deployment.execute','deployment.update',...(['restart','stop','recreate'].filter(action=>controlRole==='all'||controlRole===action).map(action=>`deployment.container.${action}`))]:[])]}
 auth.loaded=true;auth.authorizationState='ready'
-const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:{render:()=>null}}]});await router.push('/')
-const root=createApp({setup(){const dark=ref(new URL(location.href).searchParams.get('theme')==='dark');document.documentElement.dataset.theme=dark.value?'dark':'light';const antTheme=computed(()=>({algorithm:dark.value?theme.darkAlgorithm:theme.defaultAlgorithm}));return()=>h(ConfigProvider,{theme:antTheme.value},{default:()=>h('main',{style:'padding:20px'},[h('p','合成接口验收，不操作实际项目。'),h(Button,{onClick(){mode.value=mode.value==='partial'?'running':'partial'}},()=> '切换服务缺失场景'),h(DevOpsView,{section:'applications'})])})}})
+const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:{render:()=>null}}]});await router.push({path:'/',query:runResources?{view:'runs'}:{}})
+const root=createApp({setup(){const dark=ref(new URL(location.href).searchParams.get('theme')==='dark');document.documentElement.dataset.theme=dark.value?'dark':'light';const antTheme=computed(()=>({algorithm:dark.value?theme.darkAlgorithm:theme.defaultAlgorithm}));return()=>h(ConfigProvider,{theme:antTheme.value},{default:()=>h('main',{style:'padding:20px'},[h('p','合成接口验收，不操作实际项目。'),h(Button,{onClick(){mode.value=mode.value==='partial'?'running':'partial'}},()=> '切换服务缺失场景'),h(DevOpsView,{section:runResources?'release-plans':'applications'})])})}})
 root.use(pinia).use(router).use(i18n).mount('#app')
