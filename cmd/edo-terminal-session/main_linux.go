@@ -1,6 +1,6 @@
 //go:build linux && (amd64 || arm64)
 
-// edo-terminal-session 是显式预装到目标镜像的受控终端工具，不是 EDO 常驻服务。
+// edo-terminal-session 是由 EDO 按需准备到目标容器的受控终端工具，不是常驻服务。
 package main
 
 import (

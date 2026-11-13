@@ -83,6 +83,9 @@ mage start --help                查看 start 参数说明
 mage -l                          查看全部 Mage 任务`)
 }
 
+// Build 同时构建后端和默认终端工具，不构建 Web。
+func Build(ctx context.Context) error { _, err := buildBackend(ctx); return err }
+
 // Migrate 迁移 .env 指定的数据库，不启动其他服务。
 func Migrate(ctx context.Context) error {
 	if err := loadEnvironment(); err != nil {
@@ -414,6 +417,9 @@ func startBuiltWithRunner(ctx context.Context, runServer, runWeb bool, runner bu
 
 func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 	if runServer {
+		if err := buildTerminalToolsWithRunner(ctx, runCommand); err != nil {
+			return err
+		}
 		if err := startDevelopmentDependencies(ctx); err != nil {
 			return err
 		}
@@ -547,11 +553,28 @@ func buildBackendWithRunner(ctx context.Context, run func(context.Context, strin
 	if err := run(ctx, "go", args...); err != nil {
 		return "", fmt.Errorf("构建 EDO 后端失败: %w", err)
 	}
+	if err := buildTerminalToolsWithRunner(ctx, run); err != nil {
+		return "", err
+	}
 	absolute, err := filepath.Abs(binary)
 	if err != nil {
 		return "", fmt.Errorf("解析 EDO 后端路径失败: %w", err)
 	}
 	return absolute, nil
+}
+
+func buildTerminalToolsWithRunner(ctx context.Context, run func(context.Context, string, ...string) error) error {
+	for _, architecture := range []string{"amd64", "arm64"} {
+		directory := filepath.Join("bin", "terminal-tools", "linux-"+architecture)
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			return fmt.Errorf("创建终端工具目录失败: %w", err)
+		}
+		args := []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=" + architecture, "go", "build", "-trimpath", "-ldflags", "-s -w", "-o", filepath.Join(directory, "edo-terminal-session"), "./cmd/edo-terminal-session"}
+		if err := run(ctx, "env", args...); err != nil {
+			return fmt.Errorf("构建 Linux %s 终端工具失败: %w", architecture, err)
+		}
+	}
+	return nil
 }
 
 func ensureWebDependencies(ctx context.Context) error {

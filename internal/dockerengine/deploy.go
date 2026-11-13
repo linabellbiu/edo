@@ -166,6 +166,9 @@ func (s *Service) deployContainer(
 			deploymentID, configuration.DeploymentScript, stdout, stderr,
 		)
 	}
+	if stdout != nil {
+		_, _ = fmt.Fprintln(stdout, "[EDO] 创建 Docker 容器时启用默认 init")
+	}
 	configuration, err = prepareManagedContainerVolumes(deployContext, apiClient, targetID, configuration)
 	if err != nil {
 		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerVolumeFailed, err)
@@ -368,6 +371,13 @@ func (s *Service) deployContainerWithHostCommand(
 	if err != nil {
 		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerConfigInvalid, err)
 	}
+	if stdout != nil {
+		for _, argument := range arguments {
+			if argument == "--init" || strings.HasPrefix(argument, "--init=") {
+				_, _ = fmt.Fprintln(stdout, "[EDO] Docker 部署使用 init 参数："+argument)
+			}
+		}
+	}
 
 	var previous ImageSnapshot
 	oldID := ""
@@ -564,6 +574,8 @@ func initialContainerConfig(
 		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
 		NetworkMode:   container.NetworkMode(deploymentConfig.Network),
 	}
+	init := true
+	hostConfiguration.Init = &init
 	if len(deploymentConfig.Command) > 0 {
 		configuration.Cmd = slices.Clone(deploymentConfig.Command)
 	}

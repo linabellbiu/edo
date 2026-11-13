@@ -120,7 +120,7 @@ func TestDockerPTYProtocolPreservesBinaryInputThroughNonTTYHijack(t *testing.T) 
 	service, endpointID := dockerSDKService(t, server.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	session, err := service.OpenDocker(ctx, endpointID, id, "sh", Size{Columns: 100, Rows: 24})
+	session, err := service.OpenDocker(WithExecutionAuthorization(ctx, func() bool { return true }), endpointID, id, "sh", Size{Columns: 100, Rows: 24})
 	if err != nil {
 		t.Fatal(err)
 	}

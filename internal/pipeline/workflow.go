@@ -77,6 +77,7 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
+	DefaultContainerInit           bool                                        `json:"default_container_init,omitempty"`
 	PreserveComposeImageReferences bool                                        `json:"preserve_compose_image_references,omitempty"`
 	ImageTagIncludesName           bool                                        `json:"image_tag_includes_name,omitempty"` // 仅恢复曾使用完整镜像引用的历史运行。
 	IndependentDeploymentImages    bool                                        `json:"independent_deployment_images,omitempty"`
@@ -1809,6 +1810,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		}
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
+		DefaultContainerInit:           true,
 		PreserveComposeImageReferences: true,
 		IndependentDeploymentImages:    true,
 		RegistryInputs:                 registryInputs,

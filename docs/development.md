@@ -46,6 +46,8 @@ mage start
 
 `mage start` 分别构建 Go API 和前端，初始化数据库后在后台启动两个独立进程。访问 [http://127.0.0.1:5173](http://127.0.0.1:5173)，API 为 `http://127.0.0.1:8080`。本地预览服务转发 API 与 WebSocket；正式 Docker 部署使用独立 NGINX Web 容器。
 
+`mage build` 只构建后端及 Docker 终端所需的 Linux amd64、arm64 静态会话工具，输出到 `bin/`。`mage start`（包括 `--dev` 的后端模式）也会准备这些工具；Docker API 镜像直接携带，无须在业务镜像中手工安装。分发 API 二进制时保留同级 `terminal-tools` 目录。运行条件和 Exec 权限见[终端工作区](terminal-workspace.md#docker-受控会话)。
+
 本地 API 的就绪检查地址为 `http://127.0.0.1:8080/api/v1/health/ready`。模板中的宿主机 API 默认监听 `:8080`；只需本机访问时，可把 `.env` 的 `EDO_SERVER_ADDRESS` 改为 `127.0.0.1:8080`。当前 Mage 的本地进程探测固定使用 8080 和 5173；请保留这两个端口，`EDO_HTTP_PORT` / `EDO_WEB_PORT` 只修改 Compose 的端口映射。
 
 ## 完整开发容器

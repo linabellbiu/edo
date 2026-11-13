@@ -206,7 +206,7 @@ var catalog = append([]Permission{
 	permission(PermissionClusterDelete, "主机与集群", "cluster", "主机接入", "delete", "删除", "删除不再使用的远程主机", true),
 	permission(PermissionClusterExecute, "主机与集群", "cluster", "连接测试", "execute", "执行", "测试主机、Docker 或 Kubernetes 连接", true),
 	permission(PermissionK3sUninstall, "Kubernetes", "kubernetes.k3s", "原生 K3s", "uninstall", "卸载", "通过官方脚本卸载本项目托管的原生 K3s，删除该主机本地集群及本地持久卷数据", true),
-	permission(PermissionTerminalOpen, "主机与集群", "terminal", "Pod 或容器终端", "open", "打开", "打开 Kubernetes Pod 或 Docker 容器内终端", true),
+	permission(PermissionTerminalOpen, "主机与集群", "terminal", "容器与 Pod 终端（Exec）", "open", "进入终端", "通过 Exec 打开本项目容器终端，并允许按需自动准备受控终端工具；不由查看或日志权限获得", true),
 	permission(PermissionHostTerminalOpen, "主机与集群", "host.terminal", "主机终端", "open", "打开", "打开本项目主机的交互终端，不自动提权", true),
 	permission(PermissionTerminalFileRead, "主机与集群", "terminal.file", "终端文件", "read", "查看下载", "浏览、预览和下载当前目标内的普通文件", true),
 	permission(PermissionTerminalFileUpload, "主机与集群", "terminal.file", "终端文件", "upload", "上传", "在当前目标内上传新文件；覆盖还须查看和编辑权限", true),

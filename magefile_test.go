@@ -514,6 +514,14 @@ func TestBuildBackendDoesNotRequireWebAssets(t *testing.T) {
 	calls := 0
 	binary, err := buildBackendWithRunner(context.Background(), func(_ context.Context, executable string, args ...string) error {
 		calls++
+		if calls > 1 {
+			architecture := []string{"amd64", "arm64"}[calls-2]
+			want := []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=" + architecture, "go", "build", "-trimpath", "-ldflags", "-s -w", "-o", filepath.Join("bin", "terminal-tools", "linux-"+architecture, "edo-terminal-session"), "./cmd/edo-terminal-session"}
+			if executable != "env" || !slices.Equal(args, want) {
+				t.Fatal("终端工具未按静态目标架构构建", executable, args)
+			}
+			return nil
+		}
 		wantArgs := []string{"build", "-trimpath", "-ldflags", "-s -w", "-o", filepath.Join("bin", "edo"), "./cmd/edo"}
 		if executable != "go" || !slices.Equal(args, wantArgs) {
 			t.Fatalf("后端必须独立构建且不使用 Web 标签: %s %v", executable, args)
@@ -523,7 +531,7 @@ func TestBuildBackendDoesNotRequireWebAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || binary != filepath.Join(root, "bin", "edo") {
+	if calls != 3 || binary != filepath.Join(root, "bin", "edo") {
 		t.Fatalf("后端构建命令次数或路径不正确: calls=%d binary=%q", calls, binary)
 	}
 	if _, err := os.Stat("internal"); !errors.Is(err, os.ErrNotExist) {

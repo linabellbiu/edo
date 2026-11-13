@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -34,7 +35,7 @@ func dockerSDKService(t *testing.T, address string) (*Service, string) {
 	if err := db.Create(&endpoint).Error; err != nil {
 		t.Fatal(err)
 	}
-	return NewService(dockerengine.NewService(db, manager, config.Runtime{ConnectTimeout: time.Second, RequestTimeout: time.Second}), nil, time.Hour), endpoint.ID
+	return NewService(dockerengine.NewService(db, manager, config.Runtime{ConnectTimeout: time.Second, RequestTimeout: time.Second}), nil, time.Hour, WithDockerHelperDirectory(filepath.Join(t.TempDir(), "unbundled"))), endpoint.ID
 }
 
 func TestDockerControlledMissingToolHasNoDirectShellFallback(t *testing.T) {
@@ -65,7 +66,7 @@ func TestDockerControlledMissingToolHasNoDirectShellFallback(t *testing.T) {
 	}))
 	defer server.Close()
 	service, endpointID := dockerSDKService(t, server.URL)
-	session, err := service.OpenDocker(context.Background(), endpointID, id, "sh", Size{Columns: 100, Rows: 24})
+	session, err := service.OpenDocker(WithExecutionAuthorization(t.Context(), func() bool { return true }), endpointID, id, "sh", Size{Columns: 100, Rows: 24})
 	if session != nil || !errors.Is(err, ErrDockerTerminalUnavailable) || creates.Load() != 1 || attaches.Load() != 1 {
 		t.Fatal("缺少工具未按受控条件失败，或出现自动回退", err)
 	}

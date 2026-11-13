@@ -16,6 +16,7 @@ func TestDockerRunCommandArgumentsInjectsManagedRuntimeValues(t *testing.T) {
 		t.Fatalf("生成 Docker 主机命令失败: %v", err)
 	}
 	checks := [][]string{
+		{"--init"},
 		{"--name", "order_api-a1b2c3d4"},
 		{"--network", "bridge"},
 		{"--label", "edo.managed=true"},
@@ -29,6 +30,27 @@ func TestDockerRunCommandArgumentsInjectsManagedRuntimeValues(t *testing.T) {
 	}
 	if !slices.Contains(arguments, "--detach") {
 		t.Fatalf("Docker 主机命令没有强制使用后台运行: %v", arguments)
+	}
+}
+
+func TestDockerRunCommandPreservesExplicitInit(t *testing.T) {
+	for _, setting := range []string{"--init", "--init=true", "--init=false"} {
+		args, err := dockerRunCommandArguments("docker run "+setting+" ${EDO_IMAGE}", "image", "", "app", "target", "deployment")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var count int
+		for _, arg := range args {
+			if arg == "--init" || strings.HasPrefix(arg, "--init=") {
+				count++
+				if arg != setting {
+					t.Fatal("显式 init 参数被覆盖")
+				}
+			}
+		}
+		if count != 1 {
+			t.Fatal("init 参数缺失或重复")
+		}
 	}
 }
 

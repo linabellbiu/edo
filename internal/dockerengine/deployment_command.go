@@ -16,6 +16,7 @@ type dockerRunTemplate struct {
 	imageIndex int
 	hasName    bool
 	hasDetach  bool
+	hasInit    bool
 }
 
 func parseDockerRunTemplate(value string) (dockerRunTemplate, error) {
@@ -125,6 +126,8 @@ func validateDockerRunOptions(parsed *dockerRunTemplate) error {
 	for index := 2; index < parsed.imageIndex; index++ {
 		argument := arguments[index]
 		switch {
+		case argument == "--init" || strings.HasPrefix(argument, "--init="):
+			parsed.hasInit = true
 		case argument == "--detach" || argument == "-d" || strings.Contains(strings.TrimPrefix(argument, "-"), "d") &&
 			strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--"):
 			parsed.hasDetach = true
@@ -183,6 +186,9 @@ func dockerRunCommandArguments(
 	arguments := make([]string, 0, len(parsed.arguments)+12)
 	for index, argument := range parsed.arguments {
 		if index == parsed.imageIndex {
+			if !parsed.hasInit {
+				arguments = append(arguments, "--init")
+			}
 			if !parsed.hasDetach {
 				arguments = append(arguments, "--detach")
 			}

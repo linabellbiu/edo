@@ -46,8 +46,40 @@ func (s *Service) OpenDocker(ctx context.Context, endpointID, containerID, shell
 		api.Close()
 		return nil, ErrDockerTerminalUnavailable
 	}
-	// 外层仅传协议，真正的 PTY、尺寸和 Shell 由预装工具维护；不写入 Env 或提权。
-	created, err := api.ExecCreate(ctx, containerID, client.ExecCreateOptions{TTY: false, AttachStdin: true, AttachStderr: true, AttachStdout: true, Privileged: false, Cmd: []string{terminalwire.HelperPath, "controller"}})
+	checkPreparation := func(probe context.Context) error {
+		if err := executionAuthorized(probe, true); err != nil {
+			return err
+		}
+		current, err := s.docker.TerminalRevision(probe, endpointID)
+		if err != nil {
+			return err
+		}
+		if current != revision {
+			return ErrTargetNotReady
+		}
+		status, err := api.ContainerInspect(probe, containerID, client.ContainerInspectOptions{})
+		if err != nil {
+			return err
+		}
+		stateNow := status.Container.State
+		if status.Container.ID != containerID || stateNow == nil || !stateNow.Running || stateNow.Paused || stateNow.Restarting || stateNow.Pid != state.Pid || stateNow.StartedAt != state.StartedAt {
+			return ErrTargetNotReady
+		}
+		return nil
+	}
+	preparation, cancelPreparation := context.WithTimeout(ctx, 30*time.Second)
+	helperPath, err := s.prepareDockerHelper(preparation, api, containerID, initial.Container.Image, checkPreparation)
+	cancelPreparation()
+	if err != nil {
+		api.Close()
+		return nil, s.dockerPreparationError(ctx, containerID, err)
+	}
+	if err := checkPreparation(ctx); err != nil {
+		api.Close()
+		return nil, err
+	}
+	// 外层仅传协议，PTY、尺寸和 Shell 由校验后的受控工具维护；不写入 Env 或提权。
+	created, err := api.ExecCreate(ctx, containerID, client.ExecCreateOptions{TTY: false, AttachStdin: true, AttachStderr: true, AttachStdout: true, Privileged: false, Cmd: []string{helperPath, "controller"}})
 	if err != nil {
 		api.Close()
 		return nil, fmt.Errorf("创建 Docker 受控终端失败: %w", err)

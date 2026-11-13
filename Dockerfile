@@ -33,6 +33,10 @@ COPY internal/ ./internal/
 FROM go-source AS go-builder
 ARG EDO_VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${EDO_VERSION}" -o /out/edo ./cmd/edo
+RUN set -eu; for arch in amd64 arm64; do \
+    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w" \
+      -o "/out/terminal-tools/linux-$arch/edo-terminal-session" ./cmd/edo-terminal-session; \
+    done
 
 # API 镜像只编译 Go；生产与开发 Web 均由 web/Dockerfile 独立构建。
 FROM ${EDO_API_BASE_IMAGE} AS api-runtime
@@ -50,6 +54,7 @@ RUN sed -i "s|http://deb.debian.org|${EDO_DEBIAN_MIRROR}|g" /etc/apt/sources.lis
     && chown -R edo:edo /app
 WORKDIR /app
 COPY --from=go-builder --chown=edo:edo /out/edo /app/edo
+COPY --from=go-builder --chown=edo:edo /out/terminal-tools /app/terminal-tools
 COPY --chmod=0555 deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 # 应用配置和本地部署目录使用既有数据卷，不能落到只读的 /app 根目录。
 ENV HOME=/app/data \

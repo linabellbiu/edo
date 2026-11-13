@@ -121,12 +121,14 @@ func (h terminalHandler) open(
 	defer cancel()
 	if h.streamAuth != nil {
 		authorized := h.streamAuth(c)
+		sessionContext = terminalservice.WithExecutionAuthorization(sessionContext, authorized)
+		watchContext := sessionContext
 		go func() {
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
 			for {
 				select {
-				case <-sessionContext.Done():
+				case <-watchContext.Done():
 					return
 				case <-ticker.C:
 					if !authorized() {
@@ -137,6 +139,14 @@ func (h terminalHandler) open(
 			}
 		}()
 	}
+	sessionContext = terminalservice.WithDockerPreparationObserver(sessionContext, func(prepared terminalservice.DockerPreparation) {
+		fields := map[string]any{"target_type": targetType, "architecture": prepared.Architecture, "path": prepared.Path, "digest": prepared.Digest}
+		result := model.AuditFailed
+		if prepared.Succeeded {
+			result = model.AuditSucceeded
+		}
+		h.recordTerminalAudit(c, "terminal.helper.install", resourceID, sessionID, result, fields, 0)
+	})
 	session, err := opener(sessionContext, shell, size)
 	if err != nil {
 		closeCode = websocket.CloseInternalServerErr
@@ -406,6 +416,12 @@ func requestedSubprotocol(request *http.Request) bool {
 }
 
 func terminalOpenErrorMessage(err error) string {
+	if errors.Is(err, terminalservice.ErrDockerHelperUnavailable) {
+		return terminalservice.ErrDockerHelperUnavailable.Error()
+	}
+	if errors.Is(err, terminalservice.ErrExecAuthorization) {
+		return terminalservice.ErrExecAuthorization.Error()
+	}
 	if errors.Is(err, terminalservice.ErrDockerTerminalUnavailable) {
 		return terminalservice.ErrDockerTerminalUnavailable.Error()
 	}

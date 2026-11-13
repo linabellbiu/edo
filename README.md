@@ -62,7 +62,7 @@ docker compose logs --tail 100 bootstrap migrate api web
 
 ### 主机与 Kubernetes
 
-接入主机后，可以查看 Docker 容器、日志和运行状态。Docker 交互终端需要目标镜像预装会话工具，准备方法见[终端工作区](docs/terminal-workspace.md#docker-受控会话)。
+接入主机后，可以查看 Docker 容器、日志和运行状态。具有 Exec 权限的用户首次打开 Docker 终端时，EDO 自动准备会话工具，运行条件见[终端工作区](docs/terminal-workspace.md#docker-受控会话)。
 
 Kubernetes 工作区按集群和命名空间浏览节点、工作负载、配置、存储与网络资源，提供详情、日志和编辑入口。也可以从页面创建原生 K3s 或 k3d 集群：原生 K3s 使用官方安装脚本，k3d 在单台 Docker 主机中创建容器集群。安装前先检测，再核对计划并确认，后台进度可随时重新打开查看。详见 [Kubernetes 管理](docs/kubernetes.md)和 [K3s 安装](docs/k3s-provisioning.md)。
 

@@ -15,6 +15,7 @@ import (
 
 	"edo/internal/artifact"
 	"edo/internal/cicd"
+	"edo/internal/composeconfig"
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
 	"edo/internal/model"
@@ -194,6 +195,16 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		output = s.newExecutionLogStreams(ctx, prepared.run.ID, "deploy", "Docker Compose", prepared.variableRedactions...)
 		defer output.Close()
 		request.ComposeYAML = prepared.deploymentPlan.ComposeYAML
+		if prepared.snapshot.DefaultContainerInit {
+			var services []string
+			request.ComposeYAML, services, err = composeconfig.WithDefaultInit(request.ComposeYAML)
+			if err != nil {
+				return s.failDeploymentExecution(ctx, failureState, "Compose 默认终端运行配置准备失败", err)
+			}
+			if len(services) > 0 {
+				s.appendRunLog(ctx, prepared.run.ID, "deploy", "info", "为服务启用默认 init："+strings.Join(services, "、"))
+			}
+		}
 		request.ComposeService = prepared.deploymentPlan.ServiceName
 		request.TimeoutSeconds = prepared.deploymentPlan.TimeoutSeconds
 		request.ComposeDigest = model.DeploymentPlanComposeExecutionDigest(

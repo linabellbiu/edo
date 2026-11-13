@@ -13,7 +13,7 @@ Docker 容器与 Kubernetes Pod 仍在当前终端抽屉中打开，不提供最
 | 权限 | 能力 |
 | --- | --- |
 | `host.terminal.open` | 打开主机交互终端，与容器终端独立 |
-| `terminal.open` | 打开 Docker 容器或 Pod 终端，不自动获得主机终端 |
+| `terminal.open` | 容器与 Pod 终端（Exec），包含按需准备 Docker 会话工具；不自动获得主机终端 |
 | `terminal.file.read` | 列目录、预览及下载普通文件 |
 | `terminal.file.upload` | 上传新文件 |
 | `terminal.file.edit` | 编辑已有文件；同时需要文件读取权限 |
@@ -24,7 +24,11 @@ Docker 容器与 Kubernetes Pod 仍在当前终端抽屉中打开，不提供最
 
 ## Docker 受控会话
 
-Docker Engine 的 Exec API 提供创建、启动、尺寸调整和检查，没有单个 Exec 的停止接口；关闭 attach 或 TTY 的写方向不等于 Shell 及其后台进程退出。因此 Docker 终端不再直接运行 `sh`，而要求用户将 `edo-terminal-session` v1 显式预装到目标镜像的 `/usr/local/libexec/edo-terminal-session`，并使用官方 `--init` 与默认独立 PID 命名空间。缺少工具、版本不匹配或运行条件不满足时拒绝连接；EDO 不安装工具、不变更原容器、不加 `SYS_PTRACE` 或 privileged、不关闭 seccomp，也不回退到已知会残留进程的方式。主机、Pod 和文件能力不受此工具前置影响。
+Docker Engine 的 Exec API 提供创建、启动、尺寸调整和检查，没有单个 Exec 的停止接口；关闭 attach 或 TTY 的写方向不等于 Shell 及其后台进程退出。因此 Docker 终端使用 `edo-terminal-session` v1 维护会话。EDO API 镜像和 Mage 构建默认携带 Linux amd64、arm64 的静态工具；具有当前项目 `terminal.open` 权限的用户首次连接时，EDO 根据目标镜像真实架构，通过官方 Moby API 复制到容器内的 `/usr/local/libexec/edo-terminal-session-<摘要>`，完整校验摘要后才启动。匹配随包摘要的预装工具或已安装工具直接复用；不覆盖业务文件，不从外部下载脚本，实际安装单独记录操作者、项目、目标、架构、摘要和结果。查看或日志权限不能触发安装，已有普通角色不自动增加权限；准备前后、Exec 启动前和会话期间均复核授权与目标身份。
+
+目标容器仍须启用 Docker 官方 `--init`，并使用独立 PID 命名空间。EDO 新运行的 Compose 配置自动给未指定 `init` 且未共享 PID 的服务补充 `init: true`；内置 Docker 部署也默认启用 init，用户的显式关闭设置保留，实际操作写入任务日志。升级 EDO 不会自动重建已有业务容器，已有容器须在下一次部署后采用新条件。只读文件系统需已有匹配工具；架构不支持、工具校验或运行条件不满足时明确拒绝。不会加 `SYS_PTRACE` 或 privileged、关闭 seccomp 或退回裸 Shell。主机、Pod 和文件能力不受此工具前置影响。
+
+源码运行使用 `mage build` 或 `mage start` 会准备 `bin/terminal-tools/linux-amd64`、`linux-arm64`，随 API 二进制分发时保留同级 `terminal-tools`。单独执行 `go build ./cmd/edo` 不生成工具资源，只能连接已预装受控工具的目标。
 
 外层 Docker Exec 使用非 TTY 的有界 v1 控制协议，官方 Moby `stdcopy` 解复用；工具内部继续复用 `creack/pty` 提供真实 PTY、终端尺寸和作业控制。启动仅允许 `sh/bash/ash`，时长由服务端配置决定，不接受命令、PID 或前端扩大的预算。工具进程中的 Go CPU/内存预算只作用于自身，原用户、工作目录和环境保留；未设置 `TERM` 时才补 `xterm-256color`。控制 ACK 与最多 256 KiB 的待消费终端数据分流，慢读时关闭本会话并继续读取 ACK。输入也使用最多 256 KiB 的队列，前台不读时不能阻塞关闭；队满或写入失败明确记为异常，实际回收后也不会改称正常结束。已消费输入尽力清理，不将终端内容写入日志。
 

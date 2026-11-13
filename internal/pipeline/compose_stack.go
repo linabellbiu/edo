@@ -308,6 +308,16 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failure, "Compose 部署配置无效，请检查镜像引用和变量", err)
 	}
+	if prepared.snapshot.DefaultContainerInit {
+		var services []string
+		content, services, err = composeconfig.WithDefaultInit(content)
+		if err != nil {
+			return s.failDeploymentExecution(ctx, failure, "Compose 默认终端运行配置准备失败", err)
+		}
+		if len(services) > 0 {
+			s.logComposeOperation(ctx, prepared, "为服务启用默认 init："+strings.Join(services, "、"))
+		}
+	}
 	if prepared.snapshot.IndependentDeploymentImages {
 		content, err = s.resolveConfiguredComposeImages(ctx, prepared, content)
 		if err != nil {

@@ -30,6 +30,9 @@ func TestInitialContainerConfigUsesImageDefaultsAndSafeRestartPolicy(t *testing.
 	if hostConfiguration.RestartPolicy.Name != container.RestartPolicyUnlessStopped {
 		t.Fatalf("首次部署没有配置守护进程重启策略: %+v", hostConfiguration.RestartPolicy)
 	}
+	if hostConfiguration.Init == nil || !*hostConfiguration.Init {
+		t.Fatal("默认部署未启用 Docker init")
+	}
 	if hostConfiguration.NetworkMode != container.NetworkMode("bridge") || len(hostConfiguration.PortBindings) != 0 || len(hostConfiguration.Mounts) != 0 {
 		t.Fatalf("默认容器配置不够克制: %+v", hostConfiguration)
 	}
