@@ -18,7 +18,7 @@ const preflightReport=(passed=true)=>({checked_at:new Date().toISOString(),passe
 const reportFor=body=>({...preflightReport(),hosts:(body.action==='join'?(body.join_host_ids??[]).map(id=>({id,role:body.join_role??'agent'})):[{id:body.server_host_id,role:body.mode==='k3d'?'host':'server'},...(body.mode==='k3d'?[]:(body.agent_host_ids??[]).map(id=>({id,role:'agent'})))]).map(item=>({host_id:item.id,host_name:`Host ${item.id}`,role:item.role,hostname:`node-${item.id}`,passed:true,checks:[preflightCheck()]}))})
 const preflightFailure=report=>({message:'前置检查未通过',response:{status:409,data:{code:'k3s_preflight_failed',message:'前置检查未通过',preflight:report}}})
 const nativeSources=(download_source='official',system_image_registry='')=>({download_source,installer_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh':'https://get.k3s.io',artifact_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s':'https://github.com/k3s-io/k3s/releases/download',...(download_source==='official_cn'?{mirror:'cn'}:{}),system_image_registry})
-const plan=()=>({id:'plan-1',action:'create',sources:nativeSources(),expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[],preflight:preflightReport()})
+const plan=()=>({id:'plan-1',action:'create',sources:nativeSources('official_cn','registry.cn-hangzhou.aliyuncs.com'),expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[],preflight:preflightReport()})
 const k3dPlan=(config={agents:1,api_port:16443,bind_address:'192.0.2.1'})=>({...plan(),sources:undefined,mode:'k3d',k3d:{...config},endpoint:`https://${config.bind_address}:${config.api_port}`,hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'host'}],preflight:{...preflightReport(),hosts:[{...preflightReport().hosts[0],role:'host'}]}})
 const permissions=['cluster.create','cluster.execute','cluster.update','cluster.read','kubernetes.node.create']
 
@@ -76,6 +76,91 @@ test('安装主机只显示启用的远程主机，已有 Kubernetes 关联与�
   assert.match(helpers.k3sHostDisabledReason({...host('1'),capabilities:[{kind:'kubernetes',runtime_id:'c'}]}),/已关联/)
 })
 
+test('创建默认由同一台主机兼任控制平面与Worker，两个选择入口双向补齐且只提交一次安装',async()=>{
+  const ctx=harness({assumeDetected:false})
+  try{
+    await ctx.open();ctx.state.form.name='Single node'
+    ctx.state.form.server_host_id='1';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['1'])
+    assert.equal(ctx.state.agentOptions.value.find(option=>option.value==='1').disabled,false)
+    await ctx.state.checkPreflight()
+    assert.equal(ctx.state.canPreview.value,true)
+    let payload=ctx.requests.find(item=>item.method==='check').body
+    assert.equal(payload.server_host_id,'1');assert.deepEqual(payload.agent_host_ids,[])
+    assert.deepEqual(ctx.state.selectedHosts.value.map(item=>item.id),['1'])
+    ctx.state.form.server_host_id='2';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['2'])
+    assert.equal(ctx.state.preflight.value,undefined)
+    ctx.state.workerHostSelection.value=[];await settle()
+    assert.equal(ctx.state.form.server_host_id,'');assert.deepEqual(ctx.state.form.agent_host_ids,[])
+    assert.equal(ctx.state.canCheck.value,false)
+    ctx.state.workerHostSelection.value=['1'];await settle()
+    assert.equal(ctx.state.form.server_host_id,'1');assert.deepEqual(ctx.state.workerHostSelection.value,['1'])
+    await ctx.state.checkPreflight();await ctx.state.preview()
+    payload=ctx.requests.find(item=>item.method==='preview').body
+    assert.equal(payload.server_host_id,'1');assert.deepEqual(payload.agent_host_ids,[])
+    assert.equal(ctx.requests.some(item=>item.method==='start'),false)
+  }finally{ctx.stop()}
+})
+
+test('额外Worker仍逐台提交，移除当前控制平面后回填剩余主机，切换模式保留独立选择',async()=>{
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.state.workerHostSelection.value=['2','1','1'];await settle()
+    assert.equal(ctx.state.form.server_host_id,'2')
+    assert.deepEqual(ctx.state.workerHostSelection.value,['2','1'])
+    assert.deepEqual(ctx.state.input().agent_host_ids,['1'])
+    ctx.state.form.server_host_id='1';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['1']);assert.deepEqual(ctx.state.input().agent_host_ids,[])
+    ctx.state.workerHostSelection.value=['1','2'];await settle()
+    assert.equal(ctx.state.form.server_host_id,'1');assert.deepEqual(ctx.state.input().agent_host_ids,['2'])
+    ctx.state.workerHostSelection.value=['2'];await settle()
+    assert.equal(ctx.state.form.server_host_id,'2');assert.deepEqual(ctx.state.input().agent_host_ids,[])
+    ctx.state.form.mode='k3d';await settle();ctx.state.form.server_host_id='1';await settle()
+    assert.equal('agent_host_ids' in ctx.state.input(),false)
+    ctx.state.form.mode='native';await settle()
+    assert.equal(ctx.state.form.server_host_id,'2');assert.deepEqual(ctx.state.workerHostSelection.value,['2'])
+  }finally{ctx.stop()}
+})
+
+test('显式禁用Server Agent的自定义配置保留纯控制平面，YAML覆盖优先且默认安装忽略隐藏草稿',async()=>{
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.ready();ctx.state.form.profile='custom';ctx.state.form.server_options={'disable-agent':true};await settle()
+    assert.equal(ctx.state.serverRunsAgent.value,false);assert.deepEqual(ctx.state.workerHostSelection.value,[])
+    assert.equal(ctx.state.agentOptions.value.some(option=>option.value==='1'),false)
+    ctx.state.workerHostSelection.value=['2'];await settle()
+    assert.equal(ctx.state.form.server_host_id,'1');assert.deepEqual(ctx.state.input().agent_host_ids,['2'])
+    ctx.state.form.overrides='server:\n  disable-agent: false';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['1','2'])
+    ctx.state.form.overrides='server:\n  disable-agent: null';await settle()
+    assert.equal(ctx.state.serverRunsAgent.value,true)
+    ctx.state.form.overrides='server:\n  disable-agent: true';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['2'])
+    ctx.state.form.profile='default';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['1','2'])
+    assert.deepEqual(ctx.state.input().server_options,{})
+  }finally{ctx.stop()}
+})
+
+test('新建与重开表单默认国内来源，显式来源选择保持独立，加入节点继续继承集群镜像仓库',async()=>{
+  for(const action of ['create','join']){
+    const ctx=harness({action})
+    try{
+      await ctx.open();ctx.ready()
+      assert.equal(ctx.state.form.download_source,'official_cn')
+      assert.equal(ctx.state.input().system_image_registry,action==='create'?'registry.cn-hangzhou.aliyuncs.com':undefined)
+      ctx.state.form.download_source='official';ctx.state.form.system_image_source='official'
+      assert.equal(ctx.state.input().download_source,'official')
+      assert.equal(ctx.state.input().system_image_registry,action==='create'?'':undefined)
+      ctx.props.open=false;await settle();ctx.props.open=true;await settle()
+      assert.equal(ctx.state.form.download_source,'official_cn')
+      assert.equal(ctx.state.form.system_image_source,'community_cn')
+      assert.equal(ctx.state.plan.value,undefined)
+    }finally{ctx.stop()}
+  }
+})
+
 test('表单与确认计划明确官方脚本、宿主机原生服务和默认containerd，中英文模板均有效',()=>{
   const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
   const {descriptor,errors}=parse(source)
@@ -111,9 +196,9 @@ test('原生安装不要求Docker主机能力，默认不注入运行时参数�
 
 test('官方主机命令预览不触发安装或容器回退，确认仅提交计划ID且受理不冒充成功',async()=>{
   const commands=['curl --fail --location https://get.k3s.io -o /tmp/edo-k3s-install.sh\nsudo env INSTALL_K3S_VERSION=v1.37.1+k3s1 sh /tmp/edo-k3s-install.sh server --config /etc/rancher/k3s/config.yaml']
-  const starts=[],pending=deferred(),ctx=harness({api:{previewK3sPlan:async()=>({...plan(),commands}),startK3sInstallation:(id,signal)=>{starts.push({id,signal});return pending.promise}}})
+  const starts=[],pending=deferred(),ctx=harness({api:{previewK3sPlan:async()=>({...plan(),sources:nativeSources(),commands}),startK3sInstallation:(id,signal)=>{starts.push({id,signal});return pending.promise}}})
   try{
-    await ctx.open();ctx.ready();await ctx.state.preview()
+    await ctx.open();ctx.ready();Object.assign(ctx.state.form,{download_source:'official',system_image_source:'official'});await ctx.state.preview()
     assert.deepEqual(ctx.state.plan.value.commands,commands);assert.deepEqual(starts,[])
     const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
     assert.match(source,/v-for="\(command,index\) in plan.commands"[^>]*>\{\{ command \}\}/)
@@ -382,9 +467,9 @@ test('原生默认与自定义均显式发送下载源，系统镜像源独立�
     const ctx=harness()
     try{
       await ctx.open();ctx.ready();ctx.state.form.profile=profile
-      assert.equal(ctx.state.input().download_source,'official')
-      assert.equal(ctx.state.input().system_image_registry,'')
-      ctx.state.form.download_source='official_cn'
+      assert.equal(ctx.state.input().download_source,'official_cn')
+      assert.equal(ctx.state.input().system_image_registry,'registry.cn-hangzhou.aliyuncs.com')
+      ctx.state.form.system_image_source='official'
       assert.equal(ctx.state.form.system_image_source,'official')
       assert.equal(ctx.state.input().system_image_registry,'')
       await ctx.state.preview()
@@ -397,6 +482,9 @@ test('原生默认与自定义均显式发送下载源，系统镜像源独立�
       assert.equal(domestic.profile,profile)
       assert.equal(domestic.download_source,'official_cn')
       assert.equal(domestic.system_image_registry,'registry.cn-hangzhou.aliyuncs.com')
+      ctx.state.form.download_source='official'
+      assert.equal(ctx.state.input().system_image_registry,'registry.cn-hangzhou.aliyuncs.com')
+      assert.equal(ctx.state.input().download_source,'official')
       ctx.state.form.system_image_source='custom'
       assert.equal(ctx.state.canCheck.value,false)
       ctx.state.form.custom_system_image_registry=' registry.example.com:5000/team '
@@ -443,7 +531,7 @@ test('下载源和系统镜像源往返切换均取消旧预检，旧成功或�
       if(field==='custom_system_image_registry')Object.assign(ctx.state.form,{system_image_source:'custom',custom_system_image_registry:'one.example/team'})
       const previous=ctx.state.form[field],request=ctx.state.preview()
       assert.equal(ctx.state.busy.value,true)
-      ctx.state.form[field]=field==='download_source'?'official_cn':field==='system_image_source'?'community_cn':'two.example/team'
+      ctx.state.form[field]=field==='download_source'?'official':field==='system_image_source'?'official':'two.example/team'
       assert.equal(signals[0].aborted,true)
       assert.equal(ctx.state.busy.value,false)
       ctx.state.form[field]=previous
@@ -480,7 +568,8 @@ test('k3d完全省略原生来源字段并隔离草稿，切回native恢复明�
 })
 
 test('原生计划来源缺失或与选择不符不能确认，完整的服务端来源才可执行',async()=>{
-  for(const sources of [undefined,{...nativeSources(),download_source:'official_cn'},{...nativeSources(),installer_url:''},{...nativeSources(),artifact_url:''},{...nativeSources(),system_image_registry:'other.example'},(({system_image_registry,...rest})=>rest)(nativeSources())]){
+  const selected=nativeSources('official_cn','registry.cn-hangzhou.aliyuncs.com')
+  for(const sources of [undefined,{...selected,download_source:'official'},{...selected,installer_url:''},{...selected,artifact_url:''},{...selected,system_image_registry:'other.example'},(({system_image_registry,...rest})=>rest)(selected)]){
     const ctx=harness({api:{previewK3sPlan:async()=>({...plan(),sources})}})
     try{
       await ctx.open();ctx.ready();await ctx.state.preview()
@@ -504,7 +593,7 @@ test('计划和执行结果仅展示冻结来源，旧记录未记录且加入�
     const ctx=harness({action})
     try{
       await ctx.open();ctx.ready();await ctx.state.preview()
-      assert.equal(ctx.state.frozenSources.value.download_source,'official')
+      assert.equal(ctx.state.frozenSources.value.download_source,'official_cn')
       const sources=nativeSources('official_cn','frozen.example/team')
       ctx.state.installation.value={id:'recorded-run',status:'succeeded',sources}
       Object.assign(ctx.state.form,{download_source:'official',system_image_source:'official',custom_system_image_registry:''})
@@ -728,7 +817,7 @@ test('检测绑定主机、参数、来源与模式，任意配置变化使旧�
   const ctx=harness({assumeDetected:false})
   try{
     await ctx.open();ctx.ready()
-    for(const change of [()=>{ctx.state.form.name='Changed'},()=>{ctx.state.form.server_host_id='2'},()=>{ctx.state.form.download_source='official_cn'},()=>{ctx.state.form.system_image_source='community_cn'},()=>{ctx.state.form.profile='custom'},()=>{ctx.state.form.server_options={'node-label':['environment=test']}}]){
+    for(const change of [()=>{ctx.state.form.name='Changed'},()=>{ctx.state.form.server_host_id='2'},()=>{ctx.state.form.download_source='official'},()=>{ctx.state.form.system_image_source='official'},()=>{ctx.state.form.profile='custom'},()=>{ctx.state.form.server_options={'node-label':['environment=test']}}]){
       await ctx.state.checkPreflight();assert.equal(ctx.state.canPreview.value,true)
       change();await settle();assert.equal(ctx.state.preflight.value,undefined);assert.equal(ctx.state.canPreview.value,false);await ctx.state.preview();assert.equal(ctx.state.plan.value,undefined)
     }

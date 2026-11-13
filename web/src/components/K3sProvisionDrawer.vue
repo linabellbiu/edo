@@ -13,7 +13,7 @@ import K3sOptionFields from '@/components/K3sOptionFields.vue'
 import K3sPreflightReportView from '@/components/K3sPreflightReport.vue'
 import K3sInstallationProgress from '@/components/K3sInstallationProgress.vue'
 import { useAuthStore } from '@/stores/auth'
-import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sHostRoleLabel, k3sInstallationLabel, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, validateK3sOverrides } from '@/utils/k3sProvision'
+import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sHostRoleLabel, k3sInstallationLabel, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, k3sServerAgentEnabled, validateK3sOverrides } from '@/utils/k3sProvision'
 import { formatDateTime } from '@/utils/time'
 import { defaultK3dBindAddress, validK3dBindAddress } from '@/utils/k3dProvision'
 
@@ -38,7 +38,7 @@ const checking=ref(false),checkedInput=ref(''),checkedContext=ref('')
 const preflightView=ref<{focus:()=>void}>(),errorRegion=ref<HTMLElement>()
 const emptyForm = () => ({
   mode:'native' as K3sInstallMode,k3d:{agents:1,api_port:16443,bind_address:''} as K3dConfig,
-  download_source:'official' as K3sDownloadSource,system_image_source:'official' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
+  download_source:'official_cn' as K3sDownloadSource,system_image_source:'community_cn' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
   name:'',server_host_id:'',agent_host_ids:[] as string[],profile:'default' as 'default'|'custom',endpoint:'',
   join_role:'agent' as K3sJoinRole,join_host_ids:[] as string[],server_token:'',
   server_options:{} as Record<string,unknown>,agent_options:{} as Record<string,unknown>,installer:{} as Record<string,unknown>,overrides:'',
@@ -55,8 +55,18 @@ const hostOptions = computed(() => hostChoices.value.map(host=>({
   value:host.id,label:`${host.name} · ${host.address}${k3sHostDisabledReason(host)?`（${k3sHostDisabledReason(host)}）`:''}`,
   disabled:Boolean(k3sHostDisabledReason(host)),
 })))
-const agentOptions = computed(() => hostOptions.value.filter(option=>option.value!==form.server_host_id))
 const isK3d = computed(() => props.action==='create'&&form.mode==='k3d')
+const serverRunsAgent = computed(() => props.action==='create'&&!isK3d.value&&k3sServerAgentEnabled(form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:''))
+const agentOptions = computed(() => hostOptions.value.filter(option=>serverRunsAgent.value||option.value!==form.server_host_id))
+// 同机的 Worker 由 Server 自带的 Agent 提供，不向后端重复提交一台 Agent 主机。
+const workerHostSelection = computed({
+  get:()=>[...new Set([...(serverRunsAgent.value&&form.server_host_id?[form.server_host_id]:[]),...form.agent_host_ids.filter(id=>id!==form.server_host_id)])],
+  set:(value:string[])=>{
+    const ids=[...new Set(value)]
+    if(serverRunsAgent.value&&!ids.includes(form.server_host_id))form.server_host_id=ids[0]||''
+    form.agent_host_ids=ids.filter(id=>id!==form.server_host_id)
+  },
+})
 const displayMode = computed(() => installation.value?modeOf(installation.value):plan.value?modeOf(plan.value):isK3d.value?'k3d':'native')
 const k3dConfig = computed(() => installation.value?installation.value.k3d:plan.value?.k3d)
 const systemImageRegistry = computed(() => form.system_image_source==='community_cn'?'registry.cn-hangzhou.aliyuncs.com':form.system_image_source==='custom'?form.custom_system_image_registry.trim():'')
@@ -120,7 +130,7 @@ function input(): K3sPlanInput {
   const custom=form.profile==='custom'
   const installer=custom?Object.fromEntries(Object.entries(form.installer).filter(([key,value])=>!['version','channel'].includes(key)||String(value??'').trim())):{}
   return {
-    action:props.action,mode:'native',download_source:form.download_source,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.agent_host_ids)],system_image_registry:systemImageRegistry.value}),name:form.name.trim(),
+    action:props.action,mode:'native',download_source:form.download_source,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.agent_host_ids)].filter(id=>id!==form.server_host_id),system_image_registry:systemImageRegistry.value}),name:form.name.trim(),
     profile:form.profile,server_options:custom&&showServerOptions.value?{...form.server_options}:{},agent_options:custom&&showAgentOptions.value?{...form.agent_options}:{},
     installer,overrides:custom?form.overrides:'',endpoint:form.endpoint.trim(),
   }
@@ -344,7 +354,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
             <a-form-item v-if="action==='join'" label="新增节点角色" required class="wide"><a-radio-group v-model:value="form.join_role" button-style="solid" aria-label="新增节点角色"><a-radio-button value="agent">工作节点（Worker）</a-radio-button><a-radio-button value="server">控制平面（Master）</a-radio-button></a-radio-group></a-form-item><a-form-item v-if="action==='create'" label="集群名称" required><a-input v-model:value="form.name" :maxlength="64" placeholder="例如：生产集群" /></a-form-item>
             <a-form-item v-if="!isK3d" :label="action==='create'?'API 地址（可选）':'API 地址'" :required="action==='join'" :class="{'wide':action==='join'}"><a-input v-model:value="form.endpoint" :placeholder="endpointPlaceholder" /><div class="field-help">{{ action==='create'?'留空使用控制平面主机地址和最终监听端口；可填写负载均衡或其他访问地址。':'EDO 和新节点都需要能访问此地址。' }}</div></a-form-item>
             <a-form-item v-if="action==='create'" :label="isK3d?t('k8s.k3dHost'):'控制平面主机'" required><a-select v-model:value="form.server_host_id" :aria-label="isK3d?t('k8s.k3dHost'):'控制平面主机'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="isK3d?t('k8s.k3dHostPlaceholder'):'选择安装 K3s Server 的主机'" /></a-form-item>
-            <a-form-item v-if="action==='create'&&!isK3d" label="工作节点（可选）"><a-select v-model:value="form.agent_host_ids" mode="multiple" show-search option-filter-prop="label" :options="agentOptions" placeholder="选择安装 K3s Agent 的主机" /></a-form-item><a-form-item v-else-if="action==='join'" :label="joinMaster?'控制平面主机（Master）':'工作节点主机（Worker）'" required><a-select v-model:value="joinHostSelection" :mode="joinMaster?undefined:'multiple'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="joinMaster?'选择加入控制平面的新主机':'选择加入工作节点的新主机'" /><div class="field-help">{{ joinMaster?'Master 每个计划仅加入 1 台，须等待当前节点就绪后逐台添加。':'Worker 每次最多选择 20 台新主机。' }}</div></a-form-item><a-form-item v-if="joinMaster" label="目标集群 Server Token" required class="wide"><a-input-password v-model:value="form.server_token" aria-label="目标集群 Server Token" :visibility-toggle="false" :maxlength="4096" autocomplete="off" placeholder="输入目标集群的 Server Token" /><div class="field-help">仅用于本次控制平面加入。切换角色或关闭窗口后清除，不用于工作节点加入。</div></a-form-item>
+            <a-form-item v-if="action==='create'&&!isK3d" :label="t('k8s.workerHosts')"><a-select v-model:value="workerHostSelection" :aria-label="t('k8s.workerHosts')" mode="multiple" show-search option-filter-prop="label" :options="agentOptions" :placeholder="t('k8s.workerHostsPlaceholder')" /><div v-if="serverRunsAgent" class="field-help">{{ t('k8s.serverWorkerHint') }}</div></a-form-item><a-form-item v-else-if="action==='join'" :label="joinMaster?'控制平面主机（Master）':'工作节点主机（Worker）'" required><a-select v-model:value="joinHostSelection" :mode="joinMaster?undefined:'multiple'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="joinMaster?'选择加入控制平面的新主机':'选择加入工作节点的新主机'" /><div class="field-help">{{ joinMaster?'Master 每个计划仅加入 1 台，须等待当前节点就绪后逐台添加。':'Worker 每次最多选择 20 台新主机。' }}</div></a-form-item><a-form-item v-if="joinMaster" label="目标集群 Server Token" required class="wide"><a-input-password v-model:value="form.server_token" aria-label="目标集群 Server Token" :visibility-toggle="false" :maxlength="4096" autocomplete="off" placeholder="输入目标集群的 Server Token" /><div class="field-help">仅用于本次控制平面加入。切换角色或关闭窗口后清除，不用于工作节点加入。</div></a-form-item>
             <template v-if="isK3d"><a-form-item :label="t('k8s.k3dAgents')" required><a-input-number v-model:value="form.k3d.agents" :aria-label="t('k8s.k3dAgents')" :min="0" :max="8" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dApiPort')" required><a-input-number v-model:value="form.k3d.api_port" :aria-label="t('k8s.k3dApiPort')" :min="1024" :max="65535" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dBindAddress')" required class="wide"><a-input v-model:value="form.k3d.bind_address" :aria-label="t('k8s.k3dBindAddress')" :placeholder="t('k8s.k3dBindPlaceholder')" /><div class="field-help">{{ t('k8s.k3dBindHint') }}</div></a-form-item><a-form-item :label="t('k8s.k3dEndpoint')" class="wide"><a-input :value="k3dEndpoint" readonly :aria-label="t('k8s.k3dEndpoint')" /></a-form-item></template>
           </div>
           <a-alert v-if="joinMaster" type="warning" show-icon message="目标集群需已启用内嵌 etcd" description="预检会实时核对 Server Token、目标控制平面、etcd 成员与关键配置。SQLite、外置数据存储或无法确认的目标会被阻断；不会自动转换数据库。关键配置自动继承，冲突覆盖会被拒绝。" /><a-alert v-if="!loading&&!loadError&&!hostChoices.length" type="info" show-icon message="暂无可安装的远程主机" description="请先在主机页面配置启用的 SSH 主机和登录凭据。" />

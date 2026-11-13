@@ -112,6 +112,18 @@ export function k3sAutomaticEndpoint(host?: InfrastructureHost, options: Record<
   return `https://${address}:${number}`
 }
 
+export function k3sServerAgentEnabled(options: Record<string,unknown> = {}, overrides = '') {
+  let disabled = options['disable-agent']
+  if (overrides.trim()) {
+    try {
+      const document = parseDocument(overrides, {uniqueKeys:true})
+      const value = document.errors.length ? undefined : document.toJS({maxAliasCount:0})
+      if (value?.server && typeof value.server === 'object' && Object.hasOwn(value.server,'disable-agent')) disabled = value.server['disable-agent']
+    } catch { /* 未完成的 YAML 不改变已填写选项，最终配置仍由后端校验。 */ }
+  }
+  return disabled !== true
+}
+
 export function validateK3sOverrides(source: string, nodeRole?: K3sJoinRole) {
   if (!source.trim()) return
   const document = parseDocument(source, {uniqueKeys:true})
