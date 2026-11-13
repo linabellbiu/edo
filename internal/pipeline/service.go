@@ -69,6 +69,7 @@ var (
 	ErrWorkflowTemplateNotFound       = errors.New("流水线方案不存在或未启用")
 	ErrPipelineIncomplete             = errors.New("应用尚未绑定完整的构建与发布流程")
 	ErrApplicationRepositoryInvariant = errors.New("应用代码仓库关联数据不完整")
+	ErrRepositoryTriggerFailed        = errors.New("检测到代码变化，但自动启动流水线失败，将在下次检查时重新核验")
 )
 
 var resourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
@@ -1378,7 +1379,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 	}
 	now := time.Now().UTC()
 	_ = s.db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", application.ID).
-		Updates(map[string]any{"sync_status": model.ApplicationSyncChecking, "sync_message": "", "updated_at": now}).Error
+		UpdateColumns(map[string]any{"sync_status": model.ApplicationSyncChecking, "sync_message": ""}).Error
 	pollSources := applicationPollSources(application)
 	link, err := applicationRepositoryLink(application)
 	if err != nil {
@@ -1497,6 +1498,25 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 						ID: uuid.NewString(), ApplicationRepositoryID: link.ID, CreatedAt: now,
 					}
 				}
+				if changed && (candidate.Event != "pr" || containsEvent(source.Config.PRActions, candidateAction)) {
+					candidate.Action = candidateAction
+					status, message = model.ApplicationSyncChanged, pollChangeMessage(candidate.Event)
+					// 先持久化运行，再推进监听游标；配置解析或主机预检失败不能吞掉事件。
+					run, createErr := s.createObservedRun(ctx, application, workflow, *link, source, candidate, polledRunTrigger(candidate.Event), message, now)
+					if createErr != nil {
+						s.logger.ErrorContext(ctx, "仓库变化自动启动流水线失败", "operation", "pipeline_sync_trigger",
+							"application_id", application.ID, "repository_id", link.RepositoryID, "workflow_id", workflow.ID,
+							"event", candidate.Event, "ref", candidate.Ref, "commit_sha", candidate.Commit, "err", createErr)
+						// 请求超时后仍限时保存失败状态，不让下一次检查把超时当作配置变更。
+						failureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+						s.markSyncFailureMessage(failureCtx, application.ID, ErrRepositoryTriggerFailed.Error())
+						cancel()
+						return application, nil, ErrRepositoryTriggerFailed
+					}
+					if run != nil {
+						lastRun = run
+					}
+				}
 				observation.WatchKey, observation.WorkflowID, observation.SourceNodeID = watchKey, workflow.ID, source.ID
 				observation.Event, observation.Action = candidate.Event, candidateAction
 				observation.Ref, observation.CommitSHA = candidate.Ref, candidate.Commit
@@ -1511,21 +1531,6 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 					"last_observed_ref": candidate.Ref, "last_observed_commit": candidate.Commit, "last_checked_at": now, "updated_at": now,
 				}).Error; err != nil {
 					return application, nil, fmt.Errorf("更新应用仓库监听状态失败: %w", err)
-				}
-				if !changed {
-					continue
-				}
-				if candidate.Event == "pr" && !containsEvent(source.Config.PRActions, candidateAction) {
-					continue
-				}
-				candidate.Action = candidateAction
-				status, message = model.ApplicationSyncChanged, pollChangeMessage(candidate.Event)
-				run, createErr := s.createObservedRun(ctx, application, workflow, *link, source, candidate, polledRunTrigger(candidate.Event), message, now)
-				if createErr != nil {
-					return application, nil, createErr
-				}
-				if run != nil {
-					lastRun = run
 				}
 			}
 		}
@@ -1972,11 +1977,15 @@ func (s *Service) scanDueApplications(ctx context.Context) {
 }
 
 func (s *Service) markSyncFailure(ctx context.Context, applicationID string, syncErr error) {
-	now := time.Now().UTC()
 	message := "代码仓库检查失败，请检查仓库地址或凭据"
 	if repository.IsTransientGitError(syncErr) {
 		message = "代码仓库暂时不可用，将在下次检查时重试"
 	}
+	s.markSyncFailureMessage(ctx, applicationID, message)
+}
+
+func (s *Service) markSyncFailureMessage(ctx context.Context, applicationID, message string) {
+	now := time.Now().UTC()
 	if err := s.db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", applicationID).Updates(map[string]any{
 		"sync_status": model.ApplicationSyncFailed, "sync_message": message,
 		"last_checked_at": now, "updated_at": now,
