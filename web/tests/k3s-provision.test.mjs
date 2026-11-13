@@ -54,7 +54,7 @@ function harness({action='create',codes=permissions,api={},assumeDetected=true}=
     if(assumeDetected&&ctx.state.canCheck.value){ctx.state.preflight.value=preflightReport();ctx.state.checkedInput.value=ctx.state.signature.value;ctx.state.checkedContext.value=ctx.state.context.value}
     return preview()
   }
-  return {...ctx,auth,props,requests,timers,listeners,storage,stop(){unmounts.forEach(fn=>fn());ctx.stop()},async open(){props.open=true;await settle()},ready(){Object.assign(ctx.state.form,{name:'Production',server_host_id:action==='create'?'1':'',agent_host_ids:[],join_host_ids:action==='join'?['2']:[]})}}
+  return {...ctx,auth,props,requests,timers,listeners,storage,stop(){unmounts.forEach(fn=>fn());ctx.stop()},async open(){props.open=true;await settle()},ready(){Object.assign(ctx.state.form,{name:'Production',server_host_id:action==='create'?'1':'',worker_host_ids:action==='create'?['1']:[],join_host_ids:action==='join'?['2']:[]})}}
 }
 
 test('K3s 参数目录按用途和搜索词筛选，默认值保留 false、0 和独立数组',()=>{
@@ -77,24 +77,24 @@ test('安装主机只显示启用的远程主机，已有 Kubernetes 关联与�
   assert.match(helpers.k3sHostDisabledReason({...host('1'),capabilities:[{kind:'kubernetes',runtime_id:'c'}]}),/已关联/)
 })
 
-test('创建默认由同一台主机兼任控制平面与Worker，两个选择入口双向补齐且只提交一次安装',async()=>{
+test('主机回填只补空值，控制平面和Worker任一入口可先选，同机只提交一次安装',async()=>{
   const ctx=harness({assumeDetected:false})
   try{
     await ctx.open();ctx.state.form.name='Single node'
-    ctx.state.form.server_host_id='1';await settle()
+    ctx.state.serverHostSelection.value='1';await settle()
     assert.deepEqual(ctx.state.workerHostSelection.value,['1'])
     assert.equal(ctx.state.agentOptions.value.find(option=>option.value==='1').disabled,false)
-    await ctx.state.checkPreflight()
-    assert.equal(ctx.state.canPreview.value,true)
+    await ctx.state.checkPreflight();assert.equal(ctx.state.canPreview.value,true)
     let payload=ctx.requests.find(item=>item.method==='check').body
     assert.equal(payload.server_host_id,'1');assert.deepEqual(payload.agent_host_ids,[])
     assert.deepEqual(ctx.state.selectedHosts.value.map(item=>item.id),['1'])
-    ctx.state.form.server_host_id='2';await settle()
-    assert.deepEqual(ctx.state.workerHostSelection.value,['2'])
+    ctx.state.serverHostSelection.value='2';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['1'],'已填Worker不再跟随控制平面改变')
     assert.equal(ctx.state.preflight.value,undefined)
+    assert.deepEqual(ctx.state.input().agent_host_ids,['1'])
     ctx.state.workerHostSelection.value=[];await settle()
-    assert.equal(ctx.state.form.server_host_id,'');assert.deepEqual(ctx.state.form.agent_host_ids,[])
-    assert.equal(ctx.state.canCheck.value,false)
+    assert.equal(ctx.state.form.server_host_id,'2','清空Worker不清空已选控制平面')
+    ctx.state.serverHostSelection.value='';await settle();assert.equal(ctx.state.canCheck.value,false)
     ctx.state.workerHostSelection.value=['1'];await settle()
     assert.equal(ctx.state.form.server_host_id,'1');assert.deepEqual(ctx.state.workerHostSelection.value,['1'])
     await ctx.state.checkPreflight();await ctx.state.preview()
@@ -104,27 +104,53 @@ test('创建默认由同一台主机兼任控制平面与Worker，两个选择�
   }finally{ctx.stop()}
 })
 
-test('额外Worker仍逐台提交，移除当前控制平面后回填剩余主机，切换模式保留独立选择',async()=>{
+test('A/A回填后用户改为A/B即分别保留，再改控制平面、删除Worker或切换模式均不覆盖',async()=>{
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.state.serverHostSelection.value='1';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['1'])
+    ctx.state.workerHostSelection.value=['2'];await settle()
+    assert.equal(ctx.state.form.server_host_id,'1');assert.deepEqual(ctx.state.workerHostSelection.value,['2'])
+    assert.deepEqual(ctx.state.input().agent_host_ids,['2'])
+    ctx.state.serverHostSelection.value='2';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['2']);assert.deepEqual(ctx.state.input().agent_host_ids,[])
+    ctx.state.serverHostSelection.value='1';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['2']);assert.deepEqual(ctx.state.input().agent_host_ids,['2'])
+    ctx.state.workerHostSelection.value=['1','2','2'];await settle()
+    assert.deepEqual(ctx.state.input().agent_host_ids,['2'])
+    ctx.state.workerHostSelection.value=['2'];await settle()
+    assert.equal(ctx.state.form.server_host_id,'1','移除同名Worker不替换控制平面')
+    ctx.state.form.mode='k3d';await settle();ctx.state.serverHostSelection.value='2';await settle()
+    assert.equal('agent_host_ids' in ctx.state.input(),false)
+    ctx.state.form.mode='native';await settle()
+    assert.equal(ctx.state.form.server_host_id,'1');assert.deepEqual(ctx.state.workerHostSelection.value,['2'])
+    ctx.state.workerHostSelection.value=[];await settle()
+    ctx.state.form.profile='custom';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,[],'其他配置变化不重新补齐手动清空的输入框')
+    ctx.state.serverHostSelection.value='2';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['2'],'再次选择时仅补空值')
+  }finally{ctx.stop()}
+})
+
+test('先选Worker同样只补空控制平面，用户修改两侧后不再互相替换',async()=>{
   const ctx=harness()
   try{
     await ctx.open();ctx.state.workerHostSelection.value=['2','1','1'];await settle()
     assert.equal(ctx.state.form.server_host_id,'2')
     assert.deepEqual(ctx.state.workerHostSelection.value,['2','1'])
     assert.deepEqual(ctx.state.input().agent_host_ids,['1'])
-    ctx.state.form.server_host_id='1';await settle()
-    assert.deepEqual(ctx.state.workerHostSelection.value,['1']);assert.deepEqual(ctx.state.input().agent_host_ids,[])
-    ctx.state.workerHostSelection.value=['1','2'];await settle()
-    assert.equal(ctx.state.form.server_host_id,'1');assert.deepEqual(ctx.state.input().agent_host_ids,['2'])
+    ctx.state.workerHostSelection.value=['1'];await settle()
+    assert.equal(ctx.state.form.server_host_id,'2');assert.deepEqual(ctx.state.input().agent_host_ids,['1'])
+    ctx.state.serverHostSelection.value='1';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['1'])
+    ctx.state.serverHostSelection.value='';await settle()
+    assert.deepEqual(ctx.state.workerHostSelection.value,['1'])
     ctx.state.workerHostSelection.value=['2'];await settle()
-    assert.equal(ctx.state.form.server_host_id,'2');assert.deepEqual(ctx.state.input().agent_host_ids,[])
-    ctx.state.form.mode='k3d';await settle();ctx.state.form.server_host_id='1';await settle()
-    assert.equal('agent_host_ids' in ctx.state.input(),false)
-    ctx.state.form.mode='native';await settle()
-    assert.equal(ctx.state.form.server_host_id,'2');assert.deepEqual(ctx.state.workerHostSelection.value,['2'])
+    assert.equal(ctx.state.form.server_host_id,'2','重新选择时允许补空控制平面')
   }finally{ctx.stop()}
 })
 
-test('显式禁用Server Agent的自定义配置保留纯控制平面，YAML覆盖优先且默认安装忽略隐藏草稿',async()=>{
+test('自定义禁用Server Agent保留纯控制平面，切换配置不再追加用户未选Worker',async()=>{
   const ctx=harness()
   try{
     await ctx.open();ctx.ready();ctx.state.form.profile='custom';ctx.state.form.server_options={'disable-agent':true};await settle()
@@ -133,13 +159,13 @@ test('显式禁用Server Agent的自定义配置保留纯控制平面，YAML覆�
     ctx.state.workerHostSelection.value=['2'];await settle()
     assert.equal(ctx.state.form.server_host_id,'1');assert.deepEqual(ctx.state.input().agent_host_ids,['2'])
     ctx.state.form.overrides='server:\n  disable-agent: false';await settle()
-    assert.deepEqual(ctx.state.workerHostSelection.value,['1','2'])
+    assert.deepEqual(ctx.state.workerHostSelection.value,['2'])
     ctx.state.form.overrides='server:\n  disable-agent: null';await settle()
     assert.equal(ctx.state.serverRunsAgent.value,true)
     ctx.state.form.overrides='server:\n  disable-agent: true';await settle()
     assert.deepEqual(ctx.state.workerHostSelection.value,['2'])
     ctx.state.form.profile='default';await settle()
-    assert.deepEqual(ctx.state.workerHostSelection.value,['1','2'])
+    assert.deepEqual(ctx.state.workerHostSelection.value,['2'])
     assert.deepEqual(ctx.state.input().server_options,{})
   }finally{ctx.stop()}
 })
@@ -226,14 +252,14 @@ test('创建提供原生与k3d模式，k3d只发送单宿主和容器配置，�
   const ctx=harness()
   try{
     await ctx.open();ctx.ready();assert.equal(ctx.state.form.mode,'native')
-    Object.assign(ctx.state.form,{name:'Native draft',agent_host_ids:['2'],profile:'custom',server_options:{disable:['traefik']},agent_options:{'node-label':['worker']},installer:{version:'v1.37.1+k3s1'},overrides:'server:\n  disable: []',endpoint:'https://native.example:6443'})
+    Object.assign(ctx.state.form,{name:'Native draft',worker_host_ids:['2'],profile:'custom',server_options:{disable:['traefik']},agent_options:{'node-label':['worker']},installer:{version:'v1.37.1+k3s1'},overrides:'server:\n  disable: []',endpoint:'https://native.example:6443'})
     ctx.state.form.mode='k3d';await settle();Object.assign(ctx.state.form,{name:'Container draft',server_host_id:'1'});await settle()
     assert.equal(ctx.state.form.k3d.bind_address,'192.0.2.1');assert.equal(ctx.state.form.k3d.agents,1);assert.equal(ctx.state.form.k3d.api_port,16443)
     ctx.state.form.k3d.agents=3;await ctx.state.preview()
     const payload=ctx.requests.find(item=>item.method==='preview').body
     assert.deepEqual(payload,{action:'create',mode:'k3d',name:'Container draft',server_host_id:'1',profile:'default',endpoint:'https://192.0.2.1:16443',k3d:{agents:3,api_port:16443,bind_address:'192.0.2.1'}})
     assert.equal(ctx.state.showServerOptions.value,false);assert.equal(ctx.state.showAgentOptions.value,false);assert.deepEqual(ctx.state.selectedHosts.value.map(host=>host.id),['1'])
-    ctx.state.form.mode='native';await settle();assert.equal(ctx.state.plan.value,undefined);assert.equal(ctx.state.form.name,'Native draft');assert.deepEqual(ctx.state.form.agent_host_ids,['2'])
+    ctx.state.form.mode='native';await settle();assert.equal(ctx.state.plan.value,undefined);assert.equal(ctx.state.form.name,'Native draft');assert.deepEqual(ctx.state.form.worker_host_ids,['2'])
     assert.deepEqual(ctx.state.form.server_options,{disable:['traefik']});assert.equal(ctx.state.form.endpoint,'https://native.example:6443');assert.equal(ctx.state.input().mode,'native');assert.equal('k3d' in ctx.state.input(),false)
     ctx.state.form.mode='k3d';await settle();assert.equal(ctx.state.form.name,'Container draft');assert.equal(ctx.state.form.k3d.agents,3)
   }finally{ctx.stop()}
@@ -672,12 +698,12 @@ test('参数目录读取只为加入节点传递 cluster_id 并保留取消信�
   assert.ok(requests.every(item=>item.path==='/kubernetes/k3s/options'&&item.options.signal===controller.signal))
 })
 
-test('自定义 YAML 无效时不调用预览，调整主机后清除重复工作节点并更新默认地址',async()=>{
+test('自定义 YAML 无效时不调用预览，调整主机保留独立Worker并在请求中排除同机重复安装',async()=>{
   const ctx=harness();try{
     await ctx.open();ctx.ready();ctx.state.form.profile='custom';ctx.state.form.overrides='server: []';await settle();await ctx.state.preview()
     assert.equal(ctx.requests.some(item=>item.method==='preview'),false);assert.match(ctx.state.error.value,/YAML 对象/)
-    ctx.state.form.server_host_id='';await settle();ctx.state.form.agent_host_ids=['1','2'];ctx.state.form.server_host_id='1';await settle();assert.deepEqual(ctx.state.form.agent_host_ids,['2']);assert.equal(ctx.state.form.endpoint,'');assert.equal(ctx.state.endpointPlaceholder.value,'https://192.0.2.1:6443')
-    ctx.state.form.server_host_id='2';await settle();assert.deepEqual(ctx.state.form.agent_host_ids,[]);assert.equal(ctx.state.form.endpoint,'');assert.equal(ctx.state.endpointPlaceholder.value,'https://192.0.2.2:6443')
+    ctx.state.form.server_host_id='';await settle();ctx.state.form.worker_host_ids=['1','2'];ctx.state.form.server_host_id='1';await settle();assert.deepEqual(ctx.state.input().agent_host_ids,['2']);assert.equal(ctx.state.form.endpoint,'');assert.equal(ctx.state.endpointPlaceholder.value,'https://192.0.2.1:6443')
+    ctx.state.form.server_host_id='2';await settle();assert.deepEqual(ctx.state.workerHostSelection.value,['1','2']);assert.deepEqual(ctx.state.input().agent_host_ids,['1']);assert.equal(ctx.state.form.endpoint,'');assert.equal(ctx.state.endpointPlaceholder.value,'https://192.0.2.2:6443')
   }finally{ctx.stop()}
 })
 
@@ -722,7 +748,7 @@ test('前置检查失败展示逐主机阻断报告，不创建可执行计划�
     assert.deepEqual(ctx.state.visiblePreflight.value,report);assert.equal(ctx.state.plan.value,undefined)
     assert.match(ctx.state.error.value,/前置检查/);await ctx.state.execute()
     assert.equal(ctx.requests.some(item=>item.method==='start'),false)
-    ctx.state.form.agent_host_ids=['2'];await settle();assert.equal(ctx.state.visiblePreflight.value,undefined)
+    ctx.state.form.worker_host_ids=['2'];await settle();assert.equal(ctx.state.visiblePreflight.value,undefined)
     assert.equal(ctx.state.error.value,'')
   }finally{ctx.stop()}
 })

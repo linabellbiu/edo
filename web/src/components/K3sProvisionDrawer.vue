@@ -41,7 +41,7 @@ const emptyForm = () => ({
   mode:'native' as K3sInstallMode,k3d:{agents:1,api_port:16443,bind_address:''} as K3dConfig,
   datastore:'sqlite' as 'sqlite'|'etcd',
   download_source:'official_cn' as K3sDownloadSource,system_image_source:'community_cn' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
-  name:'',server_host_id:'',agent_host_ids:[] as string[],profile:'default' as 'default'|'custom',endpoint:'',
+  name:'',server_host_id:'',worker_host_ids:[] as string[],profile:'default' as 'default'|'custom',endpoint:'',
   join_role:'agent' as K3sJoinRole,join_host_ids:[] as string[],server_token:'',
   server_options:{} as Record<string,unknown>,agent_options:{} as Record<string,unknown>,installer:{} as Record<string,unknown>,overrides:'',
 })
@@ -60,13 +60,20 @@ const hostOptions = computed(() => hostChoices.value.map(host=>({
 const isK3d = computed(() => props.action==='create'&&form.mode==='k3d')
 const serverRunsAgent = computed(() => props.action==='create'&&!isK3d.value&&k3sServerAgentEnabled(form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:''))
 const agentOptions = computed(() => hostOptions.value.filter(option=>serverRunsAgent.value||option.value!==form.server_host_id))
-// 同机的 Worker 由 Server 自带的 Agent 提供，不向后端重复提交一台 Agent 主机。
+// 回填只补空值，保留用户后来分别选择的控制平面和 Worker。
 const workerHostSelection = computed({
-  get:()=>[...new Set([...(serverRunsAgent.value&&form.server_host_id?[form.server_host_id]:[]),...form.agent_host_ids.filter(id=>id!==form.server_host_id)])],
+  get:()=>[...new Set(form.worker_host_ids)].filter(id=>serverRunsAgent.value||id!==form.server_host_id),
   set:(value:string[])=>{
     const ids=[...new Set(value)]
-    if(serverRunsAgent.value&&!ids.includes(form.server_host_id))form.server_host_id=ids[0]||''
-    form.agent_host_ids=ids.filter(id=>id!==form.server_host_id)
+    form.worker_host_ids=ids
+    if(serverRunsAgent.value&&!form.server_host_id&&ids.length)form.server_host_id=ids[0]!
+  },
+})
+const serverHostSelection = computed({
+  get:()=>form.server_host_id,
+  set:(value:string)=>{
+    form.server_host_id=value
+    if(serverRunsAgent.value&&value&&!workerHostSelection.value.length)form.worker_host_ids=[value]
   },
 })
 const displayMode = computed(() => installation.value?modeOf(installation.value):plan.value?modeOf(plan.value):isK3d.value?'k3d':'native')
@@ -93,7 +100,7 @@ const joinHostSelection = computed({
 const showServerOptions = computed(() => !isK3d.value&&(props.action==='create'||joinMaster.value))
 const showAgentOptions = computed(() => !isK3d.value&&(props.action==='create'||!joinMaster.value))
 const customDatastore = computed(() => props.action==='create'&&form.profile==='custom'&&hasCustomK3sDatastore(form.server_options,form.overrides))
-const selectedHosts = computed(() => hosts.value.filter(host=>props.action==='join'?form.join_host_ids.includes(host.id):host.id===form.server_host_id||!isK3d.value&&form.agent_host_ids.includes(host.id)))
+const selectedHosts = computed(() => hosts.value.filter(host=>props.action==='join'?form.join_host_ids.includes(host.id):host.id===form.server_host_id||!isK3d.value&&form.worker_host_ids.includes(host.id)))
 const hasHostConfig = computed(() => plan.value?.hosts?.some(host=>Boolean(host.config)))
 const endpointPlaceholder = computed(() => k3sAutomaticEndpoint(hosts.value.find(host=>host.id===form.server_host_id),form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:'')||'https://192.168.1.10:6443')
 const canManageClusterResources = computed(() => auth.canAny(['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read']))
@@ -134,7 +141,7 @@ function input(): K3sPlanInput {
   const custom=form.profile==='custom'
   const installer=custom?Object.fromEntries(Object.entries(form.installer).filter(([key,value])=>!['version','channel'].includes(key)||String(value??'').trim())):{}
   return {
-    action:props.action,mode:'native',download_source:form.download_source,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.agent_host_ids)].filter(id=>id!==form.server_host_id),system_image_registry:systemImageRegistry.value}),name:form.name.trim(),
+    action:props.action,mode:'native',download_source:form.download_source,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.worker_host_ids)].filter(id=>id!==form.server_host_id),system_image_registry:systemImageRegistry.value}),name:form.name.trim(),
     profile:form.profile,server_options:custom&&showServerOptions.value?{...form.server_options}:{},agent_options:custom&&showAgentOptions.value?{...form.agent_options}:{},
     ...(props.action==='create'&&!customDatastore.value?{datastore:form.datastore}:{}),
     installer,overrides:custom?form.overrides:'',endpoint:form.endpoint.trim(),
@@ -308,7 +315,6 @@ watch(()=>form.mode,(mode,previous)=>{
   if(props.open){if(!catalog.value)void initialize();else void loadRecent()}
 },{flush:'sync'})
 watch(()=>form.server_host_id,(id,previous)=>{
-  form.agent_host_ids=form.agent_host_ids.filter(value=>value!==id)
   if(isK3d.value&&(!form.k3d.bind_address||form.k3d.bind_address===defaultK3dBindAddress(hosts.value.find(host=>host.id===previous))))form.k3d.bind_address=defaultK3dBindAddress(hosts.value.find(host=>host.id===id))
 })
 watch(()=>form.join_role,()=>{
@@ -358,7 +364,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
           <div class="form-columns">
             <a-form-item v-if="action==='join'" label="新增节点角色" required class="wide"><a-radio-group v-model:value="form.join_role" button-style="solid" aria-label="新增节点角色"><a-radio-button value="agent">工作节点（Worker）</a-radio-button><a-radio-button value="server">控制平面（Master）</a-radio-button></a-radio-group></a-form-item><a-form-item v-if="action==='create'" label="集群名称" required><a-input v-model:value="form.name" :maxlength="64" placeholder="例如：生产集群" /></a-form-item>
             <a-form-item v-if="!isK3d" :label="action==='create'?'API 地址（可选）':'API 地址'" :required="action==='join'" :class="{'wide':action==='join'}"><a-input v-model:value="form.endpoint" :placeholder="endpointPlaceholder" /><div class="field-help">{{ action==='create'?'留空使用控制平面主机地址和最终监听端口；可填写负载均衡或其他访问地址。':'EDO 和新节点都需要能访问此地址。' }}</div></a-form-item>
-            <a-form-item v-if="action==='create'" :label="isK3d?t('k8s.k3dHost'):'控制平面主机'" required><a-select v-model:value="form.server_host_id" :aria-label="isK3d?t('k8s.k3dHost'):'控制平面主机'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="isK3d?t('k8s.k3dHostPlaceholder'):'选择安装 K3s Server 的主机'" /></a-form-item>
+            <a-form-item v-if="action==='create'" :label="isK3d?t('k8s.k3dHost'):'控制平面主机'" required><a-select v-model:value="serverHostSelection" :aria-label="isK3d?t('k8s.k3dHost'):'控制平面主机'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="isK3d?t('k8s.k3dHostPlaceholder'):'选择安装 K3s Server 的主机'" /></a-form-item>
             <a-form-item v-if="action==='create'&&!isK3d" :label="t('k8s.workerHosts')"><a-select v-model:value="workerHostSelection" :aria-label="t('k8s.workerHosts')" mode="multiple" show-search option-filter-prop="label" :options="agentOptions" :placeholder="t('k8s.workerHostsPlaceholder')" /><div v-if="serverRunsAgent" class="field-help">{{ t('k8s.serverWorkerHint') }}</div></a-form-item><a-form-item v-else-if="action==='join'" :label="joinMaster?'控制平面主机（Master）':'工作节点主机（Worker）'" required><a-select v-model:value="joinHostSelection" :mode="joinMaster?undefined:'multiple'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="joinMaster?'选择加入控制平面的新主机':'选择加入工作节点的新主机'" /><div class="field-help">{{ joinMaster?'Master 每个计划仅加入 1 台，须等待当前节点就绪后逐台添加。':'Worker 每次最多选择 20 台新主机。' }}</div></a-form-item><a-form-item v-if="joinMaster" label="目标集群 Server Token" required class="wide"><a-input-password v-model:value="form.server_token" aria-label="目标集群 Server Token" :visibility-toggle="false" :maxlength="4096" autocomplete="off" placeholder="输入目标集群的 Server Token" /><div class="field-help">仅用于本次控制平面加入。切换角色或关闭窗口后清除，不用于工作节点加入。</div></a-form-item>
             <template v-if="isK3d"><a-form-item :label="t('k8s.k3dAgents')" required><a-input-number v-model:value="form.k3d.agents" :aria-label="t('k8s.k3dAgents')" :min="0" :max="8" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dApiPort')" required><a-input-number v-model:value="form.k3d.api_port" :aria-label="t('k8s.k3dApiPort')" :min="1024" :max="65535" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dBindAddress')" required class="wide"><a-input v-model:value="form.k3d.bind_address" :aria-label="t('k8s.k3dBindAddress')" :placeholder="t('k8s.k3dBindPlaceholder')" /><div class="field-help">{{ t('k8s.k3dBindHint') }}</div></a-form-item><a-form-item :label="t('k8s.k3dEndpoint')" class="wide"><a-input :value="k3dEndpoint" readonly :aria-label="t('k8s.k3dEndpoint')" /></a-form-item></template>
           </div>
