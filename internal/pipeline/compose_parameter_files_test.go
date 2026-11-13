@@ -16,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"edo/internal/config"
+	"edo/internal/configfile"
 	"edo/internal/credential"
 	"edo/internal/database"
 	"edo/internal/deployment"
@@ -67,6 +68,45 @@ func TestComposeParameterFilesStageReferencedFilesAndRespectPrecedence(t *testin
 	// 普通配置文件不会因为参与插值而自动注入每个容器。
 	if _, exists := prepared.variables["PRIVATE"]; exists {
 		t.Fatal("仓库 ENV 被错误提升为容器共享环境变量")
+	}
+}
+
+func TestComposeConfigurationEnvUsesOfficialSyntaxAndPipelinePrecedence(t *testing.T) {
+	s, prepared, ctx := newComposeParameterTest(t, nil)
+	content := "EDO_IMAGE_TAG=file-default\nPATH=/application/bin\nIMAGE=alpine:${EDO_IMAGE_TAG}\nMESSAGE='first\nsecond'\n"
+	prepared.node.Config.DeploymentParameters = `--env-file "${EDO_APP_CONFIG_PATH}/.env"`
+	prepared.configuration = &deployment.ConfigurationSet{FilesOnly: true, Files: map[string]string{".env": content}}
+	if err := s.prepareComposeParameterFiles(ctx, prepared); err != nil {
+		t.Fatal("Compose 文件中的保留变量或多行值被拒绝", err)
+	}
+	values := composeInterpolationValues(prepared)
+	if values["EDO_IMAGE_TAG"] != "3.22" || values["IMAGE"] != "alpine:3.22" || values["MESSAGE"] != "first\nsecond" || prepared.configuration.Files[".env"] != content {
+		t.Fatal("内置环境优先级、Compose 插值或原始正文发生变化")
+	}
+	if _, exists := prepared.variables["PATH"]; exists {
+		t.Fatal("配置文件被注入部署进程环境")
+	}
+	if os.Getenv("EDO_TEST_DOCKER_INTEGRATION") == "1" {
+		directory := filepath.Join(prepared.target.WorkingDirectory, "generated")
+		writes, err := configfile.WriteScript(directory, []string{".env"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		compose := filepath.Join(prepared.target.WorkingDirectory, "compose.yaml")
+		if err := os.WriteFile(compose, []byte("services:\n  api:\n    image: ${IMAGE}\n    environment:\n      MESSAGE: ${MESSAGE}\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command("sh", "-se")
+		command.Env = append(os.Environ(), "EDO_IMAGE_TAG=3.22", configfile.TransportKey(".env")+"="+content)
+		command.Stdin = strings.NewReader(writes + "\ndocker compose --env-file " + configfile.Quote(filepath.Join(directory, ".env")) + " -f " + configfile.Quote(compose) + " config --format json")
+		body, err := command.CombinedOutput()
+		if err != nil || !bytes.Contains(body, []byte("alpine:3.22")) || !bytes.Contains(body, []byte(`first\nsecond`)) {
+			t.Fatal("真实 Compose 无法使用生成的原始 ENV 文件及内置 Tag", err)
+		}
+		generated, err := os.ReadFile(filepath.Join(directory, ".env"))
+		if err != nil || string(generated) != content {
+			t.Fatal("生成文件的正文发生变化", err)
+		}
 	}
 }
 

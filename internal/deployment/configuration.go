@@ -3,7 +3,7 @@ package deployment
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"strings"
 
 	"edo/internal/configfile"
@@ -21,6 +21,13 @@ type ConfigurationSet struct {
 	FilesOnly  bool
 	EnvFiles   []string
 }
+
+type configurationReadError struct{ cause error }
+
+func (e *configurationReadError) Error() string {
+	return "部署配置不可用，请检查配置内容、适用范围和使用权限"
+}
+func (e *configurationReadError) Unwrap() error { return e.cause }
 
 func WithReleaseConfiguration(ctx context.Context, set *ConfigurationSet) context.Context {
 	return context.WithValue(ctx, releaseConfigurationKey{}, set)
@@ -112,7 +119,9 @@ func (s *Service) ResolveDeploymentConfiguration(ctx context.Context, record *mo
 			}
 		}
 	}
-	paths = append(paths, envFiles...)
+	if !set.FilesOnly {
+		paths = append(paths, envFiles...)
+	}
 	for _, name := range paths {
 		if _, selected := files[name]; !selected {
 			continue
@@ -133,7 +142,7 @@ func (s *Service) ResolveDeploymentConfiguration(ctx context.Context, record *mo
 			}
 		}
 		if parseErr != nil {
-			return nil, s.configurationError(record, "configuration_env_parse", parseErr)
+			return nil, s.configurationError(record, "configuration_env_parse", fmt.Errorf("配置文件 %s：%w", name, parseErr))
 		}
 		for key, value := range values {
 			set.Values[key] = value
@@ -158,7 +167,7 @@ func (s *Service) ResolveDeploymentConfiguration(ctx context.Context, record *mo
 }
 func (s *Service) configurationError(record *model.DeploymentRecord, operation string, err error) error {
 	s.logger.Error("读取部署配置失败", "operation", operation, "deployment_id", record.ID, "run_id", record.PipelineRunID, "node_id", record.WorkflowNodeID, "err", err)
-	return errors.New("部署配置不可用，请检查配置内容、适用范围和使用权限")
+	return &configurationReadError{cause: err}
 }
 func configurationPaths(set *ConfigurationSet) []string {
 	paths := make([]string, 0, len(set.Bindings))

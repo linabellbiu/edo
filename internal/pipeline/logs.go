@@ -145,7 +145,7 @@ func (s *Service) ListNodeRunLogs(ctx context.Context, runID, nodeID string, aft
 }
 
 func (s *Service) appendRunLog(ctx context.Context, runID, stage, level, message string) {
-	if node, ok := ctx.Value(pipelineNodeLogKey{}).(pipelineNodeLog); ok {
+	if node, ok := ctx.Value(pipelineNodeLogKey{}).(pipelineNodeLog); ok && node.name != "" {
 		message = "[" + node.name + "] " + message
 	}
 	message = normalizeRunLogMessage(message)

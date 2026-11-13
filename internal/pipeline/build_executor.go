@@ -25,12 +25,13 @@ import (
 )
 
 type buildExecutionContext struct {
-	run         model.PipelineRun
-	node        model.WorkflowNode
-	snapshot    workflowSnapshot
-	application model.Application
-	component   model.PipelineRunRepository
-	plan        workflowBuildPlanSnapshot
+	run                  model.PipelineRun
+	node                 model.WorkflowNode
+	snapshot             workflowSnapshot
+	application          model.Application
+	component            model.PipelineRunRepository
+	plan                 workflowBuildPlanSnapshot
+	diagnosticRedactions []string
 }
 
 type scriptContainerRunner interface {
@@ -75,6 +76,11 @@ func (s *Service) executeBuildTask(ctx context.Context, payload BuildTaskPayload
 			"构建任务配置不完整，请检查流水线和构建方案", err)
 	}
 	ctx = withPipelineNodeLog(ctx, prepared.node.ID, prepared.node.Name)
+	ctx = withExecutionDiagnosticRedactions(ctx, func() []string {
+		values := append([]string{}, prepared.diagnosticRedactions...)
+		values = append(values, sensitiveVariableValues(prepared.node.Config.EnvironmentVariables)...)
+		return append(values, sensitiveVariableValues(effectiveDockerBuildArgs(prepared.node.Config, prepared.plan.BuildArgs))...)
+	})
 	runningState := failureStateForRun(prepared.run)
 	if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
 		return s.finishBuildTaskFailure(ctx, runningState, false, "流水线执行授权已失效，请检查当前项目角色权限", err)
@@ -510,6 +516,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		if variableErr != nil {
 			return nil, variableErr
 		}
+		prepared.diagnosticRedactions = append(prepared.diagnosticRedactions, variableRedactions...)
 		buildSecrets := maps.Clone(files)
 		if buildSecrets == nil {
 			buildSecrets = map[string]string{}
@@ -542,6 +549,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		if err != nil {
 			return nil, err
 		}
+		prepared.diagnosticRedactions = append(prepared.diagnosticRedactions, composeRegistryLogRedactions(auth)...)
 		imageValue := image
 		if !prepared.snapshot.ImageTagIncludesName {
 			imageValue, err = executionNodeImageTag(execution)
@@ -711,6 +719,8 @@ func (s *Service) executePipelineShell(
 	if variableErr != nil {
 		return dockerengine.ScriptContainerResult{}, variableErr
 	}
+	prepared.diagnosticRedactions = append(prepared.diagnosticRedactions, redactions...)
+	prepared.diagnosticRedactions = append(prepared.diagnosticRedactions, sensitiveVariableValues(injected)...)
 	environment = maps.Clone(environment)
 	if environment == nil {
 		environment = map[string]string{}

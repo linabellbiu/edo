@@ -134,9 +134,12 @@ func TestPipelineMarksRunFailedWhenExistingReleaseAlreadyFailed(t *testing.T) {
 	if err := db.Where("pipeline_run_id = ?", run.ID).Order("id ASC").Find(&logs).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(logs) != 2 || logs[0].Stage != "deploy" || logs[0].Level != "error" || logs[0].Message != "发布已经失败" ||
+	if len(logs) != 3 || logs[0].Stage != "deploy" || logs[0].Level != "error" || logs[0].Message != "发布已经失败" ||
 		logs[1].Stage != "failed" || logs[1].Level != "error" || logs[1].Message != "发布已经失败" {
 		t.Fatalf("部署失败原因没有同时进入部署控制台和最终状态日志: %+v", logs)
+	}
+	if logs[2].Level != "error" || logs[2].Message != "错误详情："+cause.Error() {
+		t.Fatal("底层发布错误没有进入诊断日志", logs[2])
 	}
 }
 
@@ -185,6 +188,10 @@ func TestFailExecutionDoesNotOverwriteNewTaskState(t *testing.T) {
 	}
 	if component.Status != model.PipelineRunRepositoryReady {
 		t.Fatalf("CAS 未命中时仍错误更新仓库状态: %+v", component)
+	}
+	var logCount int64
+	if err := db.Model(&model.PipelineRunLog{}).Where("pipeline_run_id = ?", run.ID).Count(&logCount).Error; err != nil || logCount != 0 {
+		t.Fatal("过期任务增加了失败或诊断日志", err)
 	}
 }
 

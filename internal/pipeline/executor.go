@@ -94,6 +94,7 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 			"流水线执行配置不完整，请检查任务、构建方案和部署方案", err)
 	}
 	ctx = withPipelineNodeLog(ctx, prepared.node.ID, prepared.node.Name)
+	ctx = withExecutionDiagnosticRedactions(ctx, func() []string { return composeExecutionLogRedactions(prepared) })
 	failureState := failureStateForRun(prepared.run)
 	if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
 		return s.failDeploymentExecution(ctx, failureState, "流水线执行授权已失效，请检查当前项目角色权限", err)
@@ -116,6 +117,7 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 	if variableErr != nil || (len(files) > 0 && prepared.deploymentPlan.Kind != model.DeploymentPlanComposeStack && prepared.deploymentPlan.Kind != model.DeploymentPlanCompose) {
 		return s.failDeploymentExecution(ctx, failureState, "部署变量无法读取，请检查变量配置", errors.Join(variableErr, cicd.ErrVariableUnavailable))
 	}
+	prepared.variables, prepared.variableRedactions = values, redactions
 	if len(prepared.snapshot.ConfigurationBindings[prepared.node.ID]) > 0 {
 		config, configErr := s.deployments.ResolveDeploymentConfiguration(ctx, &model.DeploymentRecord{ProjectID: prepared.run.ProjectID, ApplicationID: prepared.run.ApplicationID, EnvironmentID: prepared.target.EnvironmentID, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, DeploymentPlanID: prepared.deploymentPlan.ID, WorkingDirectory: prepared.target.WorkingDirectory}, false)
 		if configErr != nil {
@@ -185,6 +187,7 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		if err != nil {
 			return s.failDeploymentExecution(ctx, failureState, "读取镜像仓库认证失败，请检查构建方案使用的镜像仓库", err)
 		}
+		prepared.variableRedactions = append(prepared.variableRedactions, composeRegistryLogRedactions(request.RegistryAuth)...)
 	}
 	var output *executionLogStreams
 	if prepared.deploymentPlan.Kind == model.DeploymentPlanCompose {
@@ -898,6 +901,7 @@ func (s *Service) failExecutionWithStageLog(
 		s.appendRunLog(updateContext, expected.runID, logStage, "error", message)
 	}
 	s.appendRunLog(updateContext, expected.runID, "failed", "error", message)
+	s.appendExecutionFailureDiagnostic(updateContext, expected, message, cause)
 	s.notifyFailedWorkflowNode(updateContext, expected.runID, expected.nodeID, message)
 	return cause
 }

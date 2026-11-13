@@ -79,6 +79,7 @@ func (s *Service) finishNodeFailure(ctx context.Context, expected executionFailu
 		return ErrPipelineExecutionState
 	}
 	s.appendRunLog(updateCtx, expected.runID, "failed", "error", message)
+	s.appendExecutionFailureDiagnostic(updateCtx, expected, message, cause)
 	s.notifyFailedWorkflowNode(updateCtx, expected.runID, expected.nodeID, message)
 	s.realtime.Changed(updateCtx, "pipeline_runs", expected.runID)
 	return &buildTaskExecutionError{cause: cause, retryable: false}

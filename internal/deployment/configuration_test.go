@@ -16,6 +16,59 @@ import (
 	"edo/internal/secret"
 )
 
+func TestConfigurationFilesOnlyPreservesEnvWithoutSystemInjection(t *testing.T) {
+	f := newContainerControlFixture(t)
+	content := "# 部署配置\nIMAGE_NAMESPACE=demo\nEDO_IMAGE_TAG=file-default\nPATH=/application/bin\nMESSAGE=\"hello ${EDO_IMAGE_TAG}\"\nMULTILINE='first\nsecond'\n"
+	attachConfigurationFixture(t, f, cicd.VariableInput{Name: ".env", Kind: "config_env", Usage: "deploy", Value: &content, IsActive: true})
+	var run model.PipelineRun
+	if err := f.db.First(&run, "uuid = ?", f.record.PipelineRunID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	var stages []model.WorkflowStage
+	if err := json.Unmarshal(snapshot["stages"], &stages); err != nil {
+		t.Fatal(err)
+	}
+	stages[0].Tasks[0].Config.DeploymentInputVersion = 1
+	snapshot["stages"], _ = json.Marshal(stages)
+	encoded, _ := json.Marshal(snapshot)
+	if err := f.db.Model(&run).Update("workflow_snapshot", string(encoded)).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, latest := range []bool{false, true} {
+		set, err := f.service.ResolveDeploymentConfiguration(f.ctx, &f.record, latest)
+		if err != nil {
+			t.Fatal("配置文件被当作环境注入校验", err)
+		}
+		if !set.FilesOnly || len(set.Values) != 0 || set.Files["config/.prod.env"] != content || len(set.EnvFiles) != 1 {
+			t.Fatal("配置正文、参数或只生成文件的语义发生变化")
+		}
+		if !slices.Contains(set.Redactions, content) || !slices.Contains(set.Redactions, "EDO_IMAGE_TAG=file-default") {
+			t.Fatal("文件正文未纳入脱敏")
+		}
+	}
+}
+
+func TestConfigurationLegacyInjectionKeepsReservedNamesAndErrorCause(t *testing.T) {
+	f := newContainerControlFixture(t)
+	content := "# 配置\nIMAGE_NAMESPACE=demo\nEDO_IMAGE_TAG=private-configuration-canary\n"
+	attachConfigurationFixture(t, f, cicd.VariableInput{Name: ".env", Kind: "config_env", Usage: "deploy", Value: &content, IsActive: true})
+	set, err := f.service.ResolveDeploymentConfiguration(f.ctx, &f.record, false)
+	if err == nil || set != nil {
+		t.Fatal("旧环境注入接受了保留变量")
+	}
+	var diagnostic *configurationReadError
+	if !errors.As(err, &diagnostic) || errors.Unwrap(err) == nil || !strings.Contains(errors.Unwrap(err).Error(), "config/.prod.env") || !strings.Contains(errors.Unwrap(err).Error(), "第 3 行") {
+		t.Fatal("错误链丢失具体文件和行号", err)
+	}
+	if strings.Contains(err.Error(), "第 3 行") || strings.Contains(err.Error(), "private-configuration-canary") || strings.Contains(errors.Unwrap(err).Error(), "private-configuration-canary") {
+		t.Fatal("普通接口或诊断包含配置正文")
+	}
+}
+
 func attachConfigurationFixture(t *testing.T, f *containerControlFixture, custom ...cicd.VariableInput) (*cicd.VariableView, cicd.VariableInput) {
 	t.Helper()
 	manager, err := secret.New(base64.StdEncoding.EncodeToString([]byte(strings.Repeat("c", 32))))
