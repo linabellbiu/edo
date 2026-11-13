@@ -50,6 +50,9 @@ type helperInstallFixture struct {
 	allowed                            bool
 	readonly, symlink, corrupt, revoke bool
 	events                             []DockerPreparation
+	disconnects                        int
+	disconnectAfterCopy                bool
+	revokeOnDisconnect                 bool
 }
 
 func newHelperInstallFixture(t *testing.T, architecture string) *helperInstallFixture {
@@ -104,6 +107,19 @@ func newHelperInstallFixture(t *testing.T, architecture string) *helperInstallFi
 			}
 		case http.MethodPut:
 			f.copies++
+			if f.disconnects > 0 {
+				f.disconnects--
+				if f.revokeOnDisconnect {
+					f.allowed = false
+				}
+				connection, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				_ = connection.Close()
+				return
+			}
 			if f.readonly {
 				http.Error(w, "read-only filesystem", 403)
 				return
@@ -133,6 +149,14 @@ func newHelperInstallFixture(t *testing.T, architecture string) *helperInstallFi
 			if f.revoke {
 				f.allowed = false
 			}
+			if f.disconnectAfterCopy {
+				connection, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				_ = connection.Close()
+			}
 		default:
 			t.Error("准备阶段出现非预期操作", r.Method, r.URL.Path)
 			http.Error(w, "unexpected", 500)
@@ -160,6 +184,12 @@ func TestDockerHelperReusesMatchingPreinstalledToolOnReadOnlyTarget(t *testing.T
 
 func (f *helperInstallFixture) prepare() (string, error) {
 	return f.service.prepareDockerHelper(f.ctx, f.api, strings.Repeat("a", 64), "sha256:test", func(ctx context.Context) error { return executionAuthorized(ctx, true) })
+}
+
+func (f *helperInstallFixture) copyCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.copies
 }
 
 func TestDockerHelperAutomaticallyInstallsMatchingArchitectureAndReusesDigest(t *testing.T) {
@@ -263,5 +293,85 @@ func TestDockerHelperUnbundledPathStillRequiresAuthorization(t *testing.T) {
 	f.ctx = t.Context()
 	if _, err := f.prepare(); !errors.Is(err, ErrExecAuthorization) || f.copies != 0 {
 		t.Fatal("源码运行路径绕过了 Exec 授权", err)
+	}
+}
+
+func TestDockerHelperRecoversSingleUploadDisconnectWithFreshReader(t *testing.T) {
+	f := newHelperInstallFixture(t, "arm64")
+	f.disconnects = 1
+	file, err := f.prepare()
+	if err != nil || f.copies != 2 || !bytes.Equal(f.files[file], helperFixtureBinary("arm64")) {
+		t.Fatal("传输中断后未能完整重传同一工具", err)
+	}
+	if len(f.events) != 1 || !f.events[0].Succeeded || f.events[0].Attempts != 2 {
+		t.Fatal("未记录真实传输次数和安装结果", f.events)
+	}
+}
+
+func TestDockerHelperChecksCompletedUploadBeforeRepeatingWrite(t *testing.T) {
+	f := newHelperInstallFixture(t, "arm64")
+	f.disconnectAfterCopy = true
+	file, err := f.prepare()
+	if err != nil || f.copies != 1 || !bytes.Equal(f.files[file], helperFixtureBinary("arm64")) || len(f.events) != 1 || !f.events[0].Succeeded {
+		t.Fatal("已完整写入的工具在断连后被重复覆盖", err)
+	}
+}
+
+func TestDockerHelperUploadRetryIsBoundedAndCannotBypassRevocation(t *testing.T) {
+	for _, revoked := range []bool{false, true} {
+		f := newHelperInstallFixture(t, "arm64")
+		f.disconnects = 3
+		f.revokeOnDisconnect = revoked
+		_, err := f.prepare()
+		want := 2
+		if revoked {
+			want = 1
+			if !errors.Is(err, ErrExecAuthorization) {
+				t.Fatal("中断期间撤权未立即阻止重传", err)
+			}
+		} else if !dockerHelperTransportInterrupted(err) {
+			t.Fatal("持续中断没有保留网络失败", err)
+		}
+		if err == nil || f.copyCount() != want || len(f.events) != 1 || f.events[0].Succeeded || f.events[0].Attempts != want {
+			t.Fatal("重传无界或错误报告安装成功", f.copyCount(), f.events, err)
+		}
+	}
+	f := newHelperInstallFixture(t, "arm64")
+	f.readonly = true
+	_, err := f.prepare()
+	if f.copyCount() != 1 || !errors.Is(err, ErrDockerHelperWriteDenied) {
+		t.Fatal("写入拒绝被盲目重传或未正确分类", f.copyCount(), err)
+	}
+}
+
+func TestDockerHelperDoesNotRetryChangedContainerIdentity(t *testing.T) {
+	f := newHelperInstallFixture(t, "arm64")
+	f.disconnects = 1
+	_, err := f.service.prepareDockerHelper(f.ctx, f.api, strings.Repeat("a", 64), "image", func(ctx context.Context) error {
+		if err := executionAuthorized(ctx, true); err != nil {
+			return err
+		}
+		if f.copyCount() > 0 {
+			return ErrTargetNotReady
+		}
+		return nil
+	})
+	if !errors.Is(err, ErrTargetNotReady) || f.copyCount() != 1 {
+		t.Fatal("容器身份变化后仍然重传", err)
+	}
+}
+
+func TestDockerHelperErrorKeepsTransportFailureDistinctFromWriteDenied(t *testing.T) {
+	s := NewService(nil, nil, time.Hour)
+	for _, sample := range []struct{ cause, want error }{
+		{io.EOF, ErrDockerHelperConnection},
+		{context.DeadlineExceeded, ErrDockerHelperTimeout},
+		{ErrDockerHelperWriteDenied, ErrDockerHelperWriteDenied},
+		{errors.Join(ErrDockerHelperWriteDenied, io.EOF), ErrDockerHelperWriteDenied},
+		{errors.New("随包工具校验失败"), ErrDockerHelperUnavailable},
+	} {
+		if got := s.dockerPreparationError(t.Context(), "fixture", sample.cause); got != sample.want {
+			t.Fatal("准备失败分类错误", got)
+		}
 	}
 }

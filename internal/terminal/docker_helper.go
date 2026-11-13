@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
@@ -31,6 +32,7 @@ type DockerPreparation struct {
 	Path         string
 	Digest       string
 	Succeeded    bool
+	Attempts     int
 }
 
 // 准备工具与 Exec 使用同一个当前权限检查，不能从查看或日志权限推导。
@@ -218,8 +220,37 @@ func (s *Service) prepareDockerHelper(ctx context.Context, api *client.Client, i
 			observer(event)
 		}
 	}()
-	if _, err := api.CopyToContainer(ctx, id, client.CopyToContainerOptions{DestinationPath: "/", Content: &buffer}); err != nil {
-		return "", err
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := check(ctx); err != nil {
+			return "", err
+		}
+		event.Attempts = attempt
+		// 上传使用新连接，避免复用已被 SSH/转发端关闭的空闲字节流。
+		_ = api.Close()
+		_, err := api.CopyToContainer(ctx, id, client.CopyToContainerOptions{DestinationPath: "/", Content: bytes.NewReader(buffer.Bytes())})
+		if err == nil {
+			break
+		}
+		if errdefs.IsPermissionDenied(err) {
+			return "", errors.Join(ErrDockerHelperWriteDenied, err)
+		}
+		if ctx.Err() != nil || !dockerHelperTransportInterrupted(err) || attempt == 2 {
+			return "", err
+		}
+		// 仅重传同一摘要的工具；先重新核实授权、容器身份及可能已完成的写入。
+		slog.WarnContext(ctx, "上传终端工具时连接中断，重新核验后最多重传一次", "operation", "terminal_helper_install_retry", "container_id", id, "attempt", attempt, "err", err)
+		// 官方 Client.Close 只清理空闲连接，后续请求会建立新连接。
+		_ = api.Close()
+		if err := check(ctx); err != nil {
+			return "", err
+		}
+		matches, err := dockerHelperMatches(ctx, api, id, file, digest)
+		if err != nil {
+			return "", err
+		}
+		if matches {
+			break
+		}
 	}
 	if err := check(ctx); err != nil {
 		return "", err
@@ -229,14 +260,27 @@ func (s *Service) prepareDockerHelper(ctx context.Context, api *client.Client, i
 		return "", errors.Join(err, errors.New("安装后的终端工具校验失败"))
 	}
 	event.Succeeded = true
-	slog.InfoContext(ctx, "已自动准备容器终端工具", "operation", "terminal_helper_install", "container_id", id, "architecture", image.Architecture, "digest", digest)
+	slog.InfoContext(ctx, "已自动准备容器终端工具", "operation", "terminal_helper_install", "container_id", id, "architecture", image.Architecture, "digest", digest, "attempts", event.Attempts)
 	return file, nil
+}
+
+func dockerHelperTransportInterrupted(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
 }
 
 func (s *Service) dockerPreparationError(ctx context.Context, id string, err error) error {
 	slog.ErrorContext(ctx, "自动准备容器终端工具失败", "operation", "terminal_helper_install", "container_id", id, "err", err)
 	if errors.Is(err, ErrExecAuthorization) || errors.Is(err, ErrTargetNotReady) {
 		return err
+	}
+	if errors.Is(err, ErrDockerHelperWriteDenied) {
+		return ErrDockerHelperWriteDenied
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrDockerHelperTimeout
+	}
+	if dockerHelperTransportInterrupted(err) {
+		return ErrDockerHelperConnection
 	}
 	return ErrDockerHelperUnavailable
 }

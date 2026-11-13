@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
+
+	"edo/internal/dockerengine"
 )
 
 func TestDockerHelperRealInstallationAndControlledRelease(t *testing.T) {
@@ -59,6 +61,14 @@ func TestDockerHelperRealInstallationAndControlledRelease(t *testing.T) {
 				}
 			})
 			service, endpoint := dockerSDKService(t, host)
+			if os.Getenv("EDO_TEST_TERMINAL_SSH_PROXY") == "1" {
+				address, fingerprint := terminalDockerSSHProxy(t, host)
+				remote, err := service.docker.Create(t.Context(), "fixture", dockerengine.Input{Name: "终端 SSH 隔离目标", Host: "ssh://fixture@" + address, SSH: &dockerengine.SSHBundle{Password: "isolated-test"}, SSHHostKeyFingerprint: fingerprint})
+				if err != nil {
+					t.Fatal("创建隔离 SSH 目标失败", err)
+				}
+				endpoint = remote.ID
+			}
 			service.helperDirectory = directory
 			ctx, cancel := context.WithTimeout(WithExecutionAuthorization(t.Context(), func() bool { return true }), 40*time.Second)
 			defer cancel()
