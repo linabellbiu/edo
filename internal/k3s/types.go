@@ -76,6 +76,7 @@ type Input struct {
 	DownloadSource      string         `json:"download_source,omitempty"`
 	SystemImageRegistry *string        `json:"system_image_registry,omitempty"`
 	Profile             string         `json:"profile"`
+	Datastore           string         `json:"datastore,omitempty"`
 	Name                string         `json:"name"`
 	ClusterID           string         `json:"cluster_id,omitempty"`
 	ServerHostID        string         `json:"server_host_id,omitempty"`

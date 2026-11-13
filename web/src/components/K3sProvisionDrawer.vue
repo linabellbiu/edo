@@ -12,6 +12,7 @@ import {
 import K3sOptionFields from '@/components/K3sOptionFields.vue'
 import K3sPreflightReportView from '@/components/K3sPreflightReport.vue'
 import K3sInstallationProgress from '@/components/K3sInstallationProgress.vue'
+import { hasCustomK3sDatastore } from '@/utils/k3sDatastore'
 import { useAuthStore } from '@/stores/auth'
 import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sHostRoleLabel, k3sInstallationLabel, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, k3sServerAgentEnabled, validateK3sOverrides } from '@/utils/k3sProvision'
 import { formatDateTime } from '@/utils/time'
@@ -38,6 +39,7 @@ const checking=ref(false),checkedInput=ref(''),checkedContext=ref('')
 const preflightView=ref<{focus:()=>void}>(),errorRegion=ref<HTMLElement>()
 const emptyForm = () => ({
   mode:'native' as K3sInstallMode,k3d:{agents:1,api_port:16443,bind_address:''} as K3dConfig,
+  datastore:'sqlite' as 'sqlite'|'etcd',
   download_source:'official_cn' as K3sDownloadSource,system_image_source:'community_cn' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
   name:'',server_host_id:'',agent_host_ids:[] as string[],profile:'default' as 'default'|'custom',endpoint:'',
   join_role:'agent' as K3sJoinRole,join_host_ids:[] as string[],server_token:'',
@@ -90,6 +92,7 @@ const joinHostSelection = computed({
 })
 const showServerOptions = computed(() => !isK3d.value&&(props.action==='create'||joinMaster.value))
 const showAgentOptions = computed(() => !isK3d.value&&(props.action==='create'||!joinMaster.value))
+const customDatastore = computed(() => props.action==='create'&&form.profile==='custom'&&hasCustomK3sDatastore(form.server_options,form.overrides))
 const selectedHosts = computed(() => hosts.value.filter(host=>props.action==='join'?form.join_host_ids.includes(host.id):host.id===form.server_host_id||!isK3d.value&&form.agent_host_ids.includes(host.id)))
 const hasHostConfig = computed(() => plan.value?.hosts?.some(host=>Boolean(host.config)))
 const endpointPlaceholder = computed(() => k3sAutomaticEndpoint(hosts.value.find(host=>host.id===form.server_host_id),form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:'')||'https://192.168.1.10:6443')
@@ -110,6 +113,7 @@ const currentStep = computed(() => installation.value?3:plan.value?2:preflight.v
 const title = computed(() => props.action==='create'?t('k8s.createClusterTitle'):'添加 K3s 节点')
 const installerOptions = computed(() => catalog.value?.installer.filter(option=>!['INSTALL_K3S_VERSION','INSTALL_K3S_CHANNEL'].includes(option.name))??[])
 const serverOptionChoices = computed(() => catalog.value?.server.map(option=>{
+  if(props.action==='create'&&option.name==='cluster-init')return {...option,managed:true,description:t('k8s.datastoreManaged')}
   if(props.action==='create'&&option.name==='system-default-registry')return {...option,managed:true,description:t('k8s.systemImageManaged')}
   if(!joinMaster.value)return option
   if(k3sMasterRawArgumentOptions.some(name=>name===option.name))return {...option,unsupported_reason:k3sMasterRawArgumentReason}
@@ -132,6 +136,7 @@ function input(): K3sPlanInput {
   return {
     action:props.action,mode:'native',download_source:form.download_source,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.agent_host_ids)].filter(id=>id!==form.server_host_id),system_image_registry:systemImageRegistry.value}),name:form.name.trim(),
     profile:form.profile,server_options:custom&&showServerOptions.value?{...form.server_options}:{},agent_options:custom&&showAgentOptions.value?{...form.agent_options}:{},
+    ...(props.action==='create'&&!customDatastore.value?{datastore:form.datastore}:{}),
     installer,overrides:custom?form.overrides:'',endpoint:form.endpoint.trim(),
   }
 }
@@ -372,6 +377,11 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
             <div v-if="action==='create'&&form.download_source==='official_cn'&&form.system_image_source==='official'" class="field-help source-suggestion wide">{{ t('k8s.sourceIndependentHint') }}</div>
           </div>
           <a-form-item label="安装方式"><a-radio-group v-model:value="form.profile" button-style="solid"><a-radio-button value="default">默认安装</a-radio-button><a-radio-button value="custom">自定义安装</a-radio-button></a-radio-group></a-form-item>
+          <a-form-item v-if="action==='create'" :label="t('k8s.datastoreType')">
+            <a-input v-if="customDatastore" :value="t('k8s.datastoreCustom')" :aria-label="t('k8s.datastoreType')" readonly />
+            <a-radio-group v-else v-model:value="form.datastore" role="radiogroup" :aria-label="t('k8s.datastoreType')" button-style="solid"><a-radio-button value="sqlite">SQLite</a-radio-button><a-radio-button value="etcd">{{ t('k8s.datastoreEtcd') }}</a-radio-button></a-radio-group>
+            <div class="field-help"><div>{{ t('k8s.datastoreSqliteHint') }}</div><div>{{ t('k8s.datastoreEtcdHint') }}</div><div v-if="customDatastore">{{ t('k8s.datastoreCustomHint') }}</div></div>
+          </a-form-item>
           <div v-if="form.profile==='default'" class="default-install"><Check :size="17" /><div><strong>使用 K3s 默认配置</strong><p>{{ action==='create'?'安装控制平面及所选工作节点，完成后自动接入集群并关联主机。':joinMaster?'在所选主机添加控制平面，加入现有集群并继承已核对的关键配置。':'在所选主机安装工作节点，加入当前集群并关联主机。' }}</p><p>{{ t('k8s.nativeRuntimeHint') }}</p><small v-if="catalog">安装版本：{{ defaultVersion }}{{ action==='join'?'（跟随目标集群）':'' }}</small></div></div>
           <template v-else-if="catalog">
             <div class="catalog-caption"><strong>K3s 安装选项</strong><span>参数基于 {{ catalog.version }} · {{ catalog.catalog_version }}</span></div>

@@ -8,6 +8,7 @@ import {loadFrontend,componentHarness} from './acceptanceHarness.mjs'
 
 const helpers=loadFrontend('../src/utils/k3sProvision.ts',{yaml})
 const k3dHelpers=loadFrontend('../src/utils/k3dProvision.ts')
+const datastoreHelpers=loadFrontend('../src/utils/k3sDatastore.ts',{yaml})
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
 const catalog={version:'v1.37.1+k3s1',default_version:'v1.37.1+k3s1',catalog_version:'2026-10-26',sources:['https://docs.k3s.io/cli/server'],server:[],agent:[],installer:[]}
@@ -43,7 +44,7 @@ function harness({action='create',codes=permissions,api={},assumeDetected=true}=
     ...api,
   }
   const ctx=componentHarness('../src/components/K3sProvisionDrawer.vue',{
-    codes,props,modules:{vue:{...vue,onMounted:fn=>mounts.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/k3s':methods,'@/utils/k3sProvision':helpers,'@/utils/k3dProvision':k3dHelpers,'@/api/infrastructure':{listHosts:async()=>{requests.push({method:'hosts',project:storage.project});return props.hosts}},'@/utils/time':{formatDateTime:String},'@/stores/auth':{useAuthStore:()=>auth}},
+    codes,props,modules:{vue:{...vue,onMounted:fn=>mounts.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/k3s':methods,'@/utils/k3sProvision':helpers,'@/utils/k3sDatastore':datastoreHelpers,'@/utils/k3dProvision':k3dHelpers,'@/api/infrastructure':{listHosts:async()=>{requests.push({method:'hosts',project:storage.project});return props.hosts}},'@/utils/time':{formatDateTime:String},'@/stores/auth':{useAuthStore:()=>auth}},
     globals:{window:{addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:(name,fn)=>{if(listeners.get(name)===fn)listeners.delete(name)}},localStorage:{getItem:()=>storage.project},setTimeout:(fn,delay)=>{fn.delay=delay;timers.push(fn);return timers.length},clearTimeout(){},setInterval(){return 1},clearInterval(){}},
   })
   mounts.forEach(fn=>fn())
@@ -1012,4 +1013,51 @@ test('上下文保持不变时安装完成仍选中新集群',async()=>{
       else assert.equal(ctx.state.cluster.value,'new-cluster')
     }finally{ctx.stop()}
   }
+})
+
+test('数据库选择位于安装方式下方，默认SQLite，两种安装方式均传递etcd且使检测失效',async()=>{
+  const ctx=harness({assumeDetected:false})
+  try{
+    await ctx.open();ctx.ready()
+    assert.equal(ctx.state.form.datastore,'sqlite')
+    assert.equal(ctx.state.input().datastore,'sqlite')
+    await ctx.state.checkPreflight();assert.equal(ctx.state.canPreview.value,true)
+    ctx.state.form.datastore='etcd';await settle()
+    assert.equal(ctx.state.preflight.value,undefined);assert.equal(ctx.state.canPreview.value,false)
+    for(const profile of ['default','custom']){
+      ctx.state.form.profile=profile;await settle();await ctx.state.checkPreflight();await ctx.state.preview()
+      const payload=ctx.requests.filter(item=>item.method==='preview').at(-1).body
+      assert.equal(payload.profile,profile);assert.equal(payload.datastore,'etcd')
+      ctx.state.plan.value=undefined
+    }
+    ctx.state.form.mode='k3d';await settle();assert.equal(ctx.state.input().datastore,undefined)
+    ctx.state.form.mode='native';await settle();assert.equal(ctx.state.form.datastore,'etcd')
+    const {descriptor}=parse(readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8'))
+    const template=descriptor.template.content
+    assert.ok(template.indexOf("t('k8s.datastoreType')")>template.indexOf('label="安装方式"'))
+    assert.ok(template.indexOf("t('k8s.datastoreType')")<template.indexOf("form.profile==='default'"))
+    const {kubernetesZh:zh}=loadFrontend('../src/locales/kubernetes.ts')
+    assert.match(zh.datastoreSqliteHint,/多个工作节点.*不支持多控制平面/)
+    assert.match(zh.datastoreEtcdHint,/3 或 5.*单节点仍不具备高可用/)
+  }finally{ctx.stop()}
+})
+
+test('高级数据库连接按YAML优先级回显，默认安装忽略隐藏草稿，加入节点不提交类型',async()=>{
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.ready();ctx.state.form.profile='custom'
+    ctx.state.form.server_options={'datastore-endpoint':'postgres://db.invalid/k3s'};await settle()
+    assert.equal(ctx.state.customDatastore.value,true);assert.equal(ctx.state.input().datastore,undefined)
+    ctx.state.form.overrides='server:\n  datastore-endpoint: null';await settle()
+    assert.equal(ctx.state.customDatastore.value,false);assert.equal(ctx.state.input().datastore,'sqlite')
+    ctx.state.form.overrides='server:\n  datastore-endpoint: mysql://db.invalid/k3s';await settle()
+    assert.equal(ctx.state.customDatastore.value,true)
+    ctx.state.form.profile='default';await settle()
+    assert.equal(ctx.state.customDatastore.value,false);assert.equal(ctx.state.input().datastore,'sqlite')
+    ctx.state.form.profile='custom';await settle();assert.equal(ctx.state.customDatastore.value,true)
+    ctx.props.open=false;await settle();ctx.props.open=true;await settle()
+    assert.equal(ctx.state.form.datastore,'sqlite')
+  }finally{ctx.stop()}
+  const join=harness({action:'join'})
+  try{await join.open();join.ready();assert.equal(join.state.input().datastore,undefined)}finally{join.stop()}
 })

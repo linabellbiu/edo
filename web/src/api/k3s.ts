@@ -50,6 +50,7 @@ export interface K3sPlanInput {
   join_host_ids?: string[]
   server_token?: string
   profile: 'default' | 'custom'
+  datastore?: 'sqlite' | 'etcd'
   server_options?: Record<string, unknown>
   agent_options?: Record<string, unknown>
   installer?: Record<string, unknown>

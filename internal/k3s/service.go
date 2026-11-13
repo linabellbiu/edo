@@ -263,6 +263,9 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 	if input.Mode == "" {
 		input.Mode = "native"
 	}
+	if err := validateDatastoreSelection(input); err != nil {
+		return input, nil, nil, nil, nil, err
+	}
 	if input.Mode == "k3d" {
 		return s.normalizeK3d(ctx, input)
 	}
@@ -323,6 +326,9 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 	input.ServerOptions, err = ValidateAndMergeOptions("server", input.ServerOptions, serverOverride)
 	if err != nil {
 		return input, nil, nil, nil, nil, &ValidationError{Message: err.Error()}
+	}
+	if err := applyDatastore(&input); err != nil {
+		return input, nil, nil, nil, nil, err
 	}
 	input.AgentOptions, err = ValidateAndMergeOptions("agent", input.AgentOptions, agentOverride)
 	if err != nil {
