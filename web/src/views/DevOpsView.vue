@@ -2194,7 +2194,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
       </div>
       <ResourceRowActions v-else-if="column.key==='actions'" :more="canUpdate">
         <a-button v-if="canExecute" size="small" :loading="checkingApplicationIDs[card.application.id]" :disabled="card.sync.live" @click="checkApplicationUpdates(card.application)">{{ t('applicationCard.checkUpdates') }}</a-button>
-        <template #more><a-menu-item v-if="canUpdate" @click="edit(card.application)">{{ t('applicationCard.configure') }}</a-menu-item><a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(card.application)"><Power :size="14"/>{{ t(card.application.is_active?'delivery.disable':'delivery.enable') }}</a-menu-item></template>
+        <template #more><a-menu-item v-if="canUpdate" @click="edit(card.application)">{{ t('applicationCard.modify') }}</a-menu-item><a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(card.application)"><Power :size="14"/>{{ t(card.application.is_active?'delivery.disable':'delivery.enable') }}</a-menu-item></template>
       </ResourceRowActions>
     </template>
   </a-table>

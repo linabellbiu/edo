@@ -168,7 +168,7 @@ export const messages = {
     applicationCard: {
       autoRefresh: '自动更新', active: '已启用', inactive: '已停用', noDescription: '暂无应用说明', currentPipeline: '当前流水线', latestRun: '最近运行',
       currentNode: '当前任务', repository: '代码仓库', workflow: '流水线', commitMessage: 'Commit message：', codeStatus: '代码状态',
-      lastChecked: '最近检查', configure: '配置', pipeline: '流水线', checkUpdates: '检查更新', unbound: '未绑定', customWorkflow: '自定义流水线',
+      lastChecked: '最近检查', configure: '配置', modify: '修改', pipeline: '流水线', checkUpdates: '检查更新', unbound: '未绑定', customWorkflow: '自定义流水线',
       showDetails: '展开详情', hideDetails: '收起详情', image: '镜像', containerStatus: '容器状态', terminal: '终端', terminalRunningOnly: '容器运行时才能打开终端',
       currentRun: '当前运行', linkedWorkflows: '关联流水线', enabledWorkflowCount: '{enabled}/{total} 条启用', noWorkflows: '尚未配置流水线',
       taskCount: '{count} 个任务', buildCount: '{count} 构建', deployCount: '{count} 部署', deploymentInstances: '部署实例', deploymentCount: '{count} 个运行位置', deploymentSummary: 'Docker、Docker Compose 或 Kubernetes',
@@ -408,7 +408,7 @@ export const messages = {
     applicationCard: {
       autoRefresh: 'Auto refresh', active: 'Enabled', inactive: 'Disabled', noDescription: 'No description', currentPipeline: 'Current pipeline', latestRun: 'Latest run',
       currentNode: 'Current task', repository: 'Repository', workflow: 'Pipelines', commitMessage: 'Commit message: ', codeStatus: 'Code status',
-      lastChecked: 'Last checked', configure: 'Configure', pipeline: 'Pipeline', checkUpdates: 'Check updates', unbound: 'Not linked', customWorkflow: 'Custom pipeline',
+      lastChecked: 'Last checked', configure: 'Configure', modify: 'Edit', pipeline: 'Pipeline', checkUpdates: 'Check updates', unbound: 'Not linked', customWorkflow: 'Custom pipeline',
       showDetails: 'Show details', hideDetails: 'Hide details', image: 'Image', containerStatus: 'Container status', terminal: 'Terminal', terminalRunningOnly: 'The terminal is available only while the container is running',
       currentRun: 'Current run', linkedWorkflows: 'Linked pipelines', enabledWorkflowCount: '{enabled}/{total} enabled', noWorkflows: 'No pipelines configured',
       taskCount: '{count} tasks', buildCount: '{count} builds', deployCount: '{count} deploys', deploymentInstances: 'Deployment instances', deploymentCount: '{count} locations', deploymentSummary: 'Containers, Docker Compose services, and workloads',
