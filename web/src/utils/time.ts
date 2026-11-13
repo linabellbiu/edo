@@ -40,3 +40,12 @@ export function formatRelativeTime(value?: string | number | Date, now = Date.no
   const amount = Math.sign(deltaSeconds) * Math.max(1, Math.floor(absoluteSeconds / selected.seconds))
   return new Intl.RelativeTimeFormat(locale, { numeric: 'always' }).format(amount, selected.unit)
 }
+
+export function formatElapsedTime(value?: string | number | Date, now = Date.now(), locale = 'zh-CN', fallback = '—') {
+  const date = parseTime(value)
+  if (!date || !Number.isFinite(now)) return fallback
+
+  // 已发生的事件可能比页面计时值稍新，一分钟内统一展示，避免同步时文案跳动。
+  if (now - date.getTime() < 60_000) return locale.toLowerCase().startsWith('zh') ? '1 分钟内' : 'within 1 minute'
+  return formatRelativeTime(date, now, locale, fallback)
+}

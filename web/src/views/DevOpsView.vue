@@ -44,7 +44,7 @@ import { retainCurrentDeploymentState, selectCurrentDeploymentInstances, selectL
 import type { RollbackRecord } from '@/types/deploymentRollback'
 import type { PipelineRunApproval } from '@/types/pipelineApproval'
 import { deploymentRollbackEn, deploymentRollbackZh } from '@/locales/deploymentRollback'
-import { formatDateTime, formatRelativeTime } from '@/utils/time'
+import { formatDateTime, formatElapsedTime, formatRelativeTime } from '@/utils/time'
 import { composeRuntimeStatus, composeContainerCanTerminal } from '@/utils/composeRuntime'
 import type { ContainerControlAction, DeploymentRuntimeState } from '@/types/deploymentRuntime'
 import { parsePipelineRunFilters, pipelineRunDateBounds, pipelineRunDateRange, pipelineRunRequestParams, pipelineRunRouteQuery, type PipelineRunFilters } from '@/utils/pipelineRunFilters'
@@ -2185,7 +2185,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
       </div>
       <div v-else-if="column.key==='sync'" class="apps-cell-stack">
         <a-tooltip :title="card.application.sync_message" :mouse-enter-delay="0.1"><span class="apps-status" :class="[`tone-${card.sync.tone}`,{'is-live':card.sync.live}]"><i/>{{ card.sync.label }}</span></a-tooltip>
-        <a-tooltip :title="t('applicationCard.lastChecked')+'：'+formatApplicationTime(card.application.last_checked_at)" :mouse-enter-delay="0.1"><time class="apps-time" :datetime="card.application.last_checked_at">{{ card.application.last_checked_at?formatRelativeTime(card.application.last_checked_at,relativeTimeNow,locale):t('applicationCard.noTime') }}</time></a-tooltip>
+        <a-tooltip :title="t('applicationCard.lastChecked')+'：'+formatApplicationTime(card.application.last_checked_at)" :mouse-enter-delay="0.1"><time class="apps-time" :datetime="card.application.last_checked_at">{{ card.application.last_checked_at?formatElapsedTime(card.application.last_checked_at,relativeTimeNow,locale):t('applicationCard.noTime') }}</time></a-tooltip>
       </div>
       <div v-else-if="column.key==='resources'" class="apps-resource-switch">
         <button type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='workflows'}" :aria-label="t('applicationCard.linkedWorkflows')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='workflows'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'workflows')"><Workflow :size="14"/>{{ t('applicationCard.pipeline') }}<span class="apps-count">{{ card.workflowSummaries.length }}</span></button>
