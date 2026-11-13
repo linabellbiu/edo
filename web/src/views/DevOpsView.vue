@@ -2205,15 +2205,6 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='deployments'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'deployments')">{{ t('resourceList.instances') }} ({{ applicationDrawerCard.deploymentInstances.length }})</a-button>
       </template>
     </template>
-    <section v-if="applicationDrawerCard" class="resource-detail-section">
-      <h4>{{ t('resourceList.basic') }}</h4>
-      <dl class="resource-facts">
-        <div><dt>{{ t('applicationCard.repository') }}</dt><dd>{{ applicationDrawerCard.repository?.name || '—' }}</dd></div>
-        <div><dt>{{ t('applicationCard.currentNode') }}</dt><dd>{{ applicationCurrentNode(applicationDrawerCard.run) }}</dd></div>
-        <div><dt>{{ t('applicationCard.codeStatus') }}</dt><dd>{{ applicationDrawerCard.sync.label }}</dd></div>
-        <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ applicationDrawerCard.application.description || '—' }}</dd></div>
-      </dl>
-    </section>
     <template v-for="card in applicationDrawerCard ? [applicationDrawerCard] : []" :key="card.application.id">
 
       <section v-if="applicationDetailsOpen(card.application.id)" :id="`application-details-${card.application.id}`" class="apps-details-content resource-detail-section" :aria-label="card.application.name+' · '+(applicationDetailTab(card.application.id)==='environment'?'环境配置':applicationDetailTab(card.application.id)==='workflows'?t('applicationCard.linkedWorkflows'):t('applicationCard.deploymentInstances'))">
