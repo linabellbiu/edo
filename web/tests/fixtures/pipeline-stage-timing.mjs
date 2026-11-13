@@ -28,7 +28,7 @@ const deploy = {
 const initial = {
   id: 'completed',
   application_id: 'preview-app',
-  application: { name: '阶段耗时示例' },
+  application: { name: '阶段耗时示例', workflows: [{ id: 'workflow', name: '多阶段镜像构建及主机自动发布流水线（完整名称展示）' }] },
   workflow_id: 'workflow',
   status: 'succeeded',
   stage: 'completed',

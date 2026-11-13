@@ -258,7 +258,7 @@ const runWorkspace=ref<HTMLElement|null>(null)
 const runColumns=[
  {title:'发布计划',key:'release_plan',width:180},
  {title:'发布应用',key:'application',width:150},
- {title:'应用流水线',key:'workflow',width:180},
+ {title:'流水线',key:'workflow',width:180},
  {title:'提交 / 版本',key:'version'},
  {title:'状态 / 当前任务',key:'status',width:160},
  {title:'总耗时 / 当前阶段',key:'progress',width:240},
@@ -2386,7 +2386,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
         <button type="button" class="run-resource-link" :disabled="!record.application_id" :title="applicationName(record)" @click.stop="openApplicationFromRun(record)">{{ applicationName(record) }}</button>
       </template>
       <template v-else-if="column.key==='workflow'">
-        <button type="button" class="run-resource-link" :disabled="!record.application_id||!record.workflow_id" :title="runWorkflowName(record)" @click.stop="openApplicationWorkflow(record.application_id||'',record.workflow_id||'')">{{ runWorkflowName(record) }}</button>
+        <button type="button" class="run-resource-link run-workflow-link" :disabled="!record.application_id||!record.workflow_id" :title="runWorkflowName(record)" @click.stop="openApplicationWorkflow(record.application_id||'',record.workflow_id||'')">{{ runWorkflowName(record) }}</button>
       </template>
       <template v-else-if="column.key==='version'">
         <button class="resource-name" @click="expandRunListEntry(true,record)">{{ record.commit_message||'未记录提交说明' }}</button>
@@ -2778,6 +2778,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
 .run-row-toggle svg{transition:transform 160ms ease}.run-row-toggle svg.expanded{transform:rotate(90deg)}
 .run-resource-link{display:-webkit-box;max-width:100%;overflow:hidden;padding:2px 0;border:0;color:var(--edo-primary);background:transparent;cursor:pointer;font:inherit;line-height:1.5;text-align:left;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:2}
 .run-resource-link:hover{text-decoration:underline}.run-resource-link:disabled{color:var(--edo-muted);cursor:default;text-decoration:none}
+.run-workflow-link{display:block;overflow:visible;-webkit-line-clamp:unset;white-space:normal}
 .run-cell-title,.run-cell-secondary{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-cell-title{font-weight:600}
 .run-cell-muted,.run-cell-secondary{color:var(--edo-muted);font-size:12px}.run-cell-secondary{margin-top:3px}.run-cell-time{white-space:nowrap;font-variant-numeric:tabular-nums}
 .run-detail{min-width:0;padding:12px;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface);box-shadow:var(--edo-shadow)}
