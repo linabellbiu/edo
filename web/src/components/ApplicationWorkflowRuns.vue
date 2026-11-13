@@ -1,16 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ChevronRight, GitBranch, Tag, UserRound } from 'lucide-vue-next'
+import { History } from 'lucide-vue-next'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import { subscribeDeliveryEvents } from '@/utils/deliveryEvents'
-import { pipelineRunProgress, type PipelineRunProgressRecord } from '@/utils/pipelineRunProgress'
-import PipelineRunStages from './PipelineRunStages.vue'
-import PipelineRunProgress from './PipelineRunProgress.vue'
+import type { ApplicationWorkflowRunRecord as Run } from '@/types/pipeline'
+import ApplicationWorkflowRunRow from './ApplicationWorkflowRunRow.vue'
 
-interface Run extends PipelineRunProgressRecord { row_id?: number; application_id: string; workflow_id?: string; created_at: string; ref: string; commit_sha: string; commit_message?: string; commit_author?: string; trigger: string }
-const props = defineProps<{ applicationId: string; workflowId: string; scopeKey: string }>()
+const props = defineProps<{ applicationId: string; workflowId: string; scopeKey: string; workflowName?: string }>()
 const emit = defineEmits<{ logs: [run: Run] }>()
 const auth = useAuthStore()
 const active = ref<Run[]>([]), history = ref<Run[]>([]), loading = ref(false), loaded = ref(false), error = ref('')
@@ -23,13 +21,15 @@ const rows = computed(() => {
   const completed = new Set(previous.map(run => run.id))
   return [...active.value.filter(run => !completed.has(run.id)), ...previous]
 })
-const historyID = computed(() => `workflow-history-${props.applicationId}-${props.workflowId}`)
-const groups = computed(() => [
-  { kind: 'active', runs: rows.value.filter(run => !finished.has(run.status)), loaded: loaded.value, error: error.value, empty: '当前没有正在执行的流水线' },
-  ...(historyExpanded.value ? [{ kind: 'history', runs: history.value, loaded: historyLoaded.value, error: historyError.value, empty: '暂无历史执行' }] : []),
-])
+const currentRuns = computed(() => rows.value.filter(run => !finished.has(run.status)))
+const historyTrigger = ref<HTMLButtonElement>()
+let historyOpenedScope = ''
 let controller: AbortController | undefined, disposed = false, mounted = false, connected = false, revision = 0, refreshTimer: ReturnType<typeof setTimeout> | undefined, fallbackTimer: ReturnType<typeof setInterval> | undefined, unsubscribe: (() => void) | undefined
 const identity = () => JSON.stringify([props.applicationId, props.workflowId, props.scopeKey])
+function openHistory() { if (allowed.value) { historyOpenedScope = identity(); historyExpanded.value = true } }
+function historyVisibilityChanged(open: boolean) {
+  if (!open && !historyExpanded.value && !disposed && allowed.value && historyOpenedScope === identity()) historyTrigger.value?.focus({ preventScroll: true })
+}
 function cancel() { revision++; controller?.abort(); controller = undefined; clearTimeout(refreshTimer); refreshTimer = undefined; loading.value = false }
 async function load() {
   if (!allowed.value || disposed || document.hidden) return
@@ -77,7 +77,14 @@ function connect() {
 watch(() => [props.applicationId, props.workflowId, props.scopeKey, allowed.value, historyExpanded.value], (value, previous) => {
   cancel()
   const scopeChanged = !previous || value.slice(0, 4).some((item, index) => item !== previous[index])
-  if (scopeChanged) { active.value = []; loaded.value = false; error.value = ''; connect() }
+  if (scopeChanged) {
+    active.value = []; loaded.value = false; error.value = ''; connect()
+    if (historyExpanded.value) {
+      history.value = []; historyLoaded.value = false; historyError.value = ''
+      historyExpanded.value = false
+      return
+    }
+  }
   if (scopeChanged || !historyExpanded.value) { history.value = []; historyLoaded.value = false; historyError.value = '' }
   void load()
 }, { immediate: true })
@@ -88,42 +95,38 @@ onMounted(() => {
   fallbackTimer = setInterval(() => { if (!connected) schedule() }, 60_000)
 })
 onBeforeUnmount(() => { disposed = true; cancel(); clearInterval(fallbackTimer); unsubscribe?.(); document.removeEventListener('visibilitychange', visibility) })
-function reference(run: Run) { return run.ref.replace(/^refs\/(heads|tags)\//, '') || '未记录版本' }
-function time(value: string) { const date = new Date(value); return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(date) : '—' }
-function trigger(run: Run) { return ({ manual: '手动触发', retry: '重新执行', poll_tag: 'Tag 触发', tag_push: 'Tag 触发', poll_push: '代码提交', branch_push: '代码提交', poll_pr: '合并请求', pull_request: '合并请求' } as Record<string, string>)[run.trigger] || '代码事件' }
 </script>
 
 <template>
-  <section class="workflow-runs" aria-label="当前与历史流水线执行">
-    <header><span>当前运行</span><div class="workflow-runs-actions"><button type="button" class="workflow-history-toggle" :disabled="!allowed" :aria-expanded="historyExpanded" :aria-controls="historyExpanded?historyID:undefined" @click="historyExpanded=!historyExpanded"><ChevronRight :size="14" :class="{'is-expanded':historyExpanded}" aria-hidden="true"/>历史执行</button><a-button size="small" :loading="loading" :disabled="!allowed" @click="load">刷新</a-button></div></header>
-    <p v-if="!allowed" class="workflow-runs-empty">{{ canRead?'权限正在核验，暂时无法读取执行记录':'没有查看流水线运行记录的权限' }}</p>
-    <template v-else>
-      <section v-for="group in groups" :id="group.kind==='history'?historyID:undefined" :key="group.kind" :aria-label="group.kind==='history'?'历史执行':'当前执行'">
-        <div v-if="group.kind==='history'" class="workflow-history-heading">最近 50 条历史执行</div>
-        <a-alert v-if="group.error" type="error" show-icon :message="group.error"><template #action><a-button size="small" :disabled="loading" @click="load">重试</a-button></template></a-alert>
-        <a-spin v-if="loading&&!group.loaded"/>
-        <p v-else-if="group.loaded&&!group.runs.length&&!group.error" class="workflow-runs-empty">{{ group.empty }}</p>
-      <article v-for="run in group.runs" :key="run.id" class="workflow-run" :data-kind="group.kind" :aria-label="`执行记录：${run.commit_message||run.id}`">
-        <div class="workflow-run-copy">
-          <div class="workflow-run-title"><span class="workflow-run-status" :data-state="pipelineRunProgress(run).state"><i aria-hidden="true"/>{{ pipelineRunProgress(run).label }}</span><span v-if="run.row_id" class="workflow-run-number">#{{ run.row_id }}</span><strong>{{ run.commit_message||'未记录提交说明' }}</strong></div>
-          <div class="workflow-run-meta"><span class="workflow-run-ref" :title="run.ref"><Tag v-if="run.ref.startsWith('refs/tags/')" :size="13" aria-hidden="true"/><GitBranch v-else :size="13" aria-hidden="true"/>{{ reference(run) }}</span><span>{{ trigger(run) }}</span><span class="workflow-run-author" :aria-label="`提交人：${run.commit_author||'未记录'}`"><UserRound :size="13" aria-hidden="true"/>{{ run.commit_author||'未记录提交人' }}</span><time :datetime="run.created_at">{{ time(run.created_at) }}</time><PipelineRunProgress :run="run" duration-only/></div>
-        </div>
-        <PipelineRunStages :stages="run.execution_graph?.stages" :status="run.status"/>
-        <a-button size="small" @click="emit('logs',run)">日志</a-button>
-      </article>
-      </section>
+  <section class="workflow-runs" aria-label="当前流水线执行">
+    <header>
+      <span class="workflow-current-label">当前执行<span v-if="currentRuns.length" class="workflow-current-count">{{ currentRuns.length }}</span></span>
+      <span v-if="!allowed" class="workflow-runs-empty">{{ canRead?'权限正在核验，暂时无法读取执行记录':'没有查看流水线运行记录的权限' }}</span>
+      <span v-else-if="loading&&!loaded" class="workflow-runs-empty">正在读取执行状态…</span>
+      <span v-else-if="loaded&&!currentRuns.length&&!error" class="workflow-runs-empty">当前没有正在执行的流水线</span>
+      <div class="workflow-runs-actions"><button ref="historyTrigger" type="button" class="workflow-history-button" :disabled="!allowed" aria-haspopup="dialog" :aria-expanded="historyExpanded" @click="openHistory"><History :size="14" aria-hidden="true"/>历史执行</button><a-button size="small" :loading="loading" :disabled="!allowed" @click="load">刷新</a-button></div>
+    </header>
+    <template v-if="allowed">
+      <a-alert v-if="error" type="error" show-icon :message="error"><template #action><a-button size="small" :disabled="loading" @click="load">重试</a-button></template></a-alert>
+      <div v-if="currentRuns.length" class="workflow-current-runs" role="region" aria-label="正在执行的流水线" tabindex="0">
+        <ApplicationWorkflowRunRow v-for="run in currentRuns" :key="run.id" :run="run" compact @logs="emit('logs',$event)"/>
+      </div>
     </template>
+    <a-drawer v-model:open="historyExpanded" :title="`${workflowName||'流水线'} · 历史执行`" width="min(960px, 94vw)" class="workflow-history-drawer" :body-style="{padding:0}" destroy-on-close @after-open-change="historyVisibilityChanged">
+      <template #extra><a-button size="small" :loading="loading" :disabled="!allowed" @click="load">刷新</a-button></template>
+      <section v-if="allowed" aria-label="最近 50 条历史执行">
+        <p class="workflow-history-caption">最近 50 条历史执行</p>
+        <a-alert v-if="historyError" type="error" show-icon :message="historyError"><template #action><a-button size="small" :disabled="loading" @click="load">重试</a-button></template></a-alert>
+        <p v-if="loading&&!historyLoaded" class="workflow-history-empty">正在读取历史执行…</p>
+        <p v-else-if="historyLoaded&&!history.length&&!historyError" class="workflow-history-empty">暂无历史执行</p>
+        <ApplicationWorkflowRunRow v-for="run in history" :key="run.id" :run="run" @logs="emit('logs',$event)"/>
+      </section>
+    </a-drawer>
   </section>
 </template>
 
 <style scoped>
-.workflow-runs{min-width:0;background:var(--edo-surface)}.workflow-runs>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--edo-border);color:var(--edo-muted);font-size:12px}.workflow-runs-empty{margin:0;padding:22px 14px;color:var(--edo-muted);font-size:13px}
-.workflow-runs-actions{display:flex;align-items:center;gap:12px}.workflow-history-toggle{display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:2px 4px;border:0;border-radius:4px;background:transparent;color:var(--edo-muted);cursor:pointer;font-size:12px}.workflow-history-toggle:hover{color:var(--edo-primary);background:var(--edo-primary-soft)}.workflow-history-toggle:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.workflow-history-toggle:disabled{cursor:not-allowed;opacity:.5}.workflow-history-toggle svg{transition:transform 160ms ease}.workflow-history-toggle svg.is-expanded{transform:rotate(90deg)}.workflow-history-heading{padding:10px 14px;border-block:1px solid var(--edo-border);font-size:12px;color:var(--edo-muted)}
-@media(prefers-reduced-motion:reduce){.workflow-history-toggle svg{transition:none}}
-.workflow-run{display:grid;grid-template-columns:minmax(260px,1fr) minmax(260px,1fr) auto;align-items:center;gap:18px;padding:14px;border-bottom:1px solid var(--edo-border)}.workflow-run:last-child{border-bottom:0}.workflow-run-copy{min-width:0}.workflow-run-title{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;line-height:1.6}.workflow-run-title>strong{font-size:13px;font-weight:500;overflow-wrap:anywhere}.workflow-run-number{font-size:12px;color:var(--edo-muted)}
-.workflow-run-status{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;color:var(--edo-muted);font-size:12px}.workflow-run-status>i{width:7px;height:7px;border-radius:50%;background:currentColor}.workflow-run-status[data-state='succeeded']{color:var(--edo-success,#16845b)}.workflow-run-status[data-state='failed']{color:var(--edo-danger,#d74354)}.workflow-run-status[data-state='running'],.workflow-run-status[data-state='waiting']{color:var(--edo-warning,#b68100)}
-:global([data-theme='dark'] .workflow-run-status[data-state='succeeded']){color:#49c89c}:global([data-theme='dark'] .workflow-run-status[data-state='failed']){color:#ff8490}:global([data-theme='dark'] .workflow-run-status[data-state='running']),:global([data-theme='dark'] .workflow-run-status[data-state='waiting']){color:#f1c359}
-.workflow-run-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;margin-top:5px;color:var(--edo-muted);font-size:12px}.workflow-run-ref{display:inline-flex;align-items:center;gap:5px;max-width:100%;overflow-wrap:anywhere}.workflow-run-ref svg{flex-shrink:0}.workflow-run-meta :deep(.run-progress-duration){font-size:12px;color:var(--edo-muted)}.workflow-run>button{justify-self:end}.workflow-runs :deep(.ant-spin){display:block;padding:20px}
-.workflow-run-author{display:inline-flex;align-items:center;gap:5px;max-width:100%;overflow-wrap:anywhere}.workflow-run-author svg{flex-shrink:0}
-@media(max-width:760px){.workflow-run{grid-template-columns:minmax(0,1fr) auto;gap:12px}.workflow-run :deep(.pipeline-run-stages),.workflow-run :deep(.pipeline-stages-empty){grid-row:2;grid-column:1/-1}.workflow-run-copy{grid-row:1}.workflow-run>button{grid-row:1;grid-column:2}}
+.workflow-runs{min-width:0;background:var(--edo-surface)}.workflow-runs>header{display:flex;min-height:36px;align-items:center;gap:12px;padding:4px 12px;color:var(--edo-muted);font-size:12px}.workflow-current-label{display:inline-flex;align-items:center;gap:6px;flex-shrink:0}.workflow-current-count{font-variant-numeric:tabular-nums;color:var(--edo-text)}.workflow-runs-empty{font-size:12px;overflow-wrap:anywhere}.workflow-runs-actions{display:flex;align-items:center;gap:10px;margin-left:auto;flex-shrink:0}.workflow-history-button{display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:2px 4px;border:0;border-radius:4px;background:transparent;color:var(--edo-muted);cursor:pointer;font-size:12px}.workflow-history-button:hover{color:var(--edo-primary);background:var(--edo-primary-soft)}.workflow-history-button:focus-visible,.workflow-current-runs:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.workflow-history-button:disabled{cursor:not-allowed;opacity:.5}
+.workflow-current-runs{max-height:180px;overflow:auto;border-top:1px solid var(--edo-border)}.workflow-history-caption{margin:0;padding:10px 14px;border-bottom:1px solid var(--edo-border);color:var(--edo-muted);font-size:12px}.workflow-history-empty{margin:0;padding:20px 14px;color:var(--edo-muted);font-size:13px}
+@media(max-width:600px){.workflow-runs>header{flex-wrap:wrap;gap:4px 10px}.workflow-runs-empty{flex-basis:100%;order:1;padding-bottom:2px}}
 </style>

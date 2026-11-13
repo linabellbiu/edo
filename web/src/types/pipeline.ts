@@ -183,6 +183,24 @@ export interface PipelineExecutionGraph {
   stages: PipelineExecutionStage[]
 }
 
+export interface ApplicationWorkflowRunRecord {
+  id: string
+  row_id?: number
+  application_id: string
+  workflow_id?: string
+  status: string
+  stage?: string
+  current_node_id?: string
+  execution_graph?: PipelineExecutionGraph
+  timing?: PipelineStageTiming
+  created_at: string
+  ref: string
+  commit_sha: string
+  commit_message?: string
+  commit_author?: string
+  trigger: string
+}
+
 export type PipelineStageDraft = WorkflowStage
 
 export interface PipelineBuildPlan {

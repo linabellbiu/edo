@@ -27,7 +27,7 @@ function harness(readable = true) {
   return { state, props, auth, requests, resolve, doc, listeners, timers, get subscriber() { return subscriber }, get unsubscribed() { return unsubscribed }, stop() { unmounts.forEach(fn => fn()); scope.stop() } }
 }
 
-test('当前默认直接显示，仅展开历史时才读取最近50条，收起不隐藏当前', async () => {
+test('当前默认直接显示，仅打开历史抽屉时读取最近50条，关闭不隐藏当前', async () => {
   const h = harness()
   assert.equal(h.state.historyExpanded.value, false)
   assert.equal(h.requests.length, 1)
@@ -50,6 +50,47 @@ test('当前默认直接显示，仅展开历史时才读取最近50条，收起
   assert.equal(h.requests.length, 4)
   assert.equal(h.requests[3].options.params.status_group, 'active')
   h.resolve(3, [active]); await flush()
+  h.stop()
+})
+
+test('切换范围或撤权时关闭历史抽屉并取消旧读取，不自动打开新范围历史', async () => {
+  for (const revoke of [false, true]) {
+    const h = harness()
+    h.resolve(0); await flush()
+    h.state.historyExpanded.value = true; await vue.nextTick()
+    if (revoke) h.auth.readable = false
+    else { h.props.workflowId = 'other-flow'; h.props.scopeKey = 'project-b' }
+    await vue.nextTick()
+    assert.equal(h.state.historyExpanded.value, false)
+    assert.equal(h.requests[2].options.signal.aborted, true)
+    assert.equal(h.requests.slice(3).some(request => request.options.params.status_group === 'finished'), false)
+    h.resolve(1); h.resolve(2, [run('old-history')]); await flush()
+    assert.deepEqual(h.state.history.value, [])
+    if (!revoke) { h.resolve(3, [run('new-active', { status: 'running', workflow_id: 'other-flow' })]); await flush() }
+    assert.equal(h.state.currentRuns.value.length, revoke ? 0 : 1)
+    h.stop()
+  }
+})
+
+test('历史关闭后恢复原入口焦点，切换范围、撤权或重开后不抢焦点', async () => {
+  const h = harness()
+  let focused = 0
+  h.state.historyTrigger.value = { focus(options) { assert.equal(options.preventScroll, true); focused++ } }
+  h.state.openHistory(); await vue.nextTick()
+  h.state.historyExpanded.value = false; await vue.nextTick()
+  h.state.historyVisibilityChanged(false)
+  assert.equal(focused, 1)
+  h.state.openHistory(); await vue.nextTick()
+  h.state.historyVisibilityChanged(false)
+  assert.equal(focused, 1)
+  h.props.workflowId = 'another'; await vue.nextTick()
+  h.state.historyVisibilityChanged(false)
+  assert.equal(focused, 1)
+  h.auth.readable = false; await vue.nextTick()
+  h.state.openHistory()
+  assert.equal(h.state.historyExpanded.value, false)
+  h.state.historyVisibilityChanged(false)
+  assert.equal(focused, 1)
   h.stop()
 })
 
