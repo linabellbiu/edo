@@ -283,7 +283,7 @@ test('节点用量真实SSR保留超配百分比和完整数值，缺测不渲�
  assert.equal(declarations(components.KubeNodeUsage.styles,'.usage-meter').height,'24px')
 })
 
-test('节点监控饼图浅深主题可辨识，保留真实数值与12px趋势轴文字',async()=>{
+test('节点监控三条折线按指标配色，浅深主题和12px轴文字可读',async()=>{
  const helpers=loadFrontend('../src/utils/kubernetesNode.ts')
  for(const theme of ['light','dark']){
   const colors=palette(theme),options=new Map(),scope=vue.effectScope()
@@ -298,33 +298,32 @@ test('节点监控饼图浅深主题可辨识，保留真实数值与12px趋势�
    state.now.value=now;state.history.value={from:new Date(now-900_000).toISOString(),to:at,interval_seconds:30,points:[{collected_at:at,metrics_at:at,cpu:5,cpu_allocatable:4,memory:1024**3,memory_allocatable:2*1024**3,pods:3,pod_capacity:10,metrics_state:'ok',pods_state:'ok',allocation:{cpu_requests:2,cpu_limits:8,memory_requests:512*1024**2,memory_limits:4*1024**3}}]}
    state.root.value={querySelector:selector=>({selector,clientWidth:420})}
    await state.render()
-   assert.equal(options.size,6)
+   assert.equal(options.size,3)
    for(const key of ['cpu','memory','pods']){
-    const comparison=options.get(`[data-comparison="${key}"]`),trend=options.get(`[data-chart="${key}"]`)
-    for(const option of [comparison,trend]){
-     assert.equal(option.tooltip.backgroundColor,colors['--kube-surface'])
-     assert.equal(option.tooltip.textStyle.fontSize,12)
-     assert.ok(contrast(option.tooltip.textStyle.color,option.tooltip.backgroundColor)>=4.5)
-    }
+    const trend=options.get(`[data-chart="${key}"]`)
+    assert.equal(trend.tooltip.backgroundColor,colors['--kube-surface'])
+    assert.equal(trend.tooltip.textStyle.fontSize,12)
+    assert.ok(contrast(trend.tooltip.textStyle.color,trend.tooltip.backgroundColor)>=4.5)
     assert.equal(trend.xAxis.axisLabel.fontSize,12);assert.equal(trend.yAxis.axisLabel.fontSize,12)
-    assert.equal(comparison.series[0].type,'pie');assert.equal(comparison.series[0].emphasis.scale,false)
-    const [used,remaining]=comparison.series[0].data
-    assert.ok(contrast(used.itemStyle.borderColor,remaining.itemStyle.color)>=3,`${theme}/${key}/slice-boundary`)
-    assert.ok(contrast(used.itemStyle.borderColor,colors['--kube-surface'])>=3,`${theme}/${key}/boundary-surface`)
-    assert.equal(used.itemStyle.color,colors[`--kube-chart-${state.cards.value.find(card=>card.key===key).overCapacity?'danger':key}`])
-    assert.equal(remaining.itemStyle.color,colors['--kube-chart-remaining'])
-    assert.equal(trend.series[0].itemStyle.color,colors[`--kube-chart-${key}-line`]??colors[`--kube-chart-${key}`])
-    assert.ok(contrast(trend.series[0].itemStyle.color,colors['--kube-surface'])>=3,`${theme}/${key}/trend`)
+    assert.equal(trend.grid.containLabel,true)
+    for(const [index,measure] of ['used','capacity',...(key==='pods'?[]:['limits'])].entries()){
+     const series=trend.series[index]
+     assert.equal(series.type,'line');assert.equal(series.connectNulls,false)
+     assert.equal(series.itemStyle.color,colors[`--kube-chart-${measure}`])
+     assert.ok(contrast(series.itemStyle.color,colors['--kube-surface'])>=3,`${theme}/${measure}/trend`)
+    }
+    assert.deepEqual(trend.series.map(series=>series.lineStyle.type),key==='pods'?['solid','dashed']:['solid','dashed','dotted'])
    }
-   assert.deepEqual(options.get('[data-comparison="cpu"]').series[0].data.map(row=>row.value),[5,0])
-   assert.deepEqual(state.cards.value[0].rows.map(row=>row.value),[5,4,2,8])
+   assert.deepEqual(options.get('[data-chart="cpu"]').series.map(series=>series.data[0][1]),[5,4,8])
+   assert.deepEqual(state.cards.value[0].rows.map(row=>row.value),[5,4,8,2])
    assert.equal(state.cards.value[0].percent,125)
   }finally{scope.stop()}
  }
  const css=components.KubeNodeMonitor.styles
  assert.equal(declarations(css,'.monitor-card').background,'var(--kube-surface)')
  assert.equal(declarations(css,'.monitor-card')['border-radius'],'6px')
- assert.equal(declarations(css,'.usage-dot').background,'var(--chart-color)')
- assert.equal(declarations(css,'.usage-dot').border,'1px solid var(--chart-line)')
+ assert.equal(declarations(css,'.series-swatch')['border-top'],'2px solid var(--series-color)')
+ assert.equal(declarations(css,'.metric-capacity .series-swatch')['border-top-style'],'dashed')
+ assert.equal(declarations(css,'.metric-limits .series-swatch')['border-top-style'],'dotted')
  assert.ok(css.some(root=>root.nodes.some(node=>node.type==='atrule'&&node.name==='container'&&node.params.includes('960px'))))
 })

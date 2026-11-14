@@ -12,14 +12,23 @@ export function nodeMetricValue(sample:NodeSample,key:'cpu'|'memory'|'pods'):num
  if(key==='pods'&&sample.pods_state!=='ok')return null
  return value!==null&&Number.isFinite(value)&&value>=0&&capacity!==null&&Number.isFinite(capacity)&&capacity>0?value/capacity*100:null
 }
+export type NodeMeasure='used'|'capacity'|'requests'|'limits'
+export function nodeResourceValue(sample:NodeSample,key:'cpu'|'memory'|'pods',measure:NodeMeasure):number|null {
+ const amount=(value:unknown)=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null
+ if(measure==='capacity')return amount(sample[key==='cpu'?'cpu_allocatable':key==='memory'?'memory_allocatable':'pod_capacity'])
+ if(measure==='requests'||measure==='limits')return key!=='pods'&&sample.pods_state==='ok'?amount(sample.allocation?.[`${key}_${measure}`]):null
+ if(key==='pods')return sample.pods_state==='ok'?amount(sample.pods):null
+ const metricsAt=Date.parse(sample.metrics_at)
+ return sample.metrics_state==='ok'&&Number.isFinite(metricsAt)&&Math.abs(Date.parse(sample.collected_at)-metricsAt)<=120000?amount(sample[key]):null
+}
 // 断档插入空点，不插值、不沿用旧样本，也不把失败当成零。
-export function nodeChartPoints(history:NodeHistory,key:'cpu'|'memory'|'pods'):Array<[number,number|null]> {
+export function nodeChartPoints(history:NodeHistory,key:'cpu'|'memory'|'pods',measure:NodeMeasure|'percent'='percent'):Array<[number,number|null]> {
  const values:Array<[number,number|null]>=[]
  for(const sample of history.points){
   const at=Date.parse(sample.collected_at);if(!Number.isFinite(at)||at<Date.parse(history.from)||at>Date.parse(history.to))continue
   const last=values.at(-1)?.[0]
   if(last!==undefined&&at-last>history.interval_seconds*2500)values.push([(at+last)/2,null])
-  values.push([at,nodeMetricValue(sample,key)])
+  values.push([at,measure==='percent'?nodeMetricValue(sample,key):nodeResourceValue(sample,key,measure)])
  }
  return values
 }

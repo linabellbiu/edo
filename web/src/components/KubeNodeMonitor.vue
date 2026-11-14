@@ -2,35 +2,37 @@
 import {computed,nextTick,onBeforeUnmount,onMounted,ref,watch} from 'vue'
 import {useI18n} from 'vue-i18n'
 import {init,use,type EChartsType} from 'echarts/core'
-import {PieChart,LineChart} from 'echarts/charts'
+import {LineChart} from 'echarts/charts'
 import {GridComponent,TooltipComponent} from 'echarts/components'
 import {CanvasRenderer} from 'echarts/renderers'
 import {RefreshCw} from 'lucide-vue-next'
 import client from '@/api/client'
 import {formatKubeCPU,formatKubeMemory,kubeErrorMessage,type KubeObject} from '@/api/kubernetes'
-import {nodeChartPoints,nodeMetricValue,nodeSampleFresh,type NodeHistory} from '@/utils/kubernetesNode'
+import {nodeChartPoints,nodeMetricValue,nodeResourceValue,nodeSampleFresh,type NodeHistory,type NodeMeasure} from '@/utils/kubernetesNode'
 import {usePreferencesStore} from '@/stores/preferences'
 import KubeSelect from './KubeSelect.vue'
 const props=defineProps<{cluster:string;node:KubeObject;autoRefresh:boolean;workloads:boolean;embedded?:boolean;refreshToken?:number}>()
 const {t,locale}=useI18n(),preferences=usePreferencesStore()
-use([PieChart,LineChart,GridComponent,TooltipComponent,CanvasRenderer])
+use([LineChart,GridComponent,TooltipComponent,CanvasRenderer])
 const root=ref<HTMLElement>(),history=ref<NodeHistory|null>(null),windowSeconds=ref(900),error=ref(''),loading=ref(false)
 const charts=new Map<string,EChartsType>();let disposed=false,request:AbortController|undefined,revision=0,observer:ResizeObserver|undefined,timer:ReturnType<typeof setInterval>|undefined,resizeFrame:number|undefined
 const ranges=computed(()=>[900,3600,21600,86400,259200].map(value=>({value,label:t(`k8s.nodeWindow${value}`)})))
 const now=ref(Date.now())
 const latest=computed(()=>history.value?.points.at(-1))
 const current=computed(()=>!error.value&&nodeSampleFresh(latest.value,now.value)?latest.value:undefined)
-const amount=(value:unknown):number|null=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null
 const cards=computed(()=>['cpu','memory','pods'].map(key=>{
  const sample=current.value,kind=key as 'cpu'|'memory'|'pods',percent=sample&&(kind!=='pods'||props.workloads)?nodeMetricValue(sample,kind):null
  const formatter=kind==='cpu'?formatKubeCPU:kind==='memory'?formatKubeMemory:(value:number|undefined)=>value===undefined?'—':String(value)
- const value=percent===null?undefined:sample?.[kind]??undefined,capacity=sample?.[kind==='cpu'?'cpu_allocatable':kind==='memory'?'memory_allocatable':'pod_capacity']??undefined
- const rows=[{key:'used',label:t('k8s.nodeUsed'),value:amount(value)},{key:'capacity',label:t('k8s.nodeAllocatable'),value:amount(capacity)},...(kind==='pods'?[]:[{key:'requests',label:t('k8s.resourceRequests'),value:props.workloads?amount(sample?.allocation?.[kind==='cpu'?'cpu_requests':'memory_requests']):null},{key:'limits',label:t('k8s.nodeDeclaredLimits'),value:props.workloads?amount(sample?.allocation?.[kind==='cpu'?'cpu_limits':'memory_limits']):null}])].map(row=>({...row,text:formatter(row.value??undefined)}))
+ const measures:NodeMeasure[]=kind==='pods'?['used','capacity']:['used','capacity','limits','requests']
+ const labels={used:'nodeUsed',capacity:'nodeAllocatable',limits:'nodeDeclaredLimits',requests:'resourceRequests'}
+ const rows=measures.map(measure=>{
+  const allowed=measure==='capacity'||props.workloads||kind!=='pods'&&measure==='used'
+  const value=sample&&allowed?nodeResourceValue(sample,kind,measure):null
+  return {key:measure,label:t(`k8s.${labels[measure]}`),value,text:formatter(value??undefined)}
+ })
  const label=kind==='cpu'?'CPU':kind==='memory'?t('k8s.nodeMemory'):t('k8s.nodePodCount')
- const used=rows[0].value,allocatable=amount(capacity),remaining=percent!==null&&used!==null&&allocatable!==null?Math.max(0,allocatable-used):null
- const parts=[rows[0],{key:'remaining',label:t('k8s.available'),value:remaining,text:formatter(remaining??undefined)}]
  const percentText=percent===null?'—':`${percent>0&&percent<.1?'<0.1':Number(percent.toFixed(1))}%`,overCapacity=percent!==null&&percent>100
- return {key:kind,label,percent,percentText,overCapacity,rows,parts,formatter,description:`${label}: ${percentText}; ${[...rows,parts[1]].map(row=>`${row.label} ${row.text}`).join('; ')}${overCapacity?`; ${t('k8s.nodeOverAllocatable')}`:''}`}
+ return {key:kind,label,percent,percentText,overCapacity,rows,formatter,description:`${label}: ${percentText}; ${rows.map(row=>`${row.label} ${row.text}`).join('; ')}${overCapacity?`; ${t('k8s.nodeOverAllocatable')}`:''}`}
 }))
 async function load(){
  request?.abort();const controller=new AbortController();request=controller;const currentRevision=++revision;loading.value=true
@@ -42,18 +44,23 @@ async function load(){
 }
 async function render(){
  await nextTick();if(disposed||!root.value)return
- const style=getComputedStyle(root.value),text=style.getPropertyValue('--kube-muted').trim(),border=style.getPropertyValue('--kube-border').trim(),remaining=style.getPropertyValue('--kube-chart-remaining').trim(),surface=style.getPropertyValue('--kube-surface').trim(),danger=style.getPropertyValue('--kube-chart-danger').trim(),dangerLine=style.getPropertyValue('--kube-chart-danger-line').trim()
- const tooltipStyle={textStyle:{fontSize:12,color:text},backgroundColor:style.getPropertyValue('--kube-surface').trim(),borderColor:border}
+ const style=getComputedStyle(root.value),text=style.getPropertyValue('--kube-muted').trim(),border=style.getPropertyValue('--kube-border').trim()
+ const colors={used:style.getPropertyValue('--kube-chart-used').trim(),capacity:style.getPropertyValue('--kube-chart-capacity').trim(),limits:style.getPropertyValue('--kube-chart-limits').trim()}
+ const lineTypes={used:'solid',capacity:'dashed',limits:'dotted'} as const
  for(const card of cards.value){
-  const color=style.getPropertyValue(`--kube-chart-${card.key}`).trim(),line=style.getPropertyValue(`--kube-chart-${card.key}-line`).trim()||color
-  const comparison=root.value.querySelector<HTMLElement>(`[data-comparison="${card.key}"]`)
-  if(comparison?.clientWidth){
-   const key=`${card.key}-comparison`;let chart=charts.get(key);if(!chart){chart=init(comparison,undefined,{renderer:'canvas'});charts.set(key,chart)}
-   chart.setOption({animation:false,tooltip:{trigger:'item',renderMode:'richText',...tooltipStyle,formatter:(item:{name:string;value:number})=>`${item.name}\n${card.formatter(item.value)}`},series:[{type:'pie',radius:'88%',center:['50%','50%'],silent:card.percent===null,selectedMode:false,stillShowZeroSum:false,label:{show:false},labelLine:{show:false},emphasis:{scale:false},showEmptyCircle:true,emptyCircleStyle:{color:style.getPropertyValue('--kube-surface-soft').trim(),borderColor:border,borderWidth:1},itemStyle:{borderColor:surface,borderWidth:2},data:card.percent===null?[]:card.parts.map(part=>({name:part.label,value:part.value,itemStyle:part.key==='used'?{color:card.overCapacity?danger:color,borderColor:card.overCapacity?dangerLine:line,borderWidth:1}:{color:remaining}}))}]},{notMerge:true});chart.resize()
-  }
   const element=root.value.querySelector<HTMLElement>(`[data-chart="${card.key}"]`);if(!element?.clientWidth)continue
   let chart=charts.get(card.key);if(!chart){chart=init(element,undefined,{renderer:'canvas'});charts.set(card.key,chart)}
-  chart.setOption({animation:false,grid:{left:54,right:18,top:18,bottom:36},tooltip:{trigger:'axis',renderMode:'richText',...tooltipStyle,valueFormatter:(value:unknown)=>typeof value==='number'?`${value.toFixed(1)}%`:'—'},xAxis:{type:'time',min:history.value?Date.parse(history.value.from):undefined,max:history.value?Date.parse(history.value.to):undefined,axisLabel:{color:text,fontSize:12,hideOverlap:true},axisLine:{lineStyle:{color:border}}},yAxis:{type:'value',min:0,max:(extent:{max:number})=>Math.max(100,Math.ceil(extent.max/10)*10),axisLabel:{formatter:'{value}%',color:text,fontSize:12},splitLine:{lineStyle:{color:border}}},series:[{name:card.label,type:'line',smooth:false,connectNulls:false,showSymbol:true,symbolSize:3,itemStyle:{color:line},lineStyle:{width:2},areaStyle:{opacity:.06},data:history.value&&(card.key!=='pods'||props.workloads)?nodeChartPoints(history.value,card.key):[]}]},{notMerge:true});chart.resize()
+  const series=card.rows.filter(row=>row.key!=='requests').map(row=>{
+   const measure=row.key as keyof typeof colors,allowed=measure==='capacity'||props.workloads||measure==='used'&&card.key!=='pods'
+   const data=history.value&&allowed?nodeChartPoints(history.value,card.key,measure):[]
+   return {name:row.label,type:'line',smooth:false,connectNulls:false,showSymbol:data.filter(point=>point[1]!==null).length===1,symbolSize:4,z:measure==='used'?3:2,itemStyle:{color:colors[measure]},lineStyle:{color:colors[measure],width:2,type:lineTypes[measure]},data}
+  })
+  const largest=series.reduce((max,line)=>line.data.reduce((max,[,value])=>Math.max(max,value??0),max),0),scale=card.key==='memory'?(largest>=1024**3?1024**3:1024**2):1
+  const axisValue=(value:number)=>value===0?'0':card.key==='memory'?`${value>0&&value<.01?'<0.01':Number(value.toFixed(2))} ${scale===1024**3?'GiB':'MiB'}`:card.formatter(value)
+  chart.setOption({animation:false,grid:{left:8,right:16,top:18,bottom:12,containLabel:true},tooltip:{trigger:'axis',renderMode:'richText',textStyle:{fontSize:12,color:text},backgroundColor:style.getPropertyValue('--kube-surface').trim(),borderColor:border,formatter:(items:Array<{seriesName:string;value:[number,number|null]}>)=>{
+   const at=items[0]?.value[0]
+   return [at===undefined?'':new Date(at).toLocaleString(locale.value,{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}),...items.map(item=>`${item.seriesName}  ${card.formatter(item.value[1]===null?undefined:item.value[1]*scale)}`)].join('\n')
+  }},xAxis:{type:'time',min:history.value?Date.parse(history.value.from):undefined,max:history.value?Date.parse(history.value.to):undefined,axisLabel:{color:text,fontSize:12,hideOverlap:true},axisLine:{lineStyle:{color:border}}},yAxis:{type:'value',min:0,minInterval:card.key==='pods'?1:undefined,boundaryGap:[0,.1],axisLabel:{formatter:axisValue,color:text,fontSize:12},splitLine:{lineStyle:{color:border}}},series:series.map(line=>({...line,data:line.data.map(([at,value])=>[at,value===null?null:value/scale])}))},{notMerge:true});chart.resize()
  }
 }
 function refreshVisible(){now.value=Date.now();if(!document.hidden&&props.autoRefresh&&!loading.value)void load()}
@@ -80,14 +87,10 @@ onBeforeUnmount(()=>{disposed=true;revision++;request?.abort();if(timer)clearInt
   <a-alert v-else-if="current&&current.metrics_state!=='ok'" type="warning" show-icon :message="t(current.metrics_state==='forbidden'?'k8s.nodeMetricsForbidden':'k8s.metricsMissing')" />
   <a-alert v-if="!workloads||current&&current.pods_state!=='ok'" type="info" show-icon :message="t(!workloads?'k8s.nodePodsNoPermission':'k8s.nodePodsUnavailable')" />
   <div class="monitor-grid">
-   <article v-for="card in cards" :key="card.key" class="monitor-card" :class="`monitor-card-${card.key}`">
+   <article v-for="card in cards" :key="card.key" class="monitor-card">
     <header class="monitor-card-heading"><h4>{{ card.label }}</h4><div class="usage-ratio"><strong :class="{ 'is-over-capacity':card.overCapacity }">{{ card.percentText }}</strong><span v-if="card.overCapacity" class="is-over-capacity">{{ t('k8s.nodeOverAllocatable') }}</span></div></header>
-    <div class="usage-summary">
-     <div class="usage-pie"><div :data-comparison="card.key" class="node-comparison" role="img" :aria-label="card.description" /><span v-if="card.percent===null" class="pie-empty" aria-hidden="true">—</span></div>
-     <dl class="usage-legend"><div v-for="part in card.parts" :key="part.key"><dt><i :class="['usage-dot',`usage-dot-${part.key}`,{ 'is-over-capacity':card.overCapacity&&part.key==='used' }]" aria-hidden="true" />{{ part.label }}</dt><dd>{{ part.text }}</dd></div></dl>
-    </div>
-    <dl class="node-values"><div v-for="row in card.rows.slice(1)" :key="row.key"><dt>{{ row.label }}</dt><dd>{{ row.text }}</dd></div></dl>
-    <h5>{{ t('k8s.nodeUtilizationTrend') }}</h5><div :data-chart="card.key" class="node-trend" role="img" :aria-label="t('k8s.nodeTrendLabel',{name:card.label})" />
+    <div :data-chart="card.key" class="node-trend" role="img" :aria-label="`${t('k8s.nodeTrendLabel',{name:card.label})}; ${card.description}`" />
+    <dl class="node-values"><div v-for="row in card.rows" :key="row.key" :class="['metric-row',`metric-${row.key}`]"><dt><i v-if="row.key!=='requests'" class="series-swatch" aria-hidden="true" />{{ row.label }}</dt><dd>{{ row.text }}</dd></div></dl>
    </article>
   </div>
  </section>
@@ -97,9 +100,8 @@ onBeforeUnmount(()=>{disposed=true;revision++;request?.abort();if(timer)clearInt
 h4{margin:0;font-size:14px;font-weight:600;line-height:1.5}
 .monitor-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}.monitor-toolbar>h4{flex:1;min-width:140px}.monitor-toolbar label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--kube-muted)}.monitor-toolbar :deep(.kube-select){width:130px}
 .monitor-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}
-.monitor-card{--chart-color:var(--kube-chart-cpu);--chart-line:var(--kube-chart-cpu);min-width:0;border:1px solid var(--kube-border);border-radius:6px;background:var(--kube-surface);padding:12px}.monitor-card-memory{--chart-color:var(--kube-chart-memory);--chart-line:var(--kube-chart-memory-line)}.monitor-card-pods{--chart-color:var(--kube-chart-pods);--chart-line:var(--kube-chart-pods-line)}.monitor-card-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;min-height:34px}.monitor-card-heading h4{font-size:13px}.usage-ratio{text-align:right;font-variant-numeric:tabular-nums}.usage-ratio strong{display:block;font-size:22px;line-height:1.2;font-weight:600}.usage-ratio>span{display:block;font-size:12px;margin-top:4px}.is-over-capacity{color:var(--kube-danger)}.monitor-card h5{font-size:12px;font-weight:500;color:var(--kube-muted);margin:8px 0 0;padding-top:10px;border-top:1px solid var(--kube-border)}
-.usage-summary{display:grid;grid-template-columns:128px minmax(0,1fr);align-items:center;gap:14px;margin:6px 0 10px}.usage-pie{position:relative;min-width:0}.node-comparison{height:140px;min-width:0}.pie-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--kube-muted);font-size:20px;pointer-events:none}
-dl{margin:0;font-size:12px;font-variant-numeric:tabular-nums}dt{color:var(--kube-muted)}dd{margin:0;color:var(--kube-text);overflow-wrap:anywhere}.usage-legend{display:grid;gap:14px}.usage-legend dt{display:flex;align-items:center;gap:6px}.usage-legend dd{margin:3px 0 0 14px;font-size:14px;font-weight:500}.usage-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:var(--chart-color);border:1px solid var(--chart-line)}.usage-dot-remaining{background:var(--kube-chart-remaining);border:1px solid var(--kube-muted)}.usage-dot-used.is-over-capacity{background:var(--kube-chart-danger);border-color:var(--kube-chart-danger-line)}.node-values{min-height:96px}.node-values>div{display:flex;justify-content:space-between;gap:12px;padding:6px 0}.node-values dd{text-align:right}.node-trend{height:184px;min-width:0}.node-monitor :deep(.ant-alert){margin-bottom:10px}
+.monitor-card{min-width:0;border:1px solid var(--kube-border);border-radius:6px;background:var(--kube-surface);padding:12px}.monitor-card-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;min-height:30px}.monitor-card-heading h4{font-size:14px}.usage-ratio{text-align:right;font-variant-numeric:tabular-nums}.usage-ratio strong{display:block;font-size:18px;line-height:1.2;font-weight:600}.usage-ratio>span{display:block;font-size:12px;margin-top:4px}.is-over-capacity{color:var(--kube-danger)}
+.node-trend{height:230px;min-width:0;margin:8px 0 10px}.node-values{margin:0;padding-top:8px;border-top:1px solid var(--kube-border);font-size:12px;font-variant-numeric:tabular-nums}.metric-row{--series-color:var(--kube-chart-used);display:flex;justify-content:space-between;gap:12px;padding:5px 0}.metric-row dt{display:flex;align-items:center;gap:7px;color:var(--kube-muted)}.metric-row dd{margin:0;text-align:right;overflow-wrap:anywhere;color:var(--kube-text)}.series-swatch{width:16px;flex-shrink:0;border-top:2px solid var(--series-color)}.metric-capacity{--series-color:var(--kube-chart-capacity)}.metric-capacity .series-swatch{border-top-style:dashed}.metric-limits{--series-color:var(--kube-chart-limits)}.metric-limits .series-swatch{border-top-style:dotted}.metric-requests dt{padding-left:23px}.node-monitor :deep(.ant-alert){margin-bottom:10px}
 @container(max-width:960px){.monitor-grid{grid-template-columns:1fr}}
 @media(max-width:950px){.monitor-grid{grid-template-columns:1fr}}
 </style>
