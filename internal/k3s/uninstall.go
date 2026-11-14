@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"go.yaml.in/yaml/v3"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -35,7 +34,6 @@ type savedUninstall struct {
 	Summary      UninstallSummary `json:"summary"`
 	SourceDigest string           `json:"source_digest"`
 	Proof        uninstallProof   `json:"proof"`
-	ConfigDigest string           `json:"config_digest"`
 }
 
 func uninstallDestructiveStage(value datatypes.JSON) bool {
@@ -44,24 +42,6 @@ func uninstallDestructiveStage(value datatypes.JSON) bool {
 		return true
 	}
 	return hosts[0].Stage == "uninstall" || hosts[0].Stage == "uninstall_verify"
-}
-
-func uninstallConfigDigest(input Input, summary UninstallSummary) (string, error) {
-	options := input.AgentOptions
-	if summary.Role == "server" {
-		options = input.ServerOptions
-	}
-	config := runtimeOptions(options, Host{ID: summary.HostID, Role: summary.Role}, summary.SourceInstallationID, input.Endpoint, "EDO_RUNTIME_TOKEN")
-	if isServerJoin(input) {
-		config["server"] = input.Endpoint
-	}
-	delete(config, "token")
-	encoded, err := yaml.Marshal(config)
-	if err != nil {
-		return "", ErrUninstallUnsupported
-	}
-	sum := sha256.Sum256(encoded)
-	return hex.EncodeToString(sum[:]), nil
 }
 
 func (s *Service) authorizeUninstall(ctx context.Context, actorID string) (*model.User, error) {
@@ -333,21 +313,17 @@ func (s *Service) PreviewUninstall(ctx context.Context, actorID string, input Un
 	}
 	probeCtx, stop := context.WithTimeout(ctx, 45*time.Second)
 	defer stop()
-	configDigest, err := uninstallConfigDigest(original.Input, summary)
-	if err != nil {
-		return nil, err
-	}
-	proof, err := s.probeUninstall(probeCtx, host, bundle, summary, configDigest)
+	proof, err := s.probeUninstall(probeCtx, host, bundle, summary)
 	if err != nil {
 		return nil, err
 	}
 	id := uuid.NewString()
-	snapshot := savedInput{Input: Input{Action: "uninstall", Mode: "native", Name: source.Name}, HostDigests: map[string]string{host.ID: hostDigest(host)}, AuthVersion: actor.AuthVersion, Uninstall: &savedUninstall{TaskID: id, Summary: summary, SourceDigest: uninstallSourceDigest(source), Proof: proof, ConfigDigest: configDigest}}
+	snapshot := savedInput{Input: Input{Action: "uninstall", Mode: "native", Name: source.Name}, HostDigests: map[string]string{host.ID: hostDigest(host)}, AuthVersion: actor.AuthVersion, Uninstall: &savedUninstall{TaskID: id, Summary: summary, SourceDigest: uninstallSourceDigest(source), Proof: proof}}
 	if err = s.recheckInstallationAuthority(ctx, actorID, "uninstall", snapshot); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
-	plan = &Plan{ID: id, Action: "uninstall", Mode: "native", Name: source.Name, Status: "planned", ClusterID: source.ClusterID, ExpiresAt: now.Add(planTTL), Uninstall: &summary, Hosts: []Host{{ID: host.ID, Name: host.Name, Address: host.Address, Role: summary.Role, Status: "ready"}}, Commands: []string{summary.ScriptPath}, Warnings: []string{"官方卸载将停止此主机的 K3s 和工作负载，删除本地集群数据、本地持久卷及 K3s 网络配置；此操作不可撤销。", "不会删除 EDO 安装历史或集群连接；远端服务、进程、安装标记及锁全部验证完成后，任务才显示成功。"}}
+	plan = &Plan{ID: id, Action: "uninstall", Mode: "native", Name: source.Name, Status: "planned", ClusterID: source.ClusterID, ExpiresAt: now.Add(planTTL), Uninstall: &summary, Hosts: []Host{{ID: host.ID, Name: host.Name, Address: host.Address, Role: summary.Role, Status: "ready"}}, Commands: []string{summary.ScriptPath}, Warnings: []string{"官方卸载将停止此主机的 K3s 和工作负载，删除本地集群数据、本地持久卷及 K3s 网络配置；此操作不可撤销。", "不会删除 EDO 安装历史或集群连接；任务记录官方脚本的实际执行结果。"}}
 	encoded, _ := json.Marshal(snapshot)
 	ciphertext, err := s.secrets.Encrypt(string(encoded), []byte("k3s-installation:"+plan.ID))
 	if err != nil {
@@ -488,7 +464,7 @@ func (s *Service) recheckUninstallRemote(ctx context.Context, snapshot savedInpu
 	}
 	probeCtx, stop := context.WithTimeout(ctx, 45*time.Second)
 	defer stop()
-	proof, err := s.probeUninstall(probeCtx, host, bundle, snapshot.Uninstall.Summary, snapshot.Uninstall.ConfigDigest)
+	proof, err := s.probeUninstall(probeCtx, host, bundle, snapshot.Uninstall.Summary)
 	if err != nil {
 		return err
 	}
@@ -534,7 +510,7 @@ func (s *Service) performUninstall(ctx context.Context, record *model.K3sInstall
 	}); err != nil {
 		return installationError("uninstall_verify", err)
 	}
-	if err = s.hostProgress(record, hosts, 0, "succeeded", "官方卸载及现场验证完成"); err != nil {
+	if err = s.hostProgress(record, hosts, 0, "succeeded", "官方卸载已完成"); err != nil {
 		return err
 	}
 	return s.log(record, "官方卸载已完成；EDO 历史与集群连接已保留。")

@@ -21,7 +21,7 @@ import (
 
 func uninstallProofFixture() string {
 	var output strings.Builder
-	for index, key := range []string{"script", "killall", "config", "unit", "environment"} {
+	for index, key := range []string{"script", "killall"} {
 		fmt.Fprintf(&output, "EDO_K3S_UNINSTALL_PROOF\t%s\t1:%d:0:0:700:1:100:1:1:%s\n", key, index+1, strings.Repeat("a", 64))
 	}
 	return output.String() + "EDO_K3S_UNINSTALL_PROOF_END\n"
@@ -161,10 +161,10 @@ func TestUninstallWorkerOfficialOnlyAndVerifiedSuccess(t *testing.T) {
 	if err != nil || task.Status != "succeeded" {
 		t.Fatalf("task=%+v err=%v", task, err)
 	}
-	if len(transport.runs) != 1 || !strings.Contains(transport.runs[0], `env K3S_DATA_DIR="$edo_data" sh -- "$edo_script"`) {
+	if len(transport.runs) != 1 || !strings.Contains(transport.runs[0], `sh -- "$edo_script"`) {
 		t.Fatal("official script not used")
 	}
-	for _, bad := range []string{"rm -rf", "systemctl stop", "kill -9", "rmdir", "mkdir"} {
+	for _, bad := range []string{"K3S_DATA_DIR", "rm -rf", "systemctl stop", "kill -9", "rmdir", "mkdir", "umount", "iptables"} {
 		if strings.Contains(transport.runs[0], bad) {
 			t.Fatalf("custom uninstall mutation: %s", bad)
 		}
@@ -373,7 +373,7 @@ func TestUninstallProofRejectsUnknownTruncatedDuplicateAndSecretOutput(t *testin
 	if _, err := parseUninstallProof(valid); err != nil {
 		t.Fatal(err)
 	}
-	for _, output := range []string{"", valid + "secret-token", strings.Replace(valid, "\tkillall\t", "\tscript\t", 1), strings.Replace(valid, "\tunit\t", "\tunknown\t", 1), strings.Replace(valid, ":0:0:700:", ":1000:0:700:", 1), strings.Replace(valid, "EDO_K3S_UNINSTALL_PROOF_END", "", 1), strings.Repeat("x", 5000)} {
+	for _, output := range []string{"", valid + "secret-token", strings.Replace(valid, "\tkillall\t", "\tscript\t", 1), strings.Replace(valid, "\tkillall\t", "\tunknown\t", 1), strings.Replace(valid, "\tkillall\t", "\tconfig\t", 1), strings.Replace(valid, "\tkillall\t", "\tunit\t", 1), strings.Replace(valid, "\tkillall\t", "\tenvironment\t", 1), strings.Replace(valid, ":0:0:700:", ":1000:0:700:", 1), strings.Replace(valid, "EDO_K3S_UNINSTALL_PROOF_END", "", 1), strings.Repeat("x", 5000)} {
 		if _, err := parseUninstallProof(output); !errors.Is(err, ErrUninstallUnsupported) {
 			t.Fatalf("invalid protocol accepted: %v", err)
 		}

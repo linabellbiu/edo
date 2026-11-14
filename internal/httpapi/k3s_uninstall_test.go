@@ -49,7 +49,7 @@ func (transport *k3sUninstallHTTPTransport) Read(ctx context.Context, host model
 	if strings.Contains(script, "EDO_K3S_UNINSTALL_PROOF_END") {
 		transport.reads.Add(1)
 		var result strings.Builder
-		for index, key := range []string{"script", "killall", "config", "unit", "environment"} {
+		for index, key := range []string{"script", "killall"} {
 			fmt.Fprintf(&result, "EDO_K3S_UNINSTALL_PROOF\t%s\t1:%d:0:0:700:1:100:1:1:%s\n", key, index+1, strings.Repeat("a", 64))
 		}
 		return result.String() + "EDO_K3S_UNINSTALL_PROOF_END\n", ctx.Err()

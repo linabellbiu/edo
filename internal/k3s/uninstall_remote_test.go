@@ -4,8 +4,6 @@ package k3s
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,11 +14,20 @@ import (
 
 type uninstallShellFixture struct {
 	root, commands string
-	configDigest   string
-	fakeSocket     bool
 	summary        UninstallSummary
 	rewrite        *strings.Replacer
 }
+
+const uninstallStatFixture = `for item do last=$item; done
+case "$2" in
+'%u') printf '0\n';;
+'%a') printf '700\n';;
+'%h') printf '1\n';;
+'%s') printf '100\n';;
+'%d:%i:%u:%g:%a:%h:%s:%Y:%Z') printf '1:1:0:0:700:1:100:1:1\n';;
+*) exit 2;;
+esac
+`
 
 func newUninstallShellFixture(t *testing.T) uninstallShellFixture {
 	t.Helper()
@@ -29,57 +36,34 @@ func newUninstallShellFixture(t *testing.T) uninstallShellFixture {
 		t.Fatal(err)
 	}
 	commands := filepath.Join(root, "commands")
-	for _, directory := range []string{commands, root + "/usr/local/bin", root + "/etc/systemd/system", root + "/etc/rancher/k3s", root + "/var/lib/rancher/k3s", root + "/run/systemd/system", root + "/etc/init.d"} {
+	for _, directory := range []string{commands, root + "/usr/local/bin", root + "/etc/systemd/system", root + "/etc/rancher/k3s", root + "/var/lib/rancher/k3s", root + "/run", root + "/etc/init.d"} {
 		if err := os.MkdirAll(directory, 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	summary := UninstallSummary{SourceInstallationID: "source-fixture", HostID: "host-fixture", Role: "server", ServiceName: "k3s", ScriptPath: "/usr/local/bin/k3s-uninstall.sh", DataDir: "/var/lib/rancher/k3s"}
-	rewrite := strings.NewReplacer("/usr/local/bin", root+"/usr/local/bin", "/etc", root+"/etc", "/var/lib", root+"/var/lib", "/var/run", root+"/var/run", "/var/snap", root+"/var/snap", "/run", root+"/run")
-	write := func(path, value string) {
-		t.Helper()
-		if err := os.WriteFile(root+path, []byte(rewrite.Replace(value)), 0600); err != nil {
-			t.Fatal(err)
-		}
+	fixture := uninstallShellFixture{
+		root: root, commands: commands,
+		summary: UninstallSummary{SourceInstallationID: "source-fixture", HostID: "host-fixture", Role: "server", ServiceName: "k3s", ScriptPath: "/usr/local/bin/k3s-uninstall.sh", DataDir: "/var/lib/rancher/k3s"},
+		rewrite: strings.NewReplacer("/usr/local/bin", root+"/usr/local/bin", "/usr/lib", root+"/usr/lib", "/etc", root+"/etc", "/var/lib", root+"/var/lib", "/var/run", root+"/var/run", "/var/snap", root+"/var/snap", "/run", root+"/run"),
 	}
-	write("/usr/local/bin/k3s-uninstall.sh", "#!/bin/sh\n# /usr/local/bin/k3s-killall.sh K3S_DATA_DIR /etc/systemd/system/k3s.service /etc/rancher/k3s remove_uninstall\nprintf invoked > "+shellQuote(root+"/official-invoked")+"\n")
-	write("/usr/local/bin/k3s-killall.sh", "#!/bin/sh\n# KUBE- containerd-shim\n")
-	write("/etc/rancher/k3s/config.yaml", "node-label:\n- edo.dev/installation=source-fixture\n- edo.dev/host=host-fixture\n")
-	write("/etc/systemd/system/k3s.service", "ExecStart=/usr/local/bin/k3s server --config /etc/rancher/k3s/config.yaml\n")
-	// 官方默认环境文件可以合法为空，仍必须审阅其身份与空内容摘要。
-	write("/etc/systemd/system/k3s.service.env", "")
+	// 无害脚本只记录调用；测试不运行真正的官方卸载，也不删除主机资源。
+	fixture.write(t, "/usr/local/bin/k3s-uninstall.sh", "#!/bin/sh\nprintf invoked > "+shellQuote(root+"/official-invoked")+"\nprintf '%s' \"${K3S_DATA_DIR-unset}\" > "+shellQuote(root+"/received-data-dir")+"\nprintf '%s\\n' \"$@\" > "+shellQuote(root+"/received-arguments")+"\n")
+	fixture.write(t, "/usr/local/bin/k3s-killall.sh", "#!/bin/sh\n# 卸载脚本引用的同机官方辅助脚本夹具\n")
 	writePreflightCommand(t, commands, "id", "printf '0\\n'\n")
-	writePreflightCommand(t, commands, "stat", `for item do last=$item; done
-case "$last" in *.service.env) size=0;; *) size=100;; esac
-case "$2" in
-'%u') printf '0\n';;
-'%a') printf '700\n';;
-'%h') printf '1\n';;
-'%s') printf '%s\n' "$size";;
-'%d:%i:%u:%g:%a:%h:%s:%Y:%Z') printf '1:1:0:0:700:1:%s:1:1\n' "$size";;
-*) exit 2;;
-esac
-`)
+	writePreflightCommand(t, commands, "stat", uninstallStatFixture)
 	writePreflightCommand(t, commands, "readlink", `for item do result=$item; done; printf '%s\n' "$result"`)
-	writePreflightCommand(t, commands, "findmnt", "printf '/\\n'\n")
-	writePreflightCommand(t, commands, "ps", "printf 'sh\\n'\n")
-	writePreflightCommand(t, commands, "systemctl", "case \"$*\" in\n*FragmentPath*) printf '%s\\n' "+shellQuote(root+"/etc/systemd/system/k3s.service")+";;\n*LoadState*) printf 'not-found\\n';;\n*DropInPaths*) :;;\n'list-unit-files'*) printf 'k3s.service enabled\\n';;\n*) exit 2;;\nesac\n")
-	for _, tool := range []string{"ip", "iptables-save", "ip6tables-save"} {
-		writePreflightCommand(t, commands, tool, ":\n")
-	}
 	writeLinuxToolFixtures(t, commands)
-	config, err := os.ReadFile(root + "/etc/rancher/k3s/config.yaml")
-	if err != nil {
+	return fixture
+}
+
+func (f uninstallShellFixture) write(t *testing.T, name, value string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(f.root+name), 0700); err != nil {
 		t.Fatal(err)
 	}
-	digest := sha256.Sum256(config)
-	script, _ := os.ReadFile(root + "/usr/local/bin/k3s-uninstall.sh")
-	killall, _ := os.ReadFile(root + "/usr/local/bin/k3s-killall.sh")
-	unit, _ := os.ReadFile(root + "/etc/systemd/system/k3s.service")
-	scriptSHA, killallSHA, unitSHA := sha256.Sum256(script), sha256.Sum256(killall), sha256.Sum256(unit)
-	// 测试只执行无害夹具；生产白名单常量在这个临时脚本副本中替换为夹具摘要。
-	combinedRewrite := strings.NewReplacer(officialServerUninstallSHA256, fmt.Sprintf("%x", scriptSHA), officialKillallSHA256, fmt.Sprintf("%x", killallSHA), officialServerUnitSHA256, fmt.Sprintf("%x", unitSHA), "/usr/local/bin", root+"/usr/local/bin", "/usr/lib", root+"/usr/lib", "/etc", root+"/etc", "/var/lib", root+"/var/lib", "/var/run", root+"/var/run", "/var/snap", root+"/var/snap", "/run", root+"/run")
-	return uninstallShellFixture{root: root, commands: commands, configDigest: fmt.Sprintf("%x", digest), summary: summary, rewrite: combinedRewrite}
+	if err := os.WriteFile(f.root+name, []byte(value), 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f uninstallShellFixture) run(t *testing.T, script string) (string, error) {
@@ -87,186 +71,183 @@ func (f uninstallShellFixture) run(t *testing.T, script string) (string, error) 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, "sh", "-se")
-	if f.fakeSocket {
-		script = strings.Replace(script, "[ -S /var/run/docker.sock ]", "[ -f "+shellQuote(f.root+"/docker-marker")+" ]", 1)
-	}
 	command.Stdin = strings.NewReader(f.rewrite.Replace(script))
 	command.Env = []string{"PATH=" + f.commands + ":/usr/bin:/bin:/usr/sbin:/sbin", "GORACE=atexit_sleep_ms=0"}
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
 
-func TestUninstallShellReadOnlyGuardAndExactFrozenOfficialExecution(t *testing.T) {
-	f := newUninstallShellFixture(t)
-	output, err := f.run(t, uninstallProbeScript(f.summary, f.configDigest))
+func (f uninstallShellFixture) probe(t *testing.T) uninstallProof {
+	t.Helper()
+	output, err := f.run(t, uninstallProbeScript(f.summary))
 	if err != nil {
-		t.Fatalf("probe: %v %s", err, output)
+		t.Fatalf("读取脚本身份失败: %v %s", err, output)
 	}
 	proof, err := parseUninstallProof(output)
 	if err != nil {
-		t.Fatalf("proof: %v %s", err, output)
+		t.Fatalf("脚本身份协议无效: %v %s", err, output)
 	}
+	return proof
+}
+
+func TestUninstallShellReadOnlyGuardAndExactFrozenOfficialExecution(t *testing.T) {
+	f := newUninstallShellFixture(t)
+	proof := f.probe(t)
 	if _, err := os.Stat(f.root + "/official-invoked"); !os.IsNotExist(err) {
-		t.Fatal("probe executed uninstaller")
+		t.Fatal("只读预览执行了卸载脚本")
 	}
-	output, err = f.run(t, uninstallExecutionScript(savedUninstall{Summary: f.summary, Proof: proof, ConfigDigest: f.configDigest}))
+	output, err := f.run(t, uninstallExecutionScript(savedUninstall{Summary: f.summary, Proof: proof}))
 	if err != nil {
-		t.Fatalf("official invocation: %v %s", err, output)
+		t.Fatalf("调用已冻结的目标脚本失败: %v %s", err, output)
 	}
 	if value, err := os.ReadFile(f.root + "/official-invoked"); err != nil || string(value) != "invoked" {
-		t.Fatal("frozen script not invoked")
+		t.Fatal("没有执行准确目标脚本")
+	}
+	if value, err := os.ReadFile(f.root + "/received-data-dir"); err != nil || string(value) != "unset" {
+		t.Fatal("EDO 向官方脚本注入了旧安装计划的数据目录")
+	}
+	if value, err := os.ReadFile(f.root + "/received-arguments"); err != nil || strings.TrimSpace(string(value)) != "" {
+		t.Fatal("EDO 向官方脚本注入了额外参数")
 	}
 }
 
-func TestUninstallShellBlocksFailedReadsSharedMountsOtherServicesAndReplacedFiles(t *testing.T) {
-	for _, scenario := range []string{"ps-error", "mount-error", "unit-error", "other-service", "other-init-service", "dangling-init-service", "shared-mount", "prefix-mount", "docker-prefix-bind", "docker-raw-link", "cni-netns-mount", "cni-rules", "dropin", "config-dropin-empty", "config-dropin-override", "config-dropin-symlink", "foreign-cli-link", "environment", "live-installer", "installer-lock", "symlink", "wrong-origin", "replaced-script", "replaced-unit", "read-only-proof"} {
+func TestUninstallShellLeavesMountsNetworkServicesAndConfigurationToOfficialScript(t *testing.T) {
+	f := newUninstallShellFixture(t)
+	// 模拟用户安装后维护的配置与其他服务。EDO 不读取其状态，不执行辅助清理。
+	for name, value := range map[string]string{
+		"/etc/rancher/k3s/config.yaml":                                          "data-dir: /user-managed/data\nnode-label: []\n",
+		"/etc/rancher/k3s/config.yaml.d/99-storage.yaml":                        "snapshotter: native\n",
+		"/etc/systemd/system/k3s.service":                                       "用户维护的系统服务\n",
+		"/etc/systemd/system/k3s.service.env":                                   "HTTPS_PROXY=http://user-managed-proxy\n",
+		"/etc/systemd/system/k3s.service.d/override.conf":                       "用户维护的服务参数\n",
+		"/etc/default/k3s":                                                      "用户维护的环境\n",
+		"/etc/init.d/k3s":                                                       "OpenRC 官方安装脚本生成的服务\n",
+		"/var/lib/cni/state":                                                    "已有容器网络状态\n",
+		"/var/lib/kubelet/pods/pod/volumes/kubernetes.io~empty-dir/cache/state": "Pod 临时卷\n",
+	} {
+		f.write(t, name, value)
+	}
+	for _, tool := range []string{"ps", "findmnt", "systemctl", "rc-service", "rc-update", "docker", "tailscale", "ip", "iptables", "iptables-save", "ip6tables-save", "mount", "umount", "rm", "kill"} {
+		writePreflightCommand(t, f.commands, tool, "printf '%s\\n' "+shellQuote(tool)+" >> "+shellQuote(f.root+"/unexpected-tool")+"\nexit 97\n")
+	}
+	proof := f.probe(t)
+	if output, err := f.run(t, uninstallExecutionScript(savedUninstall{Summary: f.summary, Proof: proof})); err != nil {
+		t.Fatalf("正常运行状态仍被 EDO 自制检查阻断: %v %s", err, output)
+	}
+	if _, err := os.Stat(f.root + "/unexpected-tool"); !os.IsNotExist(err) {
+		t.Fatal("EDO 额外调用了挂载、网络、服务或清理工具")
+	}
+	if value, err := os.ReadFile(f.root + "/etc/rancher/k3s/config.yaml"); err != nil || string(value) != "data-dir: /user-managed/data\nnode-label: []\n" {
+		t.Fatal("EDO 改写了用户维护的 K3s 配置")
+	}
+	if _, err := os.Stat(f.root + "/official-invoked"); err != nil {
+		t.Fatal("没有将操作交给目标主机的卸载脚本")
+	}
+}
+
+func TestUninstallShellBlocksInvalidIdentityLocksAndReplacedScripts(t *testing.T) {
+	for _, scenario := range []string{"non-root", "stat-error", "hash-error", "installer-lock", "dangling-lock", "script-symlink", "killall-symlink", "missing-script", "missing-killall", "non-root-file", "writable-file", "multiple-links", "empty-script", "oversized-script", "replaced-script", "replaced-killall", "changed-proof"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newUninstallShellFixture(t)
-			output, err := f.run(t, uninstallProbeScript(f.summary, f.configDigest))
-			if err != nil {
-				t.Fatalf("initial probe: %v %s", err, output)
-			}
-			proof, err := parseUninstallProof(output)
-			if err != nil {
-				t.Fatal(err)
-			}
+			proof := f.probe(t)
 			switch scenario {
-			case "ps-error":
-				writePreflightCommand(t, f.commands, "ps", "exit 2\n")
-			case "mount-error":
-				writePreflightCommand(t, f.commands, "findmnt", "exit 2\n")
-			case "unit-error":
-				writePreflightCommand(t, f.commands, "systemctl", "exit 2\n")
-			case "other-service":
-				if err := os.WriteFile(f.root+"/etc/systemd/system/k3s-other.service", []byte("fixture"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			case "other-init-service":
-				if err := os.WriteFile(f.root+"/etc/init.d/k3s-other", []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
-					t.Fatal(err)
-				}
-			case "dangling-init-service":
-				if err := os.Symlink(f.root+"/absent", f.root+"/etc/init.d/k3s-other"); err != nil {
-					t.Fatal(err)
-				}
-			case "shared-mount":
-				writePreflightCommand(t, f.commands, "findmnt", "printf '%s\\n' "+shellQuote(f.root+"/var/lib/rancher/k3s/shared")+"\n")
-			case "prefix-mount":
-				writePreflightCommand(t, f.commands, "findmnt", "printf '%s\\n' "+shellQuote(f.root+"/run/k3s-foreign")+"\n")
-			case "cni-netns-mount":
-				writePreflightCommand(t, f.commands, "findmnt", "printf '%s\\n' "+shellQuote(f.root+"/run/netns/cni-foreign")+"\n")
-			case "docker-prefix-bind", "docker-raw-link":
-				f.fakeSocket = true
-				if err := os.WriteFile(f.root+"/docker-marker", nil, 0600); err != nil {
-					t.Fatal(err)
-				}
-				bind := f.root + "/run/k3s-other"
-				if scenario == "docker-raw-link" {
-					bind = f.root + "/var/lib/rancher/k3s/link"
-					writePreflightCommand(t, f.commands, "readlink", "for item do last=$item; done\ncase \"$last\" in "+shellQuote(bind)+") printf '/outside/safe-data\\n';; *) printf '%s\\n' \"$last\";; esac\n")
-				}
-				writePreflightCommand(t, f.commands, "docker", "case \"$*\" in *' info '*) printf '/safe/docker-data\\n';; *' ps '*) printf '%s\\n' "+shellQuote(strings.Repeat("a", 64))+";; *' inspect '*) printf '%s\\n' "+shellQuote(bind)+";; *) exit 2;; esac\n")
-			case "cni-rules":
-				writePreflightCommand(t, f.commands, "iptables-save", "printf '%s\\n' '-A CNI-EXTERNAL -j ACCEPT'\n")
-			case "dropin":
-				if err := os.Mkdir(f.root+"/etc/systemd/system/k3s.service.d", 0700); err != nil {
-					t.Fatal(err)
-				}
-			case "config-dropin-empty", "config-dropin-override":
-				dir := f.root + "/etc/rancher/k3s/config.yaml.d"
-				if err := os.Mkdir(dir, 0700); err != nil {
-					t.Fatal(err)
-				}
-				if scenario == "config-dropin-override" {
-					if err := os.WriteFile(dir+"/99-storage.yaml", []byte("data-dir: /unrelated/data\n"), 0600); err != nil {
-						t.Fatal(err)
-					}
-				}
-			case "config-dropin-symlink":
-				if err := os.Symlink(f.root, f.root+"/etc/rancher/k3s/config.yaml.d"); err != nil {
-					t.Fatal(err)
-				}
-			case "foreign-cli-link":
-				if err := os.Symlink("/usr/bin/foreign-kubectl", f.root+"/usr/local/bin/kubectl"); err != nil {
-					t.Fatal(err)
-				}
-			case "environment":
-				if err := os.WriteFile(f.root+"/etc/systemd/system/k3s.service.env", []byte("K3S_DATA_DIR=/unrelated/data\n"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			case "live-installer":
-				writePreflightCommand(t, f.commands, "ps", "printf '%s\\n' 'sh /tmp/edo-k3s-install.fixture/install.sh'\n")
+			case "non-root":
+				writePreflightCommand(t, f.commands, "id", "printf '1000\\n'\n")
+			case "stat-error":
+				writePreflightCommand(t, f.commands, "stat", "exit 2\n")
+			case "hash-error":
+				writePreflightCommand(t, f.commands, "sha256sum", "exit 2\n")
 			case "installer-lock":
 				if err := os.Mkdir(f.root+"/run/edo-k3s-install.lock", 0700); err != nil {
 					t.Fatal(err)
 				}
-			case "symlink":
-				if err := os.Rename(f.root+"/etc/rancher/k3s/config.yaml", f.root+"/config-real"); err != nil {
+			case "dangling-lock":
+				if err := os.Symlink(f.root+"/absent", f.root+"/run/edo-k3s-install.lock"); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink(f.root+"/config-real", f.root+"/etc/rancher/k3s/config.yaml"); err != nil {
+			case "script-symlink", "killall-symlink":
+				name := "/usr/local/bin/k3s-uninstall.sh"
+				if scenario == "killall-symlink" {
+					name = "/usr/local/bin/k3s-killall.sh"
+				}
+				if err := os.Rename(f.root+name, f.root+"/real-script"); err != nil {
 					t.Fatal(err)
 				}
-			case "wrong-origin":
-				if err := os.WriteFile(f.root+"/etc/rancher/k3s/config.yaml", []byte("node-label: []\n"), 0600); err != nil {
+				if err := os.Symlink(f.root+"/real-script", f.root+name); err != nil {
 					t.Fatal(err)
 				}
-			case "replaced-script":
-				file, err := os.OpenFile(f.root+"/usr/local/bin/k3s-uninstall.sh", os.O_APPEND|os.O_WRONLY, 0600)
-				if err != nil {
+			case "missing-script", "missing-killall":
+				name := "/usr/local/bin/k3s-uninstall.sh"
+				if scenario == "missing-killall" {
+					name = "/usr/local/bin/k3s-killall.sh"
+				}
+				if err := os.Remove(f.root + name); err != nil {
 					t.Fatal(err)
 				}
-				_, _ = file.WriteString("\n# replaced\n")
-				_ = file.Close()
-			case "replaced-unit":
-				file, err := os.OpenFile(f.root+"/etc/systemd/system/k3s.service", os.O_APPEND|os.O_WRONLY, 0600)
-				if err != nil {
+			case "non-root-file":
+				writePreflightCommand(t, f.commands, "stat", strings.ReplaceAll(uninstallStatFixture, "printf '0\\n'", "printf '1000\\n'"))
+			case "writable-file":
+				writePreflightCommand(t, f.commands, "stat", strings.ReplaceAll(uninstallStatFixture, "printf '700\\n'", "printf '777\\n'"))
+			case "multiple-links":
+				writePreflightCommand(t, f.commands, "stat", strings.ReplaceAll(uninstallStatFixture, "'%h') printf '1\\n'", "'%h') printf '2\\n'"))
+			case "empty-script":
+				writePreflightCommand(t, f.commands, "stat", strings.ReplaceAll(uninstallStatFixture, "'%s') printf '100\\n'", "'%s') printf '0\\n'"))
+			case "oversized-script":
+				writePreflightCommand(t, f.commands, "stat", strings.ReplaceAll(uninstallStatFixture, "'%s') printf '100\\n'", "'%s') printf '1048577\\n'"))
+			case "replaced-script", "replaced-killall":
+				name := "/usr/local/bin/k3s-uninstall.sh"
+				if scenario == "replaced-killall" {
+					name = "/usr/local/bin/k3s-killall.sh"
+				}
+				if err := os.WriteFile(f.root+name, []byte("#!/bin/sh\nprintf changed\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				_, _ = file.WriteString("ExecStop=/usr/bin/false\n")
-				_ = file.Close()
-			case "read-only-proof":
+			case "changed-proof":
 				proof.Killall = strings.Replace(proof.Killall, ":100:", ":101:", 1)
 			}
-			if output, err := f.run(t, uninstallExecutionScript(savedUninstall{Summary: f.summary, Proof: proof, ConfigDigest: f.configDigest})); err == nil {
-				t.Fatalf("unsafe scene executed: %s", output)
+			if output, err := f.run(t, uninstallExecutionScript(savedUninstall{Summary: f.summary, Proof: proof})); err == nil {
+				t.Fatalf("文件身份或锁已变化仍执行: %s", output)
 			}
 			if _, err := os.Stat(f.root + "/official-invoked"); !os.IsNotExist(err) {
-				t.Fatal("blocked guard invoked official script")
+				t.Fatal("已阻断的目标仍执行了卸载脚本")
 			}
 		})
 	}
 }
 
-func TestUninstallShellVerificationFailsForResidualLockWithoutDeletingIt(t *testing.T) {
+func TestUninstallShellVerificationOnlyObservesExactTargetWithoutCleanup(t *testing.T) {
 	f := newUninstallShellFixture(t)
-	// 后验夹具只保留一个未知锁；所有删除仅针对测试本身创建的临时目录。
-	for _, file := range []string{"/usr/local/bin/k3s-uninstall.sh", "/usr/local/bin/k3s-killall.sh", "/etc/systemd/system/k3s.service", "/etc/systemd/system/k3s.service.env"} {
-		if err := os.Remove(f.root + file); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, directory := range []string{"/etc/rancher/k3s", "/var/lib/rancher/k3s"} {
-		if err := os.RemoveAll(f.root + directory); err != nil {
-			t.Fatal(err)
-		}
-	}
-	writePreflightCommand(t, f.commands, "systemctl", "case \"$*\" in *LoadState*) printf 'not-found\\n';; 'list-unit-files'*) :;; *) exit 2;; esac\n")
-	lock := f.root + "/run/edo-k3s-install.lock"
-	if err := os.Mkdir(lock, 0700); err != nil {
-		t.Fatal(err)
-	}
 	if output, err := f.run(t, uninstallVerificationScript(f.summary)); err == nil {
-		t.Fatalf("residual lock passed: %s", output)
+		t.Fatalf("目标卸载脚本仍存在却通过验证: %s", output)
 	}
-	if _, err := os.Stat(lock); err != nil {
-		t.Fatal("unknown lock was removed")
+	if _, err := os.Stat(f.root + "/usr/local/bin/k3s-uninstall.sh"); err != nil {
+		t.Fatal("结果验证删除了目标脚本")
 	}
-	if err := os.Remove(lock); err != nil {
+	// 仅测试夹具模拟官方卸载结束；EDO 的结果验证不负责删除其他文件或服务。
+	if err := os.Remove(f.root + "/usr/local/bin/k3s-uninstall.sh"); err != nil {
 		t.Fatal(err)
+	}
+	f.write(t, "/run/edo-k3s-install.lock/marker", "用户后续操作的锁\n")
+	f.write(t, "/var/lib/rancher/k3s/user-state", "用户维护的数据\n")
+	for _, tool := range []string{"ps", "systemctl", "rm", "umount", "ip", "iptables"} {
+		writePreflightCommand(t, f.commands, tool, "printf unexpected >> "+shellQuote(f.root+"/unexpected-tool")+"\nexit 97\n")
 	}
 	output, err := f.run(t, uninstallVerificationScript(f.summary))
 	if err != nil || output != "EDO_K3S_UNINSTALL_VERIFIED\n" {
-		t.Fatalf("clean fixture: %v %s", err, output)
+		t.Fatalf("准确目标验证失败: %v %s", err, output)
+	}
+	for _, name := range []string{"/usr/local/bin/k3s-killall.sh", "/var/lib/rancher/k3s/user-state", "/run/edo-k3s-install.lock/marker"} {
+		if _, err := os.Stat(f.root + name); err != nil {
+			t.Fatalf("结果验证触碰了其他资源: %s", name)
+		}
+	}
+	if _, err := os.Stat(f.root + "/unexpected-tool"); !os.IsNotExist(err) {
+		t.Fatal("结果验证执行了自制清理或服务检查")
+	}
+	if err := os.Symlink(f.root+"/absent", f.root+"/usr/local/bin/k3s-uninstall.sh"); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := f.run(t, uninstallVerificationScript(f.summary)); err == nil {
+		t.Fatalf("目标存在悬空符号链接却通过: %s", output)
 	}
 }
