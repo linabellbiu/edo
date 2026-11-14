@@ -1,9 +1,29 @@
 <script setup>
-import {ref} from 'vue'
+import {nextTick,onBeforeUnmount,onMounted,ref} from 'vue'
 import {theme} from 'ant-design-vue'
 import K3sUninstallDrawer from '/src/components/K3sUninstallDrawer.vue'
-defineProps({host:{type:Object,required:true},calls:{type:Array,required:true}})
-const open=ref(false),dark=new URLSearchParams(location.search).get('theme')==='dark'
+const props=defineProps({host:{type:Object,required:true},calls:{type:Array,required:true},resultTaskName:{type:String,default:''}})
+const open=ref(Boolean(props.resultTaskName)),dark=new URLSearchParams(location.search).get('theme')==='dark'
+let resultObserver,resultTimeout
+onMounted(()=>{
+  if(!props.resultTaskName)return
+  // 隔离页面沿用已有的历史查看入口展示结果，不给生产组件增加测试专用状态。
+  const viewCurrentResult=()=>{
+    const row=[...document.querySelectorAll('.history-row')].find(value=>value.textContent.includes(props.resultTaskName))
+    const button=row&&[...row.querySelectorAll('button')].find(value=>value.textContent.trim()==='查看进度')
+    if(!button||button.disabled)return
+    resultObserver?.disconnect();clearTimeout(resultTimeout)
+    const history=row.closest('details')
+    if(history)history.open=true
+    button.click()
+    nextTick(()=>{if(history?.isConnected)history.open=false})
+  }
+  resultObserver=new MutationObserver(viewCurrentResult)
+  resultObserver.observe(document.body,{childList:true,subtree:true})
+  resultTimeout=setTimeout(()=>resultObserver?.disconnect(),10_000)
+  viewCurrentResult()
+})
+onBeforeUnmount(()=>{resultObserver?.disconnect();clearTimeout(resultTimeout)})
 document.documentElement.dataset.theme=dark?'dark':'light'
 </script>
 <template>

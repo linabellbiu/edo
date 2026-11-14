@@ -111,6 +111,31 @@ test('不明卸载结果只按校验后的失败状态与固定执行阶段识�
   for(const patch of [{action:'create'},{mode:'k3d'},{uninstall:undefined},{uninstall:summary({script_path:'/tmp/arbitrary.sh'})},{hosts:[{...task().hosts[0],id:'wrong',stage:'uninstall_verify'}]}])assert.equal(uninstall.k3sUninstallResultUncertain(task({status:'failed',hosts:[{...task().hosts[0],stage:'uninstall_verify'}],...patch})),false)
 })
 
+test('结果只呈现一次状态，耗时按结束时间冻结，历史不重复当前任务且仍可切换',async()=>{
+  const done=task({status:'succeeded',started_at:'2026-11-14T15:48:27+08:00',finished_at:'2026-11-14T15:48:29+08:00',message:'官方卸载已完成'}),older=task({id:'older-task',status:'succeeded'})
+  const h=harness({api:{listK3sInstallations:async()=>[done,older],getK3sInstallation:async id=>id===older.id?older:done}})
+  try{
+    await h.open();h.state.viewInstallation(h.state.recent.value[0]);await settle()
+    assert.equal(h.state.elapsed.value,'2 秒');assert.equal(h.state.resultMessage.value,'')
+    assert.deepEqual(h.state.history.value.map(item=>item.id),['older-task'])
+    await h.advance(60_000);assert.equal(h.state.elapsed.value,'2 秒')
+    h.state.viewInstallation(h.state.history.value[0]);await settle()
+    assert.equal(h.state.installation.value.id,'older-task');assert.deepEqual(h.state.history.value.map(item=>item.id),[done.id])
+  }finally{h.stop()}
+})
+
+test('精简结果仍直接展示失败与不明结果，缺少时间保持空值',async()=>{
+  for(const value of [task({status:'failed',error:'官方脚本执行失败',hosts:[{...task().hosts[0],stage:'uninstall_guard'}]}),task({status:'failed',error:'连接中断',hosts:[{...task().hosts[0],stage:'uninstall_verify'}]})]){
+    const h=harness({api:{listK3sInstallations:async()=>[value],getK3sInstallation:async()=>value}})
+    try{
+      await h.open();h.state.viewInstallation(h.state.recent.value[0]);await settle()
+      assert.equal(h.state.elapsed.value,'—');assert.match(h.state.resultMessage.value,new RegExp(value.error))
+      assert.equal(h.state.history.value.length,0)
+      if(value.hosts[0].stage==='uninstall_verify'){assert.match(h.state.resultMessage.value,/主机锁已保留/);assert.equal(h.state.hostLocked.value,true)}
+    }finally{h.stop()}
+  }
+})
+
 test('卸载派发后结果不明显示保留锁，不能回来源/重新预览/执行，日志与刷新保留',async()=>{
   const unknown=task({status:'failed',hosts:[{...task().hosts[0],stage:'uninstall_verify',status:'failed'}],logs:['安全日志：等待结果核验'],error:'无法安全确认此目标'})
   const h=harness({api:{getK3sInstallation:async()=>unknown,listK3sInstallations:async()=>[]}})
