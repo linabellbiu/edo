@@ -309,10 +309,12 @@ test('节点监控饼图浅深主题可辨识，保留真实数值与12px趋势�
     assert.equal(trend.xAxis.axisLabel.fontSize,12);assert.equal(trend.yAxis.axisLabel.fontSize,12)
     assert.equal(comparison.series[0].type,'pie');assert.equal(comparison.series[0].emphasis.scale,false)
     const [used,remaining]=comparison.series[0].data
-    assert.ok(contrast(used.itemStyle.color,remaining.itemStyle.color)>=3,`${theme}/${key}/slices`)
-    assert.ok(contrast(used.itemStyle.color,colors['--kube-surface'])>=3,`${theme}/${key}/used`)
+    assert.ok(contrast(used.itemStyle.borderColor,remaining.itemStyle.color)>=3,`${theme}/${key}/slice-boundary`)
+    assert.ok(contrast(used.itemStyle.borderColor,colors['--kube-surface'])>=3,`${theme}/${key}/boundary-surface`)
+    assert.equal(used.itemStyle.color,colors[`--kube-chart-${state.cards.value.find(card=>card.key===key).overCapacity?'danger':key}`])
     assert.equal(remaining.itemStyle.color,colors['--kube-chart-remaining'])
-    assert.equal(trend.series[0].itemStyle.color,colors['--kube-chart-usage'])
+    assert.equal(trend.series[0].itemStyle.color,colors[`--kube-chart-${key}-line`]??colors[`--kube-chart-${key}`])
+    assert.ok(contrast(trend.series[0].itemStyle.color,colors['--kube-surface'])>=3,`${theme}/${key}/trend`)
    }
    assert.deepEqual(options.get('[data-comparison="cpu"]').series[0].data.map(row=>row.value),[5,0])
    assert.deepEqual(state.cards.value[0].rows.map(row=>row.value),[5,4,2,8])
@@ -322,5 +324,7 @@ test('节点监控饼图浅深主题可辨识，保留真实数值与12px趋势�
  const css=components.KubeNodeMonitor.styles
  assert.equal(declarations(css,'.monitor-card').background,'var(--kube-surface)')
  assert.equal(declarations(css,'.monitor-card')['border-radius'],'6px')
+ assert.equal(declarations(css,'.usage-dot').background,'var(--chart-color)')
+ assert.equal(declarations(css,'.usage-dot').border,'1px solid var(--chart-line)')
  assert.ok(css.some(root=>root.nodes.some(node=>node.type==='atrule'&&node.name==='container'&&node.params.includes('960px'))))
 })

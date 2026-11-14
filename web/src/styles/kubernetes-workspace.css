@@ -29,8 +29,14 @@
   --kube-meter-danger: #a23448;
   --kube-meter-unknown: #5d6e84;
   --kube-meter-label: #ffffff;
-  --kube-chart-usage: #2f857a;
-  --kube-chart-remaining: #e8eeed;
+  --kube-chart-cpu: #526aff;
+  --kube-chart-memory: #22b978;
+  --kube-chart-memory-line: #16845a;
+  --kube-chart-pods: #e5a11c;
+  --kube-chart-pods-line: #a66b00;
+  --kube-chart-danger: #ef5a6e;
+  --kube-chart-danger-line: #d94c62;
+  --kube-chart-remaining: #f0f2f7;
 }
 
 :root[data-theme='dark'] {
@@ -62,8 +68,14 @@
   --kube-meter-warning: #8c621e;
   --kube-meter-danger: #a8465b;
   --kube-meter-unknown: #5a6d84;
-  --kube-chart-usage: #58b8a8;
-  --kube-chart-remaining: #2a3c3b;
+  --kube-chart-cpu: #8fa2ff;
+  --kube-chart-memory: #62d8a2;
+  --kube-chart-memory-line: #62d8a2;
+  --kube-chart-pods: #f3c65b;
+  --kube-chart-pods-line: #f3c65b;
+  --kube-chart-danger: #ff8c9b;
+  --kube-chart-danger-line: #ff8c9b;
+  --kube-chart-remaining: #354254;
 }
 
 .kube-workspace .resource-panel.resource-panel {
