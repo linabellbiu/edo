@@ -235,7 +235,10 @@ func (entry *resourceObserver) change(value any, eventType string) {
 }
 
 func (q *clusterQueries) publish(event ResourceChange) {
-	q.overviewEpoch.Add(1)
+	// 新订阅者的 reset 仅要求页面重新读取，并不代表资源发生了变化。
+	if event.Type != "reset" || event.Resource != "" {
+		q.overviewEpoch.Add(1)
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	def, known := ResourceType(event.Resource)

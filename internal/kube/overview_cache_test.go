@@ -72,6 +72,11 @@ func TestOverviewCacheIsolatedCopyExpiryAndInvalidation(t *testing.T) {
 	if reads.Load() != 1 || second.Counts["nodes"].Count != 1 || second.Phases["Injected"] != 0 || second.Usage["nodes"]["worker"].CPU != .1 || *second.Nodes[0].PodCapacity != 110 || !second.CollectedAt.Equal(collected) {
 		t.Fatal("缓存被调用方污染、重复采集或伪造了采集时间", reads.Load(), second)
 	}
+	query.publish(ResourceChange{Type: "reset"})
+	read()
+	if reads.Load() != 1 {
+		t.Fatal("页面重连的同步通知不应清空有效缓存", reads.Load())
+	}
 	clock.now = clock.now.Add(overviewCacheTTL + time.Millisecond)
 	read()
 	if reads.Load() != 2 {
