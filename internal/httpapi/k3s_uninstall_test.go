@@ -68,7 +68,7 @@ func TestK3sUninstallHTTPRequiresIndependentPermission(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/v1/kubernetes/k3s/uninstall-targets?host_id=httpapi-deployment-host", nil},
 		{http.MethodPost, "/api/v1/kubernetes/k3s/uninstall/plans", map[string]string{"installation_id": "missing-installation", "host_id": "httpapi-deployment-host"}},
-		{http.MethodPost, "/api/v1/kubernetes/k3s/uninstallations", map[string]string{"plan_id": "missing-plan", "confirmation": "确认"}},
+		{http.MethodPost, "/api/v1/kubernetes/k3s/uninstallations", map[string]string{"plan_id": "missing-plan", "confirmation": "我已确认卸载"}},
 	}
 	for _, item := range requests {
 		response := performJSONRequest(t, router, item.method, item.path, item.body, nil)
@@ -106,12 +106,12 @@ func TestK3sUninstallHTTPRejectsMissingOrInexactConfirmation(t *testing.T) {
 	t.Cleanup(cleanup)
 	admin := loginForDepartmentTest(t, router, "admin")
 	before := k3sHTTPPreflightState(t, db)
-	for _, confirmation := range []string{"", "确认 ", " 确认", "CONFIRM", "确认确认"} {
+	for _, confirmation := range []string{"", "确认", "我已确认", "我已确认卸载 ", " 我已确认卸载", "CONFIRM", "我已确认卸载\n", "我已确认卸载\u200b"} {
 		response := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/uninstallations", map[string]string{
 			"plan_id": "missing-plan", "confirmation": confirmation,
 		}, admin)
 		var payload errorResponse
-		if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &payload) != nil || payload.Code != "k3s_uninstall_confirmation" {
+		if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &payload) != nil || payload.Code != "k3s_uninstall_confirmation" || payload.Message != "请输入“我已确认卸载”后再执行卸载" {
 			t.Fatalf("未要求用户精确输入确认: status=%d body=%s", response.Code, response.Body.String())
 		}
 	}
@@ -199,15 +199,15 @@ func TestK3sUninstallHTTPQueuesOnlyExplicitlyConfirmedOwnedPlan(t *testing.T) {
 	if response.Header().Get("Cache-Control") != "no-store" || strings.Contains(response.Body.String(), "test-only-ssh-password") || strings.Contains(response.Body.String(), "700:1:100:1:1:") {
 		t.Fatal("卸载预览被缓存或泄露私有现场摘要")
 	}
-	notOwner := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/uninstallations", map[string]string{"plan_id": plan.ID, "confirmation": "确认"}, admin)
+	notOwner := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/uninstallations", map[string]string{"plan_id": plan.ID, "confirmation": "我已确认卸载"}, admin)
 	if notOwner.Code != http.StatusNotFound {
 		t.Fatalf("其他操作者可以提交卸载计划: status=%d body=%s", notOwner.Code, notOwner.Body.String())
 	}
-	queued := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/uninstallations", map[string]string{"plan_id": plan.ID, "confirmation": "确认"}, cookie)
+	queued := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/uninstallations", map[string]string{"plan_id": plan.ID, "confirmation": "我已确认卸载"}, cookie)
 	if queued.Code != http.StatusAccepted || !strings.Contains(queued.Body.String(), "\"status\":\"pending\"") {
 		t.Fatalf("确认后的卸载未异步排队: status=%d body=%s", queued.Code, queued.Body.String())
 	}
-	repeated := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/uninstallations", map[string]string{"plan_id": plan.ID, "confirmation": "确认"}, cookie)
+	repeated := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/uninstallations", map[string]string{"plan_id": plan.ID, "confirmation": "我已确认卸载"}, cookie)
 	if repeated.Code != http.StatusConflict {
 		t.Fatalf("同一卸载被重复提交: status=%d body=%s", repeated.Code, repeated.Body.String())
 	}

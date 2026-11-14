@@ -126,7 +126,7 @@ func TestUninstallPlanFreezesOneHostOfficialScriptWithoutRemoteWrite(t *testing.
 func TestUninstallConfirmationAndInstallationEndpointCannotBypass(t *testing.T) {
 	f, source, transport := uninstallFixture(t)
 	plan := uninstallPlan(t, f, source)
-	for _, confirmation := range []string{"", "确认 ", " 确认", "CONFIRM", "确认\n"} {
+	for _, confirmation := range []string{"", "确认", "我已确认", "我已确认卸载 ", " 我已确认卸载", "CONFIRM", "我已确认卸载\n", "我已确认卸载\u200b"} {
 		if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, confirmation); !errors.Is(err, ErrUninstallConfirmation) {
 			t.Fatalf("confirmation=%q err=%v", confirmation, err)
 		}
@@ -137,11 +137,11 @@ func TestUninstallConfirmationAndInstallationEndpointCannotBypass(t *testing.T) 
 	if len(transport.runs) != 0 {
 		t.Fatal("invalid confirmation executed remote script")
 	}
-	task, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "确认")
+	task, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "我已确认卸载")
 	if err != nil || task.Status != "pending" || task.Uninstall == nil {
 		t.Fatalf("submit=%+v err=%v", task, err)
 	}
-	if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "确认"); !errors.Is(err, ErrPlanConsumed) {
+	if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "我已确认卸载"); !errors.Is(err, ErrPlanConsumed) {
 		t.Fatalf("duplicate=%v", err)
 	}
 }
@@ -149,7 +149,7 @@ func TestUninstallConfirmationAndInstallationEndpointCannotBypass(t *testing.T) 
 func TestUninstallWorkerOfficialOnlyAndVerifiedSuccess(t *testing.T) {
 	f, source, transport := uninstallFixture(t)
 	plan := uninstallPlan(t, f, source)
-	if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "确认"); err != nil {
+	if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "我已确认卸载"); err != nil {
 		t.Fatal(err)
 	}
 	record, err := f.service.claim(f.ctx)
@@ -184,7 +184,7 @@ func TestUninstallWorkerFailureNeverRetriesOrClaimsSuccess(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			f, source, transport := uninstallFixture(t)
 			plan := uninstallPlan(t, f, source)
-			if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "确认"); err != nil {
+			if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "我已确认卸载"); err != nil {
 				t.Fatal(err)
 			}
 			switch scenario {
@@ -240,7 +240,7 @@ func TestUninstallRejectsChangedExpiredBusyAndLateRevocation(t *testing.T) {
 			case "source":
 				f.db.Model(&model.K3sInstallation{}).Where("uuid = ?", source.ID).Update("status", "running")
 			}
-			if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "确认"); err == nil {
+			if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "我已确认卸载"); err == nil {
 				t.Fatal("changed/invalid target submitted")
 			}
 			if len(transport.runs) != 0 {
@@ -271,7 +271,7 @@ func TestUninstallPermissionIsIndependentFreshAndSourceMayBeColleague(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.ExecuteUninstall(ctx, actor.ID, plan.ID, "确认"); err != nil {
+	if _, err := f.service.ExecuteUninstall(ctx, actor.ID, plan.ID, "我已确认卸载"); err != nil {
 		t.Fatal("uninstall must not require install/node creation permissions:", err)
 	}
 	if err := f.db.Create(&model.UserPermission{UserID: actor.ID, Permission: access.PermissionK3sUninstall, Effect: model.PermissionDeny, CreatedAt: time.Now(), UpdatedAt: time.Now()}).Error; err != nil {
@@ -288,7 +288,7 @@ func TestUninstallPermissionIsIndependentFreshAndSourceMayBeColleague(t *testing
 func TestUninstallHistoryFiltersHostBeforeLimit(t *testing.T) {
 	f, source, _ := uninstallFixture(t)
 	plan := uninstallPlan(t, f, source)
-	if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "确认"); err != nil {
+	if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "我已确认卸载"); err != nil {
 		t.Fatal(err)
 	}
 	for index := 0; index < 12; index++ {
@@ -473,7 +473,7 @@ func TestUninstallDataDirectoryRejectsDestructiveOrAmbiguousPaths(t *testing.T) 
 func TestUninstallUnknownDestructiveResultKeepsHostLockedAndBlocksNewOperations(t *testing.T) {
 	f, source, transport := uninstallFixture(t)
 	plan := uninstallPlan(t, f, source)
-	if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "确认"); err != nil {
+	if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, "我已确认卸载"); err != nil {
 		t.Fatal(err)
 	}
 	transport.runErr = context.DeadlineExceeded

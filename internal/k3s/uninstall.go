@@ -25,7 +25,10 @@ import (
 	"edo/internal/model"
 )
 
-const uninstallTimeout = 10 * time.Minute
+const (
+	uninstallTimeout          = 10 * time.Minute
+	UninstallConfirmationText = "我已确认卸载"
+)
 
 type savedUninstall struct {
 	TaskID       string           `json:"task_id"`
@@ -366,7 +369,7 @@ func (s *Service) ExecuteUninstall(ctx context.Context, actorID, planID, confirm
 			slog.WarnContext(ctx, "提交 K3s 卸载任务失败", "operation", "k3s_uninstall_submit", "plan_id", planID, "err", err)
 		}
 	}()
-	if confirmation != "确认" {
+	if confirmation != UninstallConfirmationText {
 		return nil, ErrUninstallConfirmation
 	}
 	if _, err = s.authorizeUninstall(ctx, actorID); err != nil {

@@ -91,7 +91,7 @@ func (h k3sHandler) executeUninstall(c *gin.Context) {
 		h.uninstallError(c, "k3s_uninstall_execute_bind", errors.Join(k3s.ErrInvalidInput, err))
 		return
 	}
-	if input.Confirmation != "确认" {
+	if input.Confirmation != k3s.UninstallConfirmationText {
 		h.uninstallError(c, "k3s_uninstall_confirmation", k3s.ErrUninstallConfirmation)
 		return
 	}
@@ -116,7 +116,7 @@ func (h k3sHandler) uninstallError(c *gin.Context, operation string, err error) 
 	case errors.Is(err, k3s.ErrPermission), errors.Is(err, k3s.ErrUninstallPermission):
 		status, code, message = http.StatusForbidden, "permission_denied", "没有卸载 K3s 的权限，或当前项目权限已变化"
 	case errors.Is(err, k3s.ErrUninstallConfirmation):
-		status, code, message = http.StatusBadRequest, "k3s_uninstall_confirmation", "请输入“确认”后再执行卸载"
+		status, code, message = http.StatusBadRequest, "k3s_uninstall_confirmation", k3s.ErrUninstallConfirmation.Error()
 	case errors.Is(err, k3s.ErrInvalidInput):
 		status, code, message = http.StatusBadRequest, "invalid_k3s_uninstall", "请检查 K3s 卸载配置"
 	case errors.Is(err, k3s.ErrNotFound):

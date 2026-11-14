@@ -29,7 +29,7 @@ var (
 	ErrUninstallPermission   = errors.New("没有执行 K3s 卸载的权限，或当前项目权限已变化")
 	ErrUninstallUnsupported  = errors.New("无法安全确认此原生 K3s 卸载目标，请检查安装来源和主机现场")
 	ErrUninstallChanged      = errors.New("K3s 卸载目标或官方脚本已变化，请重新预览")
-	ErrUninstallConfirmation = errors.New("请输入“确认”后再执行卸载")
+	ErrUninstallConfirmation = errors.New("请输入“" + UninstallConfirmationText + "”后再执行卸载")
 	ErrUninstallIncomplete   = errors.New("K3s 卸载未通过现场验证，请保留现场并检查任务记录，不要直接重试")
 )
 

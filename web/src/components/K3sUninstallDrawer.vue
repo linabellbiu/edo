@@ -32,7 +32,7 @@ const hostLocked=computed(()=>uncertain.value||recent.value.some(item=>k3sUninst
 const expired=computed(()=>Boolean(plan.value)&&(!Number.isFinite(Date.parse(plan.value!.expires_at))||Date.parse(plan.value!.expires_at)<=now.value))
 const remaining=computed(()=>plan.value&&!expired.value?Math.max(0,Math.ceil((Date.parse(plan.value.expires_at)-now.value)/1000)):0)
 const canPreview=computed(()=>canOperate.value&&!hostLocked.value&&!recentLoading.value&&!recentError.value&&!loading.value&&!loadError.value&&!busy.value&&!installation.value&&Boolean(selectedTarget.value))
-const canSubmit=computed(()=>canOperate.value&&!hostLocked.value&&!busy.value&&!installation.value&&!expired.value&&confirmation.value==='确认'&&Boolean(plan.value&&selectedTarget.value&&validK3sUninstallPlan(plan.value,selectedTarget.value,props.host?.address??'')))
+const canSubmit=computed(()=>canOperate.value&&!hostLocked.value&&!busy.value&&!installation.value&&!expired.value&&confirmation.value==='我已确认卸载'&&Boolean(plan.value&&selectedTarget.value&&validK3sUninstallPlan(plan.value,selectedTarget.value,props.host?.address??'')))
 const targetOptions=computed(()=>targets.value.map(target=>({value:target.source_installation_id,label:`${target.installation_name} · ${k3sHostRoleLabel(target.role)} · ${k3sInstallationLabel(target.status)}${target.created_at?` · ${formatDateTime(target.created_at)}`:''}`})))
 const facts=computed(()=>plan.value?.uninstall?[
   {label:'来源安装',value:selectedTarget.value?.installation_name||plan.value.uninstall.source_installation_id},
@@ -41,6 +41,8 @@ const facts=computed(()=>plan.value?.uninstall?[
   {label:'系统服务',value:plan.value.uninstall.service_name},{label:'数据目录',value:plan.value.uninstall.data_dir},
 ]:[])
 const progressTone=computed(()=>uncertain.value?'warning':installation.value?.status==='succeeded'?'success':['failed','interrupted'].includes(installation.value?.status??'')?'error':'info')
+const uninstallWarning='官方卸载会停止 K3s 和本机 Pod，永久删除本地集群数据、本地持久化卷及相关工具。'
+const uninstallImpact='这不是删除节点或断开集群连接。请先确认备份；外部存储的数据不在此卸载范围内。'
 const uncertainMessage='主机锁已保留，当前禁止再次安装或卸载。请核对安全日志和主机状态。'
 function taskLabel(item:K3sInstallation){return k3sUninstallResultUncertain(item)?'卸载结果未确认':k3sInstallationLabel(item.status,'uninstall')}
 
@@ -157,7 +159,7 @@ onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('
       <div v-if="error" ref="errorRegion" tabindex="-1"><a-alert type="error" show-icon :message="error" /></div>
       <a-alert v-if="hostLocked&&!uncertain" type="warning" show-icon message="卸载结果未确认" :description="uncertainMessage" />
       <template v-if="!installation&&!hostLocked">
-        <a-alert type="warning" show-icon message="官方卸载会停止 K3s 和本机 Pod，永久删除本地集群数据、本地持久化卷及相关工具。" description="这不是删除节点或断开集群连接。请先确认备份；外部存储的数据不在此卸载范围内。" />
+        <a-alert v-if="!plan" type="warning" show-icon :message="uninstallWarning" :description="uninstallImpact" />
         <a class="uninstall-docs" href="https://docs.k3s.io/zh/installation/uninstall" target="_blank" rel="noopener noreferrer">官方卸载说明</a>
         <a-alert v-if="loadError" type="error" show-icon message="卸载来源读取失败" :description="loadError"><template #action><a-button size="small" @click="loadTargets">重试</a-button></template></a-alert>
         <a-form v-if="!plan" layout="vertical" :disabled="busy||!canOperate">
@@ -168,7 +170,8 @@ onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('
           <dl class="uninstall-facts"><div v-for="fact in facts" :key="fact.label"><dt>{{ fact.label }}</dt><dd>{{ fact.value }}</dd></div></dl>
           <a-alert v-if="expired" type="warning" show-icon message="卸载计划已过期，请返回重新核对。" />
           <p v-else class="plan-expiry" role="status">计划有效期剩余 {{ remaining }} 秒</p>
-          <a-form layout="vertical"><a-form-item label="手动输入“确认”以卸载" required><a-input v-model:value="confirmation" :disabled="submitting||expired||!canOperate" :maxlength="20" autocomplete="off" aria-label="卸载确认" placeholder="请输入“确认”" /></a-form-item></a-form>
+          <a-alert type="warning" show-icon :message="uninstallWarning" :description="uninstallImpact" />
+          <a-form layout="vertical"><a-form-item label="手动输入“我已确认卸载”以卸载" required><a-input v-model:value="confirmation" :disabled="submitting||expired||!canOperate" :maxlength="20" autocomplete="off" aria-label="卸载确认" placeholder="请输入“我已确认卸载”" /></a-form-item></a-form>
         </section>
       </template>
       <section v-else-if="installation" class="uninstall-result">
