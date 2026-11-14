@@ -29,14 +29,14 @@ test('Ready 与压力状态采用各自健康方向，未知与非标准条件�
 import {parse,compileScript} from '@vue/compiler-sfc'
 import * as vue from 'vue'
 function monitorState(){
- const requests=[],hooks={mounted:[],unmounted:[]},options=new Map(),disposed=[]
+ const requests=[],hooks={mounted:[],unmounted:[]},options=new Map(),disposed=[],frames=new Map();let resizeCallback,disconnected=false,frameID=0
  const source=readFileSync(new URL('../src/components/KubeNodeMonitor.vue',import.meta.url),'utf8')
  const code=ts.transpileModule(compileScript(parse(source).descriptor,{id:'node-monitor'}).content,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText
  const componentModule={exports:{}},modules={vue:{...vue,onMounted:fn=>hooks.mounted.push(fn),onBeforeUnmount:fn=>hooks.unmounted.push(fn)},'vue-i18n':{useI18n:()=>({t:key=>key,locale:vue.ref('zh-CN')})},'@/api/client':{get:(url,options)=>new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}))},'@/api/kubernetes':{formatKubeCPU:value=>String(value??'—'),formatKubeMemory:value=>String(value??'—'),kubeErrorMessage:err=>err.message},'@/utils/kubernetesNode':module.exports,'@/stores/preferences':{usePreferencesStore:()=>({theme:'light'})},'echarts/core':{use(){},init:element=>({setOption:option=>options.set(element.selector,option),resize(){},dispose:()=>disposed.push(element.selector)})}}
- new Function('require','module','exports','document','getComputedStyle',code)(key=>modules[key]??{},componentModule,componentModule.exports,{removeEventListener(){}},()=>({getPropertyValue:key=>key==='--edo-primary'?'#526aff':'#758195'}))
+ new Function('require','module','exports','document','getComputedStyle','ResizeObserver','requestAnimationFrame','cancelAnimationFrame','setInterval','clearInterval',code)(key=>modules[key]??{},componentModule,componentModule.exports,{addEventListener(){},removeEventListener(){}},()=>({getPropertyValue:key=>key==='--edo-primary'?'#526aff':'#758195'}),class{constructor(callback){resizeCallback=callback}observe(){}disconnect(){disconnected=true}},fn=>{frames.set(++frameID,fn);return frameID},id=>frames.delete(id),()=>1,()=>{})
  const scope=vue.effectScope(),props=vue.reactive({cluster:'c1',node:{metadata:{name:'worker',uid:'n1'}},autoRefresh:true,workloads:true})
  const state=scope.run(()=>componentModule.exports.default.setup(props,{expose(){}}))
- return{state,requests,hooks,props,options,disposed,enableCharts(){state.root.value={querySelector:selector=>({selector,clientWidth:360})}},stop(){hooks.unmounted.forEach(fn=>fn());scope.stop()}}
+ return{state,requests,hooks,props,options,disposed,frames,resize:width=>resizeCallback([{contentRect:{width}}]),disconnected:()=>disconnected,enableCharts(){state.root.value={querySelector:selector=>({selector,clientWidth:360})}},stop(){hooks.unmounted.forEach(fn=>fn());scope.stop()}}
 }
 test('节点监控切换窗口中止旧请求，迟到响应和关闭后响应不覆盖状态',async()=>{
  const ctx=monitorState(),first=ctx.state.load(),second=ctx.state.load()
@@ -91,4 +91,13 @@ test('饼图保留真实零，缺失与过期数据留空；撤销权限时清�
  assert.deepEqual(ctx.options.get('[data-comparison="cpu"]').series[0].data,[])
  assert.equal(ctx.options.get('[data-comparison="cpu"]').series[0].showEmptyCircle,true)
  ctx.stop()
+})
+test('窗口重排按宽度变化合并到下一帧，关闭后取消待绘制任务',async()=>{
+ const ctx=monitorState();ctx.enableCharts();ctx.hooks.mounted.forEach(fn=>fn())
+ ctx.resize(360);ctx.resize(390);assert.equal(ctx.frames.size,1)
+ const [id,draw]=[...ctx.frames][0];ctx.frames.delete(id);draw();await vue.nextTick()
+ assert.equal(ctx.options.size,6)
+ ctx.resize(390);assert.equal(ctx.frames.size,0)
+ ctx.resize(400);assert.equal(ctx.frames.size,1)
+ ctx.stop();assert.equal(ctx.frames.size,0);assert.equal(ctx.disconnected(),true)
 })

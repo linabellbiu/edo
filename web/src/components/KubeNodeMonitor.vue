@@ -15,7 +15,7 @@ const props=defineProps<{cluster:string;node:KubeObject;autoRefresh:boolean;work
 const {t,locale}=useI18n(),preferences=usePreferencesStore()
 use([PieChart,LineChart,GridComponent,TooltipComponent,CanvasRenderer])
 const root=ref<HTMLElement>(),history=ref<NodeHistory|null>(null),windowSeconds=ref(900),error=ref(''),loading=ref(false)
-const charts=new Map<string,EChartsType>();let disposed=false,request:AbortController|undefined,revision=0,observer:ResizeObserver|undefined,timer:ReturnType<typeof setInterval>|undefined
+const charts=new Map<string,EChartsType>();let disposed=false,request:AbortController|undefined,revision=0,observer:ResizeObserver|undefined,timer:ReturnType<typeof setInterval>|undefined,resizeFrame:number|undefined
 const ranges=computed(()=>[900,3600,21600,86400,259200].map(value=>({value,label:t(`k8s.nodeWindow${value}`)})))
 const now=ref(Date.now())
 const latest=computed(()=>history.value?.points.at(-1))
@@ -61,8 +61,15 @@ watch([()=>props.cluster,()=>props.node.metadata.uid],()=>{history.value=null;vo
 watch([history,cards,()=>preferences.theme,locale],()=>void render())
 watch(()=>props.refreshToken,()=>void load())
 watch(()=>props.autoRefresh,(enabled,previous)=>{if(enabled&&!previous)void load()})
-onMounted(()=>{void load();observer=new ResizeObserver(()=>void render());if(root.value)observer.observe(root.value);timer=setInterval(refreshVisible,30000);document.addEventListener('visibilitychange',refreshVisible)})
-onBeforeUnmount(()=>{disposed=true;revision++;request?.abort();if(timer)clearInterval(timer);document.removeEventListener('visibilitychange',refreshVisible);observer?.disconnect();charts.forEach(chart=>chart.dispose())})
+onMounted(()=>{
+ void load();let lastWidth:number|undefined
+ observer=new ResizeObserver(entries=>{
+  const width=entries[0]?.contentRect.width;if(width===lastWidth)return;lastWidth=width
+  if(resizeFrame===undefined)resizeFrame=requestAnimationFrame(()=>{resizeFrame=undefined;void render()})
+ })
+ if(root.value)observer.observe(root.value);timer=setInterval(refreshVisible,30000);document.addEventListener('visibilitychange',refreshVisible)
+})
+onBeforeUnmount(()=>{disposed=true;revision++;request?.abort();if(timer)clearInterval(timer);document.removeEventListener('visibilitychange',refreshVisible);observer?.disconnect();if(resizeFrame!==undefined)cancelAnimationFrame(resizeFrame);charts.forEach(chart=>chart.dispose())})
 </script>
 <template>
  <section ref="root" class="node-monitor resource-detail-section" :aria-busy="loading">
