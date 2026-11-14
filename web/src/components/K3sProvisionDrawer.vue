@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ChevronLeft, RefreshCw, Server } from 'lucide-vue-next'
+import { ChevronLeft, CircleDot, Download, FileCode2, RefreshCw, Server } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { listHosts, type InfrastructureHost } from '@/api/infrastructure'
@@ -13,6 +13,7 @@ import K3sOptionFields from '@/components/K3sOptionFields.vue'
 import K3sPreflightReportView from '@/components/K3sPreflightReport.vue'
 import K3sInstallationProgress from '@/components/K3sInstallationProgress.vue'
 import HostDrawer from '@/components/HostDrawer.vue'
+import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import { hasCustomK3sDatastore } from '@/utils/k3sDatastore'
 import { useAuthStore } from '@/stores/auth'
 import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sHostRoleLabel, k3sInstallationLabel, k3sInstallationLogView, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, k3sServerAgentEnabled, validateK3sOverrides } from '@/utils/k3sProvision'
@@ -87,13 +88,15 @@ const frozenSources = computed(() => installation.value?installation.value.sourc
 const sourceFacts = computed(() => {
   const sources=frozenSources.value
   return [
-    {label:t('k8s.installDownloadSource'),value:sources?.download_source==='official'?t('k8s.downloadOfficial'):sources?.download_source==='official_cn'?t('k8s.downloadOfficialCn'):t('k8s.sourceNotRecorded')},
-    {label:t('k8s.installerSourceURL'),value:sources?.installer_url||t('k8s.sourceNotRecorded')},
-    {label:t('k8s.artifactSourceURL'),value:sources?.artifact_url||t('k8s.sourceNotRecorded')},
-    {label:t('k8s.systemImageSource'),value:typeof sources?.system_image_registry==='string'?(sources.system_image_registry||t('k8s.systemImageOfficial')):t(props.action==='join'?'k8s.systemImageInheritedUnrecorded':'k8s.sourceNotRecorded')},
-    ...(sources?.mirror?[{label:t('k8s.installerMirror'),value:sources.mirror}]:[]),
+    {key:'download_source',label:t('k8s.installDownloadSource'),value:sources?.download_source==='official'?t('k8s.downloadOfficial'):sources?.download_source==='official_cn'?t('k8s.downloadOfficialCn'):t('k8s.sourceNotRecorded')},
+    {key:'installer_url',label:t('k8s.installerSourceURL'),value:sources?.installer_url||t('k8s.sourceNotRecorded')},
+    {key:'artifact_url',label:t('k8s.artifactSourceURL'),value:sources?.artifact_url||t('k8s.sourceNotRecorded')},
+    {key:'system_image_registry',label:t('k8s.systemImageSource'),value:typeof sources?.system_image_registry==='string'?(sources.system_image_registry||t('k8s.systemImageOfficial')):t(props.action==='join'?'k8s.systemImageInheritedUnrecorded':'k8s.sourceNotRecorded')},
+    ...(sources?.mirror?[{key:'mirror',label:t('k8s.installerMirror'),value:sources.mirror}]:[]),
   ]
 })
+const summarySourceFacts = computed(()=>sourceFacts.value.filter(fact=>['download_source','system_image_registry'].includes(fact.key)))
+const downloadSourceFacts = computed(()=>sourceFacts.value.filter(fact=>!['download_source','system_image_registry'].includes(fact.key)))
 const k3dEndpoint = computed(() => {const address=form.k3d.bind_address.trim();return validK3dBindAddress(address)?`https://${address}:${form.k3d.api_port}`:''})
 const joinMaster = computed(() => props.action==='join'&&form.join_role==='server')
 const joinHostSelection = computed({
@@ -419,18 +422,59 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
           <a-alert v-if="displayMode==='k3d'" type="warning" show-icon :message="t('k8s.k3dInstallConfirmTitle')" :description="t('k8s.k3dSingleHostWarning')" />
           <a-alert v-if="!planModeValid" type="error" show-icon :message="t('k8s.installModeMismatch')" />
           <a-alert v-if="!planSourceValid" type="error" show-icon :message="t('k8s.installSourceMismatch')" />
-          <dl class="plan-facts"><div><dt>{{ t('k8s.installMode') }}</dt><dd>{{ t(displayMode==='k3d'?'k8s.installModeK3d':'k8s.installModeNative') }}</dd></div><template v-if="displayMode==='k3d'"><div><dt>{{ t('k8s.k3dTopologyLabel') }}</dt><dd>{{ t('k8s.k3dTopology', { agents: k3dConfig?.agents ?? '—' }) }}</dd></div><div><dt>{{ t('k8s.k3dBindAddress') }}</dt><dd>{{ k3dConfig?.bind_address || '—' }}</dd></div><div><dt>{{ t('k8s.k3dApiPort') }}</dt><dd>{{ k3dConfig?.api_port ?? '—' }}</dd></div></template></dl>
-          <dl v-if="displayMode==='native'" class="plan-facts source-facts"><div v-for="fact in sourceFacts" :key="fact.label"><dt>{{ fact.label }}</dt><dd><code>{{ fact.value }}</code></dd></div></dl>
           <a-alert v-if="planExpired" type="warning" show-icon message="计划已过期，请返回配置后重新预览。" />
           <a-alert v-if="displayMode==='k3d'&&!planPreflightPassed" type="error" show-icon message="缺少通过的前置检查，请返回配置后重新检查。" />
-          <dl class="plan-facts"><div v-if="action==='create'"><dt>集群名称</dt><dd>{{ plan.name||form.name }}</dd></div><div v-if="plan.version"><dt>安装版本</dt><dd><code>{{ plan.version }}</code></dd></div><div v-if="action==='join'&&plan.target_version"><dt>目标集群版本</dt><dd><code>{{ plan.target_version }}</code></dd></div><div><dt>API 地址</dt><dd><code>{{ plan.endpoint||form.endpoint }}</code></dd></div><div><dt>计划有效期</dt><dd>{{ formatDateTime(plan.expires_at,'zh-CN') }}</dd></div></dl>
-          <div class="plan-hosts"><div v-for="host in plan.hosts||selectedHosts" :key="host.id"><Server :size="16" /><strong>{{ host.name }}</strong><code>{{ host.address }}</code><a-tag>{{ displayMode==='k3d'?t('k8s.k3dHost'):k3sHostRoleLabel('role' in host?String(host.role):undefined) }}</a-tag></div></div>
+
+          <section class="review-section" aria-label="基础信息">
+            <h4 class="review-section-heading"><CircleDot :size="15" aria-hidden="true" />基础信息</h4>
+            <dl class="review-facts review-section-content">
+              <div v-if="action==='create'"><dt>集群名称</dt><dd>{{ plan.name||form.name }}</dd></div>
+              <div><dt>{{ t('k8s.installMode') }}</dt><dd><a-tag>{{ t(displayMode==='k3d'?'k8s.installModeK3d':'k8s.installModeNative') }}</a-tag></dd></div>
+              <div v-if="plan.version"><dt>安装版本</dt><dd><code>{{ plan.version }}</code></dd></div>
+              <div v-if="action==='join'&&plan.target_version"><dt>目标集群版本</dt><dd><code>{{ plan.target_version }}</code></dd></div>
+              <div><dt>API 地址</dt><dd><code>{{ plan.endpoint||form.endpoint }}</code></dd></div>
+              <div><dt>计划有效期</dt><dd>{{ formatDateTime(plan.expires_at,'zh-CN') }}</dd></div>
+              <template v-if="displayMode==='k3d'">
+                <div><dt>{{ t('k8s.k3dTopologyLabel') }}</dt><dd>{{ t('k8s.k3dTopology', { agents: k3dConfig?.agents ?? '—' }) }}</dd></div>
+                <div><dt>{{ t('k8s.k3dBindAddress') }}</dt><dd><code>{{ k3dConfig?.bind_address || '—' }}</code></dd></div>
+                <div><dt>{{ t('k8s.k3dApiPort') }}</dt><dd>{{ k3dConfig?.api_port ?? '—' }}</dd></div>
+              </template>
+            </dl>
+          </section>
+
+          <section class="review-section" aria-label="目标主机">
+            <h4 class="review-section-heading"><Server :size="15" aria-hidden="true" />目标主机</h4>
+            <ul class="plan-hosts" tabindex="0" aria-label="安装目标主机">
+              <li v-for="host in plan.hosts||selectedHosts" :key="host.id"><span class="review-host-identity"><strong>{{ host.name }}</strong><code>{{ host.address }}</code></span><a-tag>{{ displayMode==='k3d'?t('k8s.k3dHost'):k3sHostRoleLabel('role' in host?String(host.role):undefined) }}</a-tag></li>
+            </ul>
+          </section>
+
+          <section v-if="displayMode==='native'" class="review-section" aria-label="安装来源">
+            <h4 class="review-section-heading"><Download :size="15" aria-hidden="true" />安装来源</h4>
+            <div class="review-section-content">
+              <dl class="review-facts"><div v-for="fact in summarySourceFacts" :key="fact.key"><dt>{{ fact.label }}</dt><dd>{{ fact.value }}</dd></div></dl>
+              <details class="review-disclosure download-addresses">
+                <summary>下载地址</summary>
+                <dl class="review-facts download-facts"><div v-for="fact in downloadSourceFacts" :key="fact.key"><dt>{{ fact.label }}</dt><dd><code>{{ fact.value }}</code></dd></div></dl>
+              </details>
+            </div>
+          </section>
+
           <a-alert v-for="warning in plan.warnings" :key="warning" type="warning" show-icon :message="warning" />
-          <section v-if="displayMode==='native'&&hasHostConfig" class="host-configs"><h4>最终主机配置</h4><details v-for="host in plan.hosts?.filter(item=>item.config)" :key="host.id" open><summary>{{ host.name }} · {{ k3sHostRoleLabel(host.role) }}</summary><pre>{{ host.config }}</pre></details></section>
-          <section v-if="displayMode==='native'&&plan.server_config&&!hasHostConfig"><h4>控制平面最终配置</h4><pre>{{ plan.server_config }}</pre></section>
-          <section v-if="displayMode==='native'&&plan.agent_config&&!hasHostConfig"><h4>工作节点最终配置</h4><pre>{{ plan.agent_config }}</pre></section>
-          <section v-if="displayMode==='native'&&plan.installer_config"><h4>安装器配置</h4><pre>{{ plan.installer_config }}</pre></section>
-          <section v-if="plan.commands?.length"><h4>执行命令</h4><pre v-for="(command,index) in plan.commands" :key="index">{{ command }}</pre></section>
+          <section v-if="displayMode==='native'&&(hasHostConfig||plan.server_config||plan.agent_config||plan.installer_config)||plan.commands?.length" class="review-section review-configurations" aria-label="安装配置">
+            <h4 class="review-section-heading"><FileCode2 :size="15" aria-hidden="true" />安装配置</h4>
+            <div class="review-section-content configuration-stack">
+              <template v-if="displayMode==='native'">
+                <template v-if="hasHostConfig">
+                  <YamlCodeEditor v-for="host in plan.hosts?.filter(item=>item.config)" :key="`${plan.id}:${host.id}`" :model-value="host.config||''" readonly fullscreen collapsible default-collapsed :label="`最终主机配置：${host.name} · ${k3sHostRoleLabel(host.role)}`"><template #toolbar><span>{{ host.name }}</span><a-tag>{{ k3sHostRoleLabel(host.role) }}</a-tag></template></YamlCodeEditor>
+                </template>
+                <YamlCodeEditor v-if="!hasHostConfig&&plan.server_config" :model-value="plan.server_config" readonly fullscreen collapsible default-collapsed label="控制平面最终配置"><template #toolbar><span>控制平面最终配置</span></template></YamlCodeEditor>
+                <YamlCodeEditor v-if="!hasHostConfig&&plan.agent_config" :model-value="plan.agent_config" readonly fullscreen collapsible default-collapsed label="工作节点最终配置"><template #toolbar><span>工作节点最终配置</span></template></YamlCodeEditor>
+                <YamlCodeEditor v-if="plan.installer_config" :model-value="plan.installer_config" readonly fullscreen collapsible default-collapsed label="安装器配置"><template #toolbar><span>安装器配置</span></template></YamlCodeEditor>
+              </template>
+              <details v-if="plan.commands?.length" class="review-disclosure review-commands"><summary>执行命令</summary><pre v-for="(command,index) in plan.commands" :key="index" tabindex="0">{{ command }}</pre></details>
+            </div>
+          </section>
         </div>
 
         <div v-else-if="installation" class="installation-result">
@@ -454,8 +498,9 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
 <style scoped>
 .provision-content{grid-template-columns:minmax(0,1fr);min-width:0}.provision-content>*{min-width:0}.provision-content :deep(.ant-alert-content),.provision-content :deep(.ant-form-item),.provision-content :deep(.ant-form-item-control-input-content){min-width:0;overflow-wrap:anywhere}.provision-content :deep(.ant-select-selection-item){min-width:0}.field-help,.catalog-caption,.plan-hosts{overflow-wrap:anywhere}
 .source-options{margin-top:16px}.source-options :deep(.ant-select){width:100%}.source-suggestion{margin-top:-10px;margin-bottom:22px}.source-facts{padding:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}
-.host-configs details+details{margin-top:12px}.host-configs summary{padding:9px 0;cursor:pointer;font-size:12px}
 .previous-failure{min-width:0;border-top:1px solid var(--edo-border);padding-top:10px}.previous-failure summary{width:fit-content;font-size:12px;color:var(--edo-muted);cursor:pointer;line-height:1.8}.previous-failure[open] summary{margin-bottom:10px}.previous-failure pre{margin:0;padding:12px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg);color:var(--edo-text);font:12px/1.7 SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;tab-size:2}.previous-failure summary:focus-visible,.previous-failure pre:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
 .provision-content{display:grid;gap:22px}.provision-form{margin-top:6px}.form-columns{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}.wide{grid-column:1/-1}.field-help{margin-top:6px;font-size:12px;line-height:1.65;color:var(--edo-muted)}.install-note{padding-top:18px;font-size:12px;color:var(--edo-muted);line-height:1.7}.catalog-caption{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.catalog-caption strong{font-size:14px;font-weight:600}.catalog-caption span{font-size:11px;color:var(--edo-muted)}.option-tabs{margin:8px 0 20px}.override-field{margin-top:22px}.override-field :deep(textarea){font-family:Consolas,monospace;font-size:12px}.provision-footer{display:flex;align-items:center;justify-content:flex-end;gap:8px}.plan-review,.installation-result{display:grid;gap:16px}.plan-facts{margin:0;display:grid;grid-template-columns:1fr 1fr;gap:14px}.plan-facts div{min-width:0}.plan-facts dt{color:var(--edo-muted);font-size:12px;margin-bottom:5px}.plan-facts dd{margin:0;font-size:13px;overflow-wrap:anywhere}.plan-hosts{border:1px solid var(--edo-border);border-radius:6px}.plan-hosts>div{display:flex;align-items:center;gap:10px;padding:12px;border-bottom:1px solid var(--edo-border);flex-wrap:wrap;font-size:12px}.plan-hosts>div:last-child{border:0}.plan-hosts strong{font-weight:500}.plan-hosts code{color:var(--edo-muted)}.plan-hosts .ant-tag{margin-left:auto}.plan-review h4,.installation-result h4{margin:0 0 8px;font-size:13px;font-weight:600}.plan-review pre,.installation-logs{margin:0;padding:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg);font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto}.plan-review pre+pre{margin-top:10px}.operation-id{font-size:11px;color:var(--edo-muted);margin:0;overflow-wrap:anywhere}.operation-hosts>div{display:flex;align-items:center;gap:10px;padding:12px 0;flex-wrap:wrap;border-bottom:1px solid var(--edo-border)}.operation-hosts span{flex:1}.operation-hosts strong,.operation-hosts small{display:block}.operation-hosts strong{font-size:13px;font-weight:500}.operation-hosts small{font-size:11px;color:var(--edo-muted);margin-top:3px}.operation-hosts p{flex-basis:100%;margin:0 0 0 26px;font-size:12px;color:var(--edo-muted)}@media(max-width:650px){.form-columns,.plan-facts{grid-template-columns:1fr}.catalog-caption{align-items:flex-start;flex-direction:column}.provision-footer{flex-wrap:wrap}}
 .provision-content .form-columns,.provision-content .plan-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.plan-review,.installation-result{grid-template-columns:minmax(0,1fr);min-width:0}.plan-review>*,.installation-result>*{min-width:0}@media(max-width:650px){.provision-content .form-columns,.provision-content .plan-facts{grid-template-columns:minmax(0,1fr)}}
+
+.plan-review .review-section{min-width:0}.plan-review .review-section-heading{display:flex;align-items:center;gap:8px;margin:0;padding:9px 14px;border-block:1px solid var(--edo-border);background:color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface));color:var(--edo-text);font-size:14px;font-weight:600}.review-section-heading>svg{flex-shrink:0;color:var(--edo-primary)}.review-section-content{padding:12px 14px;min-width:0}.review-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px;margin:0;min-width:0}.review-facts>div{display:flex;align-items:baseline;gap:10px;min-width:0;font-size:13px;line-height:1.7}.review-facts dt{flex:0 0 88px;color:var(--edo-muted);font-size:12px}.review-facts dd{flex:1;min-width:0;margin:0;overflow-wrap:anywhere}.review-facts code{font-size:12px}.review-facts .ant-tag{margin:0}.plan-review .plan-hosts{list-style:none;margin:0;padding:0;border:0;border-radius:0;max-height:240px;overflow:auto}.plan-hosts>li{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--edo-border);font-size:13px}.plan-hosts>li:last-child{border-bottom:0}.review-host-identity{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 14px;min-width:0}.review-host-identity strong{min-width:0;overflow-wrap:anywhere;font-weight:500}.review-host-identity code{min-width:0;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.plan-hosts>li .ant-tag{margin:0;white-space:normal;text-align:center}.review-disclosure{min-width:0}.review-disclosure summary{width:fit-content;max-width:100%;cursor:pointer;font-size:12px;line-height:1.8;color:var(--edo-text);overflow-wrap:anywhere}.download-addresses{margin-top:12px;padding-top:10px;border-top:1px solid var(--edo-border)}.review-disclosure[open]>summary{margin-bottom:10px}.download-facts{grid-template-columns:minmax(0,1fr)}.download-facts dt{flex-basis:112px}.configuration-stack{display:grid;gap:12px}.review-configurations :deep(.yaml-editor-heading){font-size:13px;overflow-wrap:anywhere}.review-configurations :deep(.yaml-editor-heading .ant-tag){margin:0}.review-configurations :deep(.yaml-code-editor .cm-scroller){min-height:112px;max-height:320px}.plan-review .review-commands pre{padding:12px;max-height:240px;min-width:0;font:12px/1.7 SFMono-Regular,Consolas,monospace}.review-disclosure summary:focus-visible,.plan-hosts:focus-visible,.review-commands pre:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}@media(max-width:650px){.review-facts{grid-template-columns:minmax(0,1fr);gap:10px}.review-facts dt{flex-basis:88px}.download-facts>div{display:grid;grid-template-columns:minmax(0,1fr);gap:2px}.download-facts dt{flex-basis:auto}.review-host-identity{display:grid;gap:2px}.review-section-content{padding:12px}.plan-hosts>li{padding:10px 12px;gap:8px}}
 </style>

@@ -331,17 +331,19 @@ test('历史缺少mode按native显示，k3d详情只显示服务端容器数量�
   }finally{ctx.stop()}
 })
 
-test('k3d计划不渲染原生主机安装器YAML，新建不冒充已有目标版本',()=>{
+test('原生配置以只读折叠YAML展示，k3d不渲染原生配置，目标版本仅加入时显示',()=>{
   const {descriptor}=parse(readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8'))
   const elements=[]
-  function visit(node){if(node.type===1)elements.push(node);for(const child of node.children??[])visit(child)}
+  function visit(node,ancestors=[]){if(node.type===1)elements.push({node,ancestors});for(const child of node.children??[])visit(child,[...ancestors,node])}
   visit(descriptor.template.ast)
-  const heading=node=>node.children?.find(child=>child.tag==='h4'||child.tag==='dt')?.children?.map(child=>child.content??'').join('')
-  for(const title of ['最终主机配置','控制平面最终配置','工作节点最终配置','安装器配置']){
-    const node=elements.find(node=>node.tag==='section'&&heading(node)===title)
-    assert.ok(node,title);assert.match(node.props.find(prop=>prop.type===7&&prop.name==='if').exp.content,/^displayMode==='native'&&/)
+  const yaml=elements.filter(({node})=>node.tag==='YamlCodeEditor')
+  assert.equal(yaml.length,4)
+  for(const {node,ancestors} of yaml){
+    for(const flag of ['readonly','collapsible','default-collapsed','fullscreen'])assert.ok(node.props.some(prop=>prop.type===6&&prop.name===flag),flag)
+    assert.ok(ancestors.some(parent=>parent.props?.some(prop=>prop.type===7&&prop.name==='if'&&prop.exp.content==="displayMode==='native'")))
+    assert.equal(node.props.some(prop=>prop.type===7&&prop.name==='on'&&prop.arg?.content==='update:modelValue'),false)
   }
-  const target=elements.find(node=>node.tag==='div'&&heading(node)==='目标集群版本')
+  const target=elements.map(item=>item.node).find(node=>node.tag==='div'&&node.children?.some(child=>child.tag==='dt'&&child.children?.some(text=>text.content==='目标集群版本')))
   assert.equal(target.props.find(prop=>prop.type===7&&prop.name==='if').exp.content,"action==='join'&&plan.target_version")
 })
 
@@ -630,7 +632,7 @@ test('原生两种安装方式均可选择下载源，镜像仓库仅自定义�
   assert.match(source,/<a-form-item v-if="form.profile==='custom'" :label="t\('k8s.systemImageSource'\)"/)
   assert.match(source,/v-if="action==='create'" v-model:value="form.system_image_source"/)
   assert.match(source,/v-else :value="t\('k8s.systemImageInherited'\)" disabled/)
-  assert.equal((source.match(/v-for="fact in sourceFacts"/g)||[]).length,2)
+  for(const facts of ['summarySourceFacts','downloadSourceFacts','sourceFacts'])assert.ok(source.includes(`v-for="fact in ${facts}"`))
   const {kubernetesZh:zh,kubernetesEn:en}=loadFrontend('../src/locales/kubernetes.ts')
   for(const key of ['installDownloadSource','downloadOfficial','downloadOfficialCn','systemImageSource','systemImageOfficial','systemImageCommunityCn','systemImageCustom','systemImagePrefixHint','systemImageJoinHint','sourceIndependentHint','sourceNotRecorded','installSourceMismatch']){
     assert.equal(typeof zh[key],'string',key);assert.equal(typeof en[key],'string',key)

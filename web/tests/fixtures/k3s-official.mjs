@@ -9,8 +9,9 @@ import {useAuthStore} from '/src/stores/auth'
 import i18n from '/src/locales'
 import K3sOfficialPreview from './K3sOfficialPreview.vue'
 import {createOfficialPreview} from './k3s-official-data.mjs'
-const calls=reactive([]),preview=createOfficialPreview({calls,progress:new URLSearchParams(location.search).has('progress'),failureLog:new URLSearchParams(location.search).has('failure')})
+const calls=reactive([]),preview=createOfficialPreview({calls,progress:new URLSearchParams(location.search).has('progress'),failureLog:new URLSearchParams(location.search).has('failure'),review:new URLSearchParams(location.search).has('review')})
 client.defaults.adapter=preview.adapter
+localStorage.setItem('edo.theme',new URLSearchParams(location.search).get('theme')==='dark'?'dark':'light')
 const pinia=createPinia(),auth=useAuthStore(pinia)
 auth.user={id:'official-fixture-user',username:'preview',project_id:localStorage.getItem('edo.project')??'',department_id:'fixture-department',is_superuser:false,permissions:preview.permissions};auth.loaded=true;auth.authorizationState='ready'
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/:pathMatch(.*)*',component:{template:'<p>仅用于隔离前端验收。</p>'}}]})

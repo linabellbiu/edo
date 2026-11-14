@@ -2,7 +2,7 @@ import {AxiosError} from 'axios'
 import {createPreflightPreview,preflightPreviewHostID} from './k3s-preflight-data.mjs'
 
 // 只模拟确认与失败展示，不执行远端安装，不透传任何请求。
-export function createOfficialPreview({calls=[],progress=false,failureLog=false}={}){
+export function createOfficialPreview({calls=[],progress=false,failureLog=false,review=false}={}){
   const base=createPreflightPreview('passed',{calls}),planID='official-fixture-plan'
   let plan,installation
   const response=(config,data)=>({config,data:JSON.parse(JSON.stringify(data)),status:200,statusText:'OK',headers:{}})
@@ -20,7 +20,11 @@ export function createOfficialPreview({calls=[],progress=false,failureLog=false}
     if(method==='post'&&path==='/kubernetes/k3s/plans'&&body.mode==='native'&&body.action==='create'&&body.server_host_id===preflightPreviewHostID&&['official','official_cn'].includes(body.download_source)&&!body.system_image_registry){
       const domestic=body.download_source==='official_cn'
       const sources={download_source:body.download_source,installer_url:domestic?'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh':'https://get.k3s.io',artifact_url:domestic?'https://rancher-mirror.rancher.cn/k3s':'https://github.com/k3s-io/k3s/releases/download',...(domestic?{mirror:'cn'}:{}),system_image_registry:''}
-      plan={id:planID,action:'create',mode:'native',name:body.name,version:'v1.37.1+k3s1',endpoint:'https://192.0.2.24:6443',expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:preflightPreviewHostID,name:'前端测试主机',address:'192.0.2.24',role:'server'}],sources,server_config:body.datastore==='etcd'?'cluster-init: true':'# SQLite 默认配置',commands:[`curl -sfL ${sources.installer_url} -o /tmp/install.sh\n${domestic?'INSTALL_K3S_MIRROR=cn ':''}sh /tmp/install.sh server`],warnings:[]}
+      plan={id:planID,action:'create',mode:'native',name:body.name,version:'v1.37.1+k3s1',endpoint:'https://192.0.2.24:6443',expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:preflightPreviewHostID,name:'前端测试主机',address:'192.0.2.24',role:'server'}],sources,server_config:body.datastore==='etcd'?'cluster-init: true':'node-label:\n  - edo.dev/fixture=true',commands:[`curl -sfL ${sources.installer_url} -o /tmp/install.sh\n${domestic?'INSTALL_K3S_MIRROR=cn ':''}sh /tmp/install.sh server`],warnings:[]}
+      if(review){
+        plan.hosts[0].name='前端验收控制平面主机-用于检查长名称与完整配置'
+        plan.hosts[0].config=(body.datastore==='etcd'?'cluster-init: true\n':'')+'node-label:\n  - edo.dev/installation=fixture-installation\n  - edo.dev/host='+preflightPreviewHostID+'\ntls-san:\n  - 192.0.2.24\n'
+      }
       return response(config,plan)
     }
     if(method==='post'&&path==='/kubernetes/k3s/installations'&&plan&&body.plan_id===planID){
