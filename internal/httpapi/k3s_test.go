@@ -179,27 +179,10 @@ func TestK3sHTTPPreviewQueuesReviewedPlanAndRejectsDuplicate(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &plan); err != nil || plan.ID == "" {
 		t.Fatalf("invalid plan: %+v %v", plan, err)
 	}
-	if plan.Preflight == nil || !plan.Preflight.Passed || plan.Preflight.CheckedAt.IsZero() || len(plan.Preflight.Hosts) != 1 || !plan.Preflight.Hosts[0].Passed {
-		t.Fatalf("successful preview is missing its checked preflight report: %+v", plan.Preflight)
+	if plan.Preflight != nil || transport.reads.Load() != 0 || transport.privilegeCalls.Load() != 0 || transport.runs.Load() != 0 {
+		t.Fatal("原生计划不得检测或安装主机")
 	}
-	for _, id := range append(append([]string{}, k3sHTTPPreflightCheckIDs...), "identity", "machine_unique", "node_name_unique") {
-		found := false
-		want := "passed"
-		if id == "system_registry" {
-			want = "warning"
-		}
-		for _, check := range plan.Preflight.Hosts[0].Checks {
-			if check.ID == id {
-				found = check.Status == want && check.Name != "" && check.Message != ""
-			}
-		}
-		if !found {
-			t.Fatalf("successful preflight omitted check %s: %+v", id, plan.Preflight)
-		}
-	}
-	if transport.reads.Load() == 0 || transport.runs.Load() != 0 {
-		t.Fatal("preview must collect read-only SSH checks without invoking installation")
-	}
+
 	queued := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/installations", map[string]any{"plan_id": plan.ID}, admin)
 	if queued.Code != http.StatusAccepted || !strings.Contains(queued.Body.String(), `"status":"pending"`) {
 		t.Fatalf("queue: status=%d body=%s", queued.Code, queued.Body.String())
@@ -383,7 +366,7 @@ func k3sHTTPPreflightState(t *testing.T, db *gorm.DB) map[string]int64 {
 	return counts
 }
 
-func TestK3sHTTPFailedPreflightReturnsCompleteReportWithoutCreatingPlanOrTask(t *testing.T) {
+func TestK3sHTTPIndependentFailedPreflightReturnsCompleteReportWithoutCreatingPlanOrTask(t *testing.T) {
 	transport := &k3sHTTPTestTransport{
 		statuses:    map[string]string{"memory": "failed", "ports": "failed", "snapshotter": "failed", "existing_installation": "failed"},
 		extraOutput: "EDO_PRIVATE_OUTPUT\tprivate-remote-diagnostic password=private-remote-password\n",
@@ -392,16 +375,15 @@ func TestK3sHTTPFailedPreflightReturnsCompleteReportWithoutCreatingPlanOrTask(t 
 	defer cleanup()
 	admin := loginForDepartmentTest(t, router, "admin")
 	before := k3sHTTPPreflightState(t, db)
-	response := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/plans", map[string]any{
+	response := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/preflight", map[string]any{
 		"action": "create", "profile": "default", "name": "K3s blocked preflight", "server_host_id": "httpapi-deployment-host",
 	}, admin)
-	var failure struct {
-		errorResponse
-		Preflight *k3s.PreflightReport `json:"preflight"`
+	var report k3s.PreflightReport
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &report) != nil {
+		t.Fatalf("独立诊断响应无效: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response.Code != http.StatusConflict || json.Unmarshal(response.Body.Bytes(), &failure) != nil || failure.Code != "k3s_preflight_failed" || failure.RequestID == "" || failure.Message == "" {
-		t.Fatalf("preflight failure did not retain its structured HTTP contract: status=%d body=%s", response.Code, response.Body.String())
-	}
+	failure := struct{ Preflight *k3s.PreflightReport }{&report}
+
 	if failure.Preflight == nil || failure.Preflight.Passed || failure.Preflight.CheckedAt.IsZero() || len(failure.Preflight.Hosts) != 1 || failure.Preflight.Hosts[0].Passed || failure.Preflight.Hosts[0].Role != "server" {
 		t.Fatalf("failed master preflight is incomplete: %+v", failure.Preflight)
 	}
@@ -469,7 +451,7 @@ func TestK3sHTTPCrossProjectPreflightRejectsHostBeforeSSH(t *testing.T) {
 	}
 }
 
-func TestK3sHTTPPreflightExtendsRealServerWriteDeadline(t *testing.T) {
+func TestK3sHTTPNativePlanDoesNotWaitForHostDiagnostics(t *testing.T) {
 	transport := &k3sHTTPTestTransport{delay: 100 * time.Millisecond}
 	router, cleanup := newK3sHTTPTestRouter(t, transport)
 	defer cleanup()
@@ -503,31 +485,19 @@ func TestK3sHTTPPreflightExtendsRealServerWriteDeadline(t *testing.T) {
 		t.Fatalf("preflight response was truncated by the server write deadline: %v", err)
 	}
 	var plan k3s.Plan
-	if response.StatusCode != http.StatusCreated || json.Unmarshal(body, &plan) != nil || plan.ID == "" || plan.Preflight == nil || !plan.Preflight.Passed || len(plan.Preflight.Hosts) != 1 || !plan.Preflight.Hosts[0].Passed {
-		t.Fatalf("delayed preflight did not produce a complete real HTTP plan: status=%d body=%s", response.StatusCode, body)
+	if response.StatusCode != http.StatusCreated || json.Unmarshal(body, &plan) != nil || plan.ID == "" || plan.Preflight != nil {
+		t.Fatalf("原生计划应独立于主机检测: status=%d body=%s", response.StatusCode, body)
 	}
-	checks := map[string]k3s.PreflightCheck{}
-	for _, check := range plan.Preflight.Hosts[0].Checks {
-		checks[check.ID] = check
+	if transport.reads.Load() != 0 || transport.privilegeCalls.Load() != 0 || transport.runs.Load() != 0 {
+		t.Fatal("原生计划不应等待任何 SSH 诊断")
 	}
-	for _, id := range append(append([]string{}, k3sHTTPPreflightCheckIDs...), "identity", "machine_unique", "node_name_unique") {
-		want := "passed"
-		if id == "system_registry" {
-			want = "warning"
-		}
-		if check, ok := checks[id]; !ok || check.Status != want || check.Name == "" || check.Message == "" {
-			t.Fatalf("delayed response omitted check %s: %+v", id, checks)
-		}
-	}
-	if transport.reads.Load() != 1 || transport.runs.Load() != 0 {
-		t.Fatalf("deadline regression did not use one read-only preflight: reads=%d runs=%d", transport.reads.Load(), transport.runs.Load())
-	}
+
 	if response.Header.Get("Cache-Control") != "no-store" {
 		t.Fatal("real HTTP preflight response must not be cached")
 	}
 }
 
-func TestK3sHTTPPreflightAndPlanExplainSudoRequirement(t *testing.T) {
+func TestK3sHTTPIndependentSudoDiagnosticDoesNotGateNativePlan(t *testing.T) {
 	for _, scenario := range []struct {
 		name, username string
 		sudo           bool
@@ -560,7 +530,7 @@ func TestK3sHTTPPreflightAndPlanExplainSudoRequirement(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := k3sHTTPPreflightState(t, db)
-			for _, path := range []string{"/api/v1/kubernetes/k3s/preflight", "/api/v1/kubernetes/k3s/plans"} {
+			for _, path := range []string{"/api/v1/kubernetes/k3s/preflight"} {
 				input := map[string]any{"action": "create", "mode": "native", "profile": "default", "name": "提权检测", "server_host_id": "httpapi-deployment-host", "datastore": "etcd"}
 				response := performJSONRequest(t, router, http.MethodPost, path, input, admin)
 				if scenario.allowed {
@@ -574,20 +544,10 @@ func TestK3sHTTPPreflightAndPlanExplainSudoRequirement(t *testing.T) {
 					continue
 				}
 				var report k3s.PreflightReport
-				if strings.HasSuffix(path, "/preflight") {
-					if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &report) != nil {
-						t.Fatalf("未返回权限检测报告: %d %s", response.Code, response.Body.String())
-					}
-				} else {
-					var body struct {
-						Code      string              `json:"code"`
-						Preflight k3s.PreflightReport `json:"preflight"`
-					}
-					if response.Code != http.StatusConflict || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Code != "k3s_preflight_failed" {
-						t.Fatalf("权限未就绪仍创建计划: %d %s", response.Code, response.Body.String())
-					}
-					report = body.Preflight
+				if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &report) != nil {
+					t.Fatalf("未返回权限检测报告: %d %s", response.Code, response.Body.String())
 				}
+
 				if report.Passed || len(report.Hosts) != 1 || report.Hosts[0].Privilege == nil || report.Hosts[0].Privilege.Ready || !strings.Contains(strings.Join(report.Hosts[0].Privilege.Guidance, " "), "使用 sudo 执行 Docker / 安装操作") {
 					t.Fatal("缺少准确权限状态及修复引导")
 				}
@@ -600,6 +560,25 @@ func TestK3sHTTPPreflightAndPlanExplainSudoRequirement(t *testing.T) {
 					}
 				}
 			}
+			reads, privileges := transport.reads.Load(), transport.privilegeCalls.Load()
+			planned := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/plans", map[string]any{"action": "create", "mode": "native", "profile": "default", "name": "直接调用官方脚本", "server_host_id": "httpapi-deployment-host"}, admin)
+			var plan k3s.Plan
+			if planned.Code != http.StatusCreated || json.Unmarshal(planned.Body.Bytes(), &plan) != nil || plan.Preflight != nil || plan.ID == "" {
+				t.Fatalf("原生计划仍受 sudo 诊断限制: %d %s", planned.Code, planned.Body.String())
+			}
+			if transport.reads.Load() != reads || transport.privilegeCalls.Load() != privileges || transport.runs.Load() != 0 || strings.Contains(planned.Body.String(), "private-sudo-check-password") {
+				t.Fatal("生成计划执行了额外检测或泄露凭据")
+			}
+			for name, count := range k3sHTTPPreflightState(t, db) {
+				expected := before[name]
+				if name == "plans" {
+					expected++
+				}
+				if count != expected {
+					t.Fatalf("生成计划意外修改 %s", name)
+				}
+			}
+
 			var saved model.Host
 			if err := db.First(&saved, "uuid = ?", "httpapi-deployment-host").Error; err != nil || saved.SSHCredentialCiphertext != ciphertext {
 				t.Fatal("检测或计划修改了原凭据")

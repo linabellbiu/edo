@@ -3,12 +3,10 @@ package k3s
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net"
 	"net/url"
 	"path"
@@ -119,6 +117,8 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 					cause = ErrHostBusy
 				case 44:
 					cause = ErrPreflightFailed
+				case 68:
+					cause = ErrDownloaderMissing
 				}
 				return &remoteExitError{code: remoteExit.ExitStatus(), cause: cause}
 			}
@@ -333,7 +333,7 @@ func installScript(host Host, input Input, installationID, token string) (string
 	}
 	final := runtimeOptions(options, host, installationID, input.Endpoint, token)
 	if isServerJoin(input) {
-		if host.Role != "server" || input.Endpoint == "" || token == "" || input.ServerToken == "" || input.serverJoin == nil {
+		if host.Role != "server" || input.Endpoint == "" || token == "" || input.ServerToken == "" {
 			return "", ErrPreflightRequired
 		}
 		final["server"] = input.Endpoint
@@ -342,54 +342,15 @@ func installScript(host Host, input Input, installationID, token string) (string
 	if err != nil {
 		return "", ErrInvalidInput
 	}
-	encoded := base64.StdEncoding.EncodeToString(config)
-	// Repeat the read-only guard in the same privileged shell immediately before
-	// writing configuration; a successful old preview is not install permission.
-	script := "set -eu\nprintf 'EDO_K3S_STAGE\\tguard\\n'\n[ \"$(id -u)\" = 0 ]\nif ! mkdir -m 700 /run/edo-k3s-install.lock; then printf 'EDO_K3S_BUSY\\n'; exit 43; fi\nwork=''\nedo_binary_stage=''\ncleanup() { if [ -n \"$edo_binary_stage\" ]; then rm -f \"$edo_binary_stage\"; fi; if [ -n \"$work\" ]; then rm -f \"$work/install.sh\" \"$work/k3s\" \"$work/sha256sum.txt\" \"$work/k3s.sha256\"; rmdir \"$work\"; fi; rmdir /run/edo-k3s-install.lock; }\ntrap cleanup EXIT\ntrap 'exit 130' HUP INT TERM\n"
-	script += preflightScript(input.Installer, options, true) + "\nprintf 'EDO_K3S_STAGE\\tpreflight\\n'\nset +e\n" + preflightEnvironmentScript(host, input, host.Role == "agent" || input.Action == "join") + "\nif [ \"$edo_failed\" != 0 ]; then exit 44; fi\nset -e\nprintf 'EDO_K3S_STAGE\\tdownload\\n'\n"
-	if isServerJoin(input) {
-		stage, err := serverInstallerStage(installationID)
-		if err != nil {
-			return "", err
-		}
-		script += "work=" + shellQuote(stage) + "\n[ -d \"$work\" ] && [ ! -L \"$work\" ]\n[ -s \"$work/install.sh\" ] && [ ! -L \"$work/install.sh\" ]\n"
-	} else {
-		script += "work=$(mktemp -d /tmp/edo-k3s-install.XXXXXX)\n"
-		script += "curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 3 " + shellQuote(sources.InstallerURL) + " -o \"$work/install.sh\"\n"
-	}
-	// Downloads may take minutes. An external installer does not honor EDO's
-	// lock, so repeat the lightweight guard after download and before writes.
-	script += preflightScript(input.Installer, options, true) + "\n"
-	if isServerJoin(input) {
-		peerScript, err := serverPeerProbeScript(input.serverJoin)
-		if err != nil {
-			return "", err
-		}
-		script += peerScript + "\n"
-		if !preloadedBinary(input.Installer) {
-			script += "[ -s \"$work/k3s\" ] && [ ! -L \"$work/k3s\" ]\n(cd \"$work\" && sha256sum -c k3s.sha256 >/dev/null)\n"
-			script += serverInstallBinaryScript(input.Installer)
-		}
-	}
-	script += "printf 'EDO_K3S_STAGE\\tconfiguration\\n'\n"
-	if isServerJoin(input) {
-		script += "mkdir -p /etc/rancher\nif ! mkdir -m 700 /etc/rancher/k3s; then printf 'EDO_K3S_EXISTS\\n'; exit 42; fi\n(set -C; printf '%s' " + shellQuote(encoded) + " | base64 -d > /etc/rancher/k3s/config.yaml)\nchmod 600 /etc/rancher/k3s/config.yaml\n"
-	} else {
-		script += "install -d -m 700 /etc/rancher/k3s\nprintf '%s' " + shellQuote(encoded) + " | base64 -d > /etc/rancher/k3s/config.yaml\nchmod 600 /etc/rancher/k3s/config.yaml\n"
-	}
 	installer, err := installerForSource(input)
 	if err != nil {
 		return "", err
 	}
-	if isServerJoin(input) {
-		installer = maps.Clone(installer)
-		installer["INSTALL_K3S_SKIP_DOWNLOAD"] = true
-		installer["INSTALL_K3S_SKIP_SELINUX_RPM"] = true
-	}
-	script += "printf 'EDO_K3S_STAGE\\tinstaller\\n'\n" + installerCommand(host.Role, installer, "\"$work/install.sh\"") + "\n" + postInstallVerificationScript(host, input)
-	if host.Role == "server" {
-		script += "printf 'EDO_K3S_STAGE\\tapi\\n'\nready=false\nfor attempt in $(seq 1 90); do if " + shellQuote(binaryPath(input.Installer)) + " kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml --request-timeout=3s get --raw=/readyz >/dev/null 2>&1; then ready=true; break; fi; sleep 2; done\n\"$ready\"\n"
-	}
+	// 只负责传递配置和调用原版官方安装器，不额外探测或安装宿主机依赖。
+	script := "set -eu\numask 077\nif ! mkdir -m 700 /run/edo-k3s-install.lock; then printf 'EDO_K3S_BUSY\\n'; exit 43; fi\nwork=''\ncleanup() { if [ -n \"$work\" ]; then rm -f \"$work/install.sh\"; rmdir \"$work\"; fi; rmdir /run/edo-k3s-install.lock; }\ntrap cleanup EXIT\ntrap 'exit 130' HUP INT TERM\nwork=$(mktemp -d /tmp/edo-k3s-install.XXXXXX)\nprintf 'EDO_K3S_STAGE\\tdownload\\n'\n"
+	script += "if command -v curl >/dev/null 2>&1; then\ncurl --fail --silent --show-error --location " + shellQuote(sources.InstallerURL) + " -o \"$work/install.sh\"\nelif command -v wget >/dev/null 2>&1; then\nwget -qO \"$work/install.sh\" " + shellQuote(sources.InstallerURL) + "\nelse\nprintf 'EDO_K3S_DOWNLOADER_MISSING\\n'; exit 68\nfi\n"
+	script += "printf 'EDO_K3S_STAGE\\tconfiguration\\n'\nmkdir -p /etc/rancher/k3s\nif [ -e /etc/rancher/k3s/config.yaml ] || [ -L /etc/rancher/k3s/config.yaml ]; then printf 'EDO_K3S_EXISTS\\n'; exit 42; fi\n(set -C; printf '%s' " + shellQuote(string(config)) + " > /etc/rancher/k3s/config.yaml)\n"
+	script += "printf 'EDO_K3S_STAGE\\tinstaller\\n'\n" + installerCommand(host.Role, installer, "\"$work/install.sh\"") + "\n"
 	return script, nil
 }
 

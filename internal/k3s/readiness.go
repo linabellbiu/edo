@@ -46,6 +46,11 @@ func (e *installationFailure) Error() string {
 	if name == "" {
 		name = "安装检查"
 	}
+	for _, safe := range []error{ErrDownloaderMissing, ErrExistingInstallation} {
+		if errors.Is(e.cause, safe) {
+			return safe.Error()
+		}
+	}
 	if e.code >= 0 {
 		return fmt.Sprintf("%s失败（退出码 %d），请检查主机上的实际状态。", name, e.code)
 	}

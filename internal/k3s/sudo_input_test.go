@@ -29,6 +29,10 @@ func sudoShellPeer(t *testing.T, environment []string) (model.Host, <-chan remot
 }
 
 func sudoShellPeerWithKey(t *testing.T, environment []string, publicKey ssh.PublicKey) (model.Host, <-chan remoteCall) {
+	return shellPeerWithUser(t, environment, publicKey, "operator")
+}
+
+func shellPeerWithUser(t *testing.T, environment []string, publicKey ssh.PublicKey, username string) (model.Host, <-chan remoteCall) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -39,14 +43,14 @@ func sudoShellPeerWithKey(t *testing.T, environment []string, publicKey ssh.Publ
 		t.Fatal(err)
 	}
 	configuration := &ssh.ServerConfig{PasswordCallback: func(metadata ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-		if metadata.User() != "operator" || string(password) != "fixture-ssh-password" {
+		if metadata.User() != username || string(password) != "fixture-ssh-password" {
 			return nil, errors.New("测试凭据不匹配")
 		}
 		return nil, nil
 	}}
 	if publicKey != nil {
 		configuration.PublicKeyCallback = func(metadata ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			if metadata.User() != "operator" || !bytes.Equal(key.Marshal(), publicKey.Marshal()) {
+			if metadata.User() != username || !bytes.Equal(key.Marshal(), publicKey.Marshal()) {
 				return nil, errors.New("测试公钥不匹配")
 			}
 			return nil, nil
@@ -117,7 +121,7 @@ func sudoShellPeerWithKey(t *testing.T, environment []string, publicKey ssh.Publ
 	}()
 	address, port, _ := net.SplitHostPort(listener.Addr().String())
 	number, _ := strconv.Atoi(port)
-	return model.Host{Address: address, SSHPort: number, SSHUsername: "operator", SSHHostKeyFingerprint: ssh.FingerprintSHA256(signer.PublicKey())}, calls
+	return model.Host{Address: address, SSHPort: number, SSHUsername: username, SSHHostKeyFingerprint: ssh.FingerprintSHA256(signer.PublicKey())}, calls
 }
 
 func receiveSudoCall(t *testing.T, calls <-chan remoteCall) remoteCall {

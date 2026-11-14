@@ -102,7 +102,7 @@ func TestSSHTransportClassifiesControlledInstallGuardFailures(t *testing.T) {
 	for _, scenario := range []struct {
 		code     uint32
 		expected error
-	}{{42, ErrExistingInstallation}, {43, ErrHostBusy}, {44, ErrPreflightFailed}} {
+	}{{42, ErrExistingInstallation}, {43, ErrHostBusy}, {44, ErrPreflightFailed}, {68, ErrDownloaderMissing}} {
 		t.Run(fmt.Sprint(scenario.code), func(t *testing.T) {
 			host, _ := sshPeer(t, false, scenario.code)
 			transport := &sshTransport{timeout: time.Second}
@@ -119,13 +119,13 @@ func TestInstallScriptAcquiresPhysicalMachineLockBeforeConfiguration(t *testing.
 		t.Fatal(err)
 	}
 	lock := strings.Index(script, "mkdir -m 700 /run/edo-k3s-install.lock")
-	guard := strings.Index(script, "if [ -e '/etc/rancher/k3s'")
-	write := strings.Index(script, "base64 -d > /etc/rancher/k3s/config.yaml")
+	guard := strings.Index(script, "if [ -e /etc/rancher/k3s/config.yaml ]")
+	write := strings.Index(script, " > /etc/rancher/k3s/config.yaml")
 	if lock < 0 || guard <= lock || write <= guard || !strings.Contains(script, "trap cleanup EXIT") {
 		t.Fatal("physical host installation guard must precede all configuration writes")
 	}
-	if strings.Contains(script, "private-fixture-token") {
-		t.Fatal("configuration token must travel through encoded stdin payload")
+	if !strings.Contains(script, "umask 077") {
+		t.Fatal("配置必须以私有文件权限写入，脚本仅经 SSH 标准输入传递")
 	}
 	if !errors.Is(classifyRemoteRead("EDO_K3S_BUSY", ErrRemote), ErrHostBusy) {
 		t.Fatal("preflight busy state lost")

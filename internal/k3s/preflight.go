@@ -19,8 +19,8 @@ import (
 	"edo/internal/secret"
 )
 
-// 托管资源契约变化后，已有计划必须重新预检并确认。
-const preflightVersion = 4
+// 托管资源契约变化后，已有计划必须重新生成并确认。
+const preflightVersion = 5
 
 // PreflightTimeout bounds the complete multi-host read-only check. HTTP callers
 // use the same budget instead of the server's shorter ordinary request limit.
@@ -406,21 +406,10 @@ func (s *Service) beforeHostInstall(ctx context.Context, record model.K3sInstall
 			input.targetVersion = version
 		}
 	}
-	prepared, err := s.preparePreflightInput(ctx, input)
-	if err != nil {
-		return Input{}, err
-	}
-	report, err := s.runPreflight(ctx, prepared, []Host{host})
-	if err != nil {
-		return Input{}, err
-	}
-	if err := requirePreflight(report); err != nil {
-		return Input{}, err
-	}
 	if err := s.recheckRuntime(ctx, record, snapshot); err != nil {
 		return Input{}, err
 	}
-	return prepared, nil
+	return input, nil
 }
 
 func preflightFailureMessage(err error) string {

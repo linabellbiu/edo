@@ -42,7 +42,7 @@ const preflightView=ref<{focus:()=>void}>(),errorRegion=ref<HTMLElement>()
 const emptyForm = () => ({
   mode:'native' as K3sInstallMode,k3d:{agents:1,api_port:16443,bind_address:''} as K3dConfig,
   datastore:'sqlite' as 'sqlite'|'etcd',
-  download_source:'official_cn' as K3sDownloadSource,system_image_source:'community_cn' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
+  download_source:'official' as K3sDownloadSource,system_image_source:'official' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
   name:'',server_host_id:'',worker_host_ids:[] as string[],profile:'default' as 'default'|'custom',endpoint:'',
   join_role:'agent' as K3sJoinRole,join_host_ids:[] as string[],server_token:'',
   server_options:{} as Record<string,unknown>,agent_options:{} as Record<string,unknown>,installer:{} as Record<string,unknown>,overrides:'',
@@ -81,7 +81,7 @@ const serverHostSelection = computed({
 const displayMode = computed(() => installation.value?modeOf(installation.value):plan.value?modeOf(plan.value):isK3d.value?'k3d':'native')
 const k3dConfig = computed(() => installation.value?installation.value.k3d:plan.value?.k3d)
 const systemImageRegistry = computed(() => form.system_image_source==='community_cn'?'registry.cn-hangzhou.aliyuncs.com':form.system_image_source==='custom'?form.custom_system_image_registry.trim():'')
-const sourceInputValid = computed(() => isK3d.value||(['official','official_cn'].includes(form.download_source)&&(props.action==='join'||form.system_image_source!=='custom'||Boolean(systemImageRegistry.value))))
+const sourceInputValid = computed(() => isK3d.value||form.profile==='default'||(['official','official_cn'].includes(form.download_source)&&(props.action==='join'||form.system_image_source!=='custom'||Boolean(systemImageRegistry.value))))
 const frozenSources = computed(() => installation.value?installation.value.sources:plan.value?.sources)
 const sourceFacts = computed(() => {
   const sources=frozenSources.value
@@ -108,17 +108,18 @@ const endpointPlaceholder = computed(() => k3sAutomaticEndpoint(hosts.value.find
 const canManageClusterResources = computed(() => auth.canAny(['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read']))
 const canExecute = computed(() => auth.canAny([props.action==='create'?'cluster.create':'kubernetes.node.create'])&&auth.canAny(['cluster.execute'])&&auth.canAny(['cluster.update'])&&auth.canAny(['cluster.read','deployment.read']))
 const canCheck = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!hostConfigOpen.value&&!loading.value&&!busy.value&&sourceInputValid.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id&&(!isK3d.value||validK3dConfig(form.k3d))):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
-const canPreview = computed(() => canCheck.value&&reportPassed(preflight.value)&&checkedInput.value===signature.value&&checkedContext.value===context.value)
+const canPreview = computed(() => canCheck.value&&(!isK3d.value||reportPassed(preflight.value)&&checkedInput.value===signature.value&&checkedContext.value===context.value))
 const running = computed(() => k3sInstallationRunning(installation.value))
 const planExpired = computed(() => Boolean(plan.value)&&(!Number.isFinite(Date.parse(plan.value!.expires_at))||Date.parse(plan.value!.expires_at)<=now.value))
 const visiblePreflight = computed(() => readPreflight(plan.value?.preflight)??preflight.value)
 const planPreflightPassed = computed(() => {
+  if(plan.value&&modeOf(plan.value)==='native')return true
   const report=readPreflight(plan.value?.preflight)
   return reportPassed(report)
 })
 const planModeValid = computed(() => !!plan.value&&modeOf(plan.value)===(isK3d.value?'k3d':'native')&&(modeOf(plan.value)!=='k3d'||k3dPlanMatches(plan.value)))
 const planSourceValid = computed(() => !!plan.value&&(modeOf(plan.value)==='k3d'||nativeSourcesMatch(plan.value,input())))
-const currentStep = computed(() => installation.value?3:plan.value?2:preflight.value||checking.value?1:0)
+const currentStep = computed(() => isK3d.value?(installation.value?3:plan.value?2:preflight.value||checking.value?1:0):(installation.value?2:plan.value?1:0))
 const title = computed(() => props.action==='create'?t('k8s.createClusterTitle'):'添加 K3s 节点')
 const installerOptions = computed(() => catalog.value?.installer.filter(option=>!['INSTALL_K3S_VERSION','INSTALL_K3S_CHANNEL'].includes(option.name))??[])
 const serverOptionChoices = computed(() => catalog.value?.server.map(option=>{
@@ -143,7 +144,7 @@ function input(): K3sPlanInput {
   const custom=form.profile==='custom'
   const installer=custom?Object.fromEntries(Object.entries(form.installer).filter(([key,value])=>!['version','channel'].includes(key)||String(value??'').trim())):{}
   return {
-    action:props.action,mode:'native',download_source:form.download_source,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.worker_host_ids)].filter(id=>id!==form.server_host_id),system_image_registry:systemImageRegistry.value}),name:form.name.trim(),
+    action:props.action,mode:'native',download_source:custom?form.download_source:'official',...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.worker_host_ids)].filter(id=>id!==form.server_host_id),...(custom?{system_image_registry:systemImageRegistry.value}:{})}),name:form.name.trim(),
     profile:form.profile,server_options:custom&&showServerOptions.value?{...form.server_options}:{},agent_options:custom&&showAgentOptions.value?{...form.agent_options}:{},
     ...(props.action==='create'&&!customDatastore.value?{datastore:form.datastore}:{}),
     installer,overrides:custom?form.overrides:'',endpoint:form.endpoint.trim(),
@@ -152,7 +153,7 @@ function input(): K3sPlanInput {
 function modeOf(value:{mode?:K3sInstallMode}) {return value.mode==='k3d'?'k3d':'native'}
 function nativeSourcesMatch(value:K3sPlan,payload:K3sPlanInput) {
   const sources=value.sources
-  return !!sources&&sources.download_source===payload.download_source&&Boolean(sources.installer_url&&sources.artifact_url)&&(payload.action!=='create'||typeof sources.system_image_registry==='string'&&sources.system_image_registry===payload.system_image_registry)
+  return !!sources&&sources.download_source===payload.download_source&&Boolean(sources.installer_url&&sources.artifact_url)&&(payload.action!=='create'||sources.system_image_registry===(payload.system_image_registry??''))
 }
 function validK3dConfig(value?:K3dConfig) {return !!value&&Number.isInteger(value.agents)&&value.agents>=0&&value.agents<=8&&Number.isInteger(value.api_port)&&value.api_port>=1024&&value.api_port<=65535&&validK3dBindAddress(value.bind_address)}
 function k3dPlanMatches(value:K3sPlan) {const config=value.k3d;return validK3dConfig(config)&&value.hosts?.length===1&&value.hosts[0]?.role==='host'&&value.hosts[0]?.id===form.server_host_id&&config?.agents===form.k3d.agents&&config?.api_port===form.k3d.api_port&&config?.bind_address===form.k3d.bind_address.trim()&&value.endpoint===k3dEndpoint.value}
@@ -360,14 +361,14 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
 <template>
   <a-drawer :open="open" :title="title" width="min(1060px,96vw)" :closable="!busy||checking" :mask-closable="!busy||checking" @close="close">
     <div class="provision-content">
-      <a-steps :current="currentStep" size="small" :items="[{title:'安装配置'},{title:'安装前检测'},{title:'确认计划'},{title:'执行结果'}]" />
+      <a-steps :current="currentStep" size="small" :items="isK3d?[{title:'安装配置'},{title:'安装前检测'},{title:'确认计划'},{title:'执行结果'}]:[{title:'安装配置'},{title:'确认安装'},{title:'安装进度'}]" />
       <a-alert v-if="!installation&&!visiblePreflight&&!checking&&displayMode==='native'" type="info" show-icon :message="t('k8s.nativeInstallTitle')" :description="t('k8s.nativeInstallHint')" />
       <a-alert v-else-if="!installation&&!visiblePreflight&&!checking" type="info" show-icon :message="t('k8s.k3dInstallTitle')" :description="t('k8s.k3dInstallHint')" />
       <a-alert v-if="!canExecute" type="warning" show-icon message="需要主机读取、集群执行和关联权限，以及对应的创建权限。" />
       <a-alert v-if="loadError" type="error" show-icon message="安装配置读取失败" :description="loadError"><template #action><a-button size="small" @click="initialize">重试</a-button></template></a-alert>
       <div v-if="error" ref="errorRegion" tabindex="-1"><a-alert type="error" show-icon :message="error" /></div>
       <a-alert v-if="checking" type="info" show-icon message="正在进行安装前检测" description="只读检测所选主机，不会安装或自动修复。" role="status" />
-      <K3sPreflightReportView v-if="visiblePreflight&&!installation" ref="preflightView" :report="visiblePreflight" :mode="displayMode" :standalone="!plan" :can-configure-host="canExecute&&auth.canAny(['cluster.update'])" @configure-host="configurePrivilegeHost" />
+      <K3sPreflightReportView v-if="isK3d&&visiblePreflight&&!installation" ref="preflightView" :report="visiblePreflight" :mode="displayMode" :standalone="!plan" :can-configure-host="canExecute&&auth.canAny(['cluster.update'])" @configure-host="configurePrivilegeHost" />
       <section v-if="recent.length||recentError||recentLoading" class="recent-operations">
         <details :open="!installation">
           <summary>最近安装任务 <span v-if="recent.length">{{ recent.length }}</span></summary>
@@ -390,10 +391,10 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
             <a-form-item v-if="action==='create'&&!isK3d" :label="t('k8s.workerHosts')"><a-select v-model:value="workerHostSelection" :aria-label="t('k8s.workerHosts')" mode="multiple" show-search option-filter-prop="label" :options="agentOptions" :placeholder="t('k8s.workerHostsPlaceholder')" /><div v-if="serverRunsAgent" class="field-help">{{ t('k8s.serverWorkerHint') }}</div></a-form-item><a-form-item v-else-if="action==='join'" :label="joinMaster?'控制平面主机（Master）':'工作节点主机（Worker）'" required><a-select v-model:value="joinHostSelection" :mode="joinMaster?undefined:'multiple'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="joinMaster?'选择加入控制平面的新主机':'选择加入工作节点的新主机'" /><div class="field-help">{{ joinMaster?'Master 每个计划仅加入 1 台，须等待当前节点就绪后逐台添加。':'Worker 每次最多选择 20 台新主机。' }}</div></a-form-item><a-form-item v-if="joinMaster" label="目标集群 Server Token" required class="wide"><a-input-password v-model:value="form.server_token" aria-label="目标集群 Server Token" :visibility-toggle="false" :maxlength="4096" autocomplete="off" placeholder="输入目标集群的 Server Token" /><div class="field-help">仅用于本次控制平面加入。切换角色或关闭窗口后清除，不用于工作节点加入。</div></a-form-item>
             <template v-if="isK3d"><a-form-item :label="t('k8s.k3dAgents')" required><a-input-number v-model:value="form.k3d.agents" :aria-label="t('k8s.k3dAgents')" :min="0" :max="8" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dApiPort')" required><a-input-number v-model:value="form.k3d.api_port" :aria-label="t('k8s.k3dApiPort')" :min="1024" :max="65535" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dBindAddress')" required class="wide"><a-input v-model:value="form.k3d.bind_address" :aria-label="t('k8s.k3dBindAddress')" :placeholder="t('k8s.k3dBindPlaceholder')" /><div class="field-help">{{ t('k8s.k3dBindHint') }}</div></a-form-item><a-form-item :label="t('k8s.k3dEndpoint')" class="wide"><a-input :value="k3dEndpoint" readonly :aria-label="t('k8s.k3dEndpoint')" /></a-form-item></template>
           </div>
-          <a-alert v-if="joinMaster" type="warning" show-icon message="目标集群需已启用内嵌 etcd" description="预检会实时核对 Server Token、目标控制平面、etcd 成员与关键配置。SQLite、外置数据存储或无法确认的目标会被阻断；不会自动转换数据库。关键配置自动继承，冲突覆盖会被拒绝。" /><a-alert v-if="!loading&&!loadError&&!hostChoices.length" type="info" show-icon message="暂无可安装的远程主机" description="请先在主机页面配置启用的 SSH 主机和登录凭据。" />
+          <a-alert v-if="joinMaster" type="warning" show-icon message="目标集群需已启用内嵌 etcd" description="生成计划会核对 Server Token、目标控制平面、etcd 成员与关键配置。SQLite、外置数据存储或无法确认的目标会被阻断；不会自动转换数据库。关键配置自动继承，冲突覆盖会被拒绝。" /><a-alert v-if="!loading&&!loadError&&!hostChoices.length" type="info" show-icon message="暂无可安装的远程主机" description="请先在主机页面配置启用的 SSH 主机和登录凭据。" />
           <a-alert v-if="isK3d" type="warning" show-icon :message="t('k8s.k3dSingleHostWarning')" />
           <template v-else>
-          <div class="form-columns source-options">
+          <div v-if="form.profile==='custom'" class="form-columns source-options">
             <a-form-item :label="t('k8s.installDownloadSource')" required><a-select v-model:value="form.download_source" :aria-label="t('k8s.installDownloadSource')" :options="[{value:'official',label:t('k8s.downloadOfficial')},{value:'official_cn',label:t('k8s.downloadOfficialCn')}]" /><div class="field-help">{{ t('k8s.downloadSourceHint') }}</div></a-form-item>
             <a-form-item :label="t('k8s.systemImageSource')" :required="action==='create'">
               <a-select v-if="action==='create'" v-model:value="form.system_image_source" :aria-label="t('k8s.systemImageSource')" :options="[{value:'official',label:t('k8s.systemImageOfficial')},{value:'community_cn',label:t('k8s.systemImageCommunityCn')},{value:'custom',label:t('k8s.systemImageCustom')}]" />
@@ -423,7 +424,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
             <a-form-item label="覆盖配置（YAML）" class="override-field"><a-textarea v-model:value="form.overrides" :rows="8" spellcheck="false" :placeholder="overridesPlaceholder" /><div class="field-help">优先级：K3s 默认值 → 上方选项 → 此处覆盖。使用 server、agent、installer 分组；false 和空列表会覆盖原值。最终配置在下一步显示。</div></a-form-item>
           </template>
           </template>
-          <div v-if="!visiblePreflight&&!checking" class="install-note">{{ isK3d?t('k8s.k3dPreflightHint'):'先进行安装前检测，通过后再生成安装计划。检测不会安装软件或修改主机；开始安装前仍会实时复查。' }}</div>
+          <div v-if="!visiblePreflight&&!checking" class="install-note">{{ isK3d?t('k8s.k3dPreflightHint'):'确认目标和配置后，直接执行 K3s 官方安装脚本。' }}</div>
         </a-form>
 
         <div v-else-if="plan&&!installation" class="plan-review">
@@ -434,7 +435,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
           <dl class="plan-facts"><div><dt>{{ t('k8s.installMode') }}</dt><dd>{{ t(displayMode==='k3d'?'k8s.installModeK3d':'k8s.installModeNative') }}</dd></div><template v-if="displayMode==='k3d'"><div><dt>{{ t('k8s.k3dTopologyLabel') }}</dt><dd>{{ t('k8s.k3dTopology', { agents: k3dConfig?.agents ?? '—' }) }}</dd></div><div><dt>{{ t('k8s.k3dBindAddress') }}</dt><dd>{{ k3dConfig?.bind_address || '—' }}</dd></div><div><dt>{{ t('k8s.k3dApiPort') }}</dt><dd>{{ k3dConfig?.api_port ?? '—' }}</dd></div></template></dl>
           <dl v-if="displayMode==='native'" class="plan-facts source-facts"><div v-for="fact in sourceFacts" :key="fact.label"><dt>{{ fact.label }}</dt><dd><code>{{ fact.value }}</code></dd></div></dl>
           <a-alert v-if="planExpired" type="warning" show-icon message="计划已过期，请返回配置后重新预览。" />
-          <a-alert v-if="!planPreflightPassed" type="error" show-icon message="缺少通过的前置检查，请返回配置后重新检查。" />
+          <a-alert v-if="displayMode==='k3d'&&!planPreflightPassed" type="error" show-icon message="缺少通过的前置检查，请返回配置后重新检查。" />
           <dl class="plan-facts"><div v-if="action==='create'"><dt>集群名称</dt><dd>{{ plan.name||form.name }}</dd></div><div v-if="plan.version"><dt>安装版本</dt><dd><code>{{ plan.version }}</code></dd></div><div v-if="action==='join'&&plan.target_version"><dt>目标集群版本</dt><dd><code>{{ plan.target_version }}</code></dd></div><div><dt>API 地址</dt><dd><code>{{ plan.endpoint||form.endpoint }}</code></dd></div><div><dt>计划有效期</dt><dd>{{ formatDateTime(plan.expires_at,'zh-CN') }}</dd></div></dl>
           <div class="plan-hosts"><div v-for="host in plan.hosts||selectedHosts" :key="host.id"><Server :size="16" /><strong>{{ host.name }}</strong><code>{{ host.address }}</code><a-tag>{{ displayMode==='k3d'?t('k8s.k3dHost'):k3sHostRoleLabel('role' in host?String(host.role):undefined) }}</a-tag></div></div>
           <a-alert v-for="warning in plan.warnings" :key="warning" type="warning" show-icon :message="warning" />
@@ -458,7 +459,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
         </div>
       </a-spin>
     </div>
-    <template #footer><div class="provision-footer"><a-button :disabled="busy&&!checking" @click="close">{{ checking?'取消检测':running?'关闭窗口':'关闭' }}</a-button><a-button v-if="plan&&!installation" :disabled="busy" @click="plan=undefined;preflight=undefined;checkedInput='';checkedContext=''"><ChevronLeft :size="14" />返回配置</a-button><a-button v-if="installation&&!running" :disabled="busy" @click="configureAgain">{{ displayMode==='k3d'?t('k8s.k3dConfigureAgain'):installation.status==='succeeded'?'继续添加':'重新配置' }}</a-button><template v-if="!plan&&!installation"><a-button :type="canPreview?'default':'primary'" :loading="checking" :disabled="!canCheck" @click="checkPreflight">{{ preflight?'重新检测':'安装前检测' }}</a-button><a-button type="primary" :loading="busy&&!checking" :disabled="!canPreview" @click="preview">生成安装计划</a-button></template><a-button v-else-if="plan&&!installation" type="primary" :loading="busy" :disabled="planExpired||!canExecute||!planPreflightPassed||!planModeValid||!planSourceValid" @click="execute">开始安装</a-button></div></template>
+    <template #footer><div class="provision-footer"><a-button :disabled="busy&&!checking" @click="close">{{ checking?'取消检测':running?'关闭窗口':'关闭' }}</a-button><a-button v-if="plan&&!installation" :disabled="busy" @click="plan=undefined;preflight=undefined;checkedInput='';checkedContext=''"><ChevronLeft :size="14" />返回配置</a-button><a-button v-if="installation&&!running" :disabled="busy" @click="configureAgain">{{ displayMode==='k3d'?t('k8s.k3dConfigureAgain'):installation.status==='succeeded'?'继续添加':'重新配置' }}</a-button><template v-if="!plan&&!installation"><a-button v-if="isK3d" :type="canPreview?'default':'primary'" :loading="checking" :disabled="!canCheck" @click="checkPreflight">{{ preflight?'重新检测':'安装前检测' }}</a-button><a-button type="primary" :loading="busy&&!checking" :disabled="!canPreview" @click="preview">生成安装计划</a-button></template><a-button v-else-if="plan&&!installation" type="primary" :loading="busy" :disabled="planExpired||!canExecute||!planPreflightPassed||!planModeValid||!planSourceValid" @click="execute">开始安装</a-button></div></template>
   </a-drawer>
   <HostDrawer v-if="privilegeEditingHost&&props.open&&canExecute" v-model:open="hostConfigOpen" :host="privilegeEditingHost" :can-test="auth.canAny(['cluster.execute'])" @saved="privilegeHostSaved" />
 </template>

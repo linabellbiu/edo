@@ -2,7 +2,6 @@ package k3s
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -116,11 +115,11 @@ func TestServerPreviewInheritsCriticalConfigAndEncryptsToken(t *testing.T) {
 	if err != nil || snapshot.Input.ServerToken != fixtureServerToken || snapshot.Input.targetVersion != plan.Version || snapshot.ServerCriticalDigest == "" || len(snapshot.ServerMembers) != 1 {
 		t.Fatalf("reviewed encrypted state missing: %v", err)
 	}
-	if len(f.transport.writes) != 0 || plan.Preflight == nil || !plan.Preflight.Passed {
+	if len(f.transport.writes) != 0 || f.transport.reads != 0 || plan.Preflight != nil {
 		t.Fatal("preview performed installation")
 	}
-	if !slices.ContainsFunc(plan.Preflight.Checks, func(c PreflightCheck) bool { return c.ID == "etcd_quorum" && c.Status == "warning" }) {
-		t.Fatal("two-member quorum warning missing")
+	if !slices.ContainsFunc(plan.Warnings, func(warning string) bool { return strings.Contains(warning, "3 或 5") }) {
+		t.Fatal("两成员 etcd 风险须继续在计划中提示")
 	}
 }
 
@@ -195,7 +194,16 @@ func TestServerJoinBlocksUnknownHAAndUnreachableEtcdBeforePlanning(t *testing.T)
 				failure := map[string]error{"sqlite or external": kube.ErrServerJoinUnsupported, "unhealthy": kube.ErrServerJoinUnhealthy, "token rejected": kube.ErrServerJoinCredentials, "missing config": kube.ErrServerJoinConfig}[scenario]
 				clusters.inspect = func() (*kube.ServerJoinInfo, error) { return nil, errors.Join(failure, errors.New(fixtureServerToken)) }
 			}
-			_, err := f.service.Preview(f.ctx, f.actor.ID, input)
+			var err error
+			if scenario == "etcd unreachable" {
+				report, checkErr := f.service.Check(f.ctx, f.actor.ID, input)
+				err = checkErr
+				if err == nil {
+					err = requirePreflight(report)
+				}
+			} else {
+				_, err = f.service.Preview(f.ctx, f.actor.ID, input)
+			}
 			var failed *PreflightError
 			if !errors.As(err, &failed) || failed.Report == nil || failed.Report.Passed {
 				t.Fatalf("missing blocking report: %v", err)
@@ -248,17 +256,8 @@ func TestServerExecuteRejectsChangedReviewBeforeSideEffects(t *testing.T) {
 	}
 }
 
-func TestServerWorkerRechecksMembershipAfterLastHostProbe(t *testing.T) {
+func TestServerWorkerRechecksMembershipBeforeOfficialInstaller(t *testing.T) {
 	f, clusters, input, info := serverJoinFixture(t)
-	var probes atomic.Int32
-	base := f.service.transport
-	f.service.WithTransport(preflightReadTransport{Transport: base, read: func(ctx context.Context, h model.Host, b sshclient.Bundle, script string) (string, error) {
-		result, err := base.Read(ctx, h, b, script)
-		if strings.Contains(script, "EDO_K3S_ETCD_PEERS_OK") && probes.Add(1) >= 3 {
-			info.MembershipDigest = "external-membership-change"
-		}
-		return result, err
-	}})
 	plan, err := f.service.Preview(f.ctx, f.actor.ID, input)
 	if err != nil {
 		t.Fatal(err)
@@ -266,6 +265,7 @@ func TestServerWorkerRechecksMembershipAfterLastHostProbe(t *testing.T) {
 	if _, err = f.service.Execute(f.ctx, f.actor.ID, plan.ID); err != nil {
 		t.Fatal(err)
 	}
+	info.MembershipDigest = "external-membership-change"
 	record, err := f.service.claim(context.Background())
 	if err != nil || record == nil {
 		t.Fatal(err)
@@ -273,7 +273,7 @@ func TestServerWorkerRechecksMembershipAfterLastHostProbe(t *testing.T) {
 	f.service.runInstallation(context.Background(), *record)
 	result, err := f.service.Get(f.ctx, plan.ID)
 	if err != nil || result.Status != "failed" || result.Error != ErrHostChanged.Error() || len(f.transport.writes) != 0 || len(clusters.linked) != 0 || clusters.joins != 0 {
-		t.Fatalf("stale membership allowed installation: %+v %v", result, err)
+		t.Fatalf("过期成员快照触发安装: %+v %v", result, err)
 	}
 }
 
@@ -409,7 +409,7 @@ func TestServerWorkerJoinsExistingClusterWithoutBootstrapToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.service.WithTransport(serverInstallTransport{Transport: f.service.transport, afterRun: func(script string) {
-		if strings.Contains(script, " | base64 -d > /etc/rancher/k3s/config.yaml") {
+		if strings.Contains(script, " > /etc/rancher/k3s/config.yaml") {
 			installed.Store(true)
 		}
 	}})
@@ -433,53 +433,27 @@ func TestServerWorkerJoinsExistingClusterWithoutBootstrapToken(t *testing.T) {
 	if err != nil || result.Status != "succeeded" || clusters.created != 0 || clusters.joins != 0 || clusters.revoked != 0 || !slices.Equal(clusters.linked, []string{"old-associated-host", f.host.ID}) {
 		t.Fatalf("incomplete server join: %+v err=%v", result, err)
 	}
-	if len(f.transport.writes) != 3 || !strings.Contains(f.transport.writes[0], "get.k3s.io") || strings.Contains(f.transport.writes[0], "config.yaml") || !strings.Contains(f.transport.writes[2], "rmdir") {
-		t.Fatal("server must download, install once, then clean its staging directory")
+	if len(f.transport.writes) != 1 {
+		t.Fatal("Master 应只调用一次原版官方安装器")
 	}
-	script := f.transport.writes[1]
-	if !strings.Contains(script, "INSTALL_K3S_SKIP_DOWNLOAD=true") || !strings.Contains(script, "INSTALL_K3S_SKIP_SELINUX_RPM=true") {
-		t.Fatal("final installer may download unreviewed artifacts")
+	script := f.transport.writes[0]
+	if !strings.Contains(script, "https://get.k3s.io") || strings.Contains(script, "INSTALL_K3S_SKIP_DOWNLOAD") || strings.Contains(script, "INSTALL_K3S_SKIP_SELINUX_RPM") {
+		t.Fatal("EDO 不得接管官方安装器的下载和 SELinux 处理")
 	}
-	if strings.Contains(script, " -o \"$work/install.sh\"") {
-		t.Fatal("final install must not contain slow installer download")
+	if !strings.Contains(script, "server: "+plan.Endpoint) || !strings.Contains(script, fixtureServerToken) || !strings.Contains(script, ` sh "$work/install.sh" server`) {
+		t.Fatal("安装未传递准确的加入配置")
 	}
-	writeAt := strings.Index(script, " | base64 -d > /etc/rancher/k3s/config.yaml")
-	if writeAt < 0 {
-		t.Fatal("no config destination in installer")
-	}
-	start := strings.LastIndex(script[:writeAt], "printf '%s' '")
-	if start < 0 {
-		t.Fatal("no config write in installer")
-	}
-	encoded := strings.SplitN(script[start+len("printf '%s' '"):], "'", 2)[0]
-	config, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || !strings.Contains(string(config), "server: "+plan.Endpoint) || !strings.Contains(string(config), fixtureServerToken) || !strings.Contains(script, " sh "+"\"$work/install.sh\" server") {
-		t.Fatalf("server join command missing reviewed target: %v", err)
-	}
+
 	if strings.Contains(result.Logs, "fixture-private-server-token") || strings.Contains(result.Hosts[0].Config, "fixture-private-server-token") {
 		t.Fatal("installation result leaked Server Token")
 	}
 }
 
-func TestServerDownloadMustFinishBeforeFinalSnapshotValidation(t *testing.T) {
+func TestServerWorkerRejectsChangedSnapshotBeforeInstaller(t *testing.T) {
 	for _, change := range []string{"version", "membership", "critical", "permission"} {
 		t.Run(change, func(t *testing.T) {
 			f, clusters, input, info := serverJoinFixture(t)
-			f.service.WithTransport(serverInstallTransport{Transport: f.service.transport, afterRun: func(script string) {
-				if !strings.Contains(script, "edo_stage_ready=true") {
-					return
-				}
-				switch change {
-				case "version":
-					clusters.version = "v1.35.6+k3s1"
-				case "membership":
-					info.MembershipDigest = "changed"
-				case "critical":
-					info.CriticalDigest = "changed"
-				case "permission":
-					f.auth.denied = true
-				}
-			}})
+
 			plan, err := f.service.Preview(f.ctx, f.actor.ID, input)
 			if err != nil {
 				t.Fatal(err)
@@ -487,6 +461,17 @@ func TestServerDownloadMustFinishBeforeFinalSnapshotValidation(t *testing.T) {
 			if _, err = f.service.Execute(f.ctx, f.actor.ID, plan.ID); err != nil {
 				t.Fatal(err)
 			}
+			switch change {
+			case "version":
+				clusters.version = "v1.35.6+k3s1"
+			case "membership":
+				info.MembershipDigest = "changed"
+			case "critical":
+				info.CriticalDigest = "changed"
+			case "permission":
+				f.auth.denied = true
+			}
+
 			record, err := f.service.claim(context.Background())
 			if err != nil || record == nil {
 				t.Fatal(err)
@@ -496,7 +481,7 @@ func TestServerDownloadMustFinishBeforeFinalSnapshotValidation(t *testing.T) {
 			if err = f.db.First(&actual, "uuid = ?", plan.ID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if actual.Status != "failed" || len(clusters.linked) != 0 || len(f.transport.writes) != 2 {
+			if actual.Status != "failed" || len(clusters.linked) != 0 || len(f.transport.writes) != 0 {
 				t.Fatalf("changed state installed Master: status=%s writes=%d", actual.Status, len(f.transport.writes))
 			}
 			for _, script := range f.transport.writes {

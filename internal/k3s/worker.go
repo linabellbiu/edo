@@ -337,34 +337,6 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		return ErrInvalidInput
 	}
 	serverIndex := -1
-	// Re-read every selected machine before installing the first one. The
-	// preview report is never used as a cache of current machine readiness.
-	for index, host := range hosts {
-		if err := s.log(record, "检查主机："+host.Name); err != nil {
-			return err
-		}
-		if err := s.hostProgress(record, hosts, index, "checking", ""); err != nil {
-			return err
-		}
-	}
-	report, err := s.runPreflight(ctx, input, hosts)
-	if err != nil {
-		return err
-	}
-	for index, result := range report.Hosts {
-		var err error
-		if result.Passed {
-			err = s.hostProgress(record, hosts, index, "ready", "检查通过")
-		} else {
-			err = s.hostProgress(record, hosts, index, "failed", "前置检查未通过")
-		}
-		if err != nil {
-			return err
-		}
-	}
-	if err := requirePreflight(report); err != nil {
-		return err
-	}
 	if input.Action == "create" {
 		for index, host := range hosts {
 			if host.Role == "server" {
@@ -461,35 +433,6 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			return err
 		}
 		current, bundle, err := s.loadReviewedHost(ctx, snapshot, host.ID)
-		if err != nil {
-			return err
-		}
-		download, err := serverInstallerDownloadScript(record.ID, installInput)
-		if err != nil {
-			return err
-		}
-		cleanup, err := serverInstallerCleanupScript(record.ID)
-		if err != nil {
-			return err
-		}
-		cleanupHost, cleanupBundle := current, bundle
-		defer func() {
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-			defer cancel()
-			_ = s.transport.Run(cleanupCtx, cleanupHost, cleanupBundle, cleanup, io.Discard)
-		}()
-		if err = s.runHostOperation(ctx, record, hosts, 0, "download", func(ctx context.Context, output io.Writer) error {
-			return s.transport.Run(ctx, current, bundle, download, output)
-		}); err != nil {
-			return err
-		}
-		// Downloads may take minutes. Re-read authorization, host identity,
-		// target version, configuration and membership before any K3s writes.
-		installInput, err = s.beforeHostInstall(ctx, *record, snapshot, host)
-		if err != nil {
-			return err
-		}
-		current, bundle, err = s.loadReviewedHost(ctx, snapshot, host.ID)
 		if err != nil {
 			return err
 		}

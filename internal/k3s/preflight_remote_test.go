@@ -300,30 +300,29 @@ func TestPreflightDownloadFollowsOnlyBoundedHTTPSRedirects(t *testing.T) {
 	}
 }
 
-func TestInstallScriptRechecksSharedEnvironmentBeforeWritingConfiguration(t *testing.T) {
+func TestInstallScriptDelegatesRequirementsToOfficialInstaller(t *testing.T) {
 	input := Input{Action: "join", Endpoint: "https://api.example.test:6443", Installer: map[string]any{"INSTALL_K3S_VERSION": "v1.35.5+k3s1"}}
 	script, err := installScript(Host{Role: "agent"}, input, "fixture-installation", "private-bootstrap-token")
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard := strings.Index(script, "if [ \"$edo_failed\" != 0 ]; then exit 44; fi")
-	write := strings.Index(script, "base64 -d > /etc/rancher/k3s/config.yaml")
-	if guard < 0 || write < guard || !strings.Contains(script, "edo_check endpoint failed") {
-		t.Fatal("shared preflight must complete before configuration writes")
-	}
-	download := strings.Index(script, "--retry 3 'https://get.k3s.io' -o")
-	finalGuard := strings.LastIndex(script, "if [ -e '/etc/rancher/k3s'")
-	if download < 0 || finalGuard < download || finalGuard > write {
-		t.Fatal("existing-installation guard must run again after script download and before configuration writes")
-	}
-	for _, unsafe := range []string{" --insecure", " -k ", "systemctl stop", "systemctl disable", "ufw disable", "setenforce ", "apt install", "yum install"} {
-		if strings.Contains(preflightProbeScript(Host{Role: "agent"}, input, true), unsafe) {
-			t.Fatalf("read-only probe contains %q", unsafe)
+	for _, forbidden := range []string{"EDO_K3S_CHECK", "base64", "sha256sum", "getconf", "ss ", "awk ", "systemctl", "openrc", "--head", "--skip-download", "apt install", "yum install", "INSTALL_K3S_SKIP_DOWNLOAD", "INSTALL_K3S_SKIP_SELINUX_RPM"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("原生安装包含额外要求或依赖安装: %s", forbidden)
 		}
+	}
+	if !strings.Contains(script, "command -v curl") || !strings.Contains(script, "command -v wget") || !strings.Contains(script, ` sh "$work/install.sh" agent`) {
+		t.Fatal("未直接调用官方安装器")
+	}
+	download := strings.Index(script, "https://get.k3s.io")
+	guard := strings.Index(script, "if [ -e /etc/rancher/k3s/config.yaml ]")
+	write := strings.Index(script, " > /etc/rancher/k3s/config.yaml")
+	if download < 0 || guard < download || write < guard {
+		t.Fatal("写配置前必须拒绝覆盖已有配置")
 	}
 	serverPorts, _ := preflightPorts(Host{Role: "server"}, map[string]any{"https-listen-port": 7443, "cluster-init": true})
 	if !slices.Contains(serverPorts, 7443) || slices.Contains(serverPorts, 6443) || !slices.Contains(serverPorts, 2379) {
-		t.Fatal("configured server ports ignored")
+		t.Fatal("独立诊断忽略了配置端口")
 	}
 }
 

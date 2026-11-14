@@ -119,17 +119,17 @@ func TestPreflightReadsLiveMembershipAfterSlowHostProbe(t *testing.T) {
 	}
 }
 
-func TestWorkerRepeatsHostPreflightImmediatelyBeforeInstallation(t *testing.T) {
+func TestNativeWorkerCallsInstallerWithoutHostPreflight(t *testing.T) {
 	f := newFixture(t)
 	clusters := fakeClusterClient(t, f)
 	f.service.kubernetes = clusters
 	var probes atomic.Int32
 	f.service.WithTransport(preflightReadTransport{Transport: f.transport, read: func(ctx context.Context, host model.Host, bundle sshclient.Bundle, script string) (string, error) {
-		output, err := f.transport.Read(ctx, host, bundle, script)
-		if strings.Contains(script, "EDO_K3S_REPORT_END") && probes.Add(1) >= 3 {
-			output = strings.Replace(output, "EDO_K3S_CHECK\tmemory\tpassed", "EDO_K3S_CHECK\tmemory\tfailed", 1)
+		if strings.Contains(script, "EDO_K3S_REPORT_END") {
+			probes.Add(1)
+			return "", errors.New("不允许主机预检")
 		}
-		return output, err
+		return f.transport.Read(ctx, host, bundle, script)
 	}})
 	plan, err := f.service.Preview(f.ctx, f.actor.ID, f.input())
 	if err != nil {
@@ -144,11 +144,11 @@ func TestWorkerRepeatsHostPreflightImmediatelyBeforeInstallation(t *testing.T) {
 	}
 	f.service.runInstallation(context.Background(), *record)
 	result, err := f.service.Get(f.ctx, plan.ID)
-	if err != nil || result.Status != "failed" || probes.Load() != 3 || len(f.transport.writes) != 0 || clusters.created != 0 {
-		t.Fatalf("changed host was installed: result=%+v probes=%d err=%v", result, probes.Load(), err)
+	if err != nil || result.Status != "succeeded" || probes.Load() != 0 || len(f.transport.writes) != 1 || clusters.created != 1 {
+		t.Fatalf("未直接执行安装并接入: status=%s probes=%d err=%v", result.Status, probes.Load(), err)
 	}
-	if !strings.Contains(result.Error, "内存") {
-		t.Fatalf("controlled failure lost the blocking reason: %q", result.Error)
+	if !strings.Contains(f.transport.writes[0], "https://get.k3s.io") {
+		t.Fatal("未调用官方安装器")
 	}
 }
 
@@ -185,7 +185,7 @@ func TestExecuteRejectsLegacyPlanWithoutPreflight(t *testing.T) {
 	}
 }
 
-func TestPreviewCancellationStopsChecksWithoutSavingPlan(t *testing.T) {
+func TestIndependentCheckCancellationStopsWithoutSavingPlan(t *testing.T) {
 	f := newFixture(t)
 	started := make(chan struct{}, 1)
 	f.service.WithTransport(preflightReadTransport{Transport: f.transport, read: func(ctx context.Context, _ model.Host, _ sshclient.Bundle, _ string) (string, error) {
@@ -199,15 +199,15 @@ func TestPreviewCancellationStopsChecksWithoutSavingPlan(t *testing.T) {
 	ctx, cancel := context.WithCancel(f.ctx)
 	defer cancel()
 	done := make(chan struct {
-		plan *Plan
-		err  error
+		report *PreflightReport
+		err    error
 	}, 1)
 	go func() {
-		plan, err := f.service.Preview(ctx, f.actor.ID, f.input())
+		report, err := f.service.Check(ctx, f.actor.ID, f.input())
 		done <- struct {
-			plan *Plan
-			err  error
-		}{plan, err}
+			report *PreflightReport
+			err    error
+		}{report, err}
 	}()
 	select {
 	case <-started:
@@ -218,8 +218,8 @@ func TestPreviewCancellationStopsChecksWithoutSavingPlan(t *testing.T) {
 	cancel()
 	select {
 	case result := <-done:
-		if result.plan != nil || !errors.Is(result.err, context.Canceled) {
-			t.Fatalf("取消未停止预检: plan=%+v err=%v", result.plan, result.err)
+		if result.report != nil || !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("取消未停止预检: plan=%+v err=%v", result.report, result.err)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("取消后预检未及时退出: %s", time.Since(before))

@@ -42,6 +42,7 @@ type fakeTransport struct {
 	mu         sync.Mutex
 	writes     []string
 	reads      int
+	privileges int
 	existing   bool
 	kubeconfig string
 }
@@ -55,6 +56,9 @@ func privilegeFixture(host model.Host, bundle sshclient.Bundle) HostPrivilege {
 }
 
 func (f *fakeTransport) ProbePrivileges(_ context.Context, host model.Host, bundle sshclient.Bundle) (HostPrivilege, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.privileges++
 	return privilegeFixture(host, bundle), nil
 }
 
@@ -62,6 +66,9 @@ func (f *fakeTransport) Run(_ context.Context, _ model.Host, _ sshclient.Bundle,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.writes = append(f.writes, script)
+	if f.existing {
+		return ErrExistingInstallation
+	}
 	return nil
 }
 func (f *fakeTransport) Read(_ context.Context, host model.Host, _ sshclient.Bundle, script string) (string, error) {
@@ -174,8 +181,8 @@ func TestPreviewUsesPinnedVersionFinalRedactedConfigAndEncryptedSnapshot(t *test
 	if snapshot.Input.Installer["INSTALL_K3S_VERSION"] != "v1.36.0+k3s1" {
 		t.Fatal("overrides must win")
 	}
-	if f.transport.reads != 1 || len(f.transport.writes) != 0 || plan.Preflight == nil || !plan.Preflight.Passed {
-		t.Fatal("preview must run read-only checks without installing")
+	if f.transport.reads != 0 || f.transport.privileges != 0 || len(f.transport.writes) != 0 || plan.Preflight != nil {
+		t.Fatal("原生预览只确认配置，不探测或安装主机")
 	}
 	defaultPlan, err := f.service.Preview(f.ctx, f.actor.ID, f.input())
 	if err != nil {
@@ -244,8 +251,8 @@ func TestDefaultPreviewIgnoresRetainedCustomOptions(t *testing.T) {
 			if !strings.Contains(plan.Commands[0], CatalogK3sVersion) {
 				t.Fatal("default installation command must pin the catalog version")
 			}
-			if f.transport.reads != 1 || len(f.transport.writes) != 0 || plan.Preflight == nil || !plan.Preflight.Passed {
-				t.Fatal("preview must run read-only checks without installing")
+			if f.transport.reads != 0 || len(f.transport.writes) != 0 || plan.Preflight != nil {
+				t.Fatal("原生预览只确认配置，不探测或安装主机")
 			}
 		})
 	}
@@ -383,13 +390,13 @@ func TestWorkerRechecksRevokedPermissionAndDoesNotInstallExistingKubernetes(t *t
 			if err := f.db.First(&finished, "uuid = ?", plan.ID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if finished.Status != "failed" || len(f.transport.writes) != 0 {
+			if finished.Status != "failed" || (scenario == "permission" && len(f.transport.writes) != 0) || (scenario == "existing" && len(f.transport.writes) != 1) {
 				t.Fatalf("unsafe execution: %s, %d writes", finished.Status, len(f.transport.writes))
 			}
-			if scenario == "permission" && f.transport.reads != 1 {
+			if scenario == "permission" && f.transport.reads != 0 {
 				t.Fatal("revoked actor reached SSH")
 			}
-			if scenario == "existing" && !strings.Contains(finished.ErrorMessage, "现有安装") {
+			if scenario == "existing" && finished.ErrorMessage != ErrExistingInstallation.Error() {
 				t.Fatal(finished.ErrorMessage)
 			}
 			var locks int64

@@ -75,10 +75,17 @@ find(ast);assert.ok(footer)
 const Footer=compile(`<script setup lang="ts">
 import {toRefs} from 'vue'
 const props=defineProps<{state:any}>()
-const {busy,checking,running,plan,installation,displayMode,preflight,canCheck,canPreview,planExpired,canExecute,planPreflightPassed,planModeValid,planSourceValid,checkedInput,checkedContext}=toRefs(props.state)
+const {busy,checking,running,plan,installation,displayMode,isK3d,preflight,canCheck,canPreview,planExpired,canExecute,planPreflightPassed,planModeValid,planSourceValid,checkedInput,checkedContext}=toRefs(props.state)
 const t=(key:string)=>key,close=()=>{},configureAgain=()=>{},checkPreflight=()=>{},preview=()=>{},execute=()=>{}
 </script><template>${footer.children.map(n=>n.loc.source).join('')}</template>`)
-const initial=()=>({busy:false,checking:false,running:false,plan:undefined,installation:undefined,displayMode:'native',preflight:undefined,canCheck:true,canPreview:false,planExpired:false,canExecute:true,planPreflightPassed:false,planModeValid:true,planSourceValid:true,checkedInput:'',checkedContext:''})
+const initial=()=>({busy:false,checking:false,running:false,plan:undefined,installation:undefined,displayMode:'k3d',isK3d:true,preflight:undefined,canCheck:true,canPreview:false,planExpired:false,canExecute:true,planPreflightPassed:false,planModeValid:true,planSourceValid:true,checkedInput:'',checkedContext:''})
+
+test('原生Footer直接生成计划，确认后才出现开始安装，不显示安装前检测',async()=>{
+  const state=vue.reactive({...initial(),displayMode:'native',isK3d:false,canPreview:true})
+  let html=await render(Footer,{state});assert.doesNotMatch(html,/安装前检测|重新检测|开始安装/);assert.match(html,/<button type="primary"[^>]*>生成安装计划<\/button>/)
+  state.plan={id:'official-plan'};state.planPreflightPassed=true
+  html=await render(Footer,{state});assert.match(html,/开始安装/);assert.doesNotMatch(html,/安装前检测|生成安装计划/)
+})
 
 test('真实抽屉Footer把检测与生成计划分成两个操作，未检测/失败阻断，检测中可取消',async()=>{
   const state=vue.reactive(initial());let html=await render(Footer,{state})

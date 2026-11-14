@@ -480,12 +480,15 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 	if err := s.authorizeNativeNodes(ctx, actor, input); err != nil {
 		return nil, err
 	}
-	preflight, err := s.runPreflight(ctx, input, hosts)
-	if err != nil {
-		return nil, err
-	}
-	if err := requirePreflight(preflight); err != nil {
-		return nil, err
+	var preflight *PreflightReport
+	if input.Mode == "k3d" {
+		preflight, err = s.runK3dPreflight(ctx, input, hosts)
+		if err != nil {
+			return nil, err
+		}
+		if err := requirePreflight(preflight); err != nil {
+			return nil, err
+		}
 	}
 	now := time.Now().UTC()
 	id := uuid.NewString()
@@ -520,6 +523,9 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 	}
 	if isServerJoin(input) {
 		plan.ServerJoin = &ServerJoinSummary{Datastore: input.serverJoin.Datastore, EtcdMembers: len(input.serverJoin.Members)}
+		if (len(input.serverJoin.Members)+1)%2 == 0 {
+			plan.Warnings = append(plan.Warnings, "加入后 etcd 成员为偶数，建议最终配置 3 或 5 个成员；请逐台添加并等待健康。")
+		}
 	}
 	for _, host := range hosts {
 		if input.Mode == "k3d" {
@@ -531,15 +537,12 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 		}
 		plan.Commands = append(plan.Commands, command)
 	}
-	plan.Warnings = append(plan.Warnings, "将在所选主机安装并启动 K3s 系统服务。已有 Kubernetes 安装的主机会被拒绝，请先检查主机用途和网络。")
+	plan.Warnings = append(plan.Warnings, "将在所选主机执行 K3s 官方安装脚本并启动系统服务，不覆盖已有 K3s 配置。")
 	if input.Mode == "k3d" {
 		plan.Version = k3dK3sVersion
 		plan.ServerConfig, plan.AgentConfig = "", ""
 		plan.Commands = []string{k3dCreateCommand(input, id)}
 		plan.Warnings = k3dWarnings(id)
-	}
-	if isServerJoin(input) {
-		plan.Warnings = append(plan.Warnings, "Master 使用经过 SHA256 与版本校验的暂存制品安装，安装阶段不再下载二进制或 SELinux RPM；启用 SELinux 的主机须预装 k3s-selinux 策略包。")
 	}
 	if disabled, _ := input.ServerOptions["disable-agent"].(bool); disabled {
 		plan.Warnings = append(plan.Warnings, "禁用 Server Agent 后不会注册该控制平面节点，该主机暂不自动关联。")

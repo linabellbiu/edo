@@ -105,8 +105,8 @@ func TestSourcesDefaultProfilePreservesSelectionsAndEncryptedSnapshot(t *testing
 		t.Fatalf("来源历史读取失败: count=%d err=%v", len(history), err)
 	}
 	requireSources(t, history[0].Sources, "official_cn", sourcesCNInstaller, sourcesCNArtifacts, "cn", sourcesString(sourcesRegistry))
-	if f.transport.reads != 1 || len(f.transport.writes) != 0 || plan.Preflight == nil || !plan.Preflight.Passed {
-		t.Fatal("来源预览只能执行只读预检，不能安装")
+	if f.transport.reads != 0 || f.transport.privileges != 0 || len(f.transport.writes) != 0 || plan.Preflight != nil {
+		t.Fatal("原生来源预览不探测或安装主机")
 	}
 }
 

@@ -124,7 +124,9 @@ func installerForSource(input Input) (map[string]any, error) {
 		// 官方国内脚本的默认值不含协议，显式固定 HTTPS，不依赖 curl 的隐式 HTTP。
 		installer["INSTALL_K3S_MIRROR_URL"] = strings.TrimSuffix(sources.ArtifactURL, "/k3s")
 	} else {
-		installer["INSTALL_K3S_ARTIFACT_URL"] = sources.ArtifactURL
+		if _, configured := input.Installer["INSTALL_K3S_ARTIFACT_URL"]; configured {
+			installer["INSTALL_K3S_ARTIFACT_URL"] = sources.ArtifactURL
+		}
 	}
 	return installer, nil
 }

@@ -536,9 +536,9 @@ func TestNativeModeKeepsOfficialHostInstallerWithoutContainerFallback(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"https://get.k3s.io", "/etc/rancher/k3s/config.yaml", "/run/systemd/system", "/sbin/openrc-run"} {
+	for _, required := range []string{"https://get.k3s.io", "/etc/rancher/k3s/config.yaml", " sh \"$work/install.sh\" server"} {
 		if !strings.Contains(script, required) {
-			t.Fatalf("原生安装缺少宿主机约束: %s", required)
+			t.Fatalf("原生安装缺少官方脚本调用: %s", required)
 		}
 	}
 	for _, forbidden := range []string{"docker run", "podman run", "k3d cluster", "edo_cli cluster"} {
