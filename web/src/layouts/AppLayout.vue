@@ -376,7 +376,7 @@ onBeforeUnmount(() => {
             <template #overlay><a-menu :selected-keys="[preferences.locale]" @click="({ key }: { key: string }) => preferences.setLocale(key as 'zh-CN' | 'en-US')"><a-menu-item key="zh-CN">简体中文</a-menu-item><a-menu-item key="en-US">English</a-menu-item></a-menu></template>
           </a-dropdown>
           <a-tooltip :title="t(fullscreen ? 'common.exitFullscreen' : 'common.fullscreen')"><button class="icon-button optional-action" type="button" :aria-label="t(fullscreen ? 'common.exitFullscreen' : 'common.fullscreen')" @click="toggleFullscreen"><Expand /></button></a-tooltip>
-          <a-tooltip :title="t('common.refresh')"><button class="icon-button optional-action" type="button" :aria-label="t('common.refresh')" @click="reloadPage"><RefreshCw /></button></a-tooltip>
+
           <button class="icon-button optional-action" type="button" :aria-label="t('common.notifications')"><Bell /></button>
           <a-dropdown placement="bottomRight">
             <button class="avatar-button" type="button" :aria-label="t('common.accountMenu')"><span>{{ (auth.user?.nickname || auth.user?.username || 'Z').slice(0, 1).toUpperCase() }}</span><i /></button>

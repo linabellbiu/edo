@@ -347,7 +347,7 @@ function formatTime(value: string) {
       <ResourceTable class="artifact-table" :rows="artifacts" :columns="artifactColumns" :loading="artifactLoading" empty-text="该构建方案还没有制品">
         <template #cell-application_id="{ value }"><a-tooltip :title="applicationName(String(value))" :trigger="['hover', 'focus', 'click']"><span class="artifact-application-name" tabindex="0">{{ applicationName(String(value)) }}</span></a-tooltip></template>
         <template #detail-application_id="{ value }">{{ applicationName(String(value)) }}</template>
-        <template #cell-kind="{ value }"><a-tag color="blue">{{ artifactKindLabel(value as Artifact['kind']) }}</a-tag></template>
+        <template #cell-kind="{ value }"><a-tag>{{ artifactKindLabel(value as Artifact['kind']) }}</a-tag></template>
         <template #cell-status="{ value }"><a-tag :color="value === 'available' ? 'success' : value === 'corrupt' ? 'error' : 'default'">{{ artifactStatusLabel(value as Artifact['status']) }}</a-tag></template>
         <template #cell-size_bytes="{ row }"><span class="artifact-size">{{ formatArtifactSize(row as Artifact) }}</span></template>
         <template #detail-size_bytes="{ row }">{{ formatArtifactSize(row as Artifact) }}</template>

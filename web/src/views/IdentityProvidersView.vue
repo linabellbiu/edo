@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { message } from 'ant-design-vue'
 import { Plus, RefreshCw } from 'lucide-vue-next'
@@ -8,6 +8,8 @@ import client, { type LoginProvider } from '@/api/client'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import ResourceTable from '@/components/ResourceTable.vue'
 import { useAuthStore } from '@/stores/auth'
+const providerFormID=useId()
+
 
 type ProviderType = LoginProvider['type']
 interface EmailSettings { host: string; port: number; username: string; from: string; tls_mode: string; allowed_domains: string[]; has_password?: boolean }
@@ -100,12 +102,13 @@ onMounted(refresh)
     </div>
     <div class="vben-card">
       <ResourceTable :rows="items" :columns="columns" :loading="loading">
-        <template #cell-type="{ value }"><a-tag color="blue">{{ types.includes(value as ProviderType) ? t(`loginAuth.${value}`) : value }}</a-tag></template>
+        <template #cell-type="{ value }"><a-tag>{{ types.includes(value as ProviderType) ? t(`loginAuth.${value}`) : value }}</a-tag></template>
         <template v-if="auth.canAny(['identity.update'])" #actions="{ row }"><a-button type="link" @click="edit(row as Provider)">{{ t('loginAuth.edit') }}</a-button><a-button type="link" @click="toggle(row as Provider)">{{ t(row.is_active ? 'loginAuth.disable' : 'loginAuth.enable') }}</a-button></template>
       </ResourceTable>
     </div>
     <a-drawer v-model:open="open" :title="t(editingID ? 'loginAuth.edit' : 'loginAuth.add')" width="680" :destroy-on-close="true">
-      <a-form :model="form" layout="vertical" @finish="save">
+      <a-form :id="providerFormID" :model="form" layout="vertical" @finish="save">
+        <h3 class="edo-drawer-section-heading">{{ t('drawerSection.basic') }}</h3>
         <a-form-item v-if="!editingID" :label="t('loginAuth.type')"><a-select :value="form.type" :options="typeOptions" @change="(value: ProviderType) => Object.assign(form, initial(value))" /></a-form-item>
         <div class="form-grid">
           <a-form-item :label="t('loginAuth.displayName')" required><a-input v-model:value="form.display_name" :maxlength="64" /></a-form-item>
@@ -115,7 +118,7 @@ onMounted(refresh)
         </div>
         <a-alert type="info" show-icon :message="t('loginAuth.policyHint')" class="provider-hint" />
         <template v-if="isEmail">
-          <a-divider>{{ t('loginAuth.smtp') }}</a-divider>
+          <h3 class="edo-drawer-section-heading">{{ t('loginAuth.smtp') }}</h3>
           <div class="form-grid">
             <a-form-item :label="t('loginAuth.host')" required><a-input v-model:value="form.email_host" placeholder="smtp.example.com" /></a-form-item>
             <a-form-item :label="t('loginAuth.port')" required><a-input-number v-model:value="form.email_port" :min="1" :max="65535" /></a-form-item>
@@ -128,7 +131,7 @@ onMounted(refresh)
           <a-alert type="info" show-icon :message="t('loginAuth.emailHint')" />
         </template>
         <template v-else-if="isLDAP">
-          <a-divider>LDAP</a-divider>
+          <h3 class="edo-drawer-section-heading">LDAP</h3>
           <div class="form-grid">
             <a-form-item :label="t('loginAuth.ldapURL')" required><a-input v-model:value="form.ldap_url" /></a-form-item>
             <a-form-item :label="t('loginAuth.baseDN')" required><a-input v-model:value="form.ldap_base_dn" /></a-form-item>
@@ -140,7 +143,7 @@ onMounted(refresh)
           <a-checkbox v-model:checked="form.ldap_start_tls">{{ t('loginAuth.startTLS') }}</a-checkbox><a-checkbox v-model:checked="form.allow_insecure">{{ t('loginAuth.insecureLDAP') }}</a-checkbox>
         </template>
         <template v-else>
-          <a-divider>OAuth</a-divider>
+          <h3 class="edo-drawer-section-heading">OAuth</h3>
           <div class="form-grid">
             <a-form-item :label="t('loginAuth.clientID')" required><a-input v-model:value="form.client_id" /></a-form-item>
             <a-form-item :label="t('loginAuth.clientSecret')" :required="!editingID"><a-input-password v-model:value="form.client_secret" autocomplete="new-password" :placeholder="editingID ? t('loginAuth.keepSecret') : ''" /></a-form-item>
@@ -154,8 +157,8 @@ onMounted(refresh)
             <a-checkbox v-model:checked="form.allow_insecure">{{ t('loginAuth.allowHTTP') }}</a-checkbox>
           </a-collapse-panel></a-collapse>
         </template>
-        <a-button type="primary" html-type="submit" block :loading="saving" class="save-provider">{{ t('loginAuth.save') }}</a-button>
       </a-form>
+      <template #footer><div class="edo-drawer-actions"><a-button :disabled="saving" @click="open=false">取消</a-button><a-button :form="providerFormID" type="primary" html-type="submit" :loading="saving" class="save-provider">{{ t('loginAuth.save') }}</a-button></div></template>
     </a-drawer>
   </div>
 </template>

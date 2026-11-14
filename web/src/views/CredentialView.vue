@@ -34,7 +34,7 @@ onMounted(refresh)
   <section>
     <PageToolbar description="管理自己的 Git 令牌和 SSH 私钥。"><a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button><a-button v-if="auth.canAny(['credential.create'])" type="primary" @click="create"><Plus :size="15" />保存令牌</a-button></PageToolbar>
     <div class="vben-card"><ResourceTable :rows="items" :columns="columns" :loading="loading">
-      <template #cell-provider="{ value }"><a-tag color="blue">{{ providerNames[String(value)] || value }}</a-tag></template>
+      <template #cell-provider="{ value }"><a-tag>{{ providerNames[String(value)] || value }}</a-tag></template>
       <template #cell-auth_type="{ value }">{{ value === 'ssh_key' ? 'SSH 私钥' : '访问令牌' }}</template>
       <template #cell-secret_hint="{ row }"><span class="secret-cell"><code>{{ revealed[String(row.id)] || row.secret_hint }}</code><a-button v-if="auth.canAny(['credential.secret.read'])" type="text" size="small" :aria-label="revealed[String(row.id)] ? '隐藏密钥原文' : '查看密钥原文'" @click="reveal(row as GitCredential)"><EyeOff v-if="revealed[String(row.id)]" :size="15"/><Eye v-else :size="15"/></a-button></span></template>
       <template #actions="{ row }"><a-button v-if="auth.canAny(['credential.update'])" type="link" @click="edit(row as GitCredential)">编辑</a-button><a-button v-if="auth.canAny(['credential.delete'])" type="link" danger @click="remove(row as GitCredential)">删除</a-button></template>

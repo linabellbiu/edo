@@ -89,12 +89,14 @@ watch(()=>props.open,value=>{if(value)composeForm.value=newComposeDeliveryForm()
 <a-alert v-if="currentDefault&&(!currentDefault.workflow_available||!currentDefault.deployment_available)" type="warning" :message="t('delivery.unavailable')" class="hint"/>
 <a-form layout="vertical"><div class="grid">
 <a-form-item v-if="!applicationId" class="wide" :label="t('delivery.application')" required><a-select :aria-label="t('delivery.application')" v-model:value="form.application" :options="applications.map(item=>({value:item.id,label:item.name}))"/></a-form-item>
+<h3 class="edo-drawer-section-heading">{{ t('drawerSection.basic') }}</h3>
 <a-form-item :label="t('delivery.kind')"><a-select :aria-label="t('delivery.kind')" v-model:value="form.kind" :options="[...deliveryKinds.map(value=>({value,label:t(`delivery.${value}`)})),{value:'compose_existing',label:'Docker Compose 与 Tag',disabled:!canCreateCompose}]" @change="selectKind"/></a-form-item>
 <a-form-item :label="t('delivery.name')"><a-input :aria-label="t('delivery.name')" v-model:value="form.name" :maxlength="128"/></a-form-item>
 <a-form-item v-if="!existingCompose" :label="t('delivery.workflow')"><a-select :aria-label="t('delivery.workflow')" v-model:value="form.workflow" :options="workflowOptions"/></a-form-item>
 <a-form-item v-if="!existingCompose" :label="t('delivery.deployment')"><a-select :aria-label="t('delivery.deployment')" v-model:value="form.plan" :options="planOptions"/></a-form-item>
 <a-form-item v-if="!existingCompose" class="wide" :label="t('delivery.build')" :help="t('delivery.buildHint')" required><a-select :aria-label="t('delivery.build')" v-model:value="form.build" :options="buildOptions"/></a-form-item>
 <ComposeDeliveryFields v-if="existingCompose" ref="composeFields" v-model="composeForm" :builds="builds" :disabled="saving||!ready"/>
+<h3 class="edo-drawer-section-heading">{{ t('drawerSection.target') }}</h3>
 <a-form-item :label="t('delivery.environment')" required><a-select :aria-label="t('delivery.environment')" v-model:value="form.environment" :options="environments.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))" @change="()=>{form.host='';form.cluster=''}"/></a-form-item>
 <a-form-item v-if="form.kind==='kubernetes'" :label="t('delivery.cluster')" required><a-select :aria-label="t('delivery.cluster')" v-model:value="form.cluster" :options="clusterOptions"/></a-form-item>
 <a-form-item v-else :label="t('delivery.host')" required><a-select :aria-label="t('delivery.host')" v-model:value="form.host" :options="hostOptions"/></a-form-item>
@@ -104,8 +106,10 @@ watch(()=>props.open,value=>{if(value)composeForm.value=newComposeDeliveryForm()
 <a-form-item v-if="form.kind==='script'&&!existingCompose" class="wide" :label="t('delivery.directory')"><a-input :aria-label="t('delivery.directory')" v-model:value="form.directory" placeholder="目标主机上的绝对路径"/></a-form-item>
 </div>
 <a-alert v-if="form.kind==='kubernetes'" type="info" :message="t('delivery.targetHint')" class="hint"/>
-<a-alert v-if="form.kind==='script'" type="warning" :message="t('delivery.scriptHint')" class="hint"/>
-<a-button type="primary" :disabled="!ready" :loading="saving" @click="create">{{ t('delivery.create') }}</a-button>
-</a-form></a-spin></a-drawer>
+<a-alert v-if="form.kind==='script'" type="info" :message="t('delivery.scriptHint')" class="hint"/>
+
+</a-form></a-spin>
+  <template #footer><div class="edo-drawer-actions"><a-button :disabled="saving" @click="emit('update:open',false)">取消</a-button><a-button type="primary" :disabled="!ready" :loading="saving" @click="create">{{ t('delivery.create') }}</a-button></div></template>
+</a-drawer>
 </template>
 <style scoped>.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}.grid>*{min-width:0}.wide{grid-column:1/-1}.hint{margin-bottom:20px}@media(max-width:600px){.grid{grid-template-columns:minmax(0,1fr)}}</style>

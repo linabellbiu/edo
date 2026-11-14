@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, useId } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { Plus, RefreshCw } from 'lucide-vue-next'
 import client from '@/api/client'
@@ -11,6 +11,8 @@ import ConfigCodeEditor from '@/components/ConfigCodeEditor.vue'
 import ConfigurationHistoryDrawer from '@/components/ConfigurationHistoryDrawer.vue'
 import { checkConfigText, configurationFormat, configFormats, guessConfigFormat, type ConfigIssue } from '@/utils/configText'
 import { envTextError, variableKindLabel, type DeliveryVariableKind } from '@/utils/envText'
+const variableFormID=useId()
+
 
 interface Variable extends ResourceRecord {
   id:string;project_id:string;name:string;description:string;kind:DeliveryVariableKind;usage:'build'|'deploy';value?:string
@@ -163,17 +165,20 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
     </ResourceTable></div>
     </template>
     <a-drawer :open="open" :title="editing?'编辑配置':configurationFiles?'添加配置':embedded?'添加环境配置':'添加变量'" width="min(840px, 96vw)" destroy-on-close :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="closeEditor">
-      <a-form :model="form" :disabled="saving||!can(editing?'update':'create')" layout="vertical" @finish="save">
+      <a-form :id="variableFormID" :model="form" :disabled="saving||!can(editing?'update':'create')" layout="vertical" @finish="save">
         <a-alert v-if="editorError" type="error" show-icon :message="editorError"/>
+        <h3 class="edo-drawer-section-heading">基础信息</h3>
         <a-form-item label="项目"><a-input :value="projectName||'当前项目'" disabled/></a-form-item>
         <a-form-item v-if="configurationFiles||!embedded||form.kind!=='env_text'" :label="configurationFiles?'文件名':form.kind==='env_file'?'文件名':isEnvText?'配置名称':'名称'" name="name" required :extra="form.kind==='env_file'?'只填写文件名，例如 .prod.env，不包含目录。':undefined"><a-input v-model:value="form.name" :disabled="!!editing" :maxlength="128" :placeholder="configurationFiles?'例如 application.yaml、.prod.env':form.kind==='env_file'?'.prod.env':isEnvText?'例如 PROD_ENV':'例如 API_URL、DB_PASSWORD'"/></a-form-item>
         <a-form-item label="说明"><a-input v-model:value="form.description" :maxlength="500"/></a-form-item>
+        <h3 class="edo-drawer-section-heading">适用范围</h3>
         <div class="variable-form-grid">
           <a-form-item v-if="!configurationFiles&&!embedded" label="用途"><a-select v-model:value="form.usage" :disabled="!!editing" :options="[{value:'build',label:'构建与检查'},{value:'deploy',label:'应用运行与部署'}]"/></a-form-item>
           <a-form-item v-if="embedded" label="应用"><a-input :value="applicationName||applicationId" disabled/></a-form-item>
           <a-form-item v-else label="应用"><a-select v-model:value="form.application_id" :disabled="!!editing" :options="[{value:'',label:'当前项目共享'},...applications.map(v=>({value:v.id,label:v.name}))]"/></a-form-item>
           <a-form-item label="主机组"><a-select v-model:value="form.environment_id" :disabled="!!editing||embedded" :options="[{value:'',label:'全部主机组'},...environments.map(v=>({value:v.id,label:v.name}))]"/></a-form-item>
         </div>
+        <h3 class="edo-drawer-section-heading">配置内容</h3>
         <a-form-item v-if="configurationFiles" label="文本格式"><a-select :value="currentFormat" :options="configFormats" :disabled="!!editing" @update:value="form.kind=(`config_${$event}` as DeliveryVariableKind)"/></a-form-item>
         <a-form-item v-else-if="form.usage==='deploy'" label="添加方式">
           <a-radio-group v-model:value="form.kind" :disabled="!!editing" class="env-input-modes">
@@ -196,8 +201,8 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
         <p v-if="form.usage==='deploy'&&isEnvText" class="variable-description">{{form.kind==='env_file'?'仅用于 Docker Compose：部署时自动生成命名文件，为服务添加 env_file 引用。':'Docker Compose 部署时自动合并到所有服务的 environment，无需预先在 YAML 声明；同名项使用本次配置。'}}</p>
         <a-form-item label="允许使用的代码版本" extra="一行一个，例如 refs/heads/main、refs/tags/v*；留空表示不限制。"><a-textarea v-model:value="form.protected_refs" :rows="3"/></a-form-item>
         <a-alert type="info" show-icon :message="configurationFiles?'部署阶段按需选择配置文件并指定配置文件路径；ENV 可自动注入容器环境。':embedded?'应用配置自动注入对应主机组的部署；项目共享变量仍在任务中选择引用。运行会固定配置版本。':'共享变量只向明确引用的任务注入；应用自动配置按应用和主机组匹配，运行会固定引用的版本。'"/>
-        <a-button type="primary" html-type="submit" block :loading="saving" :disabled="readingOriginal||!can(editing?'update':'create')" style="margin-top:20px">{{configurationFiles?'保存配置':'保存变量'}}</a-button>
       </a-form>
+      <template #footer><div class="edo-drawer-actions"><a-button :disabled="saving" @click="closeEditor">取消</a-button><a-button :form="variableFormID" type="primary" html-type="submit" :loading="saving" :disabled="readingOriginal||!can(editing?'update':'create')">{{configurationFiles?'保存配置':'保存变量'}}</a-button></div></template>
     </a-drawer>
     <ConfigurationHistoryDrawer v-if="configurationFiles" :open="!!historyTarget" :target="historyTarget" @update:open="value=>{if(!value)historyTarget=undefined}"/>
   </div>

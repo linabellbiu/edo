@@ -1515,7 +1515,7 @@ onBeforeRouteLeave(async () => {
             <template #option="{ label, detail }"><span class="named-option"><strong>{{ label }}</strong><small>{{ detail }}</small></span></template>
           </a-select>
         </label>
-        <a-tag v-if="!publicMode && workflow" :color="selectedTemplateID ? 'blue' : 'default'">{{ selectedTemplateID ? '跟随项目共用流水线' : '自定义' }}</a-tag>
+        <a-tag v-if="!publicMode && workflow" >{{ selectedTemplateID ? '跟随项目共用流水线' : '自定义' }}</a-tag>
         <a-tag v-if="workflow" :color="workflow.is_active ? 'success' : 'default'">{{ workflow.is_active ? '已启用' : '草稿' }}</a-tag>
         <span v-if="workflow" class="save-indicator" :class="{ failed: autoSaveFailed, pending: dirty }"><i />{{ saveState }}</span>
       </div>

@@ -195,11 +195,11 @@ test('HTTP客户端保留revision、取消信号、编码ID与DELETE请求体',a
   assert.equal(calls.at(-1).args[2].timeout,150_000)
 })
 
-test('角色、集群列表和工作区提供授权入口，页面显示原生规则与失败状态',()=>{
+test('角色和集群列表提供授权入口，资源工作区不重复配置入口，页面保留规则与失败状态',()=>{
   const roleView=readFileSync(new URL('../src/views/AccessView.vue',import.meta.url),'utf8')
   const workspace=readFileSync(new URL('../src/views/KubernetesView.vue',import.meta.url),'utf8')
   const inventory=readFileSync(new URL('../src/components/ClusterInventory.vue',import.meta.url),'utf8')
   const drawer=readFileSync(new URL('../src/components/ClusterRbacDrawer.vue',import.meta.url),'utf8')
-  assert.match(roleView,/openClusterRbac\(row as Role\)/);assert.match(workspace,/clusterRbacOpen=true/);assert.match(inventory,/openRbac\(record\)/)
+  assert.match(roleView,/openClusterRbac\(row as Role\)/);assert.doesNotMatch(workspace,/clusterRbacOpen=true/);assert.match(inventory,/openRbac\(record\)/)
   assert.match(drawer,/最终 Kubernetes RBAC 规则/);assert.match(drawer,/state.last_error/);assert.match(drawer,/Secret 内容读取权限/)
 })

@@ -8,14 +8,14 @@ const route = useRoute(), router = useRouter(), preferences = usePreferencesStor
 const dark = new URLSearchParams(location.search).get('theme') === 'dark'
 preferences.theme = dark ? 'dark' : 'light'
 document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-const pages = [{ key: 'overview', label: '集群总览', icon: LayoutDashboard }, { key: 'nodes', label: '节点', icon: Server }, { key: 'workloads', label: '工作负载', icon: Boxes }, { key: 'config', label: '配置中心', icon: Settings }, { key: 'storage', label: '存储', icon: Database }, { key: 'network', label: '服务与网络', icon: Network }]
+const pages = [{ key: 'clusters', label: '集群', icon: Boxes }, { key: 'overview', label: '集群总览', icon: LayoutDashboard }, { key: 'nodes', label: '节点', icon: Server }, { key: 'workloads', label: '工作负载', icon: Boxes }, { key: 'config', label: '配置中心', icon: Settings }, { key: 'storage', label: '存储', icon: Database }, { key: 'network', label: '服务与网络', icon: Network }]
 </script>
 
 <template>
   <a-config-provider :theme="{ algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#5269ff', borderRadius: 6, fontSize: 14 } }">
     <main class="kubernetes-preview">
       <header class="preview-bar"><strong>EDO Kubernetes</strong><span>本地预览 · 测试数据 · 不连接集群</span><a href="./workload-reference.html">工作负载详情</a></header>
-      <nav class="preview-nav" aria-label="Kubernetes 预览页面"><button v-for="page in pages" :key="page.key" type="button" :aria-current="route.query.view === page.key ? 'page' : undefined" :class="{ selected: route.query.view === page.key }" @click="router.push({ path: '/kubernetes', query: { ...route.query, view: page.key, resource: undefined, from: undefined } })"><component :is="page.icon" :size="16" aria-hidden="true" />{{ page.label }}</button></nav>
+      <nav class="preview-nav" aria-label="Kubernetes 预览页面"><button v-for="page in pages" :key="page.key" type="button" :aria-current="route.query.view === page.key ? 'page' : undefined" :class="{ selected: route.query.view === page.key }" @click="router.push({ path: page.key === 'clusters' ? '/hosts' : '/kubernetes', query: { ...route.query, view: page.key, resource: undefined, from: undefined, ...(page.key === 'clusters' ? { cluster: undefined } : {}) } })"><component :is="page.icon" :size="16" aria-hidden="true" />{{ page.label }}</button></nav>
       <router-view />
     </main>
   </a-config-provider>

@@ -2,18 +2,20 @@ import 'ant-design-vue/dist/reset.css'
 import '/src/styles/vben.css'
 import '/src/styles/resource-list.css'
 import '/src/styles/kubernetes.css'
-import { createApp } from 'vue'
+import { createApp, h } from 'vue'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import client from '/src/api/client'
 import { useAuthStore } from '/src/stores/auth'
 import i18n from '/src/locales'
 import KubernetesView from '/src/views/KubernetesView.vue'
+import ClusterInventory from '/src/components/ClusterInventory.vue'
 import KubernetesWorkspacePreview from './KubernetesWorkspacePreview.vue'
 import { createKubernetesPreviewData } from './kubernetes-preview-data.mjs'
 
 // 测试入口使用真实页面和内存适配器；任何未登记请求及写操作都不得触达后端。
 const data = createKubernetesPreviewData()
+const inventoryClusters = [{ id: 'local-preview', name: '本地预览集群', api_server: 'https://preview.invalid:6443', default_namespace: 'preview', is_active: true, mode: 'kubeconfig', hosts: [], updated_at: new Date().toISOString() }]
 client.defaults.adapter = async config => {
   config.signal?.throwIfAborted()
   if (config.method !== 'get') throw new Error('本地预览不提交资源')
@@ -21,7 +23,7 @@ client.defaults.adapter = async config => {
   const params = config.params || {}
   const path = url.pathname
   let response
-  if (path === '/kubernetes/clusters') response = { clusters: [{ id: 'local-preview', name: '本地预览集群', api_server: 'https://preview.invalid:6443', default_namespace: 'preview', is_active: true, hosts: [] }] }
+  if (path === '/kubernetes/clusters') response = { clusters: inventoryClusters }
   else if (/^\/kubernetes\/clusters\/[^/]+\/namespaces$/.test(path)) response = { namespaces: ['preview', 'staging'] }
   else if (path.endsWith('/rbac')) {
     const enabled = new URLSearchParams(location.search).get('rbac') === 'enabled'
@@ -83,10 +85,10 @@ window.WebSocket = class PreviewWebSocket extends EventTarget {
 }
 const pinia = createPinia()
 const auth = useAuthStore(pinia)
-auth.user = { id: 'local-preview-user', username: 'preview', nickname: '本地预览', project_id: localStorage.getItem('edo.project') ?? '', is_superuser: false, permissions: ['cluster.read', 'terminal.open', 'kubernetes.rbac.read', 'kubernetes.rbac.update', ...['node', 'workload', 'config', 'storage', 'network'].flatMap(resource => ['read', 'update'].map(action => `kubernetes.${resource}.${action}`))] }
+auth.user = { id: 'local-preview-user', username: 'preview', nickname: '本地预览', project_id: localStorage.getItem('edo.project') ?? '', is_superuser: false, permissions: ['cluster.read', 'cluster.create', 'cluster.execute', 'cluster.update', 'terminal.open', 'kubernetes.rbac.read', 'kubernetes.rbac.update', ...['node', 'workload', 'config', 'storage', 'network'].flatMap(resource => ['read', 'update'].map(action => `kubernetes.${resource}.${action}`))] }
 auth.loaded = true
 auth.authorizationState = 'ready'
-const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/kubernetes', component: KubernetesView }] })
+const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/kubernetes', component: KubernetesView }, { path: '/hosts', component: { render: () => h(ClusterInventory, { clusters: inventoryClusters, hosts: [], loading: false }) } }] })
 const view = new URLSearchParams(location.search).get('view') || 'overview'
-await router.push({ path: '/kubernetes', query: { view, cluster: 'local-preview', namespace: 'preview' } })
+await router.push({ path: view === 'clusters' ? '/hosts' : '/kubernetes', query: { view, ...(view === 'clusters' ? {} : { cluster: 'local-preview', namespace: 'preview' }) } })
 createApp(KubernetesWorkspacePreview).use(pinia).use(i18n).use(router).mount('#root')

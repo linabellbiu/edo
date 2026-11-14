@@ -152,6 +152,7 @@ function close() {
   >
     <a-form ref="formRef" :model="form" layout="vertical" :disabled="testing || submitting">
       <div class="form-grid">
+        <h3 class="edo-drawer-section-heading">{{ t('drawerSection.connection') }}</h3>
         <a-form-item
           :label="t('dockerConnection.name')"
           name="name"
@@ -180,6 +181,7 @@ function close() {
         >
           <a-input-number v-model:value="form.port" :min="1" :max="65535" />
         </a-form-item>
+        <h3 class="edo-drawer-section-heading">{{ t('drawerSection.credentials') }}</h3>
         <a-form-item class="span-2" :label="t('dockerConnection.authType')" name="authType">
           <a-radio-group v-model:value="form.authType" button-style="solid">
             <a-radio-button value="private_key">{{ t('dockerConnection.privateKey') }}</a-radio-button>

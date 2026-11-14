@@ -36,7 +36,7 @@ async function submit() {
   <a-drawer :open="open" :title="`新建${title}`" width="560" @close="emit('update:open', false)">
     <a-alert type="info" show-icon message="高级配置以 JSON 提交，敏感字段不会在服务端回显。" />
     <a-textarea v-model:value="value" class="json-editor" :rows="20" spellcheck="false" />
-    <template #extra><a-button type="primary" :loading="submitting" @click="submit">提交</a-button></template>
+    <template #footer><div class="edo-drawer-actions"><a-button :disabled="submitting" @click="emit('update:open',false)">取消</a-button><a-button type="primary" :loading="submitting" @click="submit">提交</a-button></div></template>
   </a-drawer>
 </template>
 

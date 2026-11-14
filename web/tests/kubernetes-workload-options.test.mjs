@@ -438,6 +438,6 @@ test('工作负载表单与容器字段模板可编译，每个控件可访问�
    for(const child of node.children)visit(child,label)
   }
   descriptor.template.ast.children.forEach(node=>visit(node))
-  assert.equal(count,file==='KubeResourceEditor.vue'?55:22,`${file} 必须遍历全部实际表单控件`)
+  assert.equal(count,file==='KubeResourceEditor.vue'?57:22,`${file} 必须遍历全部实际表单控件`)
  }
 })

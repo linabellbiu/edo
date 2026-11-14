@@ -224,7 +224,7 @@ test('存储和网络单元格完整展示绑定、命名端口、多条路径�
  assert.equal(cells.capacity.text,'5 GiB');assert.match(cells.capacity.secondary,/8 GiB/);assert.equal(cells.capacity.raw,'5Gi / 8Gi');assert.equal(cells.volume.reference.resource,'persistentvolumes')
  assert.deepEqual(cells.storageClass.reference,{resource:'storageclasses',name:'fast',namespace:undefined})
  const service={kind:'Service',metadata:{},spec:{type:'NodePort',clusterIPs:['10.0.0.1','fd00::1'],ports:[{port:80,targetPort:'http',nodePort:30080},{port:53,targetPort:53,protocol:'UDP'}]}}
- const ports=presentation.resourceCells(service,translate).servicePorts.text;assert.match(ports,/80 → http\/TCP \(:30080\)/);assert.match(ports,/53 → 53\/UDP/)
+ const ports=presentation.resourceCells(service,translate).servicePorts;assert.equal(ports.text,'80:http/TCP (NodePort 30080)\n53:53/UDP');assert.deepEqual(ports.tokens,['80:http/TCP (NodePort 30080)','53:53/UDP'])
  const ingress={spec:{rules:[{host:'a.test',http:{paths:[{path:'/api',pathType:'Prefix',backend:{service:{name:'api',port:{name:'http'}}}}]}},{host:'b.test',http:{paths:[{path:'/',backend:{service:{name:'web',port:{number:80}}}}]}}],defaultBackend:{service:{name:'fallback',port:{number:8080}}}}}
  assert.equal(presentation.ingressRoutes(ingress).length,3);assert.equal(presentation.ingressRoutes(ingress)[0].port,'http');assert.equal(presentation.ingressRoutes(ingress)[2].service,'fallback')
 })

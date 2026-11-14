@@ -794,7 +794,6 @@ onBeforeUnmount(() => {
 <template>
   <section class="host-page">
     <PageToolbar :title="activeWorkspace === 'clusters' ? '集群' : '主机'" description="">
-      <a-button v-if="activeWorkspace === 'hosts' && canReadGroups && auth.canAny(['deployment.create'])" class="host-toolbar-action" @click="createGroup"><Plus :size="15" />新建主机分组</a-button>
       <a-button v-if="activeWorkspace === 'hosts' && canReadResources" class="host-toolbar-action" @click="openAllResources"><Container :size="15" />运行资源</a-button>
     </PageToolbar>
 

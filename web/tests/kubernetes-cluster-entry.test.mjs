@@ -60,16 +60,30 @@ function mount(t, component, props = {}) {
   for (const name of ['a-button', 'a-input', 'a-select', 'a-empty', 'a-space', 'a-checkbox', 'a-radio-group', 'a-radio-button', 'a-alert', 'a-tag', 'a-menu-item']) {
     app.component(name, { inheritAttrs: false, setup: (_p, { attrs, slots }) => () => vue.h(name === 'a-button' ? 'button' : 'div', attrs, slots.default?.()) })
   }
-  app.component('a-table', { props: ['dataSource'], setup: (p, { slots }) => () => vue.h('div', p.dataSource.length ? [] : slots.emptyText?.()) })
+  app.component('a-table', { props: ['dataSource'], setup: (p, { slots }) => () => vue.h('div', p.dataSource.length ? p.dataSource.map(record=>slots.bodyCell?.({column:{key:'name'},record})) : slots.emptyText?.()) })
   for (const name of ['RefreshCw', 'Plus']) app.component(name, () => vue.h('svg'))
   app.mount(root); t.after(() => app.unmount())
   return { buttons: () => descendants(root).filter(n => n.tag === 'button') }
 }
 const canCreate = ['cluster.create', 'cluster.execute', 'cluster.update', 'cluster.read']
-function inventory(permissions) {
+test('详情抽屉保留自定义标题，普通标题仍按属性显示', t => {
+  const Drawer = compile(readFileSync(new URL('../src/components/ResourceDetailDrawer.vue', import.meta.url), 'utf8'))
+  for (const custom of [false, true]) {
+    const root = node('root'), app = renderer.createApp({
+      render: () => vue.h(Drawer, { open: true, title: '连接详情' }, custom ? { title: () => vue.h('strong', '目标集群') } : {}),
+    })
+    app.component('a-drawer', {
+      props: ['title'],
+      setup: (props, { slots }) => () => vue.h('section', props.title ?? slots.title?.()),
+    })
+    app.mount(root); t.after(() => app.unmount())
+    assert.equal(text(root), custom ? '目标集群' : '连接详情')
+  }
+})
+function inventory(permissions, navigations = []) {
   return compile(readFileSync(new URL('../src/components/ClusterInventory.vue', import.meta.url), 'utf8'), {
     'lucide-vue-next': Object.fromEntries(['ArrowUpRight', 'Link2', 'Pencil', 'Plus', 'RefreshCw', 'Search', 'Server'].map(name => [name, () => vue.h('svg')])),
-    'vue-router': { useRoute: () => ({ query: {} }), useRouter: () => ({ replace() {}, push() {} }) },
+    'vue-router': { useRoute: () => ({ query: {} }), useRouter: () => ({ replace(route) { navigations.push({kind:'replace',route}) }, push(route) { navigations.push({kind:'push',route}) } }) },
     '@/stores/auth': { useAuthStore: () => ({ canAny: codes => codes.some(code => permissions.has(code)) }) },
     '@/utils/resourceList': loadFrontend('../src/utils/resourceList.ts', { vue, 'vue-i18n': { useI18n: () => ({ t: key => key }) } }),
     '@/utils/infrastructureRelations': loadFrontend('../src/utils/infrastructureRelations.ts'),
@@ -83,9 +97,22 @@ test('真实集群列表有数据或为空时都不提供接入入口，保留�
       assert.equal(h.buttons().some(button => text(button) === '接入集群'), false)
       const refresh = h.buttons().find(button => text(button) === '刷新'), provision = h.buttons().find(button => text(button) === '创建集群')
       assert.ok(refresh); assert.ok(provision)
+      assert.equal(h.buttons().filter(button => text(button) === '创建集群').length, 1)
       refresh.props.onClick(); provision.props.onClick()
       assert.deepEqual(events, ['refresh', 'provision'])
     })
+  }
+})
+
+test('集群名称进入准确总览；无资源权限或停用时保留详情入口', t => {
+  for(const [readResources,active] of [[true,true],[false,true],[true,false]]){
+    const navigations=[],permissions=new Set(['cluster.read',...(readResources?['kubernetes.node.read']:[])])
+    const cluster={id:'cluster-target',name:'目标集群',is_active:active,hosts:[]}
+    const h=mount(t,inventory(permissions,navigations),{clusters:[cluster],hosts:[],loading:false})
+    const name=h.buttons().find(button=>text(button)==='目标集群');assert.ok(name);name.props.onClick()
+    assert.deepEqual(navigations.at(-1),readResources&&active
+      ?{kind:'push',route:{path:'/kubernetes',query:{cluster:'cluster-target',view:'overview'}}}
+      :{kind:'replace',route:{path:'/hosts',query:{view:'clusters',cluster:'cluster-target'}}})
   }
 })
 

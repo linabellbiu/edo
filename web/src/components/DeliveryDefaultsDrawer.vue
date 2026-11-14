@@ -71,7 +71,8 @@ onBeforeUnmount(()=>{disposed=true;reset();window.removeEventListener('edo:proje
 <a-form-item :label="t('delivery.workflow')" :validate-status="workflowInvalid?'error':undefined" :help="workflowInvalid?t('delivery.workflowRequirement'):undefined"><a-select :aria-label="t('delivery.workflow')" v-model:value="workflow" :disabled="saving||!ready" :options="workflowOptions"/></a-form-item>
 <a-form-item :label="t('delivery.deployment')" :validate-status="planInvalid?'error':undefined" :help="planInvalid?t('delivery.planRequirement'):undefined"><a-select :aria-label="t('delivery.deployment')" v-model:value="plan" :disabled="saving||!ready" :options="planOptions"/></a-form-item>
 <p class="delivery-copy">{{ t('delivery.independent') }}</p>
-<a-button v-if="auth.canAny(['workflow.update'])&&auth.canAny(['deployment_plan.update'])" type="primary" :disabled="!canSave" :loading="saving" @click="save">{{ t('delivery.save') }}</a-button></a-form></a-spin>
+</a-form></a-spin>
+  <template #footer><div class="edo-drawer-actions"><a-button :disabled="saving" @click="emit('update:open',false)">取消</a-button><a-button v-if="auth.canAny(['workflow.update'])&&auth.canAny(['deployment_plan.update'])" type="primary" :disabled="!canSave" :loading="saving" @click="save">{{ t('delivery.save') }}</a-button></div></template>
 </a-drawer>
 </template>
 <style scoped>.delivery-copy{color:var(--edo-muted);line-height:1.7}</style>

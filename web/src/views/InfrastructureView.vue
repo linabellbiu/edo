@@ -280,7 +280,7 @@ onBeforeUnmount(() => {
             <article><span class="docker"><RuntimeBrandIcon kind="docker" /></span><div><small>Docker 运行时</small><strong>{{ docker.length }}</strong></div></article>
             <article><span class="kubernetes"><RuntimeBrandIcon kind="kubernetes" /></span><div><small>Kubernetes 集群</small><strong>{{ clusters.length }}</strong></div></article>
           </div>
-          <a-alert v-if="hasUnboundRuntimes" class="unbound-alert" type="warning" show-icon message="存在未关联主机的历史或独立运行时" description="可继续使用；远程 Docker 主机可在“主机与接入”中补全归属，托管 Kubernetes 集群可以保持独立。" />
+          <a-alert v-if="hasUnboundRuntimes" class="unbound-alert" type="info" show-icon message="存在未关联主机的历史或独立运行时" description="可继续使用；远程 Docker 主机可在“主机与接入”中补全归属，托管 Kubernetes 集群可以保持独立。" />
         </div>
 
         <template v-else-if="selectedDocker">

@@ -92,7 +92,7 @@ onBeforeUnmount(() => { disposed = true; window.clearInterval(timer) })
     </section>
 
     <div class="dashboard-bottom">
-      <section class="vben-card quick-status"><div class="card-heading"><div><strong>发布功能</strong><span>仓库检查、失败重试和操作记录</span></div><Users /></div><ul><li><span>仓库变更监听</span><a-tag color="blue">主动检查</a-tag></li><li><span>任务失败处理</span><a-tag color="orange">有限重试</a-tag></li><li><span>发布操作</span><a-tag color="green">记录审计日志</a-tag></li></ul></section>
+      <section class="vben-card quick-status"><div class="card-heading"><div><strong>发布功能</strong><span>仓库检查、失败重试和操作记录</span></div><Users /></div><ul><li><span>仓库变更监听</span><a-tag>主动检查</a-tag></li><li><span>任务失败处理</span><a-tag>有限重试</a-tag></li><li><span>发布操作</span><a-tag>记录审计日志</a-tag></li></ul></section>
       <section class="vben-card update-card"><div class="card-heading"><div><strong>状态同步</strong><span>最后一次成功请求</span></div></div><div class="update-time">{{ system.updatedAt?.toLocaleTimeString('zh-CN', { hour12: false }) || '—' }}</div><p>每 15 秒自动刷新。</p></section>
     </div>
   </div>

@@ -346,6 +346,7 @@ onBeforeUnmount(clearCredentials)
   >
     <a-form ref="formRef" :model="form" layout="vertical" :disabled="testing || submitting || readingPrivateKey">
       <div class="form-grid" :class="{ local: isLocal }">
+        <h3 class="edo-drawer-section-heading">基础信息</h3>
         <a-form-item :class="{ 'span-2': isLocal }" label="主机名称" name="name" :rules="[{ required: true, whitespace: true, message: '请输入主机名称' }]">
           <a-input v-model:value="form.name" placeholder="例如：上海构建节点 01" />
         </a-form-item>
@@ -377,6 +378,7 @@ onBeforeUnmount(clearCredentials)
         </a-form-item>
 
         <template v-else>
+          <h3 class="edo-drawer-section-heading">连接设置</h3>
           <a-form-item label="SSH 用户名" name="ssh_username" :rules="[{ required: true, whitespace: true, message: '请输入 SSH 用户名' }]">
             <a-input v-model:value="form.ssh_username" autocomplete="username" placeholder="例如：ubuntu" />
           </a-form-item>
@@ -425,6 +427,7 @@ onBeforeUnmount(clearCredentials)
           </a-form-item>
 
           <template v-if="needsCredential">
+            <h3 class="edo-drawer-section-heading">登录凭据</h3>
             <a-form-item class="span-2" label="认证方式" name="ssh_auth_type">
               <a-radio-group v-model:value="form.ssh_auth_type" button-style="solid">
                 <a-radio-button value="private_key">SSH 私钥</a-radio-button>

@@ -472,7 +472,7 @@ onMounted(() => {
           <h3>EDO 内置变量目录</h3>
           <p>查看通知、脚本、构建和部署可用的变量。</p>
         </div>
-        <a-tag color="blue">只读目录</a-tag>
+        <a-tag>只读目录</a-tag>
       </header>
       <a-alert class="variable-catalog-alert" type="info" show-icon message="这里不显示变量值或密钥。通知中需要用到的变量，请在模板里填写。" />
       <div class="variable-catalog-toolbar">
@@ -500,7 +500,7 @@ onMounted(() => {
             </div>
             <div class="variable-entry-scopes">
               <b>适用范围</b>
-              <a-tag v-for="scope in item.scopes" :key="scope" color="blue">{{ variableScopeDetails[scope]?.label || scope }}</a-tag>
+              <a-tag v-for="scope in item.scopes" :key="scope">{{ variableScopeDetails[scope]?.label || scope }}</a-tag>
             </div>
           </section>
         </div>

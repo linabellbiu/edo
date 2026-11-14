@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch, useId } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import { useRoute, useRouter } from 'vue-router'
 import PageToolbar from '@/components/PageToolbar.vue'
+const controlFormID=useId()
+
 interface Choice{id:string;name:string}
 interface Database extends Choice {version:number;application_id:string;environment_id:string;driver:string;host:string;port:number;database:string;username:string;tls_mode:string;is_active:boolean}
 interface Policy {id:string;environment_id:string;version:number;allowed_refs:string[];require_approval:boolean;reviewer_ids:string[];minimum_approvals:number;window_start:string;window_end:string;is_active:boolean}
@@ -57,7 +59,7 @@ onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
    </a-table>
   </div>
   <a-drawer v-model:open="open" :title="policyMode?'环境保护':(editingID?'编辑数据库':'添加数据库')" width="min(600px, 100vw)" destroy-on-close @after-open-change="(v:boolean)=>{if(!v)dbForm.password=''}">
-   <a-form :model="policyMode?policyForm:dbForm" layout="vertical" @finish="save">
+   <a-form :id="controlFormID" :model="policyMode?policyForm:dbForm" layout="vertical" @finish="save">
     <template v-if="policyMode">
      <a-form-item label="主机组" name="environment_id" required><a-select v-model:value="policyForm.environment_id" :disabled="!!editingID" :options="environments.filter(e=>!!editingID||!policies.some(p=>p.environment_id===e.id)).map(v=>({value:v.id,label:v.name}))"/></a-form-item>
      <a-form-item><a-switch v-model:checked="policyForm.is_active"/> 启用环境保护</a-form-item>
@@ -78,8 +80,9 @@ onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
      <a-form-item label="连接加密"><a-select v-model:value="dbForm.tls_mode" :options="[{value:'verify-full',label:'TLS 并验证证书'},{value:'disable',label:'不使用 TLS'}]"/></a-form-item>
      <a-form-item><a-checkbox v-model:checked="dbForm.is_active">启用</a-checkbox></a-form-item><a-button :loading="saving" @click="testDatabase">测试连接</a-button><a-tag v-if="tested" color="green">连接正常</a-tag>
     </template>
-    <a-button type="primary" block html-type="submit" :loading="saving" style="margin-top:20px">保存</a-button>
+
    </a-form>
+    <template #footer><div class="edo-drawer-actions"><a-button :disabled="saving" @click="open=false">取消</a-button><a-button :form="controlFormID" type="primary" html-type="submit" :loading="saving">保存</a-button></div></template>
   </a-drawer>
   <a-drawer v-model:open="historyOpen" title="数据库变更记录" width="min(800px, 100vw)"><a-table bordered :data-source="history" row-key="id" :columns="[{title:'状态',dataIndex:'status'},{title:'Commit',dataIndex:'commit_sha'},{title:'目录',dataIndex:'directory'},{title:'开始时间',dataIndex:'started_at'},{title:'说明',dataIndex:'message'}]"/></a-drawer>
  </div>

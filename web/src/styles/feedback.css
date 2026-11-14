@@ -1,0 +1,9 @@
+/* 普通信息使用中性色；警告、错误和成功继续保留各自的状态色。 */
+.ant-alert.ant-alert-info {
+  border-color: var(--edo-border);
+  background: var(--edo-surface-soft);
+  color: var(--edo-text);
+}
+.ant-alert.ant-alert-info .ant-alert-icon { color: var(--edo-muted); }
+.ant-alert.ant-alert-info .ant-alert-message { color: var(--edo-text); }
+.ant-alert.ant-alert-info .ant-alert-description { color: var(--edo-muted); }

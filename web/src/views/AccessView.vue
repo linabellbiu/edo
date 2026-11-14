@@ -1226,7 +1226,7 @@ onMounted(() => {
           <a-button v-if="canReadUsers" type="link" @click="openMembers('department', row as Department)">{{ value || 0 }} 人</a-button>
           <span v-else>{{ value || 0 }} 人</span>
         </template>
-        <template #cell-is_default="{ value }"><a-tag :color="value ? 'blue' : 'default'">{{ value ? '默认部门' : '业务部门' }}</a-tag></template>
+        <template #cell-is_default="{ value }"><a-tag>{{ value ? '默认部门' : '业务部门' }}</a-tag></template>
         <template #actions="{ row }">
           <a-button
             v-if="canAny(['department.update'])"
@@ -1466,10 +1466,10 @@ onMounted(() => {
           </section>
         </section>
 
-        <a-button class="drawer-save" type="primary" block :loading="saving" :disabled="!authorizationReady" @click="saveRole">
-          {{ roleEditorMode === 'permissions' ? '保存权限' : roleEditorMode === 'basic' ? '保存基本信息' : '创建角色' }}
-        </a-button>
       </a-form>
+      <template #footer><div class="edo-drawer-actions"><a-button :disabled="saving" @click="roleFormOpen=false">取消</a-button><a-button class="drawer-save" type="primary" :loading="saving" :disabled="!authorizationReady" @click="saveRole">
+          {{ roleEditorMode === 'permissions' ? '保存权限' : roleEditorMode === 'basic' ? '保存基本信息' : '创建角色' }}
+        </a-button></div></template>
     </a-drawer>
 
     <a-drawer
@@ -1483,7 +1483,7 @@ onMounted(() => {
         message="角色和用户权限例外会原子保存；用户级拒绝优先于角色允许，“继承”不会创建用户规则。"
       />
       <section class="access-role-section">
-        <header><div><h3>{{t('workspace.platformRoles')}}</h3><small>{{t('workspace.platformRoleHint')}}</small></div><a-tag color="blue">{{ accessForm.role_ids.length }} 个</a-tag></header>
+        <header><div><h3>{{t('workspace.platformRoles')}}</h3><small>{{t('workspace.platformRoleHint')}}</small></div><a-tag>{{ accessForm.role_ids.length }} 个</a-tag></header>
         <a-checkbox-group v-model:value="accessForm.role_ids" :options="delegableRoleOptions" :disabled="!authorizationReady" />
       </section>
       <div class="access-impact-summary">
@@ -1527,7 +1527,7 @@ onMounted(() => {
           </section>
         </a-collapse-panel>
       </a-collapse>
-      <a-button class="drawer-save" type="primary" block :loading="saving" :disabled="!authorizationReady" @click="saveAccess">保存角色与权限</a-button>
+      <template #footer><div class="edo-drawer-actions"><a-button :disabled="saving" @click="accessOpen=false">取消</a-button><a-button class="drawer-save" type="primary" :loading="saving" :disabled="!authorizationReady" @click="saveAccess">保存角色与权限</a-button></div></template>
     </a-drawer>
 
     <ClusterRbacDrawer v-model:open="clusterRbacOpen" :role-id="clusterRbacRoleID" />

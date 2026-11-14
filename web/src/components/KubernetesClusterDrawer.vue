@@ -254,6 +254,7 @@ async function submit() {
     <a-form ref="formRef" :model="form" layout="vertical" :disabled="busy || !canModify">
       <div class="form-grid">
         <a-alert v-if="!canModify" class="span-2" type="warning" show-icon :message="t('kubernetesCluster.message.contextChanged')" />
+        <h3 class="edo-drawer-section-heading">{{ t('drawerSection.basic') }}</h3>
         <a-form-item
           :label="t('kubernetesCluster.field.name')"
           name="name"
@@ -268,6 +269,7 @@ async function submit() {
         >
           <a-input v-model:value="form.default_namespace" placeholder="default" />
         </a-form-item>
+        <h3 class="edo-drawer-section-heading" v-if="editing||replacingConfig">{{ t('drawerSection.connection') }}</h3>
         <a-form-item v-if="editing" class="span-2" :label="t('kubernetesCluster.field.connection')">
           <a-radio-group v-model:value="form.config_action" :aria-label="t('kubernetesCluster.field.connection')"><a-radio-button value="keep">{{ t('kubernetesCluster.action.keep') }}</a-radio-button><a-radio-button value="replace" :disabled="!testAllowed">{{ t('kubernetesCluster.action.replace') }}</a-radio-button></a-radio-group>
           <div v-if="!replacingConfig" class="field-hint"><code>{{ cluster?.api_server }}</code></div>
@@ -291,6 +293,7 @@ async function submit() {
           :message="t('kubernetesCluster.test.ready', { version: testResult.version })"
           :description="testResult.api_server"
         />
+        <h3 class="edo-drawer-section-heading" v-if="canAssociate&&!editing">{{ t('drawerSection.scope') }}</h3>
         <a-form-item v-if="canAssociate && !editing" class="span-2" label="关联主机（可选）" name="host_ids">
           <a-select v-model:value="form.host_ids" mode="multiple" allow-clear placeholder="不关联主机" :options="hosts.filter(host => !host.is_builtin).map(host => ({ value: host.id, label: `${host.name}${host.is_active ? '' : '（已停用）'}` }))" />
           <div class="field-hint">保存时核对主机与集群节点信息，不匹配无法关联。没有主机时留空。</div>

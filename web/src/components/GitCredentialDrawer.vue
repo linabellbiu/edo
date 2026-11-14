@@ -70,6 +70,7 @@ async function submit() {
   <a-drawer :open="open" :title="t(credential ? 'gitCredential.edit' : 'gitCredential.create')" width="520" :closable="!submitting" :mask-closable="!submitting" :keyboard="!submitting" @close="close">
     <a-alert type="info" show-icon :message="t('gitCredential.securityHint')" class="credential-alert" />
     <a-form ref="formRef" :model="form" layout="vertical" :disabled="submitting">
+      <h3 class="edo-drawer-section-heading">{{ t('drawerSection.basic') }}</h3>
       <a-form-item :label="t('gitCredential.name')" name="name" :rules="[{ required: true, whitespace: true, message: t('gitCredential.nameRequired') }]">
         <a-input v-model:value="form.name" :maxlength="128" :placeholder="t('gitCredential.namePlaceholder')" />
       </a-form-item>
@@ -81,6 +82,7 @@ async function submit() {
           <a-select v-model:value="form.auth_type" :disabled="lockContext || submitting" :options="[{ value: 'token', label: t('gitCredential.token') }, { value: 'ssh_key', label: t('gitCredential.sshKey') }]" />
         </a-form-item>
       </div>
+      <h3 class="edo-drawer-section-heading">{{ t('drawerSection.credentials') }}</h3>
       <a-form-item :label="t('gitCredential.username')"><a-input v-model:value="form.username" :maxlength="255" :placeholder="t('gitCredential.usernamePlaceholder')" /></a-form-item>
       <a-form-item name="secret" :label="t(form.auth_type === 'token' ? 'gitCredential.token' : 'gitCredential.sshKey')" :rules="credential ? [] : [{ required: true, whitespace: true, message: t(form.auth_type === 'token' ? 'gitCredential.tokenRequired' : 'gitCredential.sshKeyRequired') }]">
         <a-textarea v-model:value="form.secret" :rows="form.auth_type === 'ssh_key' ? 8 : 3" :placeholder="t(credential ? 'gitCredential.keepSecret' : 'gitCredential.secretPlaceholder')" autocomplete="off" />

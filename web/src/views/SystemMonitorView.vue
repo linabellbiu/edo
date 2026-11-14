@@ -148,7 +148,7 @@ onBeforeUnmount(() => {
         <div class="monitor-grid">
           <article v-for="panel in panels" :key="panel.subtitle" class="monitor-panel vben-card">
             <header><div><span>{{ panel.subtitle }}</span><h3>{{ panel.name }}</h3></div>
-              <a-tag v-if="panel.subtitle === '任务执行'" color="blue">{{ metrics.worker.consumer || '未就绪' }}</a-tag>
+              <a-tag v-if="panel.subtitle === '任务执行'" >{{ metrics.worker.consumer || '未就绪' }}</a-tag>
               <div v-else-if="panel.subtitle === 'JetStream'" class="queue-actions">
                 <a-button v-if="canExecuteQueueAction" size="small" danger :disabled="!metrics.queue.connected || metrics.queue.dead_messages === 0" :loading="clearingDeadMessages" @click="clearDeadMessages"><Trash2 :size="14" />{{ t('systemMonitor.deadLetters.clear') }}</a-button>
                 <a-tag :color="metrics.queue.connected ? 'success' : 'error'">{{ metrics.queue.connected ? '已连接' : '不可用' }}</a-tag>

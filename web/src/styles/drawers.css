@@ -1,0 +1,17 @@
+/* 抽屉沿用部署阶段的紧凑标题、浅中性分区和固定底部操作区。 */
+.ant-drawer .ant-drawer-content { color: var(--edo-text); background: var(--edo-surface); }
+.ant-drawer .ant-drawer-header { min-height: 56px; padding: 12px 16px; border-color: var(--edo-border); background: var(--edo-surface); }
+.ant-drawer .ant-drawer-title { color: var(--edo-text); font-size: 15px; line-height: 24px; font-weight: 600; }
+.ant-drawer .ant-drawer-body { padding: 16px; }
+.ant-drawer .ant-drawer-footer { padding: 12px 16px; border-color: var(--edo-border); background: var(--edo-surface); }
+.ant-drawer .ant-form-vertical .ant-form-item { margin-bottom: 14px; }
+.ant-drawer .ant-form-vertical .ant-form-item-label { padding-bottom: 6px; }
+.ant-drawer .ant-form-vertical .ant-form-item-label > label { height: auto; color: var(--edo-text); font-size: 13px; }
+.ant-drawer .ant-input-number { max-width: min(160px, 100%); }
+.edo-drawer-actions { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 8px; }
+.edo-drawer-actions .drawer-save, .edo-drawer-actions .save-provider { width: auto; margin: 0; }
+.edo-drawer-section-heading { grid-column: 1 / -1; margin: 4px -16px 14px; padding: 9px 16px; border-top: 1px solid var(--edo-border); border-bottom: 1px solid var(--edo-border); background: var(--edo-surface-soft); color: var(--edo-text); font-size: 14px; line-height: 1.5; font-weight: 600; }
+.edo-drawer-section-heading:first-child { margin-top: -16px; }
+@media (max-width: 640px) {
+  .ant-drawer-right > .ant-drawer-content-wrapper { max-width: 100vw; }
+}

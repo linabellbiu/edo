@@ -14,6 +14,7 @@ import { deploymentResourcesZh, deploymentResourcesEn } from './deploymentResour
 export const messages = {
   'zh-CN': {
     deploymentResources: deploymentResourcesZh,
+    drawerSection: { basic:'基础信息', connection:'连接设置', credentials:'登录凭据', scope:'关联主机', target:'部署目标' },
     sqlChanges: sqlChangesZh,
     assistant: assistantZh,
 	delivery: deliveryZh,
@@ -255,6 +256,7 @@ export const messages = {
   },
   'en-US': {
     deploymentResources: deploymentResourcesEn,
+    drawerSection: { basic:'Basic information', connection:'Connection settings', credentials:'Credentials', scope:'Linked hosts', target:'Deployment targets' },
     sqlChanges: sqlChangesEn,
     assistant: assistantEn,
 	delivery: deliveryEn,
