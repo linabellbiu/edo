@@ -23,6 +23,10 @@ client.defaults.adapter = async config => {
   let response
   if (path === '/kubernetes/clusters') response = { clusters: [{ id: 'local-preview', name: '本地预览集群', api_server: 'https://preview.invalid:6443', default_namespace: 'preview', is_active: true, hosts: [] }] }
   else if (/^\/kubernetes\/clusters\/[^/]+\/namespaces$/.test(path)) response = { namespaces: ['preview', 'staging'] }
+  else if (path.endsWith('/rbac')) {
+    const enabled = new URLSearchParams(location.search).get('rbac') === 'enabled'
+    response = { cluster_id: 'local-preview', enabled, desired_enabled: enabled, revision: 1, status: enabled ? 'synced' : 'disabled', last_error: '', grants: [], roles: [], catalog: [], namespaces: ['preview', 'staging'] }
+  }
   else if (path.endsWith('/overview')) {
     response = data.overview(params.namespace)
     const state = new URLSearchParams(location.search).get('monitoring')
@@ -79,7 +83,7 @@ window.WebSocket = class PreviewWebSocket extends EventTarget {
 }
 const pinia = createPinia()
 const auth = useAuthStore(pinia)
-auth.user = { id: 'local-preview-user', username: 'preview', nickname: '本地预览', project_id: localStorage.getItem('edo.project') ?? '', is_superuser: false, permissions: ['cluster.read', 'terminal.open', ...['node', 'workload', 'config', 'storage', 'network'].flatMap(resource => ['read', 'update'].map(action => `kubernetes.${resource}.${action}`))] }
+auth.user = { id: 'local-preview-user', username: 'preview', nickname: '本地预览', project_id: localStorage.getItem('edo.project') ?? '', is_superuser: false, permissions: ['cluster.read', 'terminal.open', 'kubernetes.rbac.read', 'kubernetes.rbac.update', ...['node', 'workload', 'config', 'storage', 'network'].flatMap(resource => ['read', 'update'].map(action => `kubernetes.${resource}.${action}`))] }
 auth.loaded = true
 auth.authorizationState = 'ready'
 const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/kubernetes', component: KubernetesView }] })

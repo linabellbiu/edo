@@ -20,10 +20,12 @@ const loading=ref(false),clustersLoading=ref(false),busy=ref(false),error=ref(''
 const stale=ref(false)
 const editorOpen=ref(false),editingID=ref(''),reviewSignature=ref(''),deleteReview=ref('')
 const modeReview=ref<boolean|undefined>(),modeRevision=ref<number>()
+const modeTarget=ref(true)
 const form=reactive({role_id:'',namespace:'',cluster_scope:false,permissions:[] as string[]})
 const selectedProject=ref(readProject())
 let alive=true,revision=0,listRevision=0,request:AbortController|undefined,listRequest:AbortController|undefined
 let pollRevision=0,pollRequest:AbortController|undefined,pollTimer:ReturnType<typeof setTimeout>|undefined
+let modeTrigger:HTMLElement|undefined
 const clusterID=computed(()=>props.cluster||chosenCluster.value)
 const canManage=computed(()=>auth.canAny(['kubernetes.rbac.update']))
 const canRead=computed(()=>auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update']))
@@ -117,7 +119,8 @@ async function mutate(action:(id:string,signal:AbortSignal)=>Promise<KubernetesR
   finally{if(alive&&token===revision)busy.value=false}
 }
 async function save(){if(!canSave.value)return;const input=payload(),id=editingID.value;await mutate((cluster,signal)=>saveKubernetesRbacGrant(cluster,input,id,signal))}
-function reviewMode(){if(!state.value||!canManage.value||modePending.value||stale.value||busy.value)return;clearReview();modeReview.value=!state.value.enabled;modeRevision.value=state.value.revision}
+function reviewMode(event?:Event){if(!state.value||!canManage.value||modePending.value||stale.value||busy.value)return;clearReview();modeTrigger=event?.currentTarget as HTMLElement|undefined;modeTarget.value=!state.value.enabled;modeReview.value=modeTarget.value;modeRevision.value=state.value.revision}
+function restoreModeFocus(){if(props.open&&canManage.value&&modeTrigger?.isConnected&&!modeTrigger.matches(':disabled'))modeTrigger.focus();modeTrigger=undefined}
 async function confirmMode(){if(modeReview.value===undefined||!state.value||modeRevision.value!==state.value.revision)return;const enabled=modeReview.value,version=modeRevision.value;await mutate((id,signal)=>setKubernetesRbacMode(id,enabled,version,signal))}
 async function sync(){if(!state.value)return;const version=state.value.revision;await mutate((id,signal)=>syncKubernetesRbac(id,version,signal))}
 function reviewDelete(grant:KubernetesRbacGrant){if(!canManage.value||busy.value)return;clearReview();deleteReview.value=grant.id}
@@ -140,7 +143,7 @@ onBeforeUnmount(()=>{alive=false;cancel();listRevision++;listRequest?.abort();wi
 <template>
   <a-drawer :open="open" title="集群授权" width="min(1040px,96vw)" :closable="!busy" :mask-closable="!busy" @close="close">
     <div class="cluster-rbac">
-      <a-alert type="info" show-icon message="将 EDO 项目角色的有效权限绑定到集群 RBAC" description="按具体集群与命名空间授权。部署功能不会自动授予用户权限；启用后，用户操作还需通过集群的原生 RBAC 校验。" />
+      <p class="rbac-intro">按项目角色配置集群和命名空间的访问范围。</p>
       <a-alert v-if="!canRead" type="warning" show-icon message="需要集群授权查看或管理权限" />
       <template v-else>
         <div v-if="!cluster" class="cluster-choice"><label for="rbac-cluster">选择集群</label><a-select id="rbac-cluster" v-model:value="chosenCluster" aria-label="授权集群" show-search option-filter-prop="label" :loading="clustersLoading" :disabled="busy" placeholder="选择当前项目的集群" :options="clusters.map(item=>({value:item.id,label:item.name,disabled:!item.is_active}))" /></div>
@@ -150,12 +153,11 @@ onBeforeUnmount(()=>{alive=false;cancel();listRevision++;listRequest?.abort();wi
           <template v-if="state">
             <div class="rbac-heading"><div><strong><ShieldCheck :size="17" />{{ selectedClusterName }}</strong><a-tag :color="statusColor">{{ statusLabel }}</a-tag><span>授权版本 {{ state.revision }}</span></div><div class="rbac-actions"><a-button :disabled="busy" @click="load"><RefreshCw :size="14" />刷新</a-button><a-button v-if="canManage&&state.enabled" :disabled="stale" :loading="busy" @click="sync">重新同步</a-button><a-button v-if="canManage" :danger="state.enabled" :disabled="busy||stale||modePending" @click="reviewMode">{{ state.enabled?'关闭映射':'启用映射' }}</a-button></div></div>
             <a-alert v-if="state.last_error" type="error" show-icon message="授权同步未完成" :description="state.last_error" />
-            <a-alert v-if="modePending" type="warning" show-icon message="正在撤销集群 RBAC 映射" description="受管理的集群授权清理成功前，仍保留原生 RBAC 约束；同步失败时不会恢复应用层访问。" /><a-alert v-if="!state.enabled" type="warning" show-icon message="尚未启用集群 RBAC 映射" description="当前继续使用 EDO 的应用层授权。先配置并预览授权范围，再明确启用映射。" />
-            <div v-if="modeReview!==undefined" class="review-box"><a-alert type="warning" show-icon :message="modeReview?'确认启用集群 RBAC 映射':'确认关闭集群 RBAC 映射'" :description="modeReview?'启用后，没有已生效授权的用户将无法访问集群资源。请确认项目角色、命名空间和集群级授权已配置完整。':'关闭后将恢复当前集群的 EDO 应用层授权。请确认这符合该集群的访问策略。'"/><div class="rbac-actions"><a-button :disabled="busy" @click="clearReview">取消</a-button><a-button type="primary" :danger="!modeReview" :loading="busy" @click="confirmMode">{{ modeReview?'确认启用':'确认关闭' }}</a-button></div></div>
+            <p v-if="modePending" class="rbac-note" role="status" aria-live="polite">正在关闭映射，清理完成前保留原生 RBAC 约束。</p><p v-else-if="!state.enabled" class="rbac-note">当前使用 EDO 应用层授权。</p>
             <div class="section-heading"><h3>项目角色授权范围</h3><a-button v-if="canManage" :disabled="busy" @click="configure()"><Plus :size="14" />添加授权</a-button></div>
             <a-empty v-if="!visibleGrants.length" description="尚未配置角色授权" />
-            <article v-for="grant in visibleGrants" :key="grant.id" class="grant-card"><div class="grant-title"><strong>{{ grant.role_name||roleLabel(grant.role_id) }}</strong><a-tag :color="grant.cluster_scope?'orange':'blue'">{{ grant.cluster_scope?'集群级资源':grant.namespace }}</a-tag><a-tag v-if="grant.status">{{ statusName(grant.status) }}</a-tag><div v-if="canManage" class="rbac-actions"><a-button type="link" :disabled="busy" @click="configure(grant)">编辑</a-button><a-button type="link" danger :disabled="busy" @click="reviewDelete(grant)">撤销</a-button></div></div><div class="grant-permissions"><a-tag v-for="code in grant.permissions" :key="code">{{ permissionLabel(code) }}</a-tag></div><p v-if="grant.last_error" class="grant-error">{{ grant.last_error }}</p><div v-if="deleteReview===grant.id" class="review-box"><p>确认撤销该角色在此范围的授权？旧连接会被重新验证。</p><div class="rbac-actions"><a-button :disabled="busy" @click="clearReview">取消</a-button><a-button danger type="primary" :loading="busy" @click="remove">确认撤销</a-button></div></div></article>
-            <section v-if="editorOpen&&canManage" class="grant-editor"><h3>{{ editingID?'编辑角色授权':'添加角色授权' }}</h3><a-form layout="vertical"><a-form-item label="项目角色" required><a-select v-model:value="form.role_id" aria-label="项目角色" show-search option-filter-prop="label" :options="roleOptions" :disabled="busy||Boolean(roleId)" placeholder="选择当前项目可使用的角色" /></a-form-item><a-form-item label="授权范围" required><a-radio-group v-model:value="form.cluster_scope" :disabled="busy"><a-radio-button :value="false">指定命名空间</a-radio-button><a-radio-button :value="true">集群级资源</a-radio-button></a-radio-group></a-form-item><a-form-item v-if="!form.cluster_scope" label="命名空间" required><a-auto-complete v-model:value="form.namespace" aria-label="授权命名空间" :options="namespaceOptions" :disabled="busy" placeholder="例如：test，必须填写具体名称" /><div class="field-help">仅授权此命名空间。需要不同范围或操作时，请分别添加授权。</div></a-form-item><a-alert v-else type="warning" show-icon message="集群级权限影响整个集群" description="仅用于 Node、PV、StorageClass、Namespace 等原生集群级资源，不代表全部命名空间的工作负载权限。"/><a-form-item label="允许的操作" required><a-checkbox-group v-model:value="form.permissions" :disabled="busy" class="permission-options"><a-checkbox v-for="permission in permissionChoices" :key="permission.code" :value="permission.code">{{ permission.name }}<a-tag v-if="permission.dangerous" color="orange">敏感</a-tag></a-checkbox></a-checkbox-group><a-empty v-if="!permissionChoices.length" description="该角色在当前范围没有可授权的操作" /><div class="field-help">只显示所选角色已拥有且适用于当前范围的权限；用户级显式拒绝会继续生效。</div></a-form-item></a-form><a-alert v-if="secretSelected" type="warning" show-icon message="包含 Secret 内容读取权限" description="此授权允许读取命名空间中的 Secret 内容，请核对实际需要。普通配置查看不会自动获得此权限。"/><div class="rbac-actions"><a-button :disabled="busy" @click="resetEditor">取消编辑</a-button><a-button :disabled="!canPreview" :loading="busy" @click="checkGrant">预览授权影响</a-button></div>
+            <article v-for="grant in visibleGrants" :key="grant.id" class="grant-card"><div class="grant-title"><strong>{{ grant.role_name||roleLabel(grant.role_id) }}</strong><a-tag>{{ grant.cluster_scope?'集群级资源':grant.namespace }}</a-tag><a-tag v-if="grant.status">{{ statusName(grant.status) }}</a-tag><div v-if="canManage" class="rbac-actions"><a-button type="link" :disabled="busy" @click="configure(grant)">编辑</a-button><a-button type="link" danger :disabled="busy" @click="reviewDelete(grant)">撤销</a-button></div></div><div class="grant-permissions"><a-tag v-for="code in grant.permissions" :key="code">{{ permissionLabel(code) }}</a-tag></div><p v-if="grant.last_error" class="grant-error">{{ grant.last_error }}</p><div v-if="deleteReview===grant.id" class="review-box"><p>确认撤销该角色在此范围的授权？旧连接会被重新验证。</p><div class="rbac-actions"><a-button :disabled="busy" @click="clearReview">取消</a-button><a-button danger type="primary" :loading="busy" @click="remove">确认撤销</a-button></div></div></article>
+            <section v-if="editorOpen&&canManage" class="grant-editor"><h3>{{ editingID?'编辑角色授权':'添加角色授权' }}</h3><a-form layout="vertical"><a-form-item label="项目角色" required><a-select v-model:value="form.role_id" aria-label="项目角色" show-search option-filter-prop="label" :options="roleOptions" :disabled="busy||Boolean(roleId)" placeholder="选择当前项目可使用的角色" /></a-form-item><a-form-item label="授权范围" required><a-radio-group v-model:value="form.cluster_scope" :disabled="busy"><a-radio-button :value="false">指定命名空间</a-radio-button><a-radio-button :value="true">集群级资源</a-radio-button></a-radio-group></a-form-item><a-form-item v-if="!form.cluster_scope" label="命名空间" required><a-auto-complete v-model:value="form.namespace" aria-label="授权命名空间" :options="namespaceOptions" :disabled="busy" placeholder="例如：test，必须填写具体名称" /><div class="field-help">仅授权此命名空间。需要不同范围或操作时，请分别添加授权。</div></a-form-item><p v-else class="rbac-note">作用于 Node、PV、StorageClass、Namespace 等集群级资源，不包含全部命名空间的工作负载。</p><a-form-item label="允许的操作" required><a-checkbox-group v-model:value="form.permissions" :disabled="busy" class="permission-options"><a-checkbox v-for="permission in permissionChoices" :key="permission.code" :value="permission.code">{{ permission.name }}<a-tag v-if="permission.dangerous" color="orange">敏感</a-tag></a-checkbox></a-checkbox-group><a-empty v-if="!permissionChoices.length" description="该角色在当前范围没有可授权的操作" /><div class="field-help">只显示所选角色已拥有且适用于当前范围的权限；用户级显式拒绝会继续生效。</div></a-form-item></a-form><a-alert v-if="secretSelected" type="warning" show-icon message="包含 Secret 内容读取权限" description="此授权允许读取命名空间中的 Secret 内容，请核对实际需要。普通配置查看不会自动获得此权限。"/><div class="rbac-actions"><a-button :disabled="busy" @click="resetEditor">取消编辑</a-button><a-button :disabled="!canPreview" :loading="busy" @click="checkGrant">预览授权影响</a-button></div>
               <div v-if="preview" class="preview-panel"><h4>授权预览</h4><p>将影响 {{ preview.affected_users }} 位项目成员。{{ state.enabled?'保存后同步到集群。':'当前映射未启用，保存规则后仍需明确启用。' }}</p><a-alert v-for="(warning,index) in preview.warnings" :key="index" type="warning" show-icon :message="warning"/><details open><summary>最终 Kubernetes RBAC 规则</summary><pre>{{ JSON.stringify(preview.rules,null,2) }}</pre></details><details v-if="preview.subjects?.length"><summary>绑定的用户身份（{{ preview.subjects.length }}）</summary><pre>{{ preview.subjects.join('\n') }}</pre></details><div class="rbac-actions"><a-button type="primary" :disabled="!canSave" :loading="busy" @click="save">确认保存授权</a-button></div></div>
             </section>
           </template>
@@ -165,8 +167,29 @@ onBeforeUnmount(()=>{alive=false;cancel();listRevision++;listRequest?.abort();wi
       </template>
     </div>
   </a-drawer>
+  <a-modal
+    :open="open&&canManage&&modeReview!==undefined"
+    :title="modeTarget?'确认启用集群 RBAC 映射':'确认关闭集群 RBAC 映射'"
+    :ok-text="modeTarget?'确认启用':'确认关闭'"
+    cancel-text="取消"
+    :ok-button-props="{danger:!modeTarget,disabled:stale||modeRevision!==state?.revision}"
+    :confirm-loading="busy"
+    :cancel-button-props="{disabled:busy}"
+    :closable="!busy"
+    :mask-closable="!busy"
+    :keyboard="!busy"
+    :width="520"
+    centered
+    @cancel="!busy&&clearReview()"
+    @ok="confirmMode"
+    @after-close="restoreModeFocus"
+  >
+    <p class="rbac-mode-warning">{{ modeTarget?'启用后，没有已生效授权的普通用户将无法访问集群资源。请确认项目角色、命名空间和集群级授权已配置完整。':'关闭后将恢复当前集群的 EDO 应用层授权。请确认这符合该集群的访问策略。' }}</p>
+  </a-modal>
 </template>
 
 <style scoped>
+.rbac-mode-warning{margin:0;line-height:1.7}
+.rbac-intro,.rbac-note{margin:0;color:var(--edo-muted);font-size:13px;line-height:1.7}
 .cluster-rbac{display:grid;gap:16px}.cluster-choice{display:grid;gap:8px}.cluster-choice .ant-select{width:100%}.rbac-heading,.rbac-heading>div,.rbac-actions,.section-heading,.grant-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.rbac-heading{justify-content:space-between;margin-bottom:16px}.rbac-heading strong{display:flex;align-items:center;gap:8px}.rbac-heading span,.field-help{font-size:12px;color:var(--edo-muted)}.rbac-actions{justify-content:flex-end}.rbac-heading .ant-tag{margin:0}.section-heading{justify-content:space-between;margin-top:20px}.section-heading h3,.grant-editor h3{font-size:14px;margin:0}.grant-card,.grant-editor,.review-box{padding:16px;border:1px solid var(--edo-border);border-radius:8px;margin-top:12px}.grant-title>.rbac-actions{margin-left:auto}.grant-permissions{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}.grant-permissions .ant-tag{margin:0}.grant-error{color:var(--edo-danger);font-size:12px;overflow-wrap:anywhere}.review-box{display:grid;gap:12px}.review-box p{margin:0}.grant-editor{display:grid;gap:14px}.field-help{margin-top:7px;line-height:1.6}.permission-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;width:100%}.permission-options>label{display:flex;align-items:center;gap:8px;min-width:0;line-height:1.5}.permission-options .ant-tag{margin-left:auto;font-size:10px}.preview-panel{display:grid;gap:12px;border-top:1px solid var(--edo-border);padding-top:16px}.preview-panel h4,.preview-panel p{margin:0}.preview-panel p{font-size:12px;color:var(--edo-muted);line-height:1.7}.preview-panel details{font-size:12px}.preview-panel summary{cursor:pointer;margin-bottom:8px}.preview-panel pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:var(--edo-bg);border:1px solid var(--edo-border);padding:12px;border-radius:6px;font-size:11px;line-height:1.65}@media(max-width:650px){.permission-options{grid-template-columns:1fr}.rbac-heading{align-items:flex-start}.grant-title>.rbac-actions{margin-left:0}}
 </style>
