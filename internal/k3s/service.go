@@ -821,11 +821,18 @@ func (s *Service) List(ctx context.Context, clusterID string, limit int, actions
 		}
 		query = query.Where("action = ?", actions[0])
 	}
+	if len(actions) > 1 && actions[1] != "" {
+		if actions[1] != "failed" || actions[0] != "create" && actions[0] != "join" {
+			slog.WarnContext(ctx, "安装记录筛选条件无效", "operation", "k3s_installations_filter", "actor_id", scope.UserID)
+			return nil, ErrInvalidInput
+		}
+		query = query.Where("status = ?", actions[1])
+	}
 	if clusterID != "" {
 		query = query.Where("cluster_id = ?", clusterID)
 	}
 	var records []model.K3sInstallation
-	if err := query.Order("created_at DESC").Limit(limit).Find(&records).Error; err != nil {
+	if err := query.Order("id DESC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]Installation, 0, len(records))
@@ -855,7 +862,14 @@ func (s *Service) present(record model.K3sInstallation) *Installation {
 		}
 	}
 	if record.ClusterID != "" && record.Action != "uninstall" {
-		result.Cluster = &Cluster{ID: record.ClusterID, Name: record.Name}
+		// cluster_id 保留历史引用，只有当前连接仍存在时才提供管理入口。
+		var cluster model.KubernetesCluster
+		err := s.db.Select("uuid", "name").Where("uuid = ? AND project_id = ? AND department_id = ?", record.ClusterID, record.ProjectID, record.DepartmentID).First(&cluster).Error
+		if err == nil {
+			result.Cluster = &Cluster{ID: cluster.ID, Name: cluster.Name}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			slog.Error("读取安装任务关联集群失败", "operation", "k3s_installation_cluster", "installation_id", record.ID, "cluster_id", record.ClusterID, "err", err)
+		}
 	}
 	return result
 }

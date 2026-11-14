@@ -16,7 +16,7 @@ function compile(source,modules={}){
 const Report=compile(read('../src/components/K3sPreflightReport.vue'),{'vue-i18n':{useI18n:()=>({t:key=>key==='k8s.installationHost'?'安装主机':key})},'@/utils/time':loadFrontend('../src/utils/time.ts')})
 async function render(component,props){
   const app=vue.createSSRApp(component,props)
-  for(const name of ['a-alert','a-tag','a-button'])app.component(name,{inheritAttrs:false,setup:(_p,{attrs,slots})=>()=>vue.h(name==='a-button'?'button':'div',attrs,[String(attrs.message??''),String(attrs.description??''),slots.default?.()])})
+  for(const name of ['a-alert','a-tag','a-button'])app.component(name,{inheritAttrs:false,setup:(_p,{attrs,slots})=>()=>vue.h(name==='a-button'?'button':'div',attrs,[String(attrs.message??''),String(attrs.description??''),slots.default?.(),slots.action?.()])})
   app.component('ChevronLeft',()=>vue.h('svg'))
   return (await renderToString(app)).replace(/<!--[\s\S]*?-->/g,'')
 }
@@ -96,66 +96,45 @@ test('真实抽屉Footer把检测与生成计划分成两个操作，未检测/�
 })
 
 function descendants(node){return [node,...(node.children??[]).flatMap(descendants)]}
-const recentSection=descendants(ast).find(node=>node.type===1&&node.tag==='section'&&node.props.some(prop=>prop.type===6&&prop.name==='class'&&prop.value?.content==='recent-operations'))
-assert.ok(recentSection)
-
-test('最近安装任务保留原生折叠控件，summary内不再嵌套刷新或其他交互',()=>{
-  const details=descendants(recentSection).find(node=>node.type===1&&node.tag==='details')
-  const summary=details.children.find(node=>node.type===1&&node.tag==='summary')
-  assert.ok(summary)
-  assert.equal(details.props.find(prop=>prop.type===7&&prop.name==='bind'&&prop.arg?.content==='open')?.exp?.content,'!installation')
-  assert.deepEqual(descendants(summary).filter(node=>node!==summary&&node.type===1&&(['button','a','input','select','textarea','a-button'].includes(node.tag)||node.props.some(prop=>prop.type===6&&prop.name==='tabindex'))).map(node=>node.tag),[])
-  const actions=details.children.find(node=>node.type===1&&node.props.some(prop=>prop.type===6&&prop.name==='class'&&prop.value?.content==='recent-actions'))
-  assert.ok(actions,'刷新应位于原生折叠内容内的独立操作行')
-  const refresh=descendants(actions).find(node=>node.type===1&&node.tag==='a-button')
-  assert.equal(refresh.props.find(prop=>prop.type===7&&prop.name==='on'&&prop.arg?.content==='click')?.exp?.content,'loadRecent')
-  assert.equal(refresh.props.find(prop=>prop.type===7&&prop.name==='bind'&&prop.arg?.content==='loading')?.exp?.content,'recentLoading')
-  assert.equal(refresh.props.find(prop=>prop.type===7&&prop.name==='bind'&&prop.arg?.content==='disabled')?.exp?.content,'recentLoading')
-  assert.ok(details.children.indexOf(summary)<details.children.indexOf(actions))
-})
-
-const Recent=compile(`<script setup lang="ts">
+const failureSection=descendants(ast).find(node=>node.type===1&&node.tag==='details'&&node.props.some(prop=>prop.type===6&&prop.name==='class'&&prop.value?.content==='previous-failure'))
+assert.ok(failureSection)
+const PreviousFailure=compile(`<script setup lang="ts">
 import {toRefs} from 'vue'
 const props=defineProps<{state:any}>()
-const {recent,recentError,recentLoading,installation,busy,loadRecent,viewInstallation}=toRefs(props.state)
-const formatDateTime=(value:string)=>value,t=(key:string)=>key,modeOf=(item:any)=>item.mode||'native',k3sHostRoleLabel=(role:string)=>role,k3sInstallationLabel=(status:string)=>status
-</script><template>${recentSection.loc.source}</template>`)
+const {previousFailure,failureError,failureLoading,previousFailureLogs,installation,loadPreviousFailure}=toRefs(props.state)
+</script><template>${failureSection.loc.source}</template>`)
 
-test('最近任务展开后刷新保留加载与禁用状态，任务选择和原生开合互不干扰',async t=>{
-  const node=(tag,text='')=>({tag,text,props:{},children:[],parent:null})
-  const renderer=vue.createRenderer({
-    createElement:tag=>node(tag),createText:text=>node('#text',text),createComment:()=>node('#comment'),setText:(n,text)=>{n.text=text},setElementText:(n,text)=>{n.text=text;n.children=[]},patchProp:(n,key,_old,value)=>{n.props[key]=value},parentNode:n=>n.parent,nextSibling:n=>n.parent?.children[n.parent.children.indexOf(n)+1]??null,
-    remove(n){if(n.parent)n.parent.children.splice(n.parent.children.indexOf(n),1);n.parent=null},
-    insert(n,parent,anchor=null){if(n.parent)n.parent.children.splice(n.parent.children.indexOf(n),1);const index=anchor?parent.children.indexOf(anchor):-1;parent.children.splice(index<0?parent.children.length:index,0,n);n.parent=parent},
-  })
-  const calls=[],item={id:'test-installation',name:'安装任务',mode:'k3d',status:'running'},state=vue.reactive({recent:[item],recentError:'',recentLoading:false,installation:undefined,busy:false,loadRecent:()=>{calls.push('refresh');state.recentLoading=true},viewInstallation:value=>{calls.push(value.id);state.installation=value}})
-  const root=node('root'),app=renderer.createApp({setup:()=>()=>vue.h(Recent,{state})})
-  for(const name of ['a-button','a-tag','a-alert'])app.component(name,{inheritAttrs:false,setup:(_p,{attrs,slots})=>()=>vue.h(name==='a-button'?'button':'div',attrs,slots.default?.())})
-  app.mount(root);t.after(()=>app.unmount())
-  const text=n=>n.text+n.children.map(text).join(''),all=()=>descendants(root),findButton=label=>all().find(n=>n.tag==='button'&&text(n)===label),details=all().find(n=>n.tag==='details'),summary=all().find(n=>n.tag==='summary')
-  assert.equal(details.props.open,true);assert.equal(summary.props.tabindex,undefined);assert.equal(summary.props.role,undefined);assert.equal(summary.props.onClick,undefined)
-  findButton('刷新').props.onClick({stopPropagation(){},preventDefault(){}});await vue.nextTick()
-  assert.deepEqual(calls,['refresh']);assert.equal(details.props.open,true);assert.equal(findButton('刷新').props.loading,true);assert.equal(findButton('刷新').props.disabled,true)
-  state.recentLoading=false;await vue.nextTick();assert.equal(findButton('刷新').props.disabled,false)
-  findButton('查看进度').props.onClick();await vue.nextTick();assert.deepEqual(calls,['refresh','test-installation']);assert.equal(details.props.open,false)
+test('上一失败日志使用默认收起的原生details，保留键盘浏览且没有任务列表和进度入口',()=>{
+  const summary=failureSection.children.find(node=>node.type===1&&node.tag==='summary')
+  assert.ok(summary)
+  assert.equal(failureSection.props.some(prop=>prop.name==='open'||prop.arg?.content==='open'),false)
+  assert.deepEqual(descendants(summary).filter(node=>node!==summary&&node.type===1&&['button','a','input','a-button'].includes(node.tag)),[])
+  const pre=descendants(failureSection).find(node=>node.type===1&&node.tag==='pre')
+  assert.equal(pre.props.find(prop=>prop.name==='tabindex')?.value?.content,'0')
+  assert.doesNotMatch(read('../src/components/K3sProvisionDrawer.vue'),/最近安装任务|recent-operations|viewInstallation/)
 })
 
-test('最近任务刷新局部链接色在明暗主题及正常悬停聚焦下均满足正文对比度',()=>{
-  const {descriptor}=parse(read('../src/components/K3sProvisionDrawer.vue')),css=compileStyle({id:'k3s-recent-a11y',source:descriptor.styles[0].content,scoped:true})
+test('上一失败只渲染日志纯文本，不展示状态元数据或管理入口，当前安装时隐藏',async()=>{
+  const state=vue.reactive({previousFailure:{id:'old-task',status:'failed',cluster:{id:'deleted'}},failureError:'',failureLoading:false,previousFailureLogs:{text:'<script>日志</script>',truncated:false},installation:undefined,loadPreviousFailure(){}})
+  let html=await render(PreviousFailure,{state})
+  assert.match(html,/上一次安装失败日志/);assert.match(html,/&lt;script&gt;日志&lt;\/script&gt;/)
+  assert.doesNotMatch(html,/old-task|deleted|管理|查看进度|<script>/)
+  state.failureError='日志读取失败';html=await render(PreviousFailure,{state});assert.match(html,/日志读取失败/);assert.match(html,/重新读取/)
+  state.installation={id:'current',status:'running'};html=await render(PreviousFailure,{state});assert.doesNotMatch(html,/上一次安装失败日志|日志读取失败/)
+})
+
+test('上一失败日志在明暗主题使用可读文本与滚动区域，键盘焦点保持可见',()=>{
+  const css=compileStyle({id:'k3s-failure-logs',source:parse(read('../src/components/K3sProvisionDrawer.vue')).descriptor.styles[0].content,scoped:true})
   assert.deepEqual(css.errors,[])
-  assert.match(css.code,/\.recent-actions[^}]*background:var\(--edo-bg\)/)
-  assert.match(css.code,/\.recent-refresh\.ant-btn-link:not\(:disabled\)[^{]*\{color:var\(--edo-nav-active-color\)/)
-  assert.match(css.code,/\.recent-refresh\.ant-btn-link:not\(:disabled\):hover[^{]*\{color:var\(--edo-text\)/)
-  assert.match(css.code,/\.recent-refresh\.ant-btn-link:focus-visible[^{]*\{outline:2px solid var\(--edo-primary\);outline-offset:2px/)
+  assert.match(css.code,/\.previous-failure pre[^}]*overflow:auto/)
+  assert.match(css.code,/\.previous-failure pre[^}]*color:var\(--edo-text\)/)
+  assert.match(css.code,/\.previous-failure pre(?:\[[^\]]+\])?:focus-visible[^}]*outline:2px solid var\(--edo-primary\)/)
   const theme=read('../src/styles/vben.css'),light=theme.match(/:root\s*\{([^]*?)\}/)?.[1],dark=theme.match(/:root\[data-theme="dark"\]\s*\{([^]*?)\}/)?.[1]
   const token=(block,name)=>block.match(new RegExp(`--edo-${name}:\\s*(#[0-9a-f]{6})`,'i'))?.[1]
   const rgb=value=>value.slice(1).match(/../g).map(part=>parseInt(part,16)/255),luminance=value=>value.map(channel=>channel<=.04045?channel/12.92:((channel+.055)/1.055)**2.4).reduce((sum,channel,index)=>sum+channel*[.2126,.7152,.0722][index],0),contrast=(a,b)=>(Math.max(luminance(a),luminance(b))+.05)/(Math.min(luminance(a),luminance(b))+.05)
-  assert.match(light,/--edo-nav-active-color:\s*color-mix\(in srgb, var\(--edo-primary\) 84%, var\(--edo-text\)\)/)
   for(const [name,block] of [['light',light],['dark',dark]]){
-    const primary=rgb(token(block,'primary')),text=rgb(token(block,'text')),background=rgb(token(block,'bg')),link=primary.map((channel,index)=>channel*.84+text[index]*.16)
-    assert.ok(contrast(link,background)>=4.5,`${name}正常/聚焦文字须达4.5:1`)
-    assert.ok(contrast(text,background)>=4.5,`${name}悬停文字须达4.5:1`)
-    assert.ok(contrast(primary,background)>=3,`${name}焦点轮廓须达3:1`)
+    assert.ok(contrast(rgb(token(block,'text')),rgb(token(block,'bg')))>=4.5,`${name}日志文字须达4.5:1`)
+    assert.ok(contrast(rgb(token(block,'primary')),rgb(token(block,'bg')))>=3,`${name}焦点轮廓须达3:1`)
   }
 })
 

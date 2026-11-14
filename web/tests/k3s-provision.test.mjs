@@ -31,7 +31,7 @@ function harness({action='create',codes=permissions,api={},assumeDetected=true}=
   const methods={
     getK3sCatalog:async(cluster,signal)=>{requests.push({method:'catalog',cluster,signal});return cluster?{...catalog,default_version:targetVersion,target_version:targetVersion}:catalog},
     checkK3sPreflight:async(body,signal)=>{requests.push({method:'check',body,signal});return reportFor(body)},
-    listK3sInstallations:async(cluster,action,signal)=>{requests.push({method:'list',cluster,action,signal});return []},
+    getLastFailedK3sInstallation:async(cluster,action,signal)=>{requests.push({method:'last-failure',cluster,action,signal});return undefined},
     previewK3sPlan:async(body,signal)=>{
       requests.push({method:'preview',body,signal});previewed=body
       if(body.mode==='k3d')return k3dPlan(body.k3d)
@@ -906,23 +906,27 @@ test('用户触发检测后聚焦报告或安全失败，配置校验和网络�
   try{await failed.open();failed.ready();failed.state.errorRegion.value={focus:()=>focus.push('error')};await failed.state.checkPreflight();assert.equal(focus.at(-1),'error');assert.equal(failed.state.error.value,'检测暂时不可用');assert.equal(failed.state.canPreview.value,true);assert.equal(failed.state.plan.value,undefined)}finally{failed.stop()}
 })
 
-test('安装任务可从最近记录恢复，轮询失败保留真实状态，恢复成功只通知一次',async()=>{
+test('上一次失败只展示日志，新建保持配置步骤，真实任务完成后重开不恢复旧进度',async()=>{
   let fail=true
-  const ctx=harness({api:{listK3sInstallations:async()=>[{id:'old-run',action:'create',name:'Existing',status:'running',logs:'old'}],getK3sInstallation:async id=>{if(fail)throw Error('network unavailable');return {id,action:'create',status:'succeeded',logs:'ready',cluster:{id:'cluster-b',name:'Existing'}}}}})
+  const previous={id:'old-run',action:'create',status:'failed',logs:'上次失败日志',cluster_id:'removed'}
+  const ctx=harness({api:{getLastFailedK3sInstallation:async()=>previous,startK3sInstallation:async()=>({id:'current-run',status:'running',logs:'本次开始'}),getK3sInstallation:async id=>{if(fail)throw Error('network unavailable');return {id,action:'create',status:'succeeded',logs:'ready',cluster:{id:'cluster-b',name:'Existing'}}}}})
   try{
-    await ctx.open();assert.equal(ctx.state.recent.value[0].id,'old-run');ctx.state.viewInstallation(ctx.state.recent.value[0]);await settle()
+    await ctx.open();assert.equal(ctx.state.previousFailureLogs.value.text,'上次失败日志');assert.equal(ctx.state.installation.value,undefined);assert.equal(ctx.state.currentStep.value,0)
+    assert.equal(ctx.requests.some(item=>['poll','start'].includes(item.method)),false)
+    ctx.ready();await ctx.state.preview();await ctx.state.execute();await ctx.state.refreshInstallation()
     assert.equal(ctx.state.installation.value.status,'running');assert.equal(ctx.state.pollError.value,'network unavailable')
     fail=false;await ctx.state.refreshInstallation();await ctx.state.refreshInstallation()
     assert.equal(ctx.state.installation.value.status,'succeeded');assert.equal(ctx.events.filter(item=>item.name==='created').length,1);assert.equal(ctx.events.filter(item=>item.name==='completed').length,1)
-    ctx.props.open=false;await settle();ctx.props.open=true;await settle();assert.equal(ctx.state.installation.value.id,'old-run')
+    ctx.props.open=false;await settle();ctx.props.open=true;await settle();assert.equal(ctx.state.installation.value,undefined);assert.equal(ctx.state.currentStep.value,0)
+    assert.equal(ctx.state.previousFailureLogs.value.text,'上次失败日志')
   }finally{ctx.stop()}
 })
 
-test('安装进度断线继续重试而非停更，关闭后停止请求，重开仍恢复原任务',async()=>{
+test('安装进度断线继续重试，关闭停止请求，重开保留本次真实运行任务',async()=>{
   let fail=true
-  const ctx=harness({api:{getK3sInstallation:async id=>{if(fail)throw Error('进度暂时不可用');return {id,status:'running',hosts:[{id:'1',stage:'installer_start',stage_started_at:'2026-10-28T23:20:28+08:00',progress_updated_at:'2026-10-28T23:21:28+08:00'}],logs:'23:21:28 等待服务启动'}}}})
+  const ctx=harness({api:{startK3sInstallation:async()=>({id:'persisted-run',status:'running',logs:'23:20:28 开始安装'}),getK3sInstallation:async id=>{if(fail)throw Error('进度暂时不可用');return {id,status:'running',hosts:[{id:'1',stage:'installer_start',stage_started_at:'2026-10-28T23:20:28+08:00',progress_updated_at:'2026-10-28T23:21:28+08:00'}],logs:'23:21:28 等待服务启动'}}}})
   try{
-    await ctx.open();ctx.state.viewInstallation({id:'persisted-run',status:'running',logs:'23:20:28 开始安装'});await settle()
+    await ctx.open();ctx.ready();await ctx.state.preview();await ctx.state.execute();await ctx.timers.shift()();await settle()
     assert.equal(ctx.state.installation.value.logs,'23:20:28 开始安装');assert.equal(ctx.state.pollError.value,'进度暂时不可用');assert.equal(ctx.timers.length,1)
     fail=false;await ctx.timers.shift()();await settle();assert.equal(ctx.state.installation.value.hosts[0].stage,'installer_start');assert.equal(ctx.state.pollError.value,'')
     ctx.props.open=false;await settle();const before=ctx.requests.length
@@ -931,15 +935,16 @@ test('安装进度断线继续重试而非停更，关闭后停止请求，重�
   }finally{ctx.stop()}
 })
 
-test('回看其他安装任务拒绝迟到日志覆盖，失权清空历史并不能直接恢复',async()=>{
-  const pending=deferred(),ctx=harness({api:{getK3sInstallation:async id=>id==='first'?pending.promise:{id,status:'failed',logs:'第二项任务日志'}}})
+test('关闭重开拒绝迟到日志覆盖，失权清空上次日志及本次任务并停止请求',async()=>{
+  const pending=deferred();let reads=0
+  const ctx=harness({api:{getLastFailedK3sInstallation:async()=>({id:'old',action:'create',status:'failed',logs:'旧失败'}),getK3sInstallation:async id=>++reads===1?pending.promise:{id,status:'running',logs:'重新打开后的当前日志'}}})
   try{
-    await ctx.open();ctx.state.viewInstallation({id:'first',status:'running',logs:'第一项旧日志'});await settle()
-    ctx.state.viewInstallation({id:'second',status:'failed',logs:''});await settle()
-    pending.resolve({id:'first',status:'running',logs:'第一项迟到日志'});await settle()
-    assert.equal(ctx.state.installation.value.id,'second');assert.equal(ctx.state.installation.value.logs,'第二项任务日志')
-    ctx.auth.user=null;await settle();assert.equal(ctx.state.installation.value,undefined);assert.deepEqual(ctx.state.recent.value,[])
-    ctx.state.viewInstallation({id:'private',status:'running',logs:'不可再读取'});await settle();assert.equal(ctx.state.installation.value,undefined)
+    await ctx.open();ctx.ready();await ctx.state.preview();await ctx.state.execute();const oldPoll=ctx.state.refreshInstallation()
+    ctx.props.open=false;await settle();ctx.props.open=true;await settle()
+    pending.resolve({id:'run-1',status:'running',logs:'迟到日志'});await oldPoll;await settle()
+    assert.equal(ctx.state.installation.value.logs,'重新打开后的当前日志')
+    ctx.auth.user=null;await settle();assert.equal(ctx.state.installation.value,undefined);assert.equal(ctx.state.previousFailure.value,undefined)
+    const count=ctx.requests.length;await ctx.state.refreshInstallation();await ctx.state.loadPreviousFailure();assert.equal(ctx.requests.length,count)
   }finally{ctx.stop()}
 })
 
@@ -947,7 +952,7 @@ test('断线重试使用有上限退避，成功后恢复正常周期并重置�
   let fail=true
   const ctx=harness({api:{getK3sInstallation:async id=>{if(fail)throw Error('读取失败');return {id,status:'running',logs:'最新反馈'}}}})
   try{
-    await ctx.open();ctx.state.viewInstallation({id:'retry-run',status:'running'});await settle()
+    await ctx.open();ctx.ready();await ctx.state.preview();await ctx.state.execute();await ctx.timers.shift()();await settle()
     for(const delay of [5000,10000,20000,30000,30000]){const timer=ctx.timers.shift();assert.equal(timer.delay,delay);await timer();await settle()}
     fail=false;await ctx.timers.shift()();await settle();assert.equal(ctx.timers[0].delay,1500)
     fail=true;await ctx.timers.shift()();await settle();assert.equal(ctx.timers[0].delay,5000)
@@ -966,10 +971,10 @@ test('部分安装失败仍通知父页面刷新，并可进入已创建集群�
   }finally{ctx.stop()}
 })
 
-test('最近任务按动作在服务器分页前筛选，项目变化丢弃迟到计划，退出登录清空安装记录',async()=>{
+test('上一失败日志按动作请求，项目变化丢弃迟到计划，退出登录清空安装记录',async()=>{
   const pending=deferred(),ctx=harness({api:{previewK3sPlan:()=>pending.promise}})
   try{
-    await ctx.open();assert.equal(ctx.requests.find(item=>item.method==='list').action,'create');ctx.ready();const request=ctx.state.preview()
+    await ctx.open();assert.equal(ctx.requests.find(item=>item.method==='last-failure').action,'create');ctx.ready();const request=ctx.state.preview()
     ctx.auth.user.project_id='project-b';await settle();pending.resolve(plan());await request
     assert.equal(ctx.state.plan.value,undefined);assert.equal(ctx.state.form.name,'')
     ctx.state.installation.value={id:'private',status:'running',logs:'private log'};ctx.auth.user=null;await settle()
@@ -985,9 +990,9 @@ test('跨标签页切换实际项目清空旧安装数据并取消请求，重�
   try{
     await ctx.open();ctx.ready();const request=ctx.state.preview(),signal=ctx.state.request
     ctx.state.installation.value={id:'old-run',status:'running',logs:'private old-project log'}
-    ctx.state.recent.value=[{id:'old-history',status:'failed'}]
+    ctx.state.previousFailure.value={id:'old-history',status:'failed',logs:'旧日志'}
     ctx.props.hosts=[host('3')];ctx.storage.project='project-b';ctx.listeners.get('storage')({type:'storage',key:'edo.project'});await settle()
-    assert.equal(signal.signal.aborted,true);assert.equal(ctx.state.installation.value,undefined);assert.deepEqual(ctx.state.recent.value,[])
+    assert.equal(signal.signal.aborted,true);assert.equal(ctx.state.installation.value,undefined);assert.equal(ctx.state.previousFailure.value,undefined)
     assert.equal(ctx.state.form.name,'');assert.equal(ctx.auth.user.project_id,'project-a');assert.equal(ctx.requests.filter(item=>item.method==='hosts').at(-1).project,'project-b')
     pending.resolve(plan());await request;assert.equal(ctx.state.plan.value,undefined)
     ctx.state.plan.value=plan();ctx.storage.project='';ctx.listeners.get('storage')({type:'storage',key:null});await settle();assert.equal(ctx.state.plan.value,undefined)
@@ -1123,4 +1128,35 @@ test('权限检测数据缺失或与通过状态矛盾时阻断，正常环境�
     report.hosts[0].privilege={...report.hosts[0].privilege,account:'root',sudo:'not_needed',ready:true}
     assert.ok(ctx.state.readPreflight(report));assert.equal(ctx.state.reportPassed(report),false)
   }finally{ctx.stop()}
+})
+
+
+test('上一失败日志API在服务端筛选失败后只取一条，空记录与错误响应不会伪造日志',async()=>{
+  const requests=[];let installations=[]
+  const api=loadFrontend('../src/api/k3s.ts',{'@/api/client':{__esModule:true,default:{get:async(path,options)=>{requests.push({path,options});return {data:{installations}}}}}})
+  const controller=new AbortController()
+  assert.equal(await api.getLastFailedK3sInstallation('cluster-a','join',controller.signal),undefined)
+  assert.deepEqual(requests[0].options.params,{limit:1,action:'join',status:'failed',cluster_id:'cluster-a'});assert.equal(requests[0].options.signal,controller.signal)
+  installations=[{id:'failure',action:'create',status:'failed',logs:'真实失败日志'}]
+  assert.equal((await api.getLastFailedK3sInstallation('','create')).id,'failure')
+  for(const value of [[{...installations[0],status:'succeeded'}],[...installations,...installations],null]){installations=value;await assert.rejects(api.getLastFailedK3sInstallation('','create'),/信息不完整/)}
+})
+
+test('上一失败日志读取异常或迟到不影响配置步骤，当前范围变化后清理日志',async()=>{
+  const pending=deferred();let calls=0
+  const ctx=harness({api:{getLastFailedK3sInstallation:()=>++calls===1?pending.promise:Promise.resolve(undefined)}})
+  try{
+    await ctx.open();assert.equal(ctx.state.currentStep.value,0);assert.equal(ctx.state.failureLoading.value,true)
+    ctx.auth.user.project_id='project-b';await settle();pending.resolve({id:'old',action:'create',status:'failed',logs:'旧项目日志'});await settle()
+    assert.equal(ctx.state.previousFailure.value,undefined);assert.equal(ctx.state.installation.value,undefined)
+  }finally{ctx.stop()}
+  const failed=harness({api:{getLastFailedK3sInstallation:async()=>{throw Error('日志暂时无法读取')}}})
+  try{await failed.open();failed.ready();assert.equal(failed.state.failureError.value,'日志暂时无法读取');assert.equal(failed.state.currentStep.value,0);assert.equal(failed.state.canPreview.value,true)}finally{failed.stop()}
+})
+
+test('已结束任务重新打开回到配置，已移除连接的历史UUID不能用于管理集群',async()=>{
+  for(const status of ['failed','succeeded','interrupted']){
+    const ctx=harness({api:{startK3sInstallation:async()=>({id:'done',status,cluster_id:'removed-connection',logs:'历史日志'})}})
+    try{await ctx.open();ctx.ready();await ctx.state.preview();await ctx.state.execute();ctx.state.manageCreatedCluster();assert.equal(ctx.replacements.length,0);ctx.props.open=false;await settle();ctx.props.open=true;await settle();assert.equal(ctx.state.currentStep.value,0);assert.equal(ctx.state.installation.value,undefined)}finally{ctx.stop()}
+  }
 })

@@ -169,6 +169,11 @@ export async function listK3sInstallations(clusterID: string, action: K3sAction,
   const result=await client.get<{installations:K3sInstallation[]}>('/kubernetes/k3s/installations', { params:{limit:10,action,...(clusterID?{cluster_id:clusterID}:{}),...(hostID?{host_id:hostID}:{})},signal })
   return action==='uninstall'?result.data.installations:result.data.installations??[]
 }
+export async function getLastFailedK3sInstallation(clusterID:string,action:'create'|'join',signal?:AbortSignal) {
+  const {data}=await client.get<{installations:K3sInstallation[]}>('/kubernetes/k3s/installations',{params:{limit:1,action,status:'failed',...(clusterID?{cluster_id:clusterID}:{})},signal})
+  if(!Array.isArray(data.installations)||data.installations.length>1||data.installations.some(item=>!item||item.status!=='failed'||item.action!==action||typeof item.id!=='string'||!item.id||clusterID&&item.cluster_id!==clusterID))throw new Error('上一次失败日志信息不完整，请重新读取。')
+  return data.installations[0]
+}
 export async function listK3sUninstallTargets(hostID: string, signal?: AbortSignal) {
   return (await client.get<{targets:K3sUninstallTarget[]}>('/kubernetes/k3s/uninstall-targets',{params:{host_id:hostID},signal})).data.targets
 }

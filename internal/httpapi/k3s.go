@@ -193,6 +193,12 @@ func (h k3sHandler) list(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_k3s_action", "请选择有效的集群操作类型")
 		return
 	}
+	status := c.Query("status")
+	if status != "" && (status != "failed" || action != "create" && action != "join") {
+		h.logger.Warn("安装记录筛选条件无效", "operation", "k3s_installations_filter", "request_id", requestIDFrom(c))
+		writeError(c, http.StatusBadRequest, "invalid_k3s_status", "请选择有效的安装记录筛选条件")
+		return
+	}
 	if action == "uninstall" {
 		var query struct {
 			HostID string `form:"host_id" binding:"required,max=36"`
@@ -210,7 +216,7 @@ func (h k3sHandler) list(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"installations": items})
 		return
 	}
-	items, err := h.service.List(c.Request.Context(), c.Query("cluster_id"), limit, action)
+	items, err := h.service.List(c.Request.Context(), c.Query("cluster_id"), limit, action, status)
 	if err != nil {
 		h.writeError(c, "k3s_installations_list", err)
 		return
