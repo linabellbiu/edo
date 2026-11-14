@@ -177,8 +177,14 @@ test('新建与重开表单默认官方来源，显式来源选择保持独立�
       await ctx.open();ctx.ready()
       assert.equal(ctx.state.form.download_source,'official')
       assert.equal(ctx.state.input().system_image_registry,undefined)
-      ctx.state.form.download_source='official';ctx.state.form.system_image_source='official'
-      assert.equal(ctx.state.input().download_source,'official')
+      ctx.state.form.download_source='official_cn';ctx.state.form.system_image_source='official'
+      assert.equal(ctx.state.input().download_source,'official_cn')
+      ctx.state.form.profile='custom';await settle();assert.equal(ctx.state.input().download_source,'official_cn')
+      ctx.state.form.profile='default';await settle();await ctx.state.preview()
+      assert.equal(ctx.requests.find(item=>item.method==='preview').body.download_source,'official_cn')
+      assert.equal(ctx.state.plan.value.sources.installer_url,'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh')
+      assert.equal(ctx.state.plan.value.sources.artifact_url,'https://rancher-mirror.rancher.cn/k3s')
+      assert.equal(ctx.requests.some(item=>['check','start'].includes(item.method)),false)
       assert.equal(ctx.state.input().system_image_registry,undefined)
       ctx.props.open=false;await settle();ctx.props.open=true;await settle()
       assert.equal(ctx.state.form.download_source,'official')
@@ -481,12 +487,12 @@ test('默认安装不提交隐藏的自定义参数；自定义参数和覆盖�
   }finally{ctx.stop()}
 })
 
-test('原生默认只用官方源且不发送镜像仓库，自定义来源仍可独立显式选择',async()=>{
+test('原生默认与自定义均保留显式下载源，默认不发送隐藏镜像仓库草稿',async()=>{
   const ctx=harness()
   try{
     await ctx.open();ctx.ready()
     Object.assign(ctx.state.form,{download_source:'official_cn',system_image_source:'custom',custom_system_image_registry:''})
-    assert.equal(ctx.state.input().download_source,'official')
+    assert.equal(ctx.state.input().download_source,'official_cn')
     assert.equal(Object.hasOwn(ctx.state.input(),'system_image_registry'),false)
     assert.equal(ctx.state.canPreview.value,true)
     await ctx.state.preview();assert.equal(ctx.state.planSourceValid.value,true)
@@ -512,7 +518,7 @@ test('加入Master和Worker均能选国内下载源，但默认与自定义都�
       await ctx.open();ctx.state.form.join_role=role;await settle();ctx.ready()
       Object.assign(ctx.state.form,{profile,server_token:role==='server'?'explicit-test-token':'',download_source:'official_cn',system_image_source:'custom',custom_system_image_registry:'must-not-send.example/team'})
       const input=ctx.state.input()
-      assert.equal(input.download_source,profile==='custom'?'official_cn':'official')
+      assert.equal(input.download_source,'official_cn')
       assert.equal(Object.hasOwn(input,'system_image_registry'),false)
       await ctx.state.preview()
       assert.equal(ctx.state.planSourceValid.value,true)
@@ -617,11 +623,12 @@ test('计划和执行结果仅展示冻结来源，旧记录未记录且加入�
   }
 })
 
-test('来源控件只在原生自定义安装展开，中英文语义区分下载与系统镜像',()=>{
+test('原生两种安装方式均可选择下载源，镜像仓库仅自定义展开，中英文语义区分下载与系统镜像',()=>{
   const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
   const {descriptor}=parse(source)
   assert.deepEqual(compileTemplate({source:descriptor.template.content,filename:'K3sProvisionDrawer.vue',id:'k3s-sources'}).errors,[])
-  assert.match(source,/v-if="form.profile==='custom'" class="form-columns source-options"/)
+  assert.match(source,/<div class="form-columns source-options">/)
+  assert.match(source,/<a-form-item v-if="form.profile==='custom'" :label="t\('k8s.systemImageSource'\)"/)
   assert.match(source,/v-if="action==='create'" v-model:value="form.system_image_source"/)
   assert.match(source,/v-else :value="t\('k8s.systemImageInherited'\)" disabled/)
   assert.equal((source.match(/v-for="fact in sourceFacts"/g)||[]).length,2)

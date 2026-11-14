@@ -81,7 +81,7 @@ const serverHostSelection = computed({
 const displayMode = computed(() => installation.value?modeOf(installation.value):plan.value?modeOf(plan.value):isK3d.value?'k3d':'native')
 const k3dConfig = computed(() => installation.value?installation.value.k3d:plan.value?.k3d)
 const systemImageRegistry = computed(() => form.system_image_source==='community_cn'?'registry.cn-hangzhou.aliyuncs.com':form.system_image_source==='custom'?form.custom_system_image_registry.trim():'')
-const sourceInputValid = computed(() => isK3d.value||form.profile==='default'||(['official','official_cn'].includes(form.download_source)&&(props.action==='join'||form.system_image_source!=='custom'||Boolean(systemImageRegistry.value))))
+const sourceInputValid = computed(() => isK3d.value||(['official','official_cn'].includes(form.download_source)&&(form.profile==='default'||props.action==='join'||form.system_image_source!=='custom'||Boolean(systemImageRegistry.value))))
 const frozenSources = computed(() => installation.value?installation.value.sources:plan.value?.sources)
 const sourceFacts = computed(() => {
   const sources=frozenSources.value
@@ -144,7 +144,7 @@ function input(): K3sPlanInput {
   const custom=form.profile==='custom'
   const installer=custom?Object.fromEntries(Object.entries(form.installer).filter(([key,value])=>!['version','channel'].includes(key)||String(value??'').trim())):{}
   return {
-    action:props.action,mode:'native',download_source:custom?form.download_source:'official',...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.worker_host_ids)].filter(id=>id!==form.server_host_id),...(custom?{system_image_registry:systemImageRegistry.value}:{})}),name:form.name.trim(),
+    action:props.action,mode:'native',download_source:form.download_source,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.worker_host_ids)].filter(id=>id!==form.server_host_id),...(custom?{system_image_registry:systemImageRegistry.value}:{})}),name:form.name.trim(),
     profile:form.profile,server_options:custom&&showServerOptions.value?{...form.server_options}:{},agent_options:custom&&showAgentOptions.value?{...form.agent_options}:{},
     ...(props.action==='create'&&!customDatastore.value?{datastore:form.datastore}:{}),
     installer,overrides:custom?form.overrides:'',endpoint:form.endpoint.trim(),
@@ -393,16 +393,16 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
           <a-alert v-if="joinMaster" type="warning" show-icon message="目标集群需已启用内嵌 etcd" description="生成计划会核对 Server Token、目标控制平面、etcd 成员与关键配置。SQLite、外置数据存储或无法确认的目标会被阻断；不会自动转换数据库。关键配置自动继承，冲突覆盖会被拒绝。" /><a-alert v-if="!loading&&!loadError&&!hostChoices.length" type="info" show-icon message="暂无可安装的远程主机" description="请先在主机页面配置启用的 SSH 主机和登录凭据。" />
           <a-alert v-if="isK3d" type="warning" show-icon :message="t('k8s.k3dSingleHostWarning')" />
           <template v-else>
-          <div v-if="form.profile==='custom'" class="form-columns source-options">
+          <div class="form-columns source-options">
             <a-form-item :label="t('k8s.installDownloadSource')" required><a-select v-model:value="form.download_source" :aria-label="t('k8s.installDownloadSource')" :options="[{value:'official',label:t('k8s.downloadOfficial')},{value:'official_cn',label:t('k8s.downloadOfficialCn')}]" /><div class="field-help">{{ t('k8s.downloadSourceHint') }}</div></a-form-item>
-            <a-form-item :label="t('k8s.systemImageSource')" :required="action==='create'">
+            <a-form-item v-if="form.profile==='custom'" :label="t('k8s.systemImageSource')" :required="action==='create'">
               <a-select v-if="action==='create'" v-model:value="form.system_image_source" :aria-label="t('k8s.systemImageSource')" :options="[{value:'official',label:t('k8s.systemImageOfficial')},{value:'community_cn',label:t('k8s.systemImageCommunityCn')},{value:'custom',label:t('k8s.systemImageCustom')}]" />
               <a-input v-else :value="t('k8s.systemImageInherited')" disabled :aria-label="t('k8s.systemImageSource')" />
               <code v-if="action==='create'&&form.system_image_source==='community_cn'" class="field-help">{{ systemImageRegistry }}</code>
               <div class="field-help">{{ t(action==='create'?'k8s.systemImageSourceHint':'k8s.systemImageJoinHint') }}</div>
             </a-form-item>
-            <a-form-item v-if="action==='create'&&form.system_image_source==='custom'" :label="t('k8s.systemImageRegistryPrefix')" required class="wide"><a-input v-model:value="form.custom_system_image_registry" :aria-label="t('k8s.systemImageRegistryPrefix')" placeholder="registry.example.com:5000/team" :maxlength="512" /><div class="field-help">{{ t('k8s.systemImagePrefixHint') }}</div></a-form-item>
-            <div v-if="action==='create'&&form.download_source==='official_cn'&&form.system_image_source==='official'" class="field-help source-suggestion wide">{{ t('k8s.sourceIndependentHint') }}</div>
+            <a-form-item v-if="form.profile==='custom'&&action==='create'&&form.system_image_source==='custom'" :label="t('k8s.systemImageRegistryPrefix')" required class="wide"><a-input v-model:value="form.custom_system_image_registry" :aria-label="t('k8s.systemImageRegistryPrefix')" placeholder="registry.example.com:5000/team" :maxlength="512" /><div class="field-help">{{ t('k8s.systemImagePrefixHint') }}</div></a-form-item>
+            <div v-if="form.profile==='custom'&&action==='create'&&form.download_source==='official_cn'&&form.system_image_source==='official'" class="field-help source-suggestion wide">{{ t('k8s.sourceIndependentHint') }}</div>
           </div>
           <a-form-item label="安装方式"><a-radio-group v-model:value="form.profile" button-style="solid"><a-radio-button value="default">默认安装</a-radio-button><a-radio-button value="custom">自定义安装</a-radio-button></a-radio-group></a-form-item>
           <a-form-item v-if="action==='create'" :label="t('k8s.datastoreType')">
