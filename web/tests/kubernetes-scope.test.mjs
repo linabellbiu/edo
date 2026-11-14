@@ -25,6 +25,13 @@ test('多选统计只累加选中命名空间，节点及全局资源不重复�
  b.counts.pods.state='partial';assert.equal(api.mergeNamespaceOverviews([a,b]).counts.pods.state,'partial')
  assert.equal(api.mergeNamespaceOverviews([]),null)
 })
+test('命名空间多选沿用集群级监控状态，不由命名空间指标错误覆盖',()=>{
+ const a=overview('prod',2),b=overview('test',3)
+ a.monitoring_state='installing';a.metrics_state.nodes='unavailable';b.metrics_state.pods='forbidden'
+ const merged=api.mergeNamespaceOverviews([a,b])
+ assert.equal(merged.monitoring_state,'installing');assert.equal(merged.metrics_state.nodes,'unavailable')
+ assert.equal(merged.metrics_state.pods,'unavailable')
+})
 test('各命名空间分页游标独立保留，加载更多不重复请求已完成命名空间',async()=>{
  const calls=[]
  const api=load('../src/api/kubernetes.ts',{'./client':{__esModule:true,default:{get:async(_,options)=>{

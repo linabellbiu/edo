@@ -34,6 +34,12 @@ const totals=computed(()=>{
   return {cpu:all?sum(nodes.map(node=>node.cpu)):undefined,memory:all?sum(nodes.map(node=>node.memory)):undefined,cpuUsed:complete?sum(nodes.map(node=>usages[node.name]!.cpu)):undefined,memoryUsed:complete?sum(nodes.map(node=>usages[node.name]!.memory)):undefined,ready:nodes.filter(node=>node.ready).length,nodes:nodes.length}
 })
 const phaseKeys:Record<string,string>={Running:'running',Pending:'pending',Failed:'failed',Succeeded:'completed',Unknown:'unknown',Terminating:'terminating'}
+const monitoringNotice=computed(()=>{
+  if(props.error||props.loading||!props.data?.nodes?.length||(totals.value.cpuUsed!==undefined&&totals.value.memoryUsed!==undefined))return null
+  const state=props.data.metrics_state?.nodes==='forbidden'?'forbidden':props.data.monitoring_state
+  const messages:Record<string,string>={installing:'monitoringInstalling',image_pull_timeout:'monitoringPullTimeout',image_pull_failed:'monitoringPullFailed',startup_failed:'monitoringStartupFailed',waiting_metrics:'monitoringWaitingMetrics',forbidden:'nodeMetricsForbidden'}
+  return {type:state==='installing'||state==='waiting_metrics'?'info' as const:'warning' as const,message:t(`k8s.${messages[state??'']??'metricsMissing'}`)}
+})
 const phaseColors:Record<string,string>={Running:'#22b978',Pending:'#e5a11c',Failed:'#ef5a6e',Succeeded:'#526aff',Unknown:'#708198',Terminating:'#a66b00'}
 const phases=computed(()=>Object.entries(props.data?.phases??{}).map(([phase,value])=>({phase,name:phaseKeys[phase]?t(`k8s.state_${phaseKeys[phase]}`):phase,value,color:phaseColors[phase]??'#708198'})))
 const percentage=(used:number|undefined,total:number|undefined)=>used===undefined||total===undefined||total<=0?'—':`${(used/total*100).toFixed(1)}%`
@@ -63,7 +69,7 @@ onBeforeUnmount(()=>{disposed=true;resize?.disconnect();charts.forEach(chart=>ch
 <template>
   <section ref="root" class="cluster-overview" :aria-busy="loading">
     <a-alert v-if="error" type="warning" show-icon :message="error" />
-    <a-alert v-if="!error&&!loading&&data?.nodes?.length&&(totals.cpuUsed===undefined||totals.memoryUsed===undefined)" type="warning" show-icon :message="t('k8s.metricsMissing')" />
+    <a-alert v-if="monitoringNotice" :type="monitoringNotice.type" show-icon :message="monitoringNotice.message" role="status" aria-live="polite" />
     <a-skeleton v-if="!data&&loading" active :paragraph="{rows:4}" />
     <template v-else-if="data">
       <div class="cluster-charts">

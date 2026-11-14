@@ -98,3 +98,38 @@ test('隐藏的容器恢复尺寸后绘制；卸载时释放实例并停止后�
     await ctx.state.render();assert.equal(ctx.instances.length,3)
   }finally{if(!ctx.observers[0].disconnected)ctx.stop()}
 })
+
+test('缺测提示区分组件启动、拉取故障和真实指标权限',async()=>{
+  const ctx=chartHarness()
+  try{
+    ctx.props.data=overview();ctx.props.data.usage.nodes={};ctx.props.loading=false
+    for(const [state,key,type] of [
+      ['installing','monitoringInstalling','info'],
+      ['image_pull_timeout','monitoringPullTimeout','warning'],
+      ['image_pull_failed','monitoringPullFailed','warning'],
+      ['startup_failed','monitoringStartupFailed','warning'],
+      ['waiting_metrics','monitoringWaitingMetrics','info'],
+      ['unavailable','metricsMissing','warning'],
+      ['forbidden','nodeMetricsForbidden','warning'],
+    ]){
+      ctx.props.data.monitoring_state=state;await settle()
+      assert.deepEqual(ctx.state.monitoringNotice.value,{type,message:`k8s.${key}`})
+      assert.equal(ctx.state.totals.value.cpuUsed,undefined)
+    }
+    ctx.props.data.monitoring_state='installing';ctx.props.data.metrics_state={nodes:'forbidden'};await settle()
+    assert.equal(ctx.state.monitoringNotice.value.message,'k8s.nodeMetricsForbidden')
+  }finally{ctx.stop()}
+})
+
+test('指标恢复隐藏旧故障提示，错误和加载提示优先，旧接口安全降级',async()=>{
+  const ctx=chartHarness()
+  try{
+    ctx.props.data=overview();ctx.props.data.monitoring_state='image_pull_timeout';ctx.props.loading=false;await settle()
+    assert.equal(ctx.state.monitoringNotice.value,null)
+    ctx.props.data.usage.nodes={};delete ctx.props.data.monitoring_state;await settle()
+    assert.equal(ctx.state.monitoringNotice.value.message,'k8s.metricsMissing')
+    ctx.props.error='读取失败';await settle();assert.equal(ctx.state.monitoringNotice.value,null)
+    ctx.props.error='';ctx.props.loading=true;await settle();assert.equal(ctx.state.monitoringNotice.value,null)
+    ctx.props.loading=false;ctx.props.data.nodes=[];await settle();assert.equal(ctx.state.monitoringNotice.value,null)
+  }finally{ctx.stop()}
+})

@@ -44,6 +44,7 @@ export interface KubeOverview {
   phases:Record<string,number> | null
   usage:Record<string,Record<string,KubeUsage>>
   metrics_state:Record<string,string>
+  monitoring_state?:'installing'|'image_pull_timeout'|'image_pull_failed'|'startup_failed'|'waiting_metrics'|'forbidden'|'unavailable'
   collected_at:string
 }
 export function usageFor(data:KubeOverview|null,object:KubeObject,now=Date.now()):KubeUsage|undefined {

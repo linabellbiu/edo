@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -31,13 +32,14 @@ type NodeStatistics struct {
 	PodState    string  `json:"pod_state"`
 }
 type Overview struct {
-	Counts       map[string]ResourceCount            `json:"counts"`
-	Nodes        []NodeStatistics                    `json:"nodes"`
-	Phases       map[string]int                      `json:"phases"`
-	Usage        map[string]map[string]ResourceUsage `json:"usage"`
-	MetricsState map[string]string                   `json:"metrics_state"`
-	CollectedAt  time.Time                           `json:"collected_at"`
-	Errors       map[string]error                    `json:"-"`
+	Counts          map[string]ResourceCount            `json:"counts"`
+	Nodes           []NodeStatistics                    `json:"nodes"`
+	Phases          map[string]int                      `json:"phases"`
+	Usage           map[string]map[string]ResourceUsage `json:"usage"`
+	MetricsState    map[string]string                   `json:"metrics_state"`
+	MonitoringState string                              `json:"monitoring_state,omitempty"`
+	CollectedAt     time.Time                           `json:"collected_at"`
+	Errors          map[string]error                    `json:"-"`
 }
 
 func quantity(value any) float64 {
@@ -180,6 +182,9 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 		list, metricsErr := s.listMetrics(ctx, clusterID, kind, ns)
 		if metricsErr != nil {
 			result.MetricsState[kind] = "unavailable"
+			if apierrors.IsForbidden(metricsErr) || apierrors.IsUnauthorized(metricsErr) || errors.Is(metricsErr, ErrRBACForbidden) {
+				result.MetricsState[kind] = "forbidden"
+			}
 			result.Errors["metrics/"+kind] = resourceError(kind, metricsErr)
 			continue
 		}
@@ -229,6 +234,19 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 				key = item.GetNamespace() + "/" + key
 			}
 			result.Usage[kind][key] = usage
+		}
+	}
+	if allowed["kubernetes.node.read"] && missingNodeMetrics(result) {
+		result.MonitoringState = "unavailable"
+		if result.MetricsState["nodes"] == "forbidden" {
+			result.MonitoringState = "forbidden"
+		} else if allowed["kubernetes.workload.read"] {
+			state, err := s.monitoringState(ctx, query)
+			if err != nil {
+				result.Errors["monitoring"] = err
+			} else {
+				result.MonitoringState = state
+			}
 		}
 	}
 	if query.authorization.enforced() {

@@ -23,7 +23,15 @@ client.defaults.adapter = async config => {
   let response
   if (path === '/kubernetes/clusters') response = { clusters: [{ id: 'local-preview', name: '本地预览集群', api_server: 'https://preview.invalid:6443', default_namespace: 'preview', is_active: true, hosts: [] }] }
   else if (/^\/kubernetes\/clusters\/[^/]+\/namespaces$/.test(path)) response = { namespaces: ['preview', 'staging'] }
-  else if (path.endsWith('/overview')) response = data.overview(params.namespace)
+  else if (path.endsWith('/overview')) {
+    response = data.overview(params.namespace)
+    const state = new URLSearchParams(location.search).get('monitoring')
+    if (['installing', 'image_pull_timeout', 'image_pull_failed', 'startup_failed', 'waiting_metrics', 'forbidden', 'unavailable'].includes(state)) {
+      response.usage.nodes = {}
+      response.metrics_state.nodes = state === 'forbidden' ? 'forbidden' : 'unavailable'
+      response.monitoring_state = state
+    }
+  }
   else {
     const match = path.match(/\/resources\/([^/]+)(?:\/([^/]+))?(?:\/(events|diagnostics))?$/)
     if (match) {
