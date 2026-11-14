@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 export interface KeyValue { key: string; value: string }
-const props = withDefaults(defineProps<{ modelValue: KeyValue[]; secret?: boolean; disabled?: boolean }>(), {secret:false, disabled:false})
+const props = withDefaults(defineProps<{ modelValue: KeyValue[]; secret?: boolean; disabled?: boolean; compact?:boolean }>(), {secret:false, disabled:false,compact:false})
 const emit = defineEmits<{'update:modelValue':[value:KeyValue[]]}>()
 const { t } = useI18n()
 function change(index: number, field: 'key'|'value', value: string) { emit('update:modelValue', props.modelValue.map((item, position) => position === index ? {...item, [field]:value} : item)) }
 </script>
 <template>
-  <div class="kube-key-values">
+  <div class="kube-key-values" :class="{compact}">
     <div v-for="(item,index) in modelValue" :key="index" class="kv-row">
       <a-input :value="item.key" :disabled="disabled" placeholder="Key" :aria-label="`Key ${index+1}`" @update:value="change(index,'key',$event)" />
       <a-input-password v-if="secret" :value="item.value" :disabled="disabled" placeholder="Value" :aria-label="`Value ${index+1}`" @update:value="change(index,'value',$event)" />
@@ -19,4 +19,6 @@ function change(index: number, field: 'key'|'value', value: string) { emit('upda
 </template>
 <style scoped>
 .kube-key-values{display:grid;gap:8px}.kv-row{display:grid;grid-template-columns:minmax(100px,1fr) minmax(140px,2fr) 32px;gap:8px;align-items:start}
+
+.compact{max-width:100%}.compact>.ant-btn{justify-self:start}.compact .kv-row{grid-template-columns:minmax(0,240px) minmax(0,1fr) 32px}@media(max-width:640px){.compact .kv-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 32px}}
 </style>

@@ -284,7 +284,7 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
     <div class="editor-context"><a-tag>{{ type.kind }}</a-tag><span>{{ type.namespaced?form.namespace:t('k8s.clusterScope') }}</span><strong v-if="editing">{{ object?.metadata.name }}</strong></div>
     <div v-if="error" ref="errorPanel" tabindex="-1" role="alert" class="editor-error"><a-alert type="error" show-icon :message="error" class="editor-alert" /></div>
     <a-form layout="vertical" :disabled="saving||confirming" @finish="save">
-      <template v-if="!configuration&&!workload">
+      <template v-if="!configuration&&!workload&&type.kind!=='Service'">
         <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
         <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" /></a-form-item>
       </template>
@@ -371,10 +371,28 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
         <a-alert v-if="editing" type="warning" :message="t('k8s.expandHint')" />
       </template>
       <template v-if="type.kind==='Service'">
-        <a-form-item :label="t('k8s.serviceType')"><a-select :active="editorActive" :aria-label="t('k8s.serviceType')" v-model:value="form.serviceType" :options="['ClusterIP','NodePort','LoadBalancer'].map(value=>({value}))" /></a-form-item>
-        <a-form-item :label="t('k8s.selector')"><KubeKeyValues v-model="form.selector" :disabled="saving" /></a-form-item>
-        <div class="form-grid"><a-form-item :label="t('k8s.servicePort')" required><a-input-number :aria-label="t('k8s.servicePort')" v-model:value="form.port" :min="1" :max="65535" :precision="0" /></a-form-item><a-form-item :label="t('k8s.targetPort')" required><a-input :aria-label="t('k8s.targetPort')" v-model:value="form.targetPort" /></a-form-item></div>
-        <a-alert v-if="editing&&(object?.spec?.ports?.length??0)>1" type="info" :message="t('k8s.firstPortHint')" />
+        <section class="service-editor-section" aria-labelledby="service-basic-heading">
+          <header><h3 id="service-basic-heading">{{ t('k8s.basic') }}</h3></header>
+          <div class="form-grid service-identity-fields">
+            <a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item>
+            <a-form-item :label="t('k8s.namespace')" required><a-input :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item>
+          </div>
+          <a-form-item :label="t('k8s.labels')" class="service-label-fields"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" compact /></a-form-item>
+        </section>
+        <section class="service-editor-section" aria-labelledby="service-settings-heading">
+          <header><h3 id="service-settings-heading">{{ t('k8s.serviceConfiguration') }}</h3></header>
+          <a-form-item :label="t('k8s.serviceType')" class="service-type-field"><a-select :active="editorActive" :aria-label="t('k8s.serviceType')" v-model:value="form.serviceType" :options="['ClusterIP','NodePort','LoadBalancer'].map(value=>({value}))" /></a-form-item>
+          <a-form-item :label="t('k8s.selector')" class="service-label-fields"><KubeKeyValues v-model="form.selector" :disabled="saving||confirming" compact /></a-form-item>
+        </section>
+        <section class="service-editor-section" aria-labelledby="service-ports-heading">
+          <header><h3 id="service-ports-heading">{{ t('k8s.portMapping') }}</h3></header>
+          <div class="service-port-fields">
+            <a-form-item :label="t('k8s.servicePort')" class="service-port-number" required><a-input-number :aria-label="t('k8s.servicePort')" v-model:value="form.port" :min="1" :max="65535" :precision="0" /></a-form-item>
+            <a-form-item :label="t('k8s.targetPort')" class="service-target-port" required><a-input :aria-label="t('k8s.targetPort')" v-model:value="form.targetPort" /></a-form-item>
+            <a-form-item :label="t('k8s.protocol')" class="service-protocol-field"><span class="service-protocol-value">{{ object?.spec?.ports?.[0]?.protocol??'TCP' }}</span></a-form-item>
+          </div>
+          <p v-if="editing&&(object?.spec?.ports?.length??0)>1" class="service-port-hint">{{ t('k8s.firstPortHint') }}</p>
+        </section>
       </template>
       <template v-if="type.kind==='Ingress'">
         <div v-if="!networkReadOnly" class="form-grid"><a-form-item :label="t('k8s.hostname')"><a-input :aria-label="t('k8s.hostname')" v-model:value="form.hostname" /></a-form-item><a-form-item label="IngressClass"><a-input aria-label="IngressClass" v-model:value="form.ingressClass" /></a-form-item><a-form-item :label="t('k8s.path')" required><a-input :aria-label="t('k8s.path')" v-model:value="form.path" /></a-form-item><a-form-item :label="t('k8s.backend')" required><a-input :aria-label="t('k8s.backend')" v-model:value="form.backend" /></a-form-item><a-form-item :label="t('networkEditor.port')" required><a-input :aria-label="t('networkEditor.port')" v-model:value="form.ingressPort" /></a-form-item></div>
@@ -424,4 +442,16 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 .pod-template-tabs > :deep(.ant-tabs-nav){margin-top:-12px;margin-bottom:18px}.pod-template-tabs > :deep(.ant-tabs-nav) .ant-tabs-tab{padding:9px 0}.container-workspace{display:grid;grid-template-columns:220px minmax(0,1fr);gap:22px;align-items:start}.container-navigation{display:grid;gap:24px;padding-right:18px;border-right:1px solid var(--edo-border);min-width:0}.container-navigation-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;color:var(--edo-muted);font-size:12px}.container-navigation-item{display:flex;flex-direction:column;align-items:flex-start;width:100%;height:auto;padding:9px 10px;margin-bottom:8px;white-space:normal;text-align:left;border-color:var(--edo-border);background:var(--edo-surface)}.container-navigation-item span,.container-navigation-item small{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.container-navigation-item small{margin-top:3px;font-size:11px;color:var(--edo-muted)}.container-navigation-item.active{color:var(--edo-primary);border-color:var(--edo-primary);background:var(--edo-primary-soft)}.container-navigation-item:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.container-editor-panel{min-width:0}.container-editor-panel>.section-heading{padding-bottom:13px;border-bottom:1px solid var(--edo-border)}
 @media(max-width:760px){.container-workspace{grid-template-columns:1fr;gap:18px}.container-navigation{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding-right:0;padding-bottom:16px;border-right:0;border-bottom:1px solid var(--edo-border)}.editor-footer{flex-wrap:wrap}.editor-footer>span{flex-basis:100%;margin-right:0}.workload-editor-tabs > :deep(.ant-tabs-nav){top:-16px}}
 .container-count{padding:1px 7px;border-radius:10px;font-size:11px;background:var(--edo-surface-soft);color:var(--edo-muted)}
+
+.service-editor-section{min-width:0;margin-bottom:18px;padding:0 16px 16px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface)}
+.service-editor-section>header{margin:0 -16px 16px;padding:10px 16px;border-bottom:1px solid var(--edo-border);border-radius:6px 6px 0 0;background:var(--edo-bg)}
+.service-editor-section h3{margin:0;font-size:13px;font-weight:600;color:var(--edo-text)}
+.service-identity-fields{grid-template-columns:minmax(0,320px) minmax(0,240px)}
+.service-label-fields{max-width:660px}.service-type-field{width:220px;max-width:100%}
+.service-port-fields{display:flex;align-items:flex-start;flex-wrap:wrap;gap:12px 16px}
+.service-port-number{width:112px;max-width:100%}.service-port-number :deep(.ant-input-number){width:100%}.service-target-port{width:190px;max-width:100%}.service-protocol-field{width:80px}
+.service-protocol-value{display:inline-flex;align-items:center;height:32px;padding:0 9px;border:1px solid var(--edo-border);border-radius:4px;background:var(--edo-bg);font-size:12px}
+.service-editor-section :deep(.ant-form-item:last-child){margin-bottom:0}.service-port-fields :deep(.ant-form-item){margin-bottom:0}
+.service-port-hint{margin:12px 0 0;font-size:12px;color:var(--edo-muted);line-height:1.6}
+@media(max-width:640px){.service-identity-fields{grid-template-columns:minmax(0,1fr)}.service-editor-section{padding-inline:12px}.service-editor-section>header{margin-inline:-12px;padding-inline:12px}}
 </style>

@@ -4,6 +4,9 @@ import {theme} from 'ant-design-vue'
 import client from '/src/api/client'
 import {kubeTypes,resourceURL} from '/src/api/kubernetes'
 import KubeResourceEditor from '/src/components/KubeResourceEditor.vue'
+import KubeResourceCell from '/src/components/KubeResourceCell.vue'
+import {resourceCells} from '/src/utils/kubernetesPresentation'
+import {useI18n} from 'vue-i18n'
 
 const query=new URLSearchParams(location.search),dark=query.get('theme')==='dark'
 document.documentElement.dataset.theme=dark?'dark':'light'
@@ -19,6 +22,9 @@ const objects=new Map([
   }},
  }],
 ])
+if(query.get('scenario')==='service-ports')objects.set('services',{apiVersion:'v1',kind:'Service',metadata:{...metadata('kube-dns','focus-service'),namespace:'kube-system',labels:{'k8s-app':'kube-dns','kubernetes.io/cluster-service':'true','kubernetes.io/name':'CoreDNS','objectset.rio.cattle.io/hash':'bce283298811743a0386ab510f2f67ef74240c57'}},spec:{type:'ClusterIP',selector:{'k8s-app':'kube-dns'},ports:[{name:'dns',port:53,targetPort:53,protocol:'UDP'},{name:'dns-tcp',port:53,targetPort:53,protocol:'TCP'},{name:'metrics',port:9153,targetPort:9153,protocol:'TCP'}]}})
+const {t}=useI18n()
+const portCell=computed(()=>{saved.value;return resourceCells(objects.get('services'),t).servicePorts})
 const open=ref(false),resource=ref('configmaps'),snapshot=ref(),saved=ref(0),resourceType=computed(()=>kubeTypes.find(item=>item.resource===resource.value))
 function edit(value){resource.value=value;snapshot.value=structuredClone(objects.get(value));open.value=true}
 // 本夹具只用内存对象响应已登记操作，任何请求都不会交给真实后端。
@@ -45,7 +51,8 @@ client.defaults.adapter=async config=>{
     <main class="editor-focus-preview">
       <h1>EDO Kubernetes 编辑器</h1><p>本地交互夹具 · 内存数据 · 不连接集群</p>
       <div class="fixture-actions"><a-button @click="edit('configmaps')">编辑配置项</a-button><a-button @click="edit('deployments')">编辑工作负载</a-button><a-button @click="edit('services')">编辑服务</a-button></div>
-      <table><thead><tr><th>名称</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="n in 8" :key="n"><td>demo-resource-{{ n }}</td><td>就绪</td><td><button type="button" @click="edit('configmaps')">编辑 demo-resource-{{ n }}</button></td></tr></tbody></table>
+      <table v-if="query.get('scenario')==='service-ports'"><thead><tr><th>名称</th><th>命名空间</th><th>端口映射</th></tr></thead><tbody><tr><td>kube-dns</td><td><span class="kube-namespace-badge">kube-system</span></td><td><KubeResourceCell :cell="portCell" /></td></tr></tbody></table>
+      <table v-else><thead><tr><th>名称</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="n in 8" :key="n"><td>demo-resource-{{ n }}</td><td>就绪</td><td><button type="button" @click="edit('configmaps')">编辑 demo-resource-{{ n }}</button></td></tr></tbody></table>
       <div class="fixture-pagination"><button type="button">上一页</button><button type="button">下一页</button><label>每页条数 <select aria-label="每页条数"><option>10 条/页</option><option>20 条/页</option></select></label></div>
       <output aria-live="polite">内存保存次数：{{ saved }}</output>
       <KubeResourceEditor :open="open" cluster="focus-preview" namespace="preview" :type="resourceType" :object="snapshot" @update:open="open=$event" @saved="saved++" />

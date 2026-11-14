@@ -181,6 +181,18 @@ test('网络详情真实SSR保留关联权限和安全文本，滚动区域不�
  assert.doesNotMatch(components.KubeResourceDetails.descriptor.scriptSetup.content,/client\.(post|patch|delete)|fetch\(/)
 })
 
+test('Service 多端口使用冒号和独立标签，协议、命名端口及NodePort保持准确',async()=>{
+ const object={kind:'Service',metadata:{name:'kube-dns',namespace:'kube-system'},spec:{ports:[{port:53,targetPort:53,protocol:'UDP'},{port:53,targetPort:53,protocol:'TCP'},{port:9153,targetPort:'metrics',protocol:'TCP',nodePort:30153}]}}
+ const cell=presentation.resourceCells(object,translate).servicePorts
+ assert.deepEqual(cell.tokens,['53:53/UDP','53:53/TCP','9153:metrics/TCP (NodePort 30153)'])
+ const html=await renderComponent('KubeResourceCell',{cell})
+ assert.equal((html.match(/class="kube-namespace-badge kube-port-badge"/g)||[]).length,3)
+ assert.doesNotMatch(html,/→| · /);assert.match(html,/tabindex="0"/)
+ assert.deepEqual(presentation.resourceCells({...object,spec:{ports:[{port:443,targetPort:6443,protocol:'TCP'}]}},translate).servicePorts.tokens,['443:6443'])
+ const empty=presentation.resourceCells({...object,spec:{ports:[]}},translate).servicePorts
+ assert.equal(empty.text,'—');assert.deepEqual(empty.tokens,[])
+})
+
 test('节点详情真实SSR只转换展示单位，保留原始精度、未知值和不可信文本',async()=>{
  const node={kind:'Node',metadata:{uid:'node-test',name:'worker',labels:{}},spec:{taints:[{key:'example.test/role',value:'<script>unsafe</script>',effect:'NoSchedule'}]},status:{nodeInfo:{architecture:'arm64'},capacity:{cpu:'4',memory:'1024Mi',pods:'110'},allocatable:{cpu:'3950m',memory:'1000Mi'}}}
  const before=structuredClone(node),html=await renderComponent('KubeNodeInfo',{node})

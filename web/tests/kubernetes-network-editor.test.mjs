@@ -145,6 +145,20 @@ test('新建 NetworkPolicy 保留原简易流程，deny-all 不要求虚假端�
   assert.equal(allowed.ingress[0].ports[0].port, 5432); assert.equal(allowed.policyTypes, undefined)
 })
 
+test('Service 紧凑表单保存首端口时保留其余端口、协议、NodePort和精确身份',async t=>{
+  const original={apiVersion:'v1',kind:'Service',metadata:{name:'kube-dns',namespace:'kube-system',uid:'service-uid',resourceVersion:'12',labels:{'k8s-app':'kube-dns'}},spec:{type:'NodePort',selector:{'k8s-app':'kube-dns'},ports:[{name:'dns',port:53,targetPort:53,protocol:'UDP',nodePort:30053},{name:'dns-tcp',port:53,targetPort:53,protocol:'TCP',nodePort:30054},{name:'metrics',port:9153,targetPort:9153,protocol:'TCP',nodePort:30153}]}}
+  const before=clone(original),h=editor('Service',original);t.after(h.stop)
+  h.state.form.port=5353;h.state.form.targetPort='dns-main';await h.state.save()
+  assert.equal(h.calls.length,0);assert.equal(h.dialogs.length,1)
+  await h.dialogs[0].onOk()
+  assert.deepEqual(h.calls.map(call=>call.method),['get','post','patch'])
+  const write=h.calls[2].data
+  assert.deepEqual(write.spec.ports[0],{...original.spec.ports[0],port:5353,targetPort:'dns-main'})
+  assert.deepEqual(write.spec.ports.slice(1),original.spec.ports.slice(1))
+  assert.equal(write.metadata.uid,original.metadata.uid);assert.equal(write.metadata.resourceVersion,'fresh-21')
+  assert.deepEqual(original,before)
+})
+
 test('生产编辑器仅改 Ingress 标签不提交 spec，命名端口修改先确认、再 fresh/dry-run/PATCH', async t => {
   const original = ingress({ name: 'http-api' }), h = editor('Ingress', original); t.after(h.stop)
   assert.equal(h.state.form.ingressPort, 'http-api'); assert.equal(h.state.dirty.value, false)
