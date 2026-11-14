@@ -7,6 +7,12 @@ import {createPreflightPreview,preflightPreviewHostID,preflightPreviewScenarios}
 const input={action:'create',mode:'native',name:'fixture-cluster',server_host_id:preflightPreviewHostID}
 const request=(preview,url,method='get',extra={})=>preview.adapter({url,method,...extra})
 
+test('未启用安装提权的场景返回可展示的业务指引，不创建计划或安装',async()=>{
+  const preview=createPreflightPreview('sudo')
+  await assert.rejects(request(preview,'/kubernetes/k3s/preflight','post',{data:input}),error=>error.response.status===400&&/前端测试主机.*使用 sudo 执行 Docker \/ 安装操作.*测试连接并保存/.test(error.response.data.message))
+  assert.deepEqual(preview.calls,[{method:'post',path:'/kubernetes/k3s/preflight',outcome:'rejected'}])
+})
+
 test('专用检测夹具只返回内存报告，native与k3d按主机角色展示，不包含凭据',async()=>{
   for(const mode of ['native','k3d'])for(const scenario of ['passed','warning','failed']){
     const preview=createPreflightPreview(scenario),response=await request(preview,'/kubernetes/k3s/preflight','post',{data:{...input,mode,server_token:'must-not-return'}})

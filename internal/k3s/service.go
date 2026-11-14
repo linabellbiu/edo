@@ -240,7 +240,9 @@ func (s *Service) loadHost(ctx context.Context, id string) (model.Host, sshclien
 		return host, bundle, ErrHostChanged
 	}
 	if host.SSHUsername != "root" && !bundle.UseSudo {
-		return host, bundle, fmt.Errorf("%w：主机 %s 需要启用 sudo", ErrInvalidInput, host.Name)
+		err := &ValidationError{Message: fmt.Sprintf("主机“%s”使用非 root 账号，请先在主机编辑页勾选“使用 sudo 执行 Docker / 安装操作”，测试连接并保存后重新检测", host.Name)}
+		slog.WarnContext(ctx, "K3s 主机未启用安装提权", "operation", "k3s_host_sudo_required", "host_id", host.ID, "err", err)
+		return host, bundle, err
 	}
 	return host, bundle, nil
 }

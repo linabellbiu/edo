@@ -6,7 +6,7 @@ import {preflightPreviewScenarios} from './k3s-preflight-data.mjs'
 const props=defineProps({preview:{type:Object,required:true}})
 const open=ref(false),parameters=new URLSearchParams(location.search),dark=parameters.get('theme')==='dark'
 document.documentElement.dataset.theme=dark?'dark':'light'
-const labels={passed:'通过',warning:'警告',failed:'不满足',delay:'延迟与取消',denied:'无权限'}
+const labels={passed:'通过',warning:'警告',failed:'不满足',delay:'延迟与取消',denied:'无权限',sudo:'未启用安装提权'}
 const checks=computed(()=>props.preview.calls.filter(call=>call.method==='post'&&call.path==='/kubernetes/k3s/preflight').length)
 const cancelled=computed(()=>props.preview.calls.filter(call=>call.outcome==='cancelled').length)
 const plans=computed(()=>props.preview.calls.filter(call=>call.method!=='get'&&call.path==='/kubernetes/k3s/plans').length)

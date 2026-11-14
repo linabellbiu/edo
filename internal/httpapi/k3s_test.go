@@ -509,3 +509,75 @@ func TestK3sHTTPPreflightExtendsRealServerWriteDeadline(t *testing.T) {
 		t.Fatal("real HTTP preflight response must not be cached")
 	}
 }
+
+func TestK3sHTTPPreflightAndPlanExplainSudoRequirement(t *testing.T) {
+	for _, scenario := range []struct {
+		name, username string
+		sudo           bool
+		allowed        bool
+	}{
+		{name: "非root未启用sudo", username: "ubuntu"},
+		{name: "root无需sudo", username: "root", allowed: true},
+		{name: "非root显式启用sudo", username: "ubuntu", sudo: true, allowed: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			transport := &k3sHTTPTestTransport{}
+			router, cleanup, db := newK3sHTTPTestRouterAndDB(t, transport)
+			defer cleanup()
+			admin := loginForDepartmentTest(t, router, "admin")
+			keys, err := secret.New(base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, err := json.Marshal(sshclient.Bundle{Password: "private-sudo-check-password", UseSudo: scenario.sudo})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ciphertext, err := keys.Encrypt(string(credential), hostcredential.AAD("httpapi-deployment-host"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Model(&model.Host{}).Where("uuid = ?", "httpapi-deployment-host").Updates(map[string]any{
+				"name": "sudo-check-host", "ssh_username": scenario.username, "ssh_credential_ciphertext": ciphertext,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			before := k3sHTTPPreflightState(t, db)
+			for _, path := range []string{"/api/v1/kubernetes/k3s/preflight", "/api/v1/kubernetes/k3s/plans"} {
+				input := map[string]any{"action": "create", "mode": "native", "profile": "default", "name": "提权检测", "server_host_id": "httpapi-deployment-host", "datastore": "etcd"}
+				response := performJSONRequest(t, router, http.MethodPost, path, input, admin)
+				if scenario.allowed {
+					expected := http.StatusOK
+					if strings.HasSuffix(path, "/plans") {
+						expected = http.StatusCreated
+					}
+					if response.Code != expected || transport.reads.Load() == 0 || transport.runs.Load() != 0 {
+						t.Fatalf("已满足提权条件仍被阻断或执行安装: %d %s", response.Code, response.Body.String())
+					}
+					continue
+				}
+				var body errorResponse
+				if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Code != "invalid_k3s_config" {
+					t.Fatalf("未返回配置校验错误: %d %s", response.Code, response.Body.String())
+				}
+				for _, detail := range []string{"sudo-check-host", "非 root", "使用 sudo 执行 Docker / 安装操作", "测试连接并保存"} {
+					if !strings.Contains(body.Message, detail) {
+						t.Fatalf("缺少操作指引 %s: %s", detail, body.Message)
+					}
+				}
+				if strings.Contains(response.Body.String(), "private-sudo-check-password") || transport.reads.Load() != 0 || transport.runs.Load() != 0 {
+					t.Fatal("阻断后仍读取主机或泄露凭据")
+				}
+				for name, count := range k3sHTTPPreflightState(t, db) {
+					if count != before[name] {
+						t.Fatalf("失败检测创建了 %s", name)
+					}
+				}
+			}
+			var saved model.Host
+			if err := db.First(&saved, "uuid = ?", "httpapi-deployment-host").Error; err != nil || saved.SSHCredentialCiphertext != ciphertext {
+				t.Fatal("检测或计划修改了原凭据")
+			}
+		})
+	}
+}

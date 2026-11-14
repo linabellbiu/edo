@@ -1,6 +1,6 @@
 import { AxiosError, CanceledError } from 'axios'
 
-export const preflightPreviewScenarios=['passed','warning','failed','delay','denied']
+export const preflightPreviewScenarios=['passed','warning','failed','delay','denied','sudo']
 export const preflightPreviewHostID='11111111-1111-4111-8111-111111111111'
 const permissions=['cluster.read','cluster.create','cluster.execute','cluster.update','kubernetes.node.create']
 const clone=value=>JSON.parse(JSON.stringify(value))
@@ -37,6 +37,7 @@ export function createPreflightPreview(scenario='passed',{calls=[],delay=30_000,
     if(method==='get'&&path==='/kubernetes/k3s/installations'){call.outcome='fixture';return response(config,{installations:[]})}
     if(method==='post'&&path==='/kubernetes/k3s/preflight'){
       if(scenario==='denied'){call.outcome='rejected';return reject(config,'前端夹具：无安装检测权限',403)}
+      if(scenario==='sudo'){call.outcome='rejected';return reject(config,'主机“前端测试主机”使用非 root 账号，请先在主机编辑页勾选“使用 sudo 执行 Docker / 安装操作”，测试连接并保存后重新检测',400)}
       const payload=typeof config.data==='string'?JSON.parse(config.data):config.data
       if(scenario==='delay')await new Promise((resolve,rejectPromise)=>{
         const finish=()=>{config.signal?.removeEventListener('abort',cancel);resolve()},timer=setTimeout(finish,delay)
