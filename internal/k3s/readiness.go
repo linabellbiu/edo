@@ -361,7 +361,9 @@ func (s *Service) waitForCreatedComponents(ctx context.Context, record *model.K3
 	if err != nil {
 		return installationError("components", err)
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	// 首次拉取系统镜像可能超过五分钟，组件等待沿用安装任务的总预算。
+	// 父任务的更早截止时间和取消信号仍然生效，不改变实际就绪判断。
+	readyCtx, cancel := context.WithTimeout(ctx, executionTimeout)
 	defer cancel()
 	client, err := s.kubernetes.Clientset(kube.WithInternalClusterAccess(readyCtx, "node-bootstrap"), record.ClusterID)
 	if err != nil || client == nil {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gorm.io/gorm"
@@ -287,6 +288,52 @@ func TestNativeNodePermissionIsCheckedBeforePlanAndBeforeWrites(t *testing.T) {
 
 func readySystemDeployment() *appsv1.Deployment {
 	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "coredns", Namespace: "kube-system", UID: "coredns-a", Generation: 2}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))}, Status: appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1, Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue}}}}
+}
+
+type componentDeadlineClusters struct {
+	*fakeClusters
+	deadline time.Time
+}
+
+func (k *componentDeadlineClusters) Clientset(ctx context.Context, _ string) (*kubernetes.Clientset, error) {
+	k.deadline, _ = ctx.Deadline()
+	return nil, ErrRemote
+}
+
+func TestCreatedComponentsPreserveRemainingInstallationDeadline(t *testing.T) {
+	for _, remaining := range []time.Duration{10 * time.Minute, 30 * time.Second} {
+		t.Run(remaining.String(), func(t *testing.T) {
+			clusters := &componentDeadlineClusters{fakeClusters: &fakeClusters{}}
+			service := &Service{kubernetes: clusters}
+			deadline := time.Now().Add(remaining)
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			err := service.waitForCreatedComponents(ctx, &model.K3sInstallation{}, savedInput{Input: Input{Action: "create", Mode: "native"}})
+			if !errors.Is(err, ErrRemote) || !clusters.deadline.Equal(deadline) {
+				t.Fatalf("组件等待修改了安装任务剩余期限: got=%v want=%v err=%v", clusters.deadline, deadline, err)
+			}
+		})
+	}
+}
+
+func TestSystemDeploymentColdPullCanTakeMoreThanFiveMinutes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		started := time.Now()
+		client := fake.NewSimpleClientset()
+		client.PrependReactor("get", "deployments", func(ktesting.Action) (bool, runtime.Object, error) {
+			value := readySystemDeployment()
+			if time.Since(started) < 6*time.Minute {
+				value.Status.AvailableReplicas = 0
+			}
+			return true, value, nil
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), executionTimeout)
+		defer cancel()
+		err := waitForSystemDeployments(ctx, client, []string{"coredns"}, 3*time.Second, func(context.Context) error { return nil })
+		if err != nil || time.Since(started) != 6*time.Minute {
+			t.Fatalf("冷拉取超过五分钟被提前终止或未就绪就成功: elapsed=%s err=%v", time.Since(started), err)
+		}
+	})
 }
 
 func TestSystemDeploymentReadinessRequiresActualCompletedRollout(t *testing.T) {
