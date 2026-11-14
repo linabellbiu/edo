@@ -43,7 +43,7 @@ const preflightView=ref<{focus:()=>void}>(),errorRegion=ref<HTMLElement>()
 const emptyForm = () => ({
   mode:'native' as K3sInstallMode,k3d:{agents:1,api_port:16443,bind_address:''} as K3dConfig,
   datastore:'sqlite' as 'sqlite'|'etcd',
-  download_source:'official_cn' as K3sDownloadSource,system_image_source:'official' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
+  download_source:'official_cn' as K3sDownloadSource,system_image_source:'community_cn' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
   name:'',server_host_id:'',worker_host_ids:[] as string[],profile:'default' as 'default'|'custom',endpoint:'',
   join_role:'agent' as K3sJoinRole,join_host_ids:[] as string[],server_token:'',
   server_options:{} as Record<string,unknown>,agent_options:{} as Record<string,unknown>,installer:{} as Record<string,unknown>,overrides:'',
@@ -82,7 +82,11 @@ const serverHostSelection = computed({
 const displayMode = computed(() => installation.value?modeOf(installation.value):plan.value?modeOf(plan.value):isK3d.value?'k3d':'native')
 const k3dConfig = computed(() => installation.value?installation.value.k3d:plan.value?.k3d)
 const systemImageRegistry = computed(() => form.system_image_source==='community_cn'?'registry.cn-hangzhou.aliyuncs.com':form.system_image_source==='custom'?form.custom_system_image_registry.trim():'')
-const sourceInputValid = computed(() => isK3d.value||(['official','official_cn'].includes(form.download_source)&&(form.profile==='default'||props.action==='join'||form.system_image_source!=='custom'||Boolean(systemImageRegistry.value))))
+const useSystemImageRegistry = computed({
+  get:()=>form.system_image_source!=='official',
+  set:(checked:boolean)=>{form.system_image_source=checked?'community_cn':'official'},
+})
+const sourceInputValid = computed(() => isK3d.value||(['official','official_cn'].includes(form.download_source)&&(props.action==='join'||form.system_image_source!=='custom'||Boolean(systemImageRegistry.value))))
 const frozenSources = computed(() => installation.value?installation.value.sources:plan.value?.sources)
 const sourceFacts = computed(() => {
   const sources=frozenSources.value
@@ -149,7 +153,7 @@ function input(): K3sPlanInput {
   const custom=form.profile==='custom'
   const installer=custom?Object.fromEntries(Object.entries(form.installer).filter(([key,value])=>!['version','channel'].includes(key)||String(value??'').trim())):{}
   return {
-    action:props.action,mode:'native',download_source:form.download_source,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.worker_host_ids)].filter(id=>id!==form.server_host_id),...(custom?{system_image_registry:systemImageRegistry.value}:{})}),name:form.name.trim(),
+    action:props.action,mode:'native',download_source:form.download_source,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.worker_host_ids)].filter(id=>id!==form.server_host_id),system_image_registry:systemImageRegistry.value}),name:form.name.trim(),
     profile:form.profile,server_options:custom&&showServerOptions.value?{...form.server_options}:{},agent_options:custom&&showAgentOptions.value?{...form.agent_options}:{},
     ...(props.action==='create'&&!customDatastore.value?{datastore:form.datastore}:{}),
     installer,overrides:custom?form.overrides:'',endpoint:form.endpoint.trim(),
@@ -338,6 +342,11 @@ watch(()=>form.mode,(mode,previous)=>{
   restoringMode=true;Object.assign(form,{...(modeDrafts[mode]??emptyForm()),mode});restoringMode=false
   if(props.open){if(!catalog.value)void initialize();else void loadPreviousFailure()}
 },{flush:'sync'})
+watch(()=>form.download_source,source=>{
+  if(restoringMode||props.action!=='create')return
+  if(source==='official_cn'&&form.system_image_source==='official')form.system_image_source='community_cn'
+  if(source==='official'&&form.system_image_source==='community_cn')form.system_image_source='official'
+},{flush:'sync'})
 watch(()=>form.server_host_id,(id,previous)=>{
   if(isK3d.value&&(!form.k3d.bind_address||form.k3d.bind_address===defaultK3dBindAddress(hosts.value.find(host=>host.id===previous))))form.k3d.bind_address=defaultK3dBindAddress(hosts.value.find(host=>host.id===id))
 })
@@ -389,14 +398,16 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
           <template v-else>
           <div class="form-columns source-options">
             <a-form-item :label="t('k8s.installDownloadSource')" required><a-select v-model:value="form.download_source" :aria-label="t('k8s.installDownloadSource')" :options="[{value:'official',label:t('k8s.downloadOfficial')},{value:'official_cn',label:t('k8s.downloadOfficialCn')}]" /></a-form-item>
-            <a-form-item v-if="form.profile==='custom'" :label="t('k8s.systemImageSource')" :required="action==='create'">
-              <a-select v-if="action==='create'" v-model:value="form.system_image_source" :aria-label="t('k8s.systemImageSource')" :options="[{value:'official',label:t('k8s.systemImageOfficial')},{value:'community_cn',label:t('k8s.systemImageCommunityCn')},{value:'custom',label:t('k8s.systemImageCustom')}]" />
+            <a-form-item :label="t('k8s.systemImageSource')">
+              <div v-if="action==='create'" class="system-image-controls">
+                <a-checkbox v-model:checked="useSystemImageRegistry" :aria-label="t('k8s.useSystemImageRegistry')">{{ t('k8s.useSystemImageRegistry') }}</a-checkbox>
+                <a-select v-if="useSystemImageRegistry" v-model:value="form.system_image_source" :aria-label="t('k8s.systemImageSource')" :options="[{value:'community_cn',label:t('k8s.systemImageCommunityCn')},{value:'custom',label:t('k8s.systemImageCustom')}]" />
+              </div>
               <a-input v-else :value="t('k8s.systemImageInherited')" disabled :aria-label="t('k8s.systemImageSource')" />
               <code v-if="action==='create'&&form.system_image_source==='community_cn'" class="field-help">{{ systemImageRegistry }}</code>
-              <div class="field-help">{{ t(action==='create'?'k8s.systemImageSourceHint':'k8s.systemImageJoinHint') }}</div>
+              <div class="field-help">{{ t(action==='create'?'k8s.systemImageRegistryOptOut':'k8s.systemImageJoinHint') }}</div>
             </a-form-item>
-            <a-form-item v-if="form.profile==='custom'&&action==='create'&&form.system_image_source==='custom'" :label="t('k8s.systemImageRegistryPrefix')" required class="wide"><a-input v-model:value="form.custom_system_image_registry" :aria-label="t('k8s.systemImageRegistryPrefix')" placeholder="registry.example.com:5000/team" :maxlength="512" /><div class="field-help">{{ t('k8s.systemImagePrefixHint') }}</div></a-form-item>
-            <div v-if="form.profile==='custom'&&action==='create'&&form.download_source==='official_cn'&&form.system_image_source==='official'" class="field-help source-suggestion wide">{{ t('k8s.sourceIndependentHint') }}</div>
+            <a-form-item v-if="action==='create'&&form.system_image_source==='custom'" :label="t('k8s.systemImageRegistryPrefix')" required class="wide"><a-input v-model:value="form.custom_system_image_registry" :aria-label="t('k8s.systemImageRegistryPrefix')" placeholder="registry.example.com:5000/team" :maxlength="512" /><div class="field-help">{{ t('k8s.systemImagePrefixHint') }}</div></a-form-item>
           </div>
           <a-form-item label="安装方式"><a-radio-group v-model:value="form.profile" button-style="solid"><a-radio-button value="default">默认安装</a-radio-button><a-radio-button value="custom">自定义安装</a-radio-button></a-radio-group></a-form-item>
           <a-form-item v-if="action==='create'" :label="t('k8s.datastoreType')">
@@ -503,5 +514,5 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
 .provision-content .form-columns,.provision-content .plan-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.plan-review,.installation-result{grid-template-columns:minmax(0,1fr);min-width:0}.plan-review>*,.installation-result>*{min-width:0}@media(max-width:650px){.provision-content .form-columns,.provision-content .plan-facts{grid-template-columns:minmax(0,1fr)}}
 
 .plan-review .review-section{min-width:0}.plan-review .review-section-heading{display:flex;align-items:center;gap:8px;margin:0;padding:9px 14px;border-block:1px solid var(--edo-border);background:color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface));color:var(--edo-text);font-size:14px;font-weight:600}.review-section-heading>svg{flex-shrink:0;color:var(--edo-primary)}.review-section-content{padding:12px 14px;min-width:0}.review-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px;margin:0;min-width:0}.review-facts>div{display:flex;align-items:baseline;gap:10px;min-width:0;font-size:13px;line-height:1.7}.review-facts dt{flex:0 0 88px;color:var(--edo-muted);font-size:12px}.review-facts dd{flex:1;min-width:0;margin:0;overflow-wrap:anywhere}.review-facts code{font-size:12px}.review-facts .ant-tag{margin:0}.plan-review .plan-hosts{list-style:none;margin:0;padding:0;border:0;border-radius:0;max-height:240px;overflow:auto}.plan-hosts>li{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--edo-border);font-size:13px}.plan-hosts>li:last-child{border-bottom:0}.review-host-identity{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 14px;min-width:0}.review-host-identity strong{min-width:0;overflow-wrap:anywhere;font-weight:500}.review-host-identity code{min-width:0;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.plan-hosts>li .ant-tag{margin:0;white-space:normal;text-align:center}.review-disclosure{min-width:0}.review-disclosure summary{width:fit-content;max-width:100%;cursor:pointer;font-size:12px;line-height:1.8;color:var(--edo-text);overflow-wrap:anywhere}.download-addresses{margin-top:12px;padding-top:10px;border-top:1px solid var(--edo-border)}.review-disclosure[open]>summary{margin-bottom:10px}.download-facts{grid-template-columns:minmax(0,1fr)}.download-facts dt{flex-basis:112px}.configuration-stack{display:grid;gap:12px}.review-configurations :deep(.yaml-editor-heading){font-size:13px;overflow-wrap:anywhere}.review-configurations :deep(.yaml-editor-heading .ant-tag){margin:0}.review-configurations :deep(.yaml-code-editor .cm-scroller){min-height:112px;max-height:320px}.plan-review .review-commands pre{padding:12px;max-height:240px;min-width:0;font:12px/1.7 SFMono-Regular,Consolas,monospace}.review-disclosure summary:focus-visible,.plan-hosts:focus-visible,.review-commands pre:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}@media(max-width:650px){.review-facts{grid-template-columns:minmax(0,1fr);gap:10px}.review-facts dt{flex-basis:88px}.download-facts>div{display:grid;grid-template-columns:minmax(0,1fr);gap:2px}.download-facts dt{flex-basis:auto}.review-host-identity{display:grid;gap:2px}.review-section-content{padding:12px}.plan-hosts>li{padding:10px 12px;gap:8px}}
-.review-host-roles{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px 6px;max-width:280px;min-width:0}@media(max-width:650px){.plan-hosts>li{grid-template-columns:minmax(0,1fr)}.review-host-roles{justify-content:flex-start;max-width:100%}}
+.system-image-controls{display:grid;gap:8px;min-width:0}.system-image-controls :deep(.ant-checkbox-wrapper){align-items:flex-start;overflow-wrap:anywhere}.review-host-roles{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px 6px;max-width:280px;min-width:0}@media(max-width:650px){.plan-hosts>li{grid-template-columns:minmax(0,1fr)}.review-host-roles{justify-content:flex-start;max-width:100%}}
 </style>

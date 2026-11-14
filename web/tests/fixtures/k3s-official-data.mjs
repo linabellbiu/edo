@@ -19,15 +19,17 @@ export function createOfficialPreview({calls=[],progress=false,failureLog=false,
     if(method==='get'&&['/hosts','/kubernetes/k3s/options','/kubernetes/k3s/installations'].includes(path))return base.adapter(config)
     calls.push({method,path,outcome:'fixture'});
     const body=typeof config.data==='string'?JSON.parse(config.data):config.data
-    if(method==='post'&&path==='/kubernetes/k3s/plans'&&body.mode==='native'&&body.action==='create'&&body.server_host_id===preflightPreviewHostID&&['official','official_cn'].includes(body.download_source)&&!body.system_image_registry){
+    if(method==='post'&&path==='/kubernetes/k3s/plans'&&body.mode==='native'&&body.action==='create'&&body.server_host_id===preflightPreviewHostID&&['official','official_cn'].includes(body.download_source)){
       const domestic=body.download_source==='official_cn'
-      const sources={download_source:body.download_source,installer_url:domestic?'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh':'https://get.k3s.io',artifact_url:domestic?'https://rancher-mirror.rancher.cn/k3s':'https://github.com/k3s-io/k3s/releases/download',...(domestic?{mirror:'cn'}:{}),system_image_registry:''}
+      const sources={download_source:body.download_source,installer_url:domestic?'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh':'https://get.k3s.io',artifact_url:domestic?'https://rancher-mirror.rancher.cn/k3s':'https://github.com/k3s-io/k3s/releases/download',...(domestic?{mirror:'cn'}:{}),system_image_registry:body.system_image_registry||''}
+      const registryConfig=body.system_image_registry?'system-default-registry: '+JSON.stringify(body.system_image_registry)+'\n':''
       plan={id:planID,action:'create',mode:'native',name:body.name,version:'v1.37.1+k3s1',endpoint:'https://192.0.2.24:6443',expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:preflightPreviewHostID,name:'前端测试主机',address:'192.0.2.24',role:'server'}],sources,server_config:body.datastore==='etcd'?'cluster-init: true':'node-label:\n  - edo.dev/fixture=true',commands:[`curl -sfL ${sources.installer_url} -o /tmp/install.sh\n${domestic?'INSTALL_K3S_MIRROR=cn ':''}sh /tmp/install.sh server`],warnings:[]}
+      plan.server_config=registryConfig+plan.server_config
       if(review){
         const serverOptions={...body.server_options,...parseDocument(body.overrides||'').toJS({maxAliasCount:0})?.server}
         if(serverOptions['disable-agent']===true)plan.server_config+='\ndisable-agent: true\n'
         plan.hosts[0].name='前端验收控制平面主机-用于检查长名称与完整配置'
-        plan.hosts[0].config=(body.datastore==='etcd'?'cluster-init: true\n':'')+(serverOptions['disable-agent']===true?'disable-agent: true\n':'')+'node-label:\n  - edo.dev/installation=fixture-installation\n  - edo.dev/host='+preflightPreviewHostID+'\ntls-san:\n  - 192.0.2.24\n'
+        plan.hosts[0].config=registryConfig+(body.datastore==='etcd'?'cluster-init: true\n':'')+(serverOptions['disable-agent']===true?'disable-agent: true\n':'')+'node-label:\n  - edo.dev/installation=fixture-installation\n  - edo.dev/host='+preflightPreviewHostID+'\ntls-san:\n  - 192.0.2.24\n'
         for(const id of body.agent_host_ids??[]){
           const worker=base.hosts.find(host=>host.id===id&&host.id!==preflightPreviewHostID)
           if(!worker)return reject(config)
