@@ -119,7 +119,7 @@ const planPreflightPassed = computed(() => {
 })
 const planModeValid = computed(() => !!plan.value&&modeOf(plan.value)===(isK3d.value?'k3d':'native')&&(modeOf(plan.value)!=='k3d'||k3dPlanMatches(plan.value)))
 const planSourceValid = computed(() => !!plan.value&&(modeOf(plan.value)==='k3d'||nativeSourcesMatch(plan.value,input())))
-const currentStep = computed(() => isK3d.value?(installation.value?3:plan.value?2:preflight.value||checking.value?1:0):(installation.value?2:plan.value?1:0))
+const currentStep = computed(() => displayMode.value==='k3d'?(installation.value?3:plan.value?2:preflight.value||checking.value?1:0):(installation.value?2:plan.value?1:0))
 const title = computed(() => props.action==='create'?t('k8s.createClusterTitle'):'添加 K3s 节点')
 const installerOptions = computed(() => catalog.value?.installer.filter(option=>!['INSTALL_K3S_VERSION','INSTALL_K3S_CHANNEL'].includes(option.name))??[])
 const serverOptionChoices = computed(() => catalog.value?.server.map(option=>{
@@ -361,7 +361,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
 <template>
   <a-drawer :open="open" :title="title" width="min(1060px,96vw)" :closable="!busy||checking" :mask-closable="!busy||checking" @close="close">
     <div class="provision-content">
-      <a-steps :current="currentStep" size="small" :items="isK3d?[{title:'安装配置'},{title:'安装前检测'},{title:'确认计划'},{title:'执行结果'}]:[{title:'安装配置'},{title:'确认安装'},{title:'安装进度'}]" />
+      <a-steps :current="currentStep" size="small" :items="displayMode==='k3d'?[{title:'安装配置'},{title:'安装前检测'},{title:'确认计划'},{title:'执行结果'}]:[{title:'安装配置'},{title:'确认安装'},{title:'安装进度'}]" />
       <a-alert v-if="!installation&&!visiblePreflight&&!checking&&displayMode==='native'" type="info" show-icon :message="t('k8s.nativeInstallTitle')" :description="t('k8s.nativeInstallHint')" />
       <a-alert v-else-if="!installation&&!visiblePreflight&&!checking" type="info" show-icon :message="t('k8s.k3dInstallTitle')" :description="t('k8s.k3dInstallHint')" />
       <a-alert v-if="!canExecute" type="warning" show-icon message="需要主机读取、集群执行和关联权限，以及对应的创建权限。" />

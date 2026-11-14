@@ -327,9 +327,9 @@ test('历史缺少mode按native显示，k3d详情只显示服务端容器数量�
   const ctx=harness()
   try{
     await ctx.open();ctx.state.form.mode='k3d';await settle();ctx.state.form.k3d.agents=8
-    ctx.state.installation.value={id:'legacy',status:'succeeded'};assert.equal(ctx.state.displayMode.value,'native');assert.equal(ctx.state.k3dConfig.value,undefined)
+    ctx.state.installation.value={id:'legacy',status:'succeeded'};assert.equal(ctx.state.displayMode.value,'native');assert.equal(ctx.state.currentStep.value,2);assert.equal(ctx.state.k3dConfig.value,undefined)
     ctx.state.installation.value={id:'k3d-run',mode:'k3d',k3d:{agents:2,api_port:17443,bind_address:'192.168.10.24'},status:'succeeded'}
-    assert.equal(ctx.state.displayMode.value,'k3d');assert.equal(ctx.state.k3dConfig.value.agents,2);assert.equal(ctx.state.k3dConfig.value.api_port,17443)
+    assert.equal(ctx.state.displayMode.value,'k3d');assert.equal(ctx.state.currentStep.value,3);assert.equal(ctx.state.k3dConfig.value.agents,2);assert.equal(ctx.state.k3dConfig.value.api_port,17443)
     ctx.state.form.mode='native';await settle();ctx.state.configureAgain();assert.equal(ctx.state.form.mode,'k3d');assert.equal(ctx.state.installation.value,undefined)
   }finally{ctx.stop()}
 })
