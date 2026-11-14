@@ -65,7 +65,7 @@ const installationStages: Record<string,string> = {
   component_coredns:'等待 CoreDNS 就绪','component_metrics-server':'等待 Metrics Server 就绪','component_local-path-provisioner':'等待本地存储组件就绪',
   k3d_tool:'准备 k3d 工具',k3d_create:'创建 k3d 集群',k3d_resources:'核验 k3d 资源',
 }
-const uninstallStages:Record<string,string>={uninstall_guard:'核对卸载保护',uninstall:'执行官方卸载脚本',uninstall_verify:'核验卸载结果'}
+const uninstallStages:Record<string,string>={uninstall_guard:'核对卸载保护',uninstall:'执行官方卸载脚本',uninstall_verify:'核验卸载结果',uninstall_cleanup:'移除 EDO 关联记录'}
 
 export function k3sStageLabel(stage?: string, action?: K3sInstallation['action']) {
   if(action==='uninstall')return stage?uninstallStages[stage]||'执行卸载步骤':''

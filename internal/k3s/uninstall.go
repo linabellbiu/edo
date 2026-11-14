@@ -30,10 +30,16 @@ const (
 )
 
 type savedUninstall struct {
-	TaskID       string           `json:"task_id"`
-	Summary      UninstallSummary `json:"summary"`
-	SourceDigest string           `json:"source_digest"`
-	Proof        uninstallProof   `json:"proof"`
+	TaskID       string               `json:"task_id"`
+	Summary      UninstallSummary     `json:"summary"`
+	SourceDigest string               `json:"source_digest"`
+	Proof        uninstallProof       `json:"proof"`
+	Connection   *uninstallConnection `json:"connection,omitempty"`
+}
+
+type uninstallConnection struct {
+	ID     string `json:"id"`
+	Digest string `json:"digest"`
 }
 
 func uninstallDestructiveStage(value datatypes.JSON) bool {
@@ -258,6 +264,11 @@ func (s *Service) recheckUninstallSource(ctx context.Context, snapshot savedInpu
 	if current != summary || uninstallSourceDigest(source) != snapshot.Uninstall.SourceDigest {
 		return ErrUninstallChanged
 	}
+	if connection := snapshot.Uninstall.Connection; connection != nil {
+		if source.ClusterID != connection.ID {
+			return ErrUninstallChanged
+		}
+	}
 	return s.requireNoUncertainUninstall(ctx, summary.HostID, snapshot.Uninstall.TaskID)
 }
 
@@ -319,11 +330,21 @@ func (s *Service) PreviewUninstall(ctx context.Context, actorID string, input Un
 	}
 	id := uuid.NewString()
 	snapshot := savedInput{Input: Input{Action: "uninstall", Mode: "native", Name: source.Name}, HostDigests: map[string]string{host.ID: hostDigest(host)}, AuthVersion: actor.AuthVersion, Uninstall: &savedUninstall{TaskID: id, Summary: summary, SourceDigest: uninstallSourceDigest(source), Proof: proof}}
+	if source.ClusterID != "" {
+		cluster, err := s.uninstallCluster(ctx, source.ClusterID, false)
+		if err != nil {
+			return nil, err
+		}
+		snapshot.Uninstall.Connection = &uninstallConnection{ID: source.ClusterID}
+		if cluster != nil {
+			snapshot.Uninstall.Connection.Digest = clusterDigest(cluster)
+		}
+	}
 	if err = s.recheckInstallationAuthority(ctx, actorID, "uninstall", snapshot); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
-	plan = &Plan{ID: id, Action: "uninstall", Mode: "native", Name: source.Name, Status: "planned", ClusterID: source.ClusterID, ExpiresAt: now.Add(planTTL), Uninstall: &summary, Hosts: []Host{{ID: host.ID, Name: host.Name, Address: host.Address, Role: summary.Role, Status: "ready"}}, Commands: []string{summary.ScriptPath}, Warnings: []string{"官方卸载将停止此主机的 K3s 和工作负载，删除本地集群数据、本地持久卷及 K3s 网络配置；此操作不可撤销。", "不会删除 EDO 安装历史或集群连接；任务记录官方脚本的实际执行结果。"}}
+	plan = &Plan{ID: id, Action: "uninstall", Mode: "native", Name: source.Name, Status: "planned", ClusterID: source.ClusterID, ExpiresAt: now.Add(planTTL), Uninstall: &summary, Hosts: []Host{{ID: host.ID, Name: host.Name, Address: host.Address, Role: summary.Role, Status: "ready"}}, Commands: []string{summary.ScriptPath}, Warnings: []string{"官方卸载将停止此主机的 K3s 和工作负载，删除本地集群数据、本地持久卷及 K3s 网络配置；此操作不可撤销。", "卸载成功后移除此主机的集群关联；没有其他关联主机时移除集群连接，保留安装与卸载历史。"}}
 	encoded, _ := json.Marshal(snapshot)
 	ciphertext, err := s.secrets.Encrypt(string(encoded), []byte("k3s-installation:"+plan.ID))
 	if err != nil {
@@ -510,8 +531,19 @@ func (s *Service) performUninstall(ctx context.Context, record *model.K3sInstall
 	}); err != nil {
 		return installationError("uninstall_verify", err)
 	}
+	var cleanupMessage string
+	if err = s.runHostOperation(ctx, record, hosts, 0, "uninstall_cleanup", func(ctx context.Context, _ io.Writer) error {
+		var err error
+		cleanupMessage, err = s.cleanupUninstallRecords(ctx, *record, snapshot)
+		return err
+	}); err != nil {
+		return installationError("uninstall_cleanup", err)
+	}
+	if err = s.log(record, cleanupMessage); err != nil {
+		return err
+	}
 	if err = s.hostProgress(record, hosts, 0, "succeeded", "官方卸载已完成"); err != nil {
 		return err
 	}
-	return s.log(record, "官方卸载已完成；EDO 历史与集群连接已保留。")
+	return s.log(record, "官方卸载及关联记录清理已完成，安装与卸载历史已保留。")
 }

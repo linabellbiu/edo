@@ -167,6 +167,13 @@ func (s *Service) invalidateClusterQueries(id string) {
 	}
 }
 
+// InvalidateClusterConnection 在连接记录移除后停止缓存及资源监听，不访问集群。
+func (s *Service) InvalidateClusterConnection(id string) {
+	if s != nil {
+		s.invalidateClusterQueries(id)
+	}
+}
+
 func (s *Service) clusterQueries(ctx context.Context, id string) (*clusterQueries, error) {
 	// Always retain the database's project/department scope and active check,
 	// including on cache hits. Credentials themselves are never a public key.

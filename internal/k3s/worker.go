@@ -198,10 +198,12 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 		status = "failed"
 		message = safeFailure(err)
 		if record.Action == "uninstall" {
-			if errors.Is(err, context.Canceled) {
+			var failure *installationFailure
+			cleanupFailed := errors.As(err, &failure) && failure.stage == "uninstall_cleanup"
+			if !cleanupFailed && errors.Is(err, context.Canceled) {
 				message = "卸载连接已中断，实际状态未知，请保留现场并检查，不会自动重试。"
 			}
-			if errors.Is(err, context.DeadlineExceeded) {
+			if !cleanupFailed && errors.Is(err, context.DeadlineExceeded) {
 				message = "卸载超时，实际状态未知，请保留现场并检查，不会自动重试。"
 			}
 		}

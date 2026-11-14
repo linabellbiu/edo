@@ -22,7 +22,8 @@ import (
 // 只接受代码内登记的阶段，安装器输出和命令正文均不进入错误或任务日志。
 var installationStages = map[string]string{
 	"uninstall_guard": "卸载目标复核", "uninstall": "官方卸载脚本", "uninstall_verify": "卸载结果验证",
-	"guard": "安装前检查", "preflight": "主机环境检查", "download": "下载安装器",
+	"uninstall_cleanup": "移除 EDO 关联记录",
+	"guard":             "安装前检查", "preflight": "主机环境检查", "download": "下载安装器",
 	"configuration": "写入安装配置", "installer": "官方安装器", "version": "安装版本校验",
 	"service": "系统服务校验", "api": "API 就绪校验", "components": "系统组件就绪校验",
 	"record": "保存安装进度", "ssh": "SSH 安装连接",
@@ -44,6 +45,9 @@ type installationFailure struct {
 }
 
 func (e *installationFailure) Error() string {
+	if e.stage == "uninstall_cleanup" {
+		return "官方卸载已完成，但 EDO 关联记录移除未完成，请联系管理员处理记录，无需再次卸载。"
+	}
 	name := installationStages[e.stage]
 	if name == "" {
 		name = "安装检查"

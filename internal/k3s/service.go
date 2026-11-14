@@ -624,6 +624,15 @@ func (s *Service) recheck(ctx context.Context, record model.K3sInstallation, sna
 		if snapshot.Uninstall == nil || snapshot.Uninstall.TaskID != record.ID {
 			return ErrUninstallChanged
 		}
+		if connection := snapshot.Uninstall.Connection; connection != nil {
+			cluster, err := s.uninstallCluster(ctx, connection.ID, false)
+			if err != nil {
+				return err
+			}
+			if cluster == nil && connection.Digest != "" || cluster != nil && clusterDigest(cluster) != connection.Digest {
+				return ErrUninstallChanged
+			}
+		}
 		return nil
 	}
 	if snapshot.Input.Action == "join" {
@@ -827,7 +836,7 @@ func (s *Service) present(record model.K3sInstallation) *Installation {
 			result.Mode, result.K3d = "k3d", preview.K3d
 		}
 	}
-	if record.ClusterID != "" {
+	if record.ClusterID != "" && record.Action != "uninstall" {
 		result.Cluster = &Cluster{ID: record.ClusterID, Name: record.Name}
 	}
 	return result

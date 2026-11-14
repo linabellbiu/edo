@@ -456,16 +456,21 @@ func TestLeaseRecoveryDoesNotInterruptAnotherLiveWorker(t *testing.T) {
 }
 
 type fakeClusters struct {
-	cluster model.KubernetesCluster
-	client  *kubernetes.Clientset
-	config  string
-	linked  []string
-	created int
-	joins   int
-	revoked int
-	version string
-	onJoin  func()
-	inspect func() (*kube.ServerJoinInfo, error)
+	invalidated []string
+	cluster     model.KubernetesCluster
+	client      *kubernetes.Clientset
+	config      string
+	linked      []string
+	created     int
+	joins       int
+	revoked     int
+	version     string
+	onJoin      func()
+	inspect     func() (*kube.ServerJoinInfo, error)
+}
+
+func (k *fakeClusters) InvalidateClusterConnection(id string) {
+	k.invalidated = append(k.invalidated, id)
 }
 
 func (k *fakeClusters) Find(context.Context, string) (*model.KubernetesCluster, error) {

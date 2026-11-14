@@ -49,7 +49,7 @@ const resultMessage=computed(()=>{
   return ['failed','interrupted'].includes(item.status)?item.error||item.message||item.hosts?.find(host=>host.status==='failed')?.message||'卸载未完成，请查看日志。':''
 })
 const uninstallWarning='官方卸载会停止 K3s 和本机 Pod，永久删除本地集群数据、本地持久化卷及相关工具。'
-const uninstallImpact='这不是删除节点或断开集群连接。请先确认备份；外部存储的数据不在此卸载范围内。'
+const uninstallImpact='卸载成功后移除此主机的集群关联；没有其他关联主机时移除集群连接。请先确认备份；外部存储的数据不在此卸载范围内。'
 const uncertainMessage='主机锁已保留，当前禁止再次安装或卸载。请核对安全日志和主机状态。'
 function taskLabel(item:K3sInstallation){return k3sUninstallResultUncertain(item)?'卸载结果未确认':k3sInstallationLabel(item.status,'uninstall')}
 
