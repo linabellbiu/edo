@@ -190,13 +190,13 @@ func (s *Service) clusterQueries(ctx context.Context, id string) (*clusterQuerie
 		s.invalidateClusterActorQueries(ctx, cluster)
 		return nil, err
 	}
-	if authorization.enforced() && (authorization.CacheKey == "" || authorization.Version == "" || authorization.Principal == "") {
+	if authorization.identityBound() && (authorization.CacheKey == "" || authorization.Version == "" || authorization.enforced() && authorization.Principal == "") {
 		return nil, ErrRBACForbidden
 	}
 	key := cluster.ID
 	if internalClusterAccess(ctx) {
 		key += "\x00internal"
-	} else if authorization.enforced() {
+	} else if authorization.identityBound() {
 		key += "\x00" + authorization.CacheKey
 	}
 	version := authorizedQueryVersion(cluster, authorization, internalClusterAccess(ctx))

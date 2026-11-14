@@ -16,16 +16,16 @@ import (
 	"edo/internal/model"
 )
 
-// clusterAuthorization is a fresh policy decision. A successful decision never
-// grants a wildcard namespace and never derives an identity from HTTP headers.
+// 集群授权来自当前数据库身份；超级管理员不受普通成员的命名空间授权限制。
 type clusterAuthorization struct {
-	Enforced     bool
-	CacheKey     string
-	Version      string
-	Principal    string
-	Namespaces   []string
-	ClusterScope bool
-	Permissions  map[string][]string
+	Enforced      bool
+	Administrator bool
+	CacheKey      string
+	Version       string
+	Principal     string
+	Namespaces    []string
+	ClusterScope  bool
+	Permissions   map[string][]string
 }
 
 type internalClusterAccessKey struct{}
@@ -74,7 +74,7 @@ func cloneClusterAuthorization(value *clusterAuthorization) *clusterAuthorizatio
 }
 
 func authorizationFingerprint(value *clusterAuthorization) [32]byte {
-	if value == nil || !value.Enforced {
+	if !value.identityBound() {
 		return [32]byte{}
 	}
 	canonical := cloneClusterAuthorization(value)
@@ -88,7 +88,7 @@ func authorizationFingerprint(value *clusterAuthorization) [32]byte {
 
 func authorizedQueryVersion(cluster *model.KubernetesCluster, authorization *clusterAuthorization, internal bool) [32]byte {
 	base := clusterQueryVersion(cluster)
-	if !authorization.enforced() && !internal {
+	if !authorization.identityBound() && !internal {
 		return base
 	}
 	identity := authorizationFingerprint(authorization)
@@ -118,6 +118,11 @@ func (s *Service) invalidateClusterActorQueries(ctx context.Context, cluster *mo
 }
 
 func (a *clusterAuthorization) enforced() bool { return a != nil && a.Enforced }
+
+// 管理员连接同样绑定操作者及实时授权，不能与普通身份共享缓存。
+func (a *clusterAuthorization) identityBound() bool {
+	return a != nil && (a.Enforced || a.Administrator)
+}
 
 func (a *clusterAuthorization) has(namespace, permission string) bool {
 	return !a.enforced() || slices.Contains(a.Permissions[namespace], permission)

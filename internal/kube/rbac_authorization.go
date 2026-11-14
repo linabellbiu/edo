@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sort"
 
 	"gorm.io/gorm"
@@ -38,6 +39,21 @@ func (s *Service) subjectPlan(ctx context.Context, cluster *model.KubernetesClus
 	plan := &rbacSubjectPlan{userID: userID, namespaced: map[string][]rbacv1.PolicyRule{}, clusterRules: []rbacv1.PolicyRule{}}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		reader := s.WithTransaction(tx)
+		var fresh *access.FreshProjectAuthorization
+		var err error
+		if userID != "" {
+			fresh, err = access.FreshProjectPermissions(tx, ctx, userID, cluster.ProjectID)
+			if err != nil {
+				slog.WarnContext(ctx, "核验集群操作者权限失败", "operation", "kubernetes_cluster_authorization", "cluster_id", cluster.ID, "user_id", userID, "err", err)
+				return ErrRBACForbidden
+			}
+			if fresh.User.IsSuperuser {
+				// 使用现有集群连接，不写入额外角色绑定；身份变化后立即作废此授权。
+				plan.freshDigest = fresh.Digest
+				plan.authorization = &clusterAuthorization{Administrator: true, CacheKey: cluster.ProjectID + "/" + userID, Version: rbacHash([]any{"administrator", clusterQueryVersion(cluster), fresh.Digest})}
+				return nil
+			}
+		}
 		policy, grants, err := reader.readRBACPolicy(ctx, cluster)
 		if err != nil {
 			return err
@@ -53,9 +69,11 @@ func (s *Service) subjectPlan(ctx context.Context, cluster *model.KubernetesClus
 		if !policy.DesiredEnabled || policy.Status != "synced" && policy.Status != "pending" && policy.Status != "error" {
 			return ErrRBACSyncPending
 		}
-		fresh, err := access.FreshProjectPermissions(tx, ctx, userID, cluster.ProjectID)
-		if err != nil {
-			return ErrRBACForbidden
+		if fresh == nil {
+			fresh, err = access.FreshProjectPermissions(tx, ctx, userID, cluster.ProjectID)
+			if err != nil {
+				return ErrRBACForbidden
+			}
 		}
 		compiled, err := compileRBACSubject(cluster, policy, grants, fresh)
 		if err != nil {

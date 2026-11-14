@@ -249,7 +249,7 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 			}
 		}
 	}
-	if query.authorization.enforced() {
+	if query.authorization.identityBound() {
 		// Earlier statistics belong to this exact policy snapshot. A later
 		// failed subquery must not turn revoked data into a partial response.
 		if err := s.validateQueryAuthorization(ctx, query); err != nil {

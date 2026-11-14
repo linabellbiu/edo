@@ -60,7 +60,7 @@ func (s *Service) deployImage(
 	}
 	ctx = operationContext
 	defer func() {
-		if !query.authorization.enforced() {
+		if !query.authorization.identityBound() {
 			return
 		}
 		if err := s.validateQueryAuthorization(ctx, query); err != nil {

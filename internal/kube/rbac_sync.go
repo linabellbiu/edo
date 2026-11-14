@@ -370,6 +370,9 @@ func (s *Service) syncRBACCluster(ctx context.Context, cluster *model.Kubernetes
 			if err != nil {
 				return err
 			}
+			if plan.authorization.Administrator {
+				continue
+			}
 			if !plan.authorization.enforced() {
 				return ErrRBACConflict
 			}

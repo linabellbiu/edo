@@ -262,7 +262,7 @@ func (s *Service) saveResource(ctx context.Context, clusterID, resource, namespa
 	if !dryRun {
 		s.invalidateResourceQueries(clusterID, resource)
 	}
-	if query.authorization.enforced() {
+	if query.authorization.identityBound() {
 		if err := s.validateQueryAuthorization(ctx, query); err != nil {
 			query.stop()
 			return nil, err
