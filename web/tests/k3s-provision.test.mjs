@@ -18,7 +18,7 @@ const preflightCheck=(status='passed')=>({id:'memory',name:'内存',status,messa
 const preflightReport=(passed=true)=>({checked_at:new Date().toISOString(),passed,checks:[],hosts:[{host_id:'1',host_name:'Host 1',role:'server',hostname:'master-a',passed,checks:[preflightCheck(passed?'passed':'failed')]}]})
 const reportFor=body=>({...preflightReport(),hosts:(body.action==='join'?(body.join_host_ids??[]).map(id=>({id,role:body.join_role??'agent'})):[{id:body.server_host_id,role:body.mode==='k3d'?'host':'server'},...(body.mode==='k3d'?[]:(body.agent_host_ids??[]).map(id=>({id,role:'agent'})))]).map(item=>({host_id:item.id,host_name:`Host ${item.id}`,role:item.role,hostname:`node-${item.id}`,passed:true,checks:[preflightCheck()]}))})
 const preflightFailure=report=>({message:'前置检查未通过',response:{status:409,data:{code:'k3s_preflight_failed',message:'前置检查未通过',preflight:report}}})
-const nativeSources=(download_source='official',system_image_registry='')=>({download_source,installer_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh':'https://get.k3s.io',artifact_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s':'https://github.com/k3s-io/k3s/releases/download',...(download_source==='official_cn'?{mirror:'cn'}:{}),system_image_registry})
+const nativeSources=(download_source='official_cn',system_image_registry='')=>({download_source,installer_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh':'https://get.k3s.io',artifact_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s':'https://github.com/k3s-io/k3s/releases/download',...(download_source==='official_cn'?{mirror:'cn'}:{}),system_image_registry})
 const plan=()=>({id:'plan-1',action:'create',sources:nativeSources(),expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[],preflight:preflightReport()})
 const k3dPlan=(config={agents:1,api_port:16443,bind_address:'192.0.2.1'})=>({...plan(),sources:undefined,mode:'k3d',k3d:{...config},endpoint:`https://${config.bind_address}:${config.api_port}`,hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'host'}],preflight:{...preflightReport(),hosts:[{...preflightReport().hosts[0],role:'host'}]}})
 const permissions=['cluster.create','cluster.execute','cluster.update','cluster.read','kubernetes.node.create']
@@ -170,14 +170,14 @@ test('自定义禁用Server Agent保留纯控制平面，切换配置不再追�
   }finally{ctx.stop()}
 })
 
-test('新建与重开表单默认官方来源，显式来源选择保持独立，加入节点继续继承集群镜像仓库',async()=>{
+test('新建与重开表单默认国内来源，显式来源选择保持独立，加入节点继续继承集群镜像仓库',async()=>{
   for(const action of ['create','join']){
     const ctx=harness({action})
     try{
       await ctx.open();ctx.ready()
-      assert.equal(ctx.state.form.download_source,'official')
+      assert.equal(ctx.state.form.download_source,'official_cn')
       assert.equal(ctx.state.input().system_image_registry,undefined)
-      ctx.state.form.download_source='official_cn';ctx.state.form.system_image_source='official'
+      ctx.state.form.download_source='official';assert.equal(ctx.state.input().download_source,'official');ctx.state.form.profile='custom';await settle();assert.equal(ctx.state.form.download_source,'official');ctx.state.form.download_source='official_cn';ctx.state.form.system_image_source='official'
       assert.equal(ctx.state.input().download_source,'official_cn')
       ctx.state.form.profile='custom';await settle();assert.equal(ctx.state.input().download_source,'official_cn')
       ctx.state.form.profile='default';await settle();await ctx.state.preview()
@@ -187,22 +187,21 @@ test('新建与重开表单默认官方来源，显式来源选择保持独立�
       assert.equal(ctx.requests.some(item=>['check','start'].includes(item.method)),false)
       assert.equal(ctx.state.input().system_image_registry,undefined)
       ctx.props.open=false;await settle();ctx.props.open=true;await settle()
-      assert.equal(ctx.state.form.download_source,'official')
+      assert.equal(ctx.state.form.download_source,'official_cn')
       assert.equal(ctx.state.form.system_image_source,'official')
       assert.equal(ctx.state.plan.value,undefined)
     }finally{ctx.stop()}
   }
 })
 
-test('原生安装表单与确认页不重复展示脚本说明，保留默认运行时提示',()=>{
+test('原生安装表单删除重复说明卡片，保留实际版本配置与确认信息',()=>{
   const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
   const {descriptor,errors}=parse(source)
   assert.deepEqual(errors,[])
   assert.deepEqual(compileTemplate({source:descriptor.template.content,filename:'K3sProvisionDrawer.vue',id:'native-k3s-install'}).errors,[])
   assert.doesNotMatch(descriptor.template.content,/nativeInstallTitle|nativeInstallHint|nativeInstallConfirmTitle|nativeInstallConfirmHint/)
-  assert.ok(descriptor.template.content.includes("t('k8s.nativeRuntimeHint')"))
-  const {kubernetesZh:zh,kubernetesEn:en}=loadFrontend('../src/locales/kubernetes.ts')
-  for(const locale of [zh,en])assert.match(locale.nativeRuntimeHint,/containerd/)
+  assert.doesNotMatch(descriptor.template.content,/default-install|nativeRuntimeHint|serverWorkerHint|使用 K3s 默认配置|确认目标和配置后，直接执行/)
+  assert.match(descriptor.template.content,/<template v-if="form.profile==='custom'&&catalog">/)
 })
 
 test('原生安装不要求Docker主机能力，默认不注入运行时参数且保留官方自选cri-dockerd',async()=>{
@@ -221,7 +220,7 @@ test('原生安装不要求Docker主机能力，默认不注入运行时参数�
 
 test('官方主机命令预览不触发安装或容器回退，确认仅提交计划ID且受理不冒充成功',async()=>{
   const commands=['curl --fail --location https://get.k3s.io -o /tmp/edo-k3s-install.sh\nsudo env INSTALL_K3S_VERSION=v1.37.1+k3s1 sh /tmp/edo-k3s-install.sh server --config /etc/rancher/k3s/config.yaml']
-  const starts=[],pending=deferred(),ctx=harness({api:{previewK3sPlan:async()=>({...plan(),sources:nativeSources(),commands}),startK3sInstallation:(id,signal)=>{starts.push({id,signal});return pending.promise}}})
+  const starts=[],pending=deferred(),ctx=harness({api:{previewK3sPlan:async()=>({...plan(),sources:nativeSources('official'),commands}),startK3sInstallation:(id,signal)=>{starts.push({id,signal});return pending.promise}}})
   try{
     await ctx.open();ctx.ready();Object.assign(ctx.state.form,{download_source:'official',system_image_source:'official'});await ctx.state.preview()
     assert.deepEqual(ctx.state.plan.value.commands,commands);assert.deepEqual(starts,[])
@@ -546,7 +545,7 @@ test('下载源和系统镜像源往返切换均取消旧预检，旧成功或�
       if(field==='custom_system_image_registry')Object.assign(ctx.state.form,{system_image_source:'custom',custom_system_image_registry:'one.example/team'})
       const previous=ctx.state.form[field],request=ctx.state.preview()
       assert.equal(ctx.state.busy.value,true)
-      ctx.state.form[field]=field==='download_source'?'official_cn':field==='system_image_source'?'community_cn':'two.example/team'
+      ctx.state.form[field]=field==='download_source'?(previous==='official_cn'?'official':'official_cn'):field==='system_image_source'?'community_cn':'two.example/team'
       assert.equal(signals[0].aborted,true)
       assert.equal(ctx.state.busy.value,false)
       ctx.state.form[field]=previous
@@ -584,7 +583,7 @@ test('k3d完全省略原生来源字段并隔离草稿，切回native恢复明�
 
 test('原生计划来源缺失或与选择不符不能确认，完整的服务端来源才可执行',async()=>{
   const selected=nativeSources()
-  for(const sources of [undefined,{...selected,download_source:'official_cn'},{...selected,installer_url:''},{...selected,artifact_url:''},{...selected,system_image_registry:'other.example'}]){
+  for(const sources of [undefined,{...selected,download_source:'official'},{...selected,installer_url:''},{...selected,artifact_url:''},{...selected,system_image_registry:'other.example'}]){
     const ctx=harness({api:{previewK3sPlan:async()=>({...plan(),sources})}})
     try{
       await ctx.open();ctx.ready();await ctx.state.preview()
@@ -608,7 +607,7 @@ test('计划和执行结果仅展示冻结来源，旧记录未记录且加入�
     const ctx=harness({action})
     try{
       await ctx.open();ctx.ready();await ctx.state.preview()
-      assert.equal(ctx.state.frozenSources.value.download_source,'official')
+      assert.equal(ctx.state.frozenSources.value.download_source,'official_cn')
       const sources=nativeSources('official_cn','frozen.example/team')
       ctx.state.installation.value={id:'recorded-run',status:'succeeded',sources}
       Object.assign(ctx.state.form,{download_source:'official',system_image_source:'official',custom_system_image_registry:''})
@@ -633,11 +632,10 @@ test('原生两种安装方式均可选择下载源，镜像仓库仅自定义�
   assert.match(source,/v-else :value="t\('k8s.systemImageInherited'\)" disabled/)
   assert.equal((source.match(/v-for="fact in sourceFacts"/g)||[]).length,2)
   const {kubernetesZh:zh,kubernetesEn:en}=loadFrontend('../src/locales/kubernetes.ts')
-  for(const key of ['installDownloadSource','downloadOfficial','downloadOfficialCn','downloadSourceHint','systemImageSource','systemImageOfficial','systemImageCommunityCn','systemImageCustom','systemImagePrefixHint','systemImageJoinHint','sourceIndependentHint','sourceNotRecorded','installSourceMismatch']){
+  for(const key of ['installDownloadSource','downloadOfficial','downloadOfficialCn','systemImageSource','systemImageOfficial','systemImageCommunityCn','systemImageCustom','systemImagePrefixHint','systemImageJoinHint','sourceIndependentHint','sourceNotRecorded','installSourceMismatch']){
     assert.equal(typeof zh[key],'string',key);assert.equal(typeof en[key],'string',key)
   }
-  assert.match(zh.downloadSourceHint,/不会自动修改/)
-  assert.match(en.downloadSourceHint,/does not change/)
+  assert.doesNotMatch(source,/downloadSourceHint|选择安装脚本与 K3s 二进制的下载来源/)
   assert.match(zh.sourceIndependentHint,/仍使用官方/)
 })
 
@@ -656,7 +654,7 @@ test('创建默认使用目录版本，加入旧集群默认跟随目标精确�
     }finally{ctx.stop()}
   }
   const template=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
-  assert.match(template,/安装版本：\{\{ defaultVersion \}\}/)
+  assert.doesNotMatch(template,/安装版本：\{\{ defaultVersion \}\}/)
   assert.match(template,/:placeholder="defaultVersion"/)
   assert.match(template,/参数基于 \{\{ catalog.version \}\}/)
   assert.match(template,/加入节点必须固定精确版本，不能仅填写通道/)
@@ -848,7 +846,7 @@ test('检测绑定主机、参数、来源与模式，任意配置变化使旧�
   const ctx=harness({assumeDetected:false})
   try{
     await ctx.open();ctx.ready();ctx.state.form.profile='custom'
-    for(const change of [()=>{ctx.state.form.name='Changed'},()=>{ctx.state.form.server_host_id='2'},()=>{ctx.state.form.download_source='official_cn'},()=>{ctx.state.form.system_image_source='community_cn'},()=>{ctx.state.form.installer={INSTALL_K3S_VERSION:'v1.36.0+k3s1'}},()=>{ctx.state.form.server_options={'node-label':['environment=test']}}]){
+    for(const change of [()=>{ctx.state.form.name='Changed'},()=>{ctx.state.form.server_host_id='2'},()=>{ctx.state.form.download_source='official'},()=>{ctx.state.form.system_image_source='community_cn'},()=>{ctx.state.form.installer={INSTALL_K3S_VERSION:'v1.36.0+k3s1'}},()=>{ctx.state.form.server_options={'node-label':['environment=test']}}]){
       await ctx.state.checkPreflight();assert.equal(ctx.state.canPreview.value,true)
       change();await settle();assert.equal(ctx.state.preflight.value,undefined);assert.equal(ctx.state.canPreview.value,true);assert.equal(ctx.state.plan.value,undefined)
     }
@@ -1070,7 +1068,7 @@ test('数据库选择位于安装方式下方，默认SQLite，两种安装方�
     const {descriptor}=parse(readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8'))
     const template=descriptor.template.content
     assert.ok(template.indexOf("t('k8s.datastoreType')")>template.indexOf('label="安装方式"'))
-    assert.ok(template.indexOf("t('k8s.datastoreType')")<template.indexOf("form.profile==='default'"))
+    assert.ok(template.indexOf("t('k8s.datastoreType')")<template.indexOf("form.profile==='custom'&&catalog"))
     const {kubernetesZh:zh}=loadFrontend('../src/locales/kubernetes.ts')
     assert.match(zh.datastoreSqliteHint,/多个工作节点.*不支持多控制平面/)
     assert.match(zh.datastoreEtcdHint,/3 或 5.*单节点仍不具备高可用/)
