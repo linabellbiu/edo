@@ -29,8 +29,8 @@
   --kube-meter-danger: #a23448;
   --kube-meter-unknown: #5d6e84;
   --kube-meter-label: #ffffff;
-  --kube-chart-requests: #8a661a;
-  --kube-chart-limits: #8961a7;
+  --kube-chart-usage: #2f857a;
+  --kube-chart-remaining: #e8eeed;
 }
 
 :root[data-theme='dark'] {
@@ -62,8 +62,8 @@
   --kube-meter-warning: #8c621e;
   --kube-meter-danger: #a8465b;
   --kube-meter-unknown: #5a6d84;
-  --kube-chart-requests: #e1c37e;
-  --kube-chart-limits: #cfb5ed;
+  --kube-chart-usage: #58b8a8;
+  --kube-chart-remaining: #2a3c3b;
 }
 
 .kube-workspace .resource-panel.resource-panel {

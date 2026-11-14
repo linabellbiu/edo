@@ -283,7 +283,7 @@ test('节点用量真实SSR保留超配百分比和完整数值，缺测不渲�
  assert.equal(declarations(components.KubeNodeUsage.styles,'.usage-meter').height,'24px')
 })
 
-test('节点监控真实图表配置使用12px轴文字、足够内边距和浅深主题配对',async()=>{
+test('节点监控饼图浅深主题可辨识，保留真实数值与12px趋势轴文字',async()=>{
  const helpers=loadFrontend('../src/utils/kubernetesNode.ts')
  for(const theme of ['light','dark']){
   const colors=palette(theme),options=new Map(),scope=vue.effectScope()
@@ -302,16 +302,20 @@ test('节点监控真实图表配置使用12px轴文字、足够内边距和浅�
    for(const key of ['cpu','memory','pods']){
     const comparison=options.get(`[data-comparison="${key}"]`),trend=options.get(`[data-chart="${key}"]`)
     for(const option of [comparison,trend]){
-     assert.equal(option.xAxis.axisLabel.fontSize,12);assert.equal(option.yAxis.axisLabel.fontSize,12)
      assert.equal(option.tooltip.backgroundColor,colors['--kube-surface'])
      assert.equal(option.tooltip.textStyle.fontSize,12)
      assert.ok(contrast(option.tooltip.textStyle.color,option.tooltip.backgroundColor)>=4.5)
     }
-    assert.equal(comparison.series[0].label.fontSize,12)
-    assert.ok(comparison.grid.left>=90);assert.ok(comparison.grid.right>=80)
-    for(const bar of comparison.series[0].data)assert.ok(contrast(bar.itemStyle.color,colors['--kube-surface'])>=3,`${theme}/${key}/bar`)
+    assert.equal(trend.xAxis.axisLabel.fontSize,12);assert.equal(trend.yAxis.axisLabel.fontSize,12)
+    assert.equal(comparison.series[0].type,'pie');assert.equal(comparison.series[0].emphasis.scale,false)
+    const [used,remaining]=comparison.series[0].data
+    assert.ok(contrast(used.itemStyle.color,remaining.itemStyle.color)>=3,`${theme}/${key}/slices`)
+    assert.ok(contrast(used.itemStyle.color,colors['--kube-surface'])>=3,`${theme}/${key}/used`)
+    assert.equal(remaining.itemStyle.color,colors['--kube-chart-remaining'])
+    assert.equal(trend.series[0].itemStyle.color,colors['--kube-chart-usage'])
    }
-   assert.deepEqual(options.get('[data-comparison="cpu"]').series[0].data.map(row=>row.value),[5,4,2,8])
+   assert.deepEqual(options.get('[data-comparison="cpu"]').series[0].data.map(row=>row.value),[5,0])
+   assert.deepEqual(state.cards.value[0].rows.map(row=>row.value),[5,4,2,8])
    assert.equal(state.cards.value[0].percent,125)
   }finally{scope.stop()}
  }
