@@ -9,7 +9,7 @@ import {useAuthStore} from '/src/stores/auth'
 import i18n from '/src/locales'
 import K3sOfficialPreview from './K3sOfficialPreview.vue'
 import {createOfficialPreview} from './k3s-official-data.mjs'
-const calls=reactive([]),preview=createOfficialPreview({calls})
+const calls=reactive([]),preview=createOfficialPreview({calls,progress:new URLSearchParams(location.search).has('progress')})
 client.defaults.adapter=preview.adapter
 const pinia=createPinia(),auth=useAuthStore(pinia)
 auth.user={id:'official-fixture-user',username:'preview',project_id:localStorage.getItem('edo.project')??'',department_id:'fixture-department',is_superuser:false,permissions:preview.permissions};auth.loaded=true;auth.authorizationState='ready'

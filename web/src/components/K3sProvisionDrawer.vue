@@ -447,7 +447,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
         <div v-else-if="installation" class="installation-result">
           <a-tag>{{ t(displayMode==='k3d'?'k8s.installModeK3d':'k8s.installModeNative') }}</a-tag><a-alert v-if="displayMode==='k3d'" type="info" :message="t('k8s.k3dTopology', { agents: k3dConfig?.agents ?? '—' })" :description="t('k8s.k3dSingleHostWarning')" />
           <dl v-if="displayMode==='native'" class="plan-facts source-facts"><div v-for="fact in sourceFacts" :key="fact.label"><dt>{{ fact.label }}</dt><dd><code>{{ fact.value }}</code></dd></div></dl>
-          <a-alert :type="progressTone" show-icon :message="k3sInstallationLabel(installation.status)" :description="installation.error||installation.message||installation.phase||(running?'可以关闭窗口，安装会继续执行。':'')" />
+          <a-alert v-if="!running||installation.error" :type="progressTone" show-icon :message="k3sInstallationLabel(installation.status)" :description="installation.error||installation.message||installation.phase" />
           <a-alert v-if="installation.status==='failed'&&installation.cluster&&displayMode==='native'" type="warning" show-icon :message="action==='create'?'集群已创建，部分安装步骤未完成':'部分节点未完成加入'" description="已完成的节点会保留。请进入集群检查状态，再从添加节点中选择剩余主机。" />
           <a-alert v-else-if="installation.status==='failed'&&displayMode==='k3d'" type="warning" show-icon :message="t('k8s.k3dFailureTitle')" :description="t('k8s.k3dFailureHint')" />
           <a-button v-if="!running&&installation.cluster" class="manage-created-cluster" @click="manageCreatedCluster">{{ canManageClusterResources?'管理已创建集群':'查看已创建集群' }}</a-button>

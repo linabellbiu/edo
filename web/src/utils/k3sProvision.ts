@@ -60,7 +60,7 @@ export function k3sInstallationLogs(installation?: K3sInstallation) {
 
 const installationStages: Record<string,string> = {
   guard:'检查安装保护',preflight:'复查主机环境',download:'下载安装脚本',configuration:'写入安装配置',installer:'执行官方安装器',
-  installer_download:'下载安装包',installer_verify:'校验安装包',installer_binary:'安装 K3s 二进制',installer_environment:'配置运行环境',installer_service:'配置系统服务',installer_start:'等待 K3s 服务启动',
+  installer_hash:'下载校验文件',installer_links:'创建命令入口',installer_killall:'创建停止脚本',installer_uninstall:'创建卸载脚本',installer_enable:'启用系统服务',installer_download:'下载安装包',installer_verify:'校验安装包',installer_binary:'安装 K3s 二进制',installer_environment:'配置运行环境',installer_service:'配置系统服务',installer_start:'等待 K3s 服务启动',
   version:'核验安装版本',service:'核验系统服务',api:'等待集群 API 就绪',import:'读取集群连接配置',node:'等待节点就绪',association:'关联主机与集群',components:'等待系统组件就绪',
   component_coredns:'等待 CoreDNS 就绪','component_metrics-server':'等待 Metrics Server 就绪','component_local-path-provisioner':'等待本地存储组件就绪',
   k3d_tool:'准备 k3d 工具',k3d_create:'创建 k3d 集群',k3d_resources:'核验 k3d 资源',
@@ -88,7 +88,10 @@ export function k3sInstallationLogView(installation?: K3sInstallation) {
   const bytes=new TextEncoder().encode(tail),truncated=source.length>tail.length||bytes.length>limit
   let start=Math.max(0,bytes.length-limit)
   while(start<bytes.length&&(bytes[start]!&0xc0)===0x80)start++
-  return {text:new TextDecoder().decode(bytes.subarray(start)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g,''),truncated}
+  let text=new TextDecoder().decode(bytes.subarray(start)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g,'')
+  // 旧安装记录只收敛重复的等待文案，不改写持久化日志或过程记录。
+  if(installation?.action!=='uninstall')text=text.split('\n').map(line=>line.replace(/^(.*[：:])\s*[^：:\n]*仍在执行，(已持续 \d+ 秒)$/,'$1$2')).join('\n')
+  return {text,truncated}
 }
 
 export function k3sHostStatusLabel(status?: string, action?: K3sInstallation['action']) {

@@ -30,6 +30,8 @@ var installationStages = map[string]string{
 	"component_coredns": "CoreDNS 就绪校验", "component_metrics-server": "Metrics Server 就绪校验",
 	"component_local-path-provisioner": "本地存储组件就绪校验",
 	"installer_download":               "官方安装器下载文件", "installer_verify": "官方安装器校验文件",
+	"installer_hash": "下载 K3s 校验文件", "installer_links": "创建 K3s 命令入口",
+	"installer_killall": "创建服务停止脚本", "installer_uninstall": "创建卸载脚本", "installer_enable": "启用 K3s 系统服务",
 	"installer_binary": "官方安装器安装程序", "installer_environment": "官方安装器写入服务环境",
 	"installer_service": "官方安装器创建系统服务", "installer_start": "官方安装器启动系统服务",
 	"k3d_tool": "准备 k3d 工具", "k3d_create": "创建 k3d 容器节点", "k3d_resources": "校验 k3d 资源限制",
@@ -158,8 +160,10 @@ func officialInstallerStage(line string) string {
 	}
 	line = strings.TrimLeft(strings.TrimPrefix(line, "[INFO] "), " ")
 	for _, item := range []struct{ prefix, stage string }{
-		{"Downloading hash ", "installer_download"}, {"Downloading binary ", "installer_download"}, {"Downloading K3s artifact ", "installer_download"},
+		{"Downloading hash ", "installer_hash"}, {"Downloading binary ", "installer_download"}, {"Downloading K3s artifact ", "installer_download"},
 		{"Installing k3s to ", "installer_binary"}, {"env: Creating environment file ", "installer_environment"},
+		{"Creating killall script ", "installer_killall"}, {"Creating uninstall script ", "installer_uninstall"},
+		{"systemd: Enabling ", "installer_enable"}, {"openrc: Enabling ", "installer_enable"},
 		{"systemd: Creating service file ", "installer_service"}, {"openrc: Creating service file ", "installer_service"},
 		{"systemd: Starting ", "installer_start"}, {"openrc: Starting ", "installer_start"},
 	} {
@@ -169,6 +173,9 @@ func officialInstallerStage(line string) string {
 	}
 	if line == "Verifying binary download" {
 		return "installer_verify"
+	}
+	if strings.HasPrefix(line, "Creating ") && strings.HasSuffix(line, " symlink to k3s") {
+		return "installer_links"
 	}
 	return ""
 }

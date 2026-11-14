@@ -22,8 +22,8 @@ func TestInstallationProgressOnlyMapsOfficialInfoAndExactMarkers(t *testing.T) {
 		"installer\nEDO_K3S_STAGE\tunknown-private-token\nEDO_K3S_STAGE\tinst",
 		"aller\n[INFO]  Downloading hash https://fixture.invalid/private-token/" + strings.Repeat("x", 200) + "\n",
 		"[INFO]  Downloading binary https://fixture.invalid/private-token\n[INFO]  Verifying binary download\n",
-		"[INFO]  Installing k3s to /private-fixture\n[INFO]  env: Creating environment file /private-fixture\n",
-		"[INFO]  systemd: Creating service file /private-fixture\n[INFO]  systemd: Starting private-fixture-service\n",
+		"[INFO]  Installing k3s to /private-fixture\n[INFO] Creating /private-fixture symlink to k3s\n[INFO] Creating killall script /private-fixture\n[INFO] Creating uninstall script /private-fixture\n[INFO]  env: Creating environment file /private-fixture\n",
+		"[INFO]  systemd: Creating service file /private-fixture\n[INFO] systemd: Enabling private-fixture-service unit\n[INFO]  systemd: Starting private-fixture-service\n",
 		"[ERROR] private-fixture-token\n[INFO]  an unknown private-fixture-token\nEDO_K3S_STAGE\tversion" + strings.Repeat("x", 200) + "\n",
 		"EDO_K3S_STAGE\tversion\nEDO_K3S_STAGE\tversion\nEDO_K3S_STAGE\tinstaller\n",
 	} {
@@ -31,7 +31,7 @@ func TestInstallationProgressOnlyMapsOfficialInfoAndExactMarkers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := "installer,installer_download,installer_verify,installer_binary,installer_environment,installer_service,installer_start,version"
+	want := "installer,installer_hash,installer_download,installer_verify,installer_binary,installer_links,installer_killall,installer_uninstall,installer_environment,installer_service,installer_enable,installer_start,version"
 	if strings.Join(stages, ",") != want || d.stage != "version" || len(d.line) > 80 {
 		t.Fatalf("只允许固定安全状态且不可倒退或泄密: %v", stages)
 	}
@@ -177,7 +177,7 @@ func runningProgressFixture(t *testing.T) (fixture, *model.K3sInstallation, []Ho
 func TestHostOperationPersistsStageBeforeReturningAndGetSurvivesServiceRecreation(t *testing.T) {
 	f, record, hosts := runningProgressFixture(t)
 	err := f.service.runHostOperation(f.ctx, record, hosts, 0, "ssh", func(_ context.Context, output io.Writer) error {
-		if _, err := io.WriteString(output, "EDO_K3S_STAGE\tinstaller\n[INFO]  systemd: Starting private-fixture-service\nsecret=private-fixture-token\n"); err != nil {
+		if _, err := io.WriteString(output, "EDO_K3S_STAGE\tinstaller\n[INFO] systemd: Enabling private-fixture-service unit\n[INFO]  systemd: Starting private-fixture-service\nsecret=private-fixture-token\n"); err != nil {
 			return err
 		}
 		var current model.K3sInstallation

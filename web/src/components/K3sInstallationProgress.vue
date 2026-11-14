@@ -12,10 +12,16 @@ const end=computed(()=>running.value?props.now:props.installation.finished_at)
 const elapsed=computed(()=>k3sElapsed(props.installation.started_at,end.value))
 const logs=computed(()=>k3sInstallationLogView(props.installation))
 const viewport=ref<HTMLElement>()
+const uninstall=computed(()=>props.installation.action==='uninstall')
 const hosts=computed(()=>(props.installation.hosts??[]).map(host=>({
   ...host,stageLabel:k3sStageLabel(host.stage,props.installation.action),elapsed:k3sElapsed(host.stage_started_at,running.value&&['running','installing'].includes(host.status??'')?props.now:host.progress_updated_at??props.installation.finished_at),
+  seconds:confirmedSeconds(host.stage_started_at,host.progress_updated_at??(!running.value?props.installation.finished_at:undefined)),
   waiting:running.value&&['running','installing'].includes(host.status??'')&&Number.isFinite(Date.parse(host.progress_updated_at??''))&&props.now-Date.parse(host.progress_updated_at!)>90_000,
 })))
+function confirmedSeconds(start?:string,end?:string){
+  const from=Date.parse(start??''),to=Date.parse(end??'')
+  return Number.isFinite(from)&&Number.isFinite(to)&&to>=from?Math.floor((to-from)/1000):undefined
+}
 function showLatest(){if(viewport.value)viewport.value.scrollTop=viewport.value.scrollHeight}
 </script>
 
@@ -25,15 +31,21 @@ function showLatest(){if(viewport.value)viewport.value.scrollTop=viewport.value.
     <div class="progress-hosts">
       <article v-for="host in hosts" :key="host.id" :aria-label="`${host.name} ${actionLabel}进度`">
         <header><Server :size="16" aria-hidden="true" /><span class="host-identity"><strong>{{ host.name }}</strong><small>{{ host.address }}</small></span><a-tag :color="host.status==='succeeded'?'success':host.status==='failed'?'error':host.status==='installing'||host.status==='running'?'processing':undefined">{{ k3sHostStatusLabel(host.status,installation.action) }}</a-tag></header>
-        <div v-if="host.stageLabel||host.message" class="host-stage"><strong role="status" aria-live="polite">{{ host.stageLabel||host.message }}</strong><span v-if="host.stage_started_at">本阶段 {{ host.elapsed }}</span></div>
-        <p v-if="host.message&&host.stageLabel&&host.message!==host.stageLabel">{{ host.message }}</p>
-        <div v-if="host.progress_updated_at" class="host-feedback"><span>最近反馈 {{ formatDateTime(host.progress_updated_at) }}</span><span v-if="host.waiting" class="feedback-delayed">暂未收到新反馈</span></div>
+        <template v-if="uninstall">
+          <div v-if="host.stageLabel||host.message" class="host-stage"><strong role="status" aria-live="polite">{{ host.stageLabel||host.message }}</strong><span v-if="host.stage_started_at">本阶段 {{ host.elapsed }}</span></div>
+          <p v-if="host.message&&host.stageLabel&&host.message!==host.stageLabel">{{ host.message }}</p>
+          <div v-if="host.progress_updated_at" class="host-feedback"><span>最近反馈 {{ formatDateTime(host.progress_updated_at) }}</span><span v-if="host.waiting" class="feedback-delayed">暂未收到新反馈</span></div>
+        </template>
+        <template v-else>
+          <div v-if="host.seconds!==undefined" class="host-stage" role="status" aria-live="polite">已持续 {{ host.seconds }} 秒</div>
+          <p v-if="host.status==='failed'&&host.message">{{ host.message }}</p>
+        </template>
       </article>
     </div>
-    <section class="progress-logs"><header><h4>{{ actionLabel }}日志</h4><a-button size="small" @click="showLatest">查看最新</a-button></header><p v-if="logs.truncated" class="log-limit">仅显示最近 64 KiB 日志</p><pre ref="viewport" role="log" :aria-label="`${actionLabel}安全日志`" aria-live="off" tabindex="0">{{ logs.text||`等待${actionLabel}日志…` }}</pre></section>
+    <section class="progress-logs"><header><div class="log-heading"><h4>{{ actionLabel }}日志</h4><span v-if="running&&!uninstall" class="background-hint">可以关闭窗口，安装会继续执行。</span></div><a-button size="small" @click="showLatest">查看最新</a-button></header><p v-if="logs.truncated" class="log-limit">仅显示最近 64 KiB 日志</p><pre ref="viewport" role="log" :aria-label="`${actionLabel}安全日志`" aria-live="off" tabindex="0">{{ logs.text||`等待${actionLabel}日志…` }}</pre></section>
   </section>
 </template>
 
 <style scoped>
-.installation-progress{display:grid;gap:18px;min-width:0}.progress-times{display:flex;gap:20px 32px;flex-wrap:wrap;margin:0;padding:12px 0;border-block:1px solid var(--edo-border)}.progress-times dt{font-size:12px;color:var(--edo-muted);margin-bottom:5px}.progress-times dd{margin:0;font-size:13px;font-variant-numeric:tabular-nums}.progress-hosts{display:grid;gap:0}.progress-hosts article{padding:14px 0;border-bottom:1px solid var(--edo-border);min-width:0}.progress-hosts header{display:flex;gap:10px;align-items:center}.progress-hosts .host-identity{flex:1;min-width:0}.progress-hosts strong,.progress-hosts small{display:block;overflow-wrap:anywhere}.progress-hosts strong{font-size:13px;font-weight:500}.progress-hosts small{font-size:12px;color:var(--edo-muted);margin-top:3px}.host-stage,.host-feedback{display:flex;align-items:center;flex-wrap:wrap;gap:6px 16px;margin:10px 0 0 26px;font-size:12px}.host-stage>span,.host-feedback{color:var(--edo-muted);font-variant-numeric:tabular-nums}.progress-hosts p{margin:7px 0 0 26px;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.feedback-delayed{color:var(--edo-warning,#b7791f)}.progress-logs{min-width:0}.progress-logs header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}.progress-logs h4{margin:0;font-size:13px;font-weight:600}.progress-logs pre{margin:0;padding:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg);color:var(--edo-text);font:12px/1.7 SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;tab-size:2}.progress-logs pre:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.log-limit{font-size:12px;color:var(--edo-muted);margin:0 0 8px}@media(max-width:650px){.progress-times{gap:14px 20px}.host-stage,.host-feedback{margin-left:0}}
+.installation-progress{display:grid;gap:18px;min-width:0}.progress-times{display:flex;gap:20px 32px;flex-wrap:wrap;margin:0;padding:12px 0;border-block:1px solid var(--edo-border)}.progress-times dt{font-size:12px;color:var(--edo-muted);margin-bottom:5px}.progress-times dd{margin:0;font-size:13px;font-variant-numeric:tabular-nums}.progress-hosts{display:grid;gap:0}.progress-hosts article{padding:14px 0;border-bottom:1px solid var(--edo-border);min-width:0}.progress-hosts header{display:flex;gap:10px;align-items:center}.progress-hosts .host-identity{flex:1;min-width:0}.progress-hosts strong,.progress-hosts small{display:block;overflow-wrap:anywhere}.progress-hosts strong{font-size:13px;font-weight:500}.progress-hosts small{font-size:12px;color:var(--edo-muted);margin-top:3px}.host-stage,.host-feedback{display:flex;align-items:center;flex-wrap:wrap;gap:6px 16px;margin:10px 0 0 26px;font-size:12px}.host-stage>span,.host-feedback{color:var(--edo-muted);font-variant-numeric:tabular-nums}.progress-hosts p{margin:7px 0 0 26px;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.feedback-delayed{color:var(--edo-warning,#b7791f)}.progress-logs{min-width:0}.progress-logs header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}.log-heading{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;min-width:0}.background-hint{font-size:12px;color:#946200;line-height:1.6}:global(:root[data-theme="dark"]) .background-hint{color:#f2cc60}.progress-logs h4{margin:0;font-size:13px;font-weight:600}.progress-logs pre{margin:0;padding:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg);color:var(--edo-text);font:12px/1.7 SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;tab-size:2}.progress-logs pre:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.log-limit{font-size:12px;color:var(--edo-muted);margin:0 0 8px}@media(max-width:650px){.progress-times{gap:14px 20px}.host-stage,.host-feedback{margin-left:0}}
 </style>

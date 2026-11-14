@@ -52,6 +52,9 @@ func (s *Service) runHostOperation(ctx context.Context, record *model.K3sInstall
 		message := name
 		if heartbeat {
 			message = fmt.Sprintf("%s仍在执行，已持续 %d 秒", name, int(updated.Sub(started).Seconds()))
+			if record.Action != "uninstall" {
+				message = fmt.Sprintf("已持续 %d 秒", int(updated.Sub(started).Seconds()))
+			}
 		}
 		line := updated.In(time.Local).Format("15:04:05") + " " + hosts[index].Name + "：" + message + "\n"
 		logs := appendInstallationLog(record.Logs, line)
