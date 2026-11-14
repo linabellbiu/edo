@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/netip"
 	"net/url"
@@ -73,6 +74,7 @@ func (s *Service) ValidateHostForSave(ctx context.Context, clusterID string, hos
 		}
 		var hostRows []model.Host
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("uuid").Where("uuid = ?", host.ID).Find(&hostRows).Error; err != nil {
+			slog.ErrorContext(tx.Statement.Context, "锁定待关联主机失败", "operation", "host_cluster_save_guard", "host_id", host.ID, "err", err)
 			return ErrClusterHostCheckUnavailable
 		}
 		return RequireHostClusterAvailable(tx.Statement.Context, tx, []string{host.ID}, current.ID)
