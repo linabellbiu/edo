@@ -123,6 +123,109 @@ func TestUninstallPlanFreezesOneHostOfficialScriptWithoutRemoteWrite(t *testing.
 	}
 }
 
+func TestUninstallHostAutomaticallyUsesOnlyLatestInstallation(t *testing.T) {
+	f, older, transport := uninstallFixture(t)
+	latest, err := f.service.Preview(f.ctx, f.actor.ID, f.input())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&model.K3sInstallation{}).Where("uuid = ?", latest.ID).Update("status", "failed").Error; err != nil {
+		t.Fatal(err)
+	}
+	targets, err := f.service.ListUninstallTargets(f.ctx, f.actor.ID, f.host.ID)
+	if err != nil || len(targets) != 1 || targets[0].SourceInstallationID != latest.ID {
+		t.Fatalf("主机当前目标不唯一或选择了历史安装: %+v err=%v", targets, err)
+	}
+	plan, err := f.service.PreviewUninstall(f.ctx, f.actor.ID, UninstallInput{HostID: f.host.ID})
+	if err != nil || plan.Uninstall.SourceInstallationID != latest.ID {
+		t.Fatalf("仅传主机未自动核对当前目标: %+v err=%v", plan, err)
+	}
+	if _, err := f.service.PreviewUninstall(f.ctx, f.actor.ID, UninstallInput{InstallationID: older.ID, HostID: f.host.ID}); !errors.Is(err, ErrUninstallChanged) {
+		t.Fatalf("允许使用历史任务替换当前目标: %v", err)
+	}
+	if len(transport.runs) != 0 || transport.reads != 1 {
+		t.Fatal("自动定位目标不能执行卸载或探测历史目标")
+	}
+}
+
+func TestUninstallCurrentTargetChangeInvalidatesReviewedPlan(t *testing.T) {
+	f, source, transport := uninstallFixture(t)
+	plan := uninstallPlan(t, f, source)
+	latest, err := f.service.Preview(f.ctx, f.actor.ID, f.input())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&model.K3sInstallation{}).Where("uuid = ?", latest.ID).Update("status", "failed").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.ExecuteUninstall(f.ctx, f.actor.ID, plan.ID, UninstallConfirmationText); !errors.Is(err, ErrUninstallChanged) {
+		t.Fatalf("当前安装变化后仍可提交旧卸载计划: %v", err)
+	}
+	if len(transport.runs) != 0 {
+		t.Fatal("旧目标被执行")
+	}
+}
+
+func TestUninstallUnsupportedCurrentTargetNeverFallsBackToHistory(t *testing.T) {
+	f, _, transport := uninstallFixture(t)
+	latest, err := f.service.Preview(f.ctx, f.actor.ID, f.input())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record model.K3sInstallation
+	if err := f.db.First(&record, "uuid = ?", latest.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := f.service.decode(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Input.Installer["INSTALL_K3S_NAME"] = "other-instance"
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.InputCiphertext, err = f.service.secrets.Encrypt(string(encoded), []byte("k3s-installation:"+record.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Status = "failed"
+	if err := f.db.Save(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if targets, err := f.service.ListUninstallTargets(f.ctx, f.actor.ID, f.host.ID); !errors.Is(err, ErrUninstallUnsupported) || targets != nil {
+		t.Fatalf("无法核对当前安装时回退到了旧来源: %+v err=%v", targets, err)
+	}
+	if transport.reads != 0 || len(transport.runs) != 0 {
+		t.Fatal("不能读取或执行不匹配的历史目标")
+	}
+}
+
+func TestUninstallUnfinishedCurrentInstallationNeverFallsBackToHistory(t *testing.T) {
+	for _, status := range []string{"pending", "running", "interrupted"} {
+		t.Run(status, func(t *testing.T) {
+			f, _, transport := uninstallFixture(t)
+			latest, err := f.service.Preview(f.ctx, f.actor.ID, f.input())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.Model(&model.K3sInstallation{}).Where("uuid = ?", latest.ID).Update("status", status).Error; err != nil {
+				t.Fatal(err)
+			}
+			want := ErrHostBusy
+			if status == "interrupted" {
+				want = ErrUninstallUnsupported
+			}
+			if targets, err := f.service.ListUninstallTargets(f.ctx, f.actor.ID, f.host.ID); !errors.Is(err, want) || targets != nil {
+				t.Fatalf("未完成的当前安装被旧任务替代: %+v err=%v", targets, err)
+			}
+			if transport.reads != 0 || len(transport.runs) != 0 {
+				t.Fatal("不能探测或执行历史目标")
+			}
+		})
+	}
+}
+
 func TestUninstallConfirmationAndInstallationEndpointCannotBypass(t *testing.T) {
 	f, source, transport := uninstallFixture(t)
 	plan := uninstallPlan(t, f, source)
@@ -176,6 +279,9 @@ func TestUninstallWorkerOfficialOnlyAndVerifiedSuccess(t *testing.T) {
 	f.db.First(&sourceRecord, "uuid = ?", source.ID)
 	if sourceRecord.Status != "failed" {
 		t.Fatal("source history rewritten")
+	}
+	if targets, err := f.service.ListUninstallTargets(f.ctx, f.actor.ID, f.host.ID); err != nil || len(targets) != 0 {
+		t.Fatalf("卸载成功后历史任务仍被当作当前安装: %+v err=%v", targets, err)
 	}
 }
 

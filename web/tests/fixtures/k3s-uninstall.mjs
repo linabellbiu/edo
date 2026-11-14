@@ -57,7 +57,7 @@ client.defaults.adapter=async config=>{
   calls.push({method,path,...(body?{body}:{})})
   if(method==='get'&&path==='/kubernetes/k3s/uninstall-targets')return response(config,{targets:[target]})
   if(method==='get'&&path==='/kubernetes/k3s/installations')return response(config,{installations:installationHistory()})
-  if(method==='post'&&path==='/kubernetes/k3s/uninstall/plans'&&body.installation_id===summary.source_installation_id&&body.host_id===host.id)return response(config,{...plan,expires_at:new Date(Date.now()+300_000).toISOString()})
+  if(method==='post'&&path==='/kubernetes/k3s/uninstall/plans'&&body.host_id===host.id&&!body.installation_id)return response(config,{...plan,expires_at:new Date(Date.now()+300_000).toISOString()})
   if(method==='post'&&path==='/kubernetes/k3s/uninstallations'&&body.plan_id===plan.id&&body.confirmation==='我已确认卸载'){submitted=true;return response(config,task)}
   if(method==='get'&&path===`/kubernetes/k3s/installations/${task.id}`)return response(config,task)
   if(method==='get'&&path===`/kubernetes/k3s/installations/${historical.id}`)return response(config,historical)

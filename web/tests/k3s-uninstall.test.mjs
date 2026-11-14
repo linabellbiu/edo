@@ -31,11 +31,11 @@ function harness({permissions=codes,api={},value=host()}={}){
     globals:{Date:{now:()=>time.now,parse:Date.parse},localStorage:{getItem:()=>storage.project},window:{addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:(name,fn)=>{if(listeners.get(name)===fn)listeners.delete(name)}},setInterval:fn=>{clocks.push(fn);return clocks.length},clearInterval(){},setTimeout:(fn,delay)=>{const item={fn,delay,cancelled:false};timers.push(item);return timers.length},clearTimeout:id=>{if(timers[id-1])timers[id-1].cancelled=true}},
   })
   mounts.forEach(fn=>fn())
-  return {...h,props,auth,requests,timers,clocks,listeners,storage,time,granted,async open(){props.open=true;await settle()},async ready(){h.state.selectedID.value='source-a';await settle()},async preview(){await this.ready();await h.state.preview();await settle()},async close(){h.state.close();props.open=false;await settle()},async advance(ms){time.now+=ms;clocks.forEach(fn=>fn());await settle()},stop(){unmounts.forEach(fn=>fn());h.stop()}}
+  return {...h,props,auth,requests,timers,clocks,listeners,storage,time,granted,async open(){props.open=true;await settle()},async ready(){await settle()},async preview(){await this.ready();await h.state.preview();await settle()},async close(){h.state.close();props.open=false;await settle()},async advance(ms){time.now+=ms;clocks.forEach(fn=>fn());await settle()},stop(){unmounts.forEach(fn=>fn());h.stop()}}
 }
 
 test('独立卸载权限加cluster.read即可使用，不要求创建/加入/cluster.execute，缺一项不能读取或提交',async()=>{
-  const h=harness();try{await h.open();assert.equal(h.state.canOperate.value,true);assert.equal(h.state.canPreview.value,false);await h.ready();assert.equal(h.state.canPreview.value,true);assert.equal(h.state.canSubmit.value,false);assert.deepEqual(h.requests.map(r=>r.name).sort(),['listK3sInstallations','listK3sUninstallTargets']);assert.deepEqual(h.requests.find(r=>r.name==='listK3sInstallations').args.slice(0,2),['','uninstall']);assert.equal(h.requests.find(r=>r.name==='listK3sInstallations').args[3],'host-a')}finally{h.stop()}
+  const h=harness();try{await h.open();assert.equal(h.state.canOperate.value,true);assert.equal(h.state.canPreview.value,true);assert.equal(h.state.selectedTarget.value.source_installation_id,'source-a');assert.equal(h.state.canSubmit.value,false);assert.deepEqual(h.requests.map(r=>r.name).sort(),['listK3sInstallations','listK3sUninstallTargets']);assert.deepEqual(h.requests.find(r=>r.name==='listK3sInstallations').args.slice(0,2),['','uninstall']);assert.equal(h.requests.find(r=>r.name==='listK3sInstallations').args[3],'host-a')}finally{h.stop()}
   for(const missing of codes){const h=harness({permissions:codes.filter(code=>code!==missing)});try{await h.open();await h.ready();await h.state.preview();h.state.confirmation.value='我已确认卸载';await h.state.execute();assert.equal(h.state.canOperate.value,false);assert.deepEqual(h.requests,[],missing)}finally{h.stop()}}
 })
 
@@ -47,14 +47,14 @@ test('来源允许失败的EDO原生安装，错误主机/角色/脚本/重复�
   for(const result of [[target({host_id:'host-b'})],[target({role:'host'})],[target({script_path:'/tmp/uninstall.sh'})],[target(),target()],{}]){
     const h=harness({api:{listK3sUninstallTargets:async()=>result}});try{await h.open();assert.match(h.state.loadError.value,/信息不完整/);await h.ready();await h.state.preview();assert.equal(h.requests.filter(r=>r.name==='previewK3sUninstallPlan').length,0)}finally{h.stop()}
   }
-  const h=harness();try{await h.open();assert.equal(h.state.targets.value[0].status,'failed');assert.match(h.state.targetOptions.value[0].label,/安装失败/)}finally{h.stop()}
+  const h=harness();try{await h.open();assert.equal(h.state.selectedTarget.value.status,'failed');assert.equal(h.state.canPreview.value,true)}finally{h.stop()}
 })
 
 test('预览只核对计划不执行，准确显示Server或Agent默认脚本与数据目录',async()=>{
   for(const role of ['server','agent']){
     const snapshot=summary(role==='agent'?{role,script_path:'/usr/local/bin/k3s-agent-uninstall.sh',service_name:'k3s-agent'}:{})
     const h=harness({api:{listK3sUninstallTargets:async()=>[target(snapshot)],previewK3sUninstallPlan:async()=>plan({uninstall:snapshot,hosts:[{...plan().hosts[0],role}]})}})
-    try{await h.open();await h.preview();assert.ok(h.state.plan.value);assert.ok(h.state.facts.value.some(f=>f.value===snapshot.script_path));assert.ok(h.state.facts.value.some(f=>f.value===snapshot.data_dir));assert.equal(h.state.canSubmit.value,false);assert.equal(h.requests.some(r=>r.name==='startK3sUninstallation'),false);assert.equal(h.requests.find(r=>r.name==='previewK3sUninstallPlan').args[0],'source-a')}finally{h.stop()}
+    try{await h.open();await h.preview();assert.ok(h.state.plan.value);assert.ok(h.state.facts.value.some(f=>f.value===snapshot.script_path));assert.ok(h.state.facts.value.some(f=>f.value===snapshot.data_dir));assert.equal(h.state.canSubmit.value,false);assert.equal(h.requests.some(r=>r.name==='startK3sUninstallation'),false);assert.equal(h.requests.find(r=>r.name==='previewK3sUninstallPlan').args[0],'host-a')}finally{h.stop()}
   }
 })
 
@@ -69,7 +69,7 @@ test('二次确认须先预览再精确手输我已确认卸载，旧口令和�
 
 test('过期自动清空确认，提交前再次核对实际时钟；返回/改来源不会复用旧计划',async()=>{
   const h=harness();try{await h.open();await h.preview();h.state.confirmation.value='我已确认卸载';await h.advance(301_000);assert.equal(h.state.expired.value,true);assert.equal(h.state.confirmation.value,'');await h.state.execute();assert.equal(h.requests.some(r=>r.name==='startK3sUninstallation'),false)}finally{h.stop()}
-  const other=target({source_installation_id:'source-b',installation_name:'另一来源'}),h2=harness({api:{listK3sUninstallTargets:async()=>[target(),other]}});try{await h2.open();await h2.preview();h2.state.confirmation.value='我已确认卸载';h2.state.selectedID.value='source-b';await settle();assert.equal(h2.state.plan.value,undefined);assert.equal(h2.state.confirmation.value,'');await h2.state.execute();assert.equal(h2.requests.some(r=>r.name==='startK3sUninstallation'),false)}finally{h2.stop()}
+  let current=target();const h2=harness({api:{listK3sUninstallTargets:async()=>[current]}});try{await h2.open();await h2.preview();h2.state.confirmation.value='我已确认卸载';current=target({source_installation_id:'source-b'});await h2.state.loadTargets();assert.equal(h2.state.plan.value,undefined);assert.equal(h2.state.confirmation.value,'');await h2.state.execute();assert.equal(h2.requests.some(r=>r.name==='startK3sUninstallation'),false)}finally{h2.stop()}
 })
 
 test('重新读取同来源发现脚本或数据目录变化也清空已确认的旧计划',async()=>{
@@ -84,7 +84,7 @@ test('并发点击只提交一次，关闭只取消前台等待，迟到受理�
 })
 
 test('关闭或改来源后的迟到预览不能恢复计划，不触发执行',async()=>{
-  for(const change of ['close','target']){const pending=deferred(),h=harness({api:{previewK3sUninstallPlan:()=>pending.promise}});try{await h.open();await h.ready();const request=h.state.preview();if(change==='close')await h.close();else h.state.selectedID.value='other';await settle();assert.equal(h.requests.find(r=>r.name==='previewK3sUninstallPlan').args[2].aborted,true);pending.resolve(plan());await request;assert.equal(h.state.plan.value,undefined);assert.equal(h.state.previewing.value,false)}finally{h.stop()}}
+  for(const change of ['close','target']){let current=target();const pending=deferred(),h=harness({api:{listK3sUninstallTargets:async()=>[current],previewK3sUninstallPlan:()=>pending.promise}});try{await h.open();await h.ready();const request=h.state.preview();if(change==='close')await h.close();else{current=target({source_installation_id:'other'});await h.state.loadTargets()}await settle();assert.equal(h.requests.find(r=>r.name==='previewK3sUninstallPlan').args[1].aborted,true);pending.resolve(plan());await request;assert.equal(h.state.plan.value,undefined);assert.equal(h.state.previewing.value,false)}finally{h.stop()}}
 })
 
 test('项目、部门、主机连接或权限变化立即作废计划并取消请求，旧结果不能进入新范围',async()=>{
@@ -176,9 +176,9 @@ test('来源和历史旧响应在关闭/切主机/失权后丢弃，卸载只读
 test('卸载API使用独立三条路由与精确确认，历史携host过滤且保留AbortSignal',async()=>{
   const requests=[],client={get:async(path,options)=>{requests.push({method:'get',path,options});return {data:path.endsWith('uninstall-targets')?{targets:[target()]}:{installations:[task()]}}},post:async(path,body,options)=>{requests.push({method:'post',path,body,options});return {data:path.endsWith('/plans')?plan():task()}}}
   const api=loadFrontend('../src/api/k3s.ts',{'@/api/client':{__esModule:true,default:client}}),controller=new AbortController()
-  await api.listK3sUninstallTargets('host-a',controller.signal);await api.previewK3sUninstallPlan('source-a','host-a',controller.signal);await api.startK3sUninstallation('plan-a','我已确认卸载',controller.signal);await api.listK3sInstallations('','uninstall',controller.signal,'host-a')
+  await api.listK3sUninstallTargets('host-a',controller.signal);await api.previewK3sUninstallPlan('host-a',controller.signal);await api.startK3sUninstallation('plan-a','我已确认卸载',controller.signal);await api.listK3sInstallations('','uninstall',controller.signal,'host-a')
   assert.deepEqual(requests.map(r=>r.path),['/kubernetes/k3s/uninstall-targets','/kubernetes/k3s/uninstall/plans','/kubernetes/k3s/uninstallations','/kubernetes/k3s/installations'])
-  assert.deepEqual(requests[1].body,{installation_id:'source-a',host_id:'host-a'});assert.deepEqual(requests[2].body,{plan_id:'plan-a',confirmation:'我已确认卸载'});assert.equal(requests[1].options.timeout,180_000);assert.equal(requests[2].options.timeout,180_000);assert.deepEqual(requests[3].options.params,{limit:10,action:'uninstall',host_id:'host-a'});assert.ok(requests.every(r=>r.options.signal===controller.signal))
+  assert.deepEqual(requests[1].body,{host_id:'host-a'});assert.deepEqual(requests[2].body,{plan_id:'plan-a',confirmation:'我已确认卸载'});assert.equal(requests[1].options.timeout,180_000);assert.equal(requests[2].options.timeout,180_000);assert.deepEqual(requests[3].options.params,{limit:10,action:'uninstall',host_id:'host-a'});assert.ok(requests.every(r=>r.options.signal===controller.signal))
 })
 
 test('主机菜单独立授权非内置主机，不依赖创建权限；旧地址与旧项目入口拒绝',async()=>{

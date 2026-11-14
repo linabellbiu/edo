@@ -191,7 +191,7 @@ func TestK3sUninstallHTTPQueuesOnlyExplicitlyConfirmedOwnedPlan(t *testing.T) {
 	if targets.Code != http.StatusOK || !strings.Contains(targets.Body.String(), source.ID) {
 		t.Fatalf("同项目同事的托管来源不可见: status=%d body=%s", targets.Code, targets.Body.String())
 	}
-	response := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/uninstall/plans", map[string]string{"installation_id": source.ID, "host_id": host.ID}, cookie)
+	response := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/uninstall/plans", map[string]string{"host_id": host.ID}, cookie)
 	var plan k3s.Plan
 	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &plan) != nil || plan.Action != "uninstall" || plan.Uninstall == nil {
 		t.Fatalf("卸载预览失败: status=%d body=%s", response.Code, response.Body.String())

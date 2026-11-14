@@ -56,7 +56,7 @@ func (h k3sHandler) previewUninstall(c *gin.Context) {
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
 	var input struct {
-		InstallationID string `json:"installation_id" binding:"required,max=36"`
+		InstallationID string `json:"installation_id" binding:"max=36"`
 		HostID         string `json:"host_id" binding:"required,max=36"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {

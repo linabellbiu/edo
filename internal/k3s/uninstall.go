@@ -193,7 +193,7 @@ func (s *Service) uninstallSource(ctx context.Context, input UninstallInput) (mo
 	return record, UninstallSummary{SourceInstallationID: record.ID, HostID: input.HostID, Role: selected.Role, ScriptPath: "/usr/local/bin/" + service + "-uninstall.sh", ServiceName: service, DataDir: directory}, nil
 }
 
-// 候选列表只是 EDO 来源记录；必须再次预览现场，不能将失败任务等同于安全可卸载。
+// 每台主机只返回最近一次安装对应的目标；历史任务不代表多个 K3s 实例。
 func (s *Service) ListUninstallTargets(ctx context.Context, actorID, hostID string) (targets []UninstallTarget, err error) {
 	defer func() {
 		if err != nil {
@@ -208,9 +208,18 @@ func (s *Service) ListUninstallTargets(ctx context.Context, actorID, hostID stri
 	}
 	scope, _ := database.DepartmentScopeFromContext(ctx)
 	targets = []UninstallTarget{}
+	var removed model.K3sInstallation
+	err = s.db.WithContext(ctx).Select("id").Where("project_id = ? AND department_id = ? AND action = ? AND status = ?", scope.ProjectID, scope.DepartmentID, "uninstall", "succeeded").Where(datatypes.JSONQuery("preview").Equals(hostID, "uninstall", "host_id")).Order("id DESC").First(&removed).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	err = nil
 	var cursor uint64
 	for scanned := 0; ; scanned += 50 {
-		query := s.db.WithContext(ctx).Where("project_id = ? AND department_id = ? AND action IN ? AND status IN ?", scope.ProjectID, scope.DepartmentID, []string{"create", "join"}, []string{"failed", "succeeded"})
+		query := s.db.WithContext(ctx).Where("project_id = ? AND department_id = ? AND action IN ? AND status IN ?", scope.ProjectID, scope.DepartmentID, []string{"create", "join"}, []string{"pending", "running", "interrupted", "failed", "succeeded"})
+		if removed.RowID != 0 {
+			query = query.Where("id > ?", removed.RowID)
+		}
 		if cursor != 0 {
 			query = query.Where("id < ?", cursor)
 		}
@@ -235,18 +244,37 @@ func (s *Service) ListUninstallTargets(ctx context.Context, actorID, hostID stri
 			if !selected {
 				continue
 			}
+			if record.Status == "pending" || record.Status == "running" {
+				return nil, ErrHostBusy
+			}
 			_, summary, sourceErr := s.uninstallSource(ctx, UninstallInput{InstallationID: record.ID, HostID: hostID})
 			if sourceErr != nil {
-				continue
+				return nil, sourceErr
 			}
 			targets = append(targets, UninstallTarget{UninstallSummary: summary, InstallationName: record.Name, Status: record.Status, CreatedAt: record.CreatedAt})
+			break
 		}
-		if len(records) < 50 {
+		if len(targets) != 0 || len(records) < 50 {
 			break
 		}
 	}
 	_, err = s.authorizeUninstall(ctx, actorID)
 	return targets, err
+}
+
+func (s *Service) currentUninstallSource(ctx context.Context, actorID string, input UninstallInput) (model.K3sInstallation, UninstallSummary, error) {
+	targets, err := s.ListUninstallTargets(ctx, actorID, input.HostID)
+	if err != nil {
+		return model.K3sInstallation{}, UninstallSummary{}, err
+	}
+	if len(targets) != 1 {
+		return model.K3sInstallation{}, UninstallSummary{}, ErrUninstallUnsupported
+	}
+	if input.InstallationID != "" && input.InstallationID != targets[0].SourceInstallationID {
+		return model.K3sInstallation{}, UninstallSummary{}, ErrUninstallChanged
+	}
+	input.InstallationID = targets[0].SourceInstallationID
+	return s.uninstallSource(ctx, input)
 }
 
 func (s *Service) recheckUninstallSource(ctx context.Context, snapshot savedInput) error {
@@ -257,7 +285,8 @@ func (s *Service) recheckUninstallSource(ctx context.Context, snapshot savedInpu
 	if _, ok := snapshot.HostDigests[summary.HostID]; !ok {
 		return ErrUninstallUnsupported
 	}
-	source, current, err := s.uninstallSource(ctx, UninstallInput{InstallationID: summary.SourceInstallationID, HostID: summary.HostID})
+	scope, _ := database.DepartmentScopeFromContext(ctx)
+	source, current, err := s.currentUninstallSource(ctx, scope.UserID, UninstallInput{InstallationID: summary.SourceInstallationID, HostID: summary.HostID})
 	if err != nil {
 		return err
 	}
@@ -306,7 +335,7 @@ func (s *Service) PreviewUninstall(ctx context.Context, actorID string, input Un
 	if err != nil {
 		return nil, err
 	}
-	source, summary, err := s.uninstallSource(ctx, input)
+	source, summary, err := s.currentUninstallSource(ctx, actorID, input)
 	if err != nil {
 		return nil, err
 	}

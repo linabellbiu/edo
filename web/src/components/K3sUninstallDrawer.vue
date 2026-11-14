@@ -13,7 +13,7 @@ import { formatDateTime } from '@/utils/time'
 const props=defineProps<{open:boolean;host?:InfrastructureHost}>()
 const emit=defineEmits<{'update:open':[value:boolean];completed:[installation:K3sInstallation]}>()
 const auth=useAuthStore()
-const targets=ref<K3sUninstallTarget[]>([]),selectedID=ref(''),loading=ref(false),loadError=ref('')
+const targets=ref<K3sUninstallTarget[]>([]),loading=ref(false),loadError=ref('')
 const recent=ref<K3sInstallation[]>([]),recentLoading=ref(false),recentError=ref('')
 const plan=ref<K3sPlan>(),installation=ref<K3sInstallation>(),confirmation=ref(''),error=ref(''),pollError=ref('')
 const previewing=ref(false),submitting=ref(false),now=ref(Date.now()),selectedProject=ref(readProject())
@@ -24,7 +24,7 @@ let pollTimer:ReturnType<typeof setTimeout>|undefined,clock:ReturnType<typeof se
 const completedIDs=new Set<string>()
 const context=computed(()=>JSON.stringify([auth.user?.id??'',auth.user?.department_id??'',auth.user?.project_id??'',auth.user?.is_superuser??false,[...(auth.user?.permissions??[])].sort(),selectedProject.value,props.host?.id??'',props.host?.address??'',props.host?.ssh_port,props.host?.ssh_username,props.host?.mode,props.host?.is_active,props.host?.is_builtin,props.host?.credential_configured,props.host?.use_sudo]))
 const canOperate=computed(()=>Boolean(auth.user?.id&&selectedProject.value&&auth.user.project_id===selectedProject.value&&auth.canAny(['cluster.read'])&&auth.canAny(['kubernetes.k3s.uninstall'])&&props.host?.mode==='ssh'&&!props.host.is_builtin&&props.host.is_active&&props.host.credential_configured!==false))
-const selectedTarget=computed(()=>targets.value.find(target=>target.source_installation_id===selectedID.value))
+const selectedTarget=computed(()=>targets.value[0])
 const busy=computed(()=>previewing.value||submitting.value)
 const running=computed(()=>k3sInstallationRunning(installation.value))
 const uncertain=computed(()=>k3sUninstallResultUncertain(installation.value))
@@ -33,9 +33,7 @@ const expired=computed(()=>Boolean(plan.value)&&(!Number.isFinite(Date.parse(pla
 const remaining=computed(()=>plan.value&&!expired.value?Math.max(0,Math.ceil((Date.parse(plan.value.expires_at)-now.value)/1000)):0)
 const canPreview=computed(()=>canOperate.value&&!hostLocked.value&&!recentLoading.value&&!recentError.value&&!loading.value&&!loadError.value&&!busy.value&&!installation.value&&Boolean(selectedTarget.value))
 const canSubmit=computed(()=>canOperate.value&&!hostLocked.value&&!busy.value&&!installation.value&&!expired.value&&confirmation.value==='我已确认卸载'&&Boolean(plan.value&&selectedTarget.value&&validK3sUninstallPlan(plan.value,selectedTarget.value,props.host?.address??'')))
-const targetOptions=computed(()=>targets.value.map(target=>({value:target.source_installation_id,label:`${target.installation_name} · ${k3sHostRoleLabel(target.role)} · ${k3sInstallationLabel(target.status)}${target.created_at?` · ${formatDateTime(target.created_at)}`:''}`})))
 const facts=computed(()=>plan.value?.uninstall?[
-  {label:'来源安装',value:selectedTarget.value?.installation_name||plan.value.uninstall.source_installation_id},
   {label:'主机',value:plan.value.hosts?.[0]?.name??''},{label:'地址',value:plan.value.hosts?.[0]?.address??''},
   {label:'节点角色',value:k3sHostRoleLabel(plan.value.uninstall.role)},{label:'官方卸载脚本',value:plan.value.uninstall.script_path},
   {label:'系统服务',value:plan.value.uninstall.service_name},{label:'数据目录',value:plan.value.uninstall.data_dir},
@@ -60,7 +58,7 @@ function projectChanged(event:Event){if(event.type==='storage'&&(event as Storag
 function stopPoll(){if(pollTimer)clearTimeout(pollTimer);pollTimer=undefined;pollRequest?.abort();pollRequest=undefined}
 function invalidatePlan(){planRevision++;previewRequest?.abort();submitRequest?.abort();previewRequest=undefined;submitRequest=undefined;previewing.value=false;submitting.value=false;plan.value=undefined;confirmation.value='';error.value=''}
 function cancelRequests(){revision++;invalidatePlan();targetRequest?.abort();recentRequest?.abort();stopPoll();loading.value=false;recentLoading.value=false}
-function reset(){cancelRequests();targets.value=[];recent.value=[];selectedID.value='';installation.value=undefined;operationContext='';loadError.value='';recentError.value='';pollError.value='';pollFailures=0}
+function reset(){cancelRequests();targets.value=[];recent.value=[];installation.value=undefined;operationContext='';loadError.value='';recentError.value='';pollError.value='';pollFailures=0}
 async function focusError(){await nextTick();if(mounted&&props.open)errorRegion.value?.focus()}
 
 async function loadTargets(){
@@ -71,11 +69,10 @@ async function loadTargets(){
   try{
     const result=await listK3sUninstallTargets(hostID,controller.signal)
     if(!currentScope(expected,current)||controller.signal.aborted)return
-    if(!Array.isArray(result)||result.length>200||result.some(item=>!validK3sUninstallTarget(item,hostID))||new Set(result.map(item=>item.source_installation_id)).size!==result.length){targets.value=[];loadError.value='卸载来源信息不完整，请重新读取。';invalidatePlan();return}
-    const previous=selectedTarget.value,next=result.find(target=>target.source_installation_id===selectedID.value)
-    if(previous&&next&&!sameK3sUninstallTarget(previous,next))invalidatePlan()
+    if(!Array.isArray(result)||result.length>1||result.some(item=>!validK3sUninstallTarget(item,hostID))){targets.value=[];loadError.value='卸载目标信息不完整，请重新读取。';invalidatePlan();return}
+    const previous=selectedTarget.value,next=result[0]
+    if(previous&&(!next||!sameK3sUninstallTarget(previous,next)))invalidatePlan()
     targets.value=result
-    if(selectedID.value&&!result.some(target=>target.source_installation_id===selectedID.value))selectedID.value=''
   }catch(err){if(currentScope(expected,current)&&!controller.signal.aborted){targets.value=[];loadError.value=apiErrorMessage(err);invalidatePlan()}}
   finally{if(currentScope(expected,current)&&targetRequest===controller)loading.value=false}
 }
@@ -98,7 +95,7 @@ async function preview(){
   invalidatePlan();previewing.value=true
   const target=selectedTarget.value,expected=context.value,current=revision,operation=planRevision,controller=new AbortController();previewRequest=controller
   try{
-    const result=await previewK3sUninstallPlan(target.source_installation_id,props.host.id,controller.signal)
+    const result=await previewK3sUninstallPlan(props.host.id,controller.signal)
     if(!currentScope(expected,current)||operation!==planRevision||controller.signal.aborted)return
     now.value=Date.now()
     if(!validK3sUninstallPlan(result,target,props.host.address)||Date.parse(result.expires_at)<=now.value){error.value='卸载计划与当前目标不一致或已失效，请重新核对。';await focusError();return}
@@ -146,7 +143,6 @@ function viewInstallation(item:K3sInstallation){
 function viewUncertainInstallation(){const item=recent.value.find(k3sUninstallResultUncertain);if(item)viewInstallation(item)}
 function configureAgain(){if(busy.value||running.value||hostLocked.value)return;stopPoll();invalidatePlan();installation.value=undefined;pollError.value='';void loadTargets();void loadRecent()}
 function close(){emit('update:open',false)}
-watch(selectedID,invalidatePlan,{flush:'sync'})
 watch(expired,value=>{if(value)confirmation.value=''},{flush:'sync'})
 watch(context,()=>{reset();if(props.open&&canOperate.value){void loadTargets();void loadRecent()}},{flush:'sync'})
 watch(canOperate,allowed=>{if(!allowed)reset();else if(props.open){void loadTargets();void loadRecent()}},{flush:'sync'})
@@ -169,12 +165,10 @@ onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('
       <template v-if="!installation&&!hostLocked">
         <a-alert v-if="!plan" type="warning" show-icon :message="uninstallWarning" :description="uninstallImpact" />
         <a class="uninstall-docs" href="https://docs.k3s.io/zh/installation/uninstall" target="_blank" rel="noopener noreferrer">官方卸载说明</a>
-        <a-alert v-if="loadError" type="error" show-icon message="卸载来源读取失败" :description="loadError"><template #action><a-button size="small" @click="loadTargets">重试</a-button></template></a-alert>
-        <a-form v-if="!plan" layout="vertical" :disabled="busy||!canOperate">
-          <a-form-item label="来源安装" required><a-select v-model:value="selectedID" :loading="loading" :options="targetOptions" placeholder="选择此主机的 EDO 原生 K3s 安装" aria-label="来源安装" /></a-form-item>
-          <a-empty v-if="!loading&&!loadError&&canOperate&&!targets.length" description="没有可卸载的 EDO 原生 K3s 安装记录" />
-        </a-form>
-        <section v-else ref="reviewRegion" class="uninstall-review" tabindex="-1" aria-label="卸载目标确认">
+        <a-alert v-if="loadError" type="error" show-icon message="卸载目标读取失败" :description="loadError"><template #action><a-button size="small" @click="loadTargets">重试</a-button></template></a-alert>
+        <a-spin v-if="loading&&!plan" tip="正在读取卸载目标" />
+        <a-empty v-else-if="!plan&&!loadError&&canOperate&&!targets.length" description="没有可卸载的 EDO 原生 K3s" />
+        <section v-if="plan" ref="reviewRegion" class="uninstall-review" tabindex="-1" aria-label="卸载目标确认">
           <dl class="uninstall-facts"><div v-for="fact in facts" :key="fact.label"><dt>{{ fact.label }}</dt><dd>{{ fact.value }}</dd></div></dl>
           <a-alert v-if="expired" type="warning" show-icon message="卸载计划已过期，请返回重新核对。" />
           <p v-else class="plan-expiry" role="status">计划有效期剩余 {{ remaining }} 秒</p>
@@ -190,7 +184,7 @@ onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('
       </section>
       <details v-if="!installation&&(recent.length||recentError||recentLoading)" class="uninstall-history" :open="Boolean(recentError)"><summary>卸载记录<span v-if="recent.length">（{{ recent.length }}）</span></summary><header><a-button size="small" :loading="recentLoading" :disabled="!canOperate" @click="loadRecent">刷新</a-button></header><a-alert v-if="recentError" type="warning" :message="recentError" /><div v-for="item in recent" :key="item.id" class="history-row"><span><strong>{{ item.name||item.id }}</strong><small>{{ formatDateTime(item.created_at) }}</small></span><a-tag>{{ taskLabel(item) }}</a-tag><a-button size="small" :disabled="busy||!canOperate||hostLocked&&!k3sUninstallResultUncertain(item)" @click="viewInstallation(item)">查看进度</a-button></div></details>
     </div>
-    <template #footer><div class="uninstall-footer"><a-button @click="close">{{ running?'关闭窗口':'关闭' }}</a-button><a-button v-if="hostLocked" :disabled="!canOperate" @click="installation?refreshInstallation():loadRecent()">刷新日志</a-button><a-button v-if="plan&&!installation&&!hostLocked" :disabled="busy" @click="invalidatePlan">返回核对</a-button><a-button v-if="!plan&&!installation&&!hostLocked" type="primary" :loading="previewing" :disabled="!canPreview" @click="preview">预览卸载计划</a-button><a-button v-else-if="plan&&!installation&&!hostLocked" type="primary" danger :loading="submitting" :disabled="!canSubmit" @click="execute">确认卸载</a-button><a-button v-if="installation&&!running&&!hostLocked" :disabled="busy||!canOperate" @click="configureAgain">返回来源选择</a-button></div></template>
+    <template #footer><div class="uninstall-footer"><a-button @click="close">{{ running?'关闭窗口':'关闭' }}</a-button><a-button v-if="hostLocked" :disabled="!canOperate" @click="installation?refreshInstallation():loadRecent()">刷新日志</a-button><a-button v-if="plan&&!installation&&!hostLocked" :disabled="busy" @click="invalidatePlan">返回核对</a-button><a-button v-if="!plan&&!installation&&!hostLocked" type="primary" :loading="previewing" :disabled="!canPreview" @click="preview">预览卸载计划</a-button><a-button v-else-if="plan&&!installation&&!hostLocked" type="primary" danger :loading="submitting" :disabled="!canSubmit" @click="execute">确认卸载</a-button><a-button v-if="installation&&!running&&!hostLocked" :disabled="busy||!canOperate" @click="configureAgain">返回卸载</a-button></div></template>
   </a-drawer>
 </template>
 
