@@ -111,16 +111,16 @@ test('不明卸载结果只按校验后的失败状态与固定执行阶段识�
   for(const patch of [{action:'create'},{mode:'k3d'},{uninstall:undefined},{uninstall:summary({script_path:'/tmp/arbitrary.sh'})},{hosts:[{...task().hosts[0],id:'wrong',stage:'uninstall_verify'}]}])assert.equal(uninstall.k3sUninstallResultUncertain(task({status:'failed',hosts:[{...task().hosts[0],stage:'uninstall_verify'}],...patch})),false)
 })
 
-test('结果只呈现一次状态，耗时按结束时间冻结，历史不重复当前任务且仍可切换',async()=>{
+test('结果只呈现一次状态，耗时冻结，返回来源后仍可查看历史',async()=>{
   const done=task({status:'succeeded',started_at:'2026-11-14T15:48:27+08:00',finished_at:'2026-11-14T15:48:29+08:00',message:'官方卸载已完成'}),older=task({id:'older-task',status:'succeeded'})
   const h=harness({api:{listK3sInstallations:async()=>[done,older],getK3sInstallation:async id=>id===older.id?older:done}})
   try{
     await h.open();h.state.viewInstallation(h.state.recent.value[0]);await settle()
     assert.equal(h.state.elapsed.value,'2 秒');assert.equal(h.state.resultMessage.value,'')
-    assert.deepEqual(h.state.history.value.map(item=>item.id),['older-task'])
+    assert.deepEqual(h.state.recent.value.map(item=>item.id),[done.id,'older-task'])
     await h.advance(60_000);assert.equal(h.state.elapsed.value,'2 秒')
-    h.state.viewInstallation(h.state.history.value[0]);await settle()
-    assert.equal(h.state.installation.value.id,'older-task');assert.deepEqual(h.state.history.value.map(item=>item.id),[done.id])
+    h.state.configureAgain();await settle();assert.equal(h.state.installation.value,undefined);h.state.viewInstallation(h.state.recent.value[1]);await settle()
+    assert.equal(h.state.installation.value.id,'older-task');assert.equal(h.state.recent.value.length,2)
   }finally{h.stop()}
 })
 
@@ -130,10 +130,22 @@ test('精简结果仍直接展示失败与不明结果，缺少时间保持空�
     try{
       await h.open();h.state.viewInstallation(h.state.recent.value[0]);await settle()
       assert.equal(h.state.elapsed.value,'—');assert.match(h.state.resultMessage.value,new RegExp(value.error))
-      assert.equal(h.state.history.value.length,0)
+      assert.equal(h.state.recent.value[0].id,value.id)
       if(value.hosts[0].stage==='uninstall_verify'){assert.match(h.state.resultMessage.value,/主机锁已保留/);assert.equal(h.state.hostLocked.value,true)}
     }finally{h.stop()}
   }
+})
+
+test('其他任务导致主机锁保留时，结果页仍能直接查看准确的不明任务日志',async()=>{
+  const done=task({status:'succeeded'}),unknown=task({id:'uncertain-other',status:'failed',error:'结果尚未确认',hosts:[{...task().hosts[0],stage:'uninstall_verify'}]})
+  const h=harness({api:{listK3sInstallations:async()=>[done],getK3sInstallation:async id=>id===unknown.id?unknown:done}})
+  try{
+    await h.open();h.state.viewInstallation(h.state.recent.value[0]);await settle()
+    h.state.recent.value=[done,unknown];await settle();assert.equal(h.state.hostLocked.value,true);assert.equal(h.state.uncertain.value,false)
+    h.state.viewUncertainInstallation();await settle()
+    assert.equal(h.state.installation.value.id,unknown.id);assert.equal(h.state.uncertain.value,true);assert.match(h.state.resultMessage.value,/主机锁已保留/)
+    assert.equal(h.state.canPreview.value,false);assert.equal(h.requests.some(item=>item.name==='startK3sUninstallation'),false)
+  }finally{h.stop()}
 })
 
 test('卸载派发后结果不明显示保留锁，不能回来源/重新预览/执行，日志与刷新保留',async()=>{
@@ -179,7 +191,7 @@ test('主机菜单独立授权非内置主机，不依赖创建权限；旧地�
 function compile(source){const module={exports:{}};new Function('require','module','exports',ts.transpileModule(compileScript(parse(source).descriptor,{id:'uninstall-render',inlineTemplate:true}).content,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText)(name=>name==='vue'?vue:{},module,module.exports);return module.exports.default}
 test('真实卸载模板编译，固定官方链接和毁损警告，Footer精确确认禁用语义且窄屏可收缩',async()=>{
   const source=read('../src/components/K3sUninstallDrawer.vue'),{descriptor,errors}=parse(source);assert.deepEqual(errors,[]);compileScript(descriptor,{id:'uninstall-ui'});assert.deepEqual(compileTemplate({source:descriptor.template.content,id:'uninstall-ui'}).errors,[]);assert.deepEqual(compileStyle({source:descriptor.styles[0].content,id:'uninstall-ui',scoped:true}).errors,[])
-  assert.match(source,/永久删除本地集群数据、本地持久化卷/);assert.match(source,/不是删除节点或断开集群连接/);assert.match(source,/href="https:\/\/docs.k3s.io\/zh\/installation\/uninstall" target="_blank" rel="noopener noreferrer"/);assert.match(source,/手动输入“我已确认卸载”以卸载/);assert.match(source,/placeholder="请输入“我已确认卸载”"/);assert.match(source,/aria-label="卸载确认"/);assert.match(source,/grid-template-columns:minmax\(0,1fr\)/);assert.doesNotMatch(source,/overflow(?:-x)?:hidden|v-html|\/assistant/)
+  assert.match(source,/永久删除本地集群数据、本地持久化卷/);assert.match(source,/不是删除节点或断开集群连接/);assert.match(source,/href="https:\/\/docs.k3s.io\/zh\/installation\/uninstall" target="_blank" rel="noopener noreferrer"/);assert.match(source,/手动输入“我已确认卸载”以卸载/);assert.match(source,/placeholder="请输入“我已确认卸载”"/);assert.match(source,/aria-label="卸载确认"/);assert.match(source,/grid-template-columns:minmax\(0,1fr\)/);assert.doesNotMatch(source,/overflow(?:-x)?:hidden|v-html|\/assistant|任务详情|operation-details|任务编号|<dt>开始时间|<dt>结束时间/);assert.match(source,/v-if="!installation&&\(recent\.length\|\|recentError\|\|recentLoading\)"/)
   let footer;function walk(node){if(node.type===1&&node.tag==='template'&&node.props.some(p=>p.type===7&&p.name==='slot'&&p.arg?.content==='footer'))footer=node;for(const child of node.children??[])walk(child)}walk(descriptor.template.ast)
   const Footer=compile(`<script setup>import {toRefs} from 'vue';const props=defineProps({state:Object});const {running,plan,installation,busy,canPreview,canSubmit,previewing,submitting,canOperate,hostLocked}=toRefs(props.state);const close=()=>{},invalidatePlan=()=>{},preview=()=>{},execute=()=>{},configureAgain=()=>{},refreshInstallation=()=>{},loadRecent=()=>{};</script><template>${footer.children.map(node=>node.loc.source).join('')}</template>`)
   async function render(state){const app=vue.createSSRApp(Footer,{state});app.component('a-button',{inheritAttrs:false,setup:(_p,{attrs,slots})=>()=>vue.h('button',attrs,slots.default?.())});return renderToString(app)}

@@ -95,5 +95,5 @@ test('卸载任务复用进度与安全日志但不显示安装文案，原安�
 test('卸载完成只保留日志，去掉重复主机、时间与阶段信息',t=>{
   const h=mount(t,{...record(),action:'uninstall',status:'succeeded',finished_at:'2026-10-28T23:20:30+08:00',hosts:[{id:'host-a',name:'重复主机',address:'192.0.2.24',status:'succeeded',stage:'uninstall_verify',message:'官方卸载已完成',stage_started_at:'2026-10-28T23:20:30+08:00',progress_updated_at:'2026-10-28T23:20:30+08:00'}],logs:'官方卸载脚本执行完成'})
   assert.match(h.content(),/卸载日志/);assert.match(h.content(),/官方卸载脚本执行完成/)
-  assert.doesNotMatch(h.content(),/重复主机|192\.0\.2\.24|开始时间|结束时间|总耗时|本阶段|最近反馈|核验卸载结果|官方卸载已完成|可以关闭窗口/)
+  assert.doesNotMatch(h.content(),/重复主机|192\.0\.2\.24|开始时间|结束时间|总耗时|本阶段|最近反馈|核验卸载结果|官方卸载已完成|可以关闭窗口|查看最新/)
 })

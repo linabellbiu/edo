@@ -36,7 +36,7 @@ function showLatest(){if(viewport.value)viewport.value.scrollTop=viewport.value.
         <p v-if="host.status==='failed'&&host.message">{{ host.message }}</p>
       </article>
     </div>
-    <section class="progress-logs"><header><div class="log-heading"><h4>{{ actionLabel }}日志</h4><span v-if="running" class="background-hint">可以关闭窗口，{{ actionLabel }}会继续执行。</span></div><a-button size="small" @click="showLatest">查看最新</a-button></header><p v-if="logs.truncated" class="log-limit">仅显示最近 64 KiB 日志</p><pre ref="viewport" role="log" :aria-label="`${actionLabel}安全日志`" aria-live="off" tabindex="0">{{ logs.text||`等待${actionLabel}日志…` }}</pre></section>
+    <section class="progress-logs"><header><div class="log-heading"><h4>{{ actionLabel }}日志</h4><span v-if="running" class="background-hint">可以关闭窗口，{{ actionLabel }}会继续执行。</span></div><a-button v-if="!uninstall" size="small" @click="showLatest">查看最新</a-button></header><p v-if="logs.truncated" class="log-limit">仅显示最近 64 KiB 日志</p><pre ref="viewport" role="log" :aria-label="`${actionLabel}安全日志`" aria-live="off" tabindex="0">{{ logs.text||`等待${actionLabel}日志…` }}</pre></section>
   </section>
 </template>
 
