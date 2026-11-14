@@ -239,6 +239,8 @@ func (h hostHandler) writeError(c *gin.Context, operation string, err error) {
 		writeError(c, http.StatusBadRequest, "invalid_host", hostmanager.ErrInvalidHost.Error())
 	case errors.Is(err, hostmanager.ErrHostFingerprintRequired):
 		writeError(c, http.StatusConflict, "host_ssh_fingerprint_required", hostmanager.ErrHostFingerprintRequired.Error())
+	case errors.Is(err, kube.ErrHostClusterOccupied):
+		writeError(c, http.StatusConflict, "host_cluster_occupied", kube.ErrHostClusterOccupied.Error())
 	case errors.Is(err, kube.ErrClusterHostMismatch):
 		writeError(c, http.StatusBadRequest, "kubernetes_cluster_host_mismatch", kube.ErrClusterHostMismatch.Error())
 	case errors.Is(err, kube.ErrInvalidClusterHosts):

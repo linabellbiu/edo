@@ -24,6 +24,7 @@ import (
 
 	"edo/internal/dockerengine"
 	"edo/internal/hostcredential"
+	"edo/internal/kube"
 	"edo/internal/model"
 	"edo/internal/secret"
 	"edo/internal/sshclient"
@@ -1201,6 +1202,11 @@ func (s *Service) replaceCapabilities(
 	input Input,
 	tested TestResult,
 ) ([]model.HostCapability, error) {
+	if slices.Contains(input.CapabilityKinds, model.HostCapabilityKubernetes) {
+		if err := kube.RequireHostClusterAvailable(tx.Statement.Context, tx, []string{current.ID}, input.KubernetesClusterID); err != nil {
+			return nil, err
+		}
+	}
 	var existing []model.HostCapability
 	if err := tx.Where("host_id = ?", current.ID).Find(&existing).Error; err != nil {
 		return nil, err

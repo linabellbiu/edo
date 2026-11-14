@@ -129,10 +129,10 @@ func TestClusterHostMismatchRejectsTestCreateUpdateAndKeepsOldAssociation(t *tes
 	config := kubeconfigForServer(badServer)
 	ids := []string{host.ID}
 	input := Input{Name: "wrong-cluster", Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &config, HostIDs: &ids}
-	if _, err := service.Test(context.Background(), input); !errors.Is(err, ErrClusterHostMismatch) {
+	if _, err := service.Test(context.Background(), input); !errors.Is(err, ErrHostClusterOccupied) {
 		t.Fatalf("test must reject wrong cluster: %v", err)
 	}
-	if _, err := service.Create(context.Background(), "admin", input); !errors.Is(err, ErrClusterHostMismatch) {
+	if _, err := service.Create(context.Background(), "admin", input); !errors.Is(err, ErrHostClusterOccupied) {
 		t.Fatalf("create must reject wrong cluster: %v", err)
 	}
 	var count int64
@@ -149,7 +149,7 @@ func TestClusterHostMismatchRejectsTestCreateUpdateAndKeepsOldAssociation(t *tes
 		t.Fatalf("failed update changed connection: %+v %v", unchanged, err)
 	}
 	bad := validationClusterFixture(t, service, "existing-wrong", badServer.URL, config)
-	if err := service.SetHosts(context.Background(), bad.ID, ids); !errors.Is(err, ErrClusterHostMismatch) {
+	if err := service.SetHosts(context.Background(), bad.ID, ids); !errors.Is(err, ErrHostClusterOccupied) {
 		t.Fatalf("reassignment must reject mismatch: %v", err)
 	}
 	assertClusterHostCount(t, service, good.ID, 1)

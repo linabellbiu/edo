@@ -453,6 +453,13 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 	if len(hosts) == 0 {
 		return input, nil, nil, nil, nil, ErrInvalidInput
 	}
+	selectedHostIDs := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		selectedHostIDs = append(selectedHostIDs, host.ID)
+	}
+	if err := kube.RequireHostClusterAvailable(ctx, s.db, selectedHostIDs, input.ClusterID); err != nil {
+		return input, nil, nil, nil, nil, err
+	}
 	if isServerJoin(input) {
 		if err := s.prepareServerJoin(ctx, &input); err != nil {
 			return input, hosts, digests, cluster, warnings, serverJoinPreflightError(hosts, err)
@@ -634,6 +641,17 @@ func (s *Service) recheck(ctx context.Context, record model.K3sInstallation, sna
 			}
 		}
 		return nil
+	}
+	hostIDs := make([]string, 0, len(snapshot.HostDigests))
+	for id := range snapshot.HostDigests {
+		hostIDs = append(hostIDs, id)
+	}
+	clusterID := record.ClusterID
+	if clusterID == "" {
+		clusterID = snapshot.Input.ClusterID
+	}
+	if err := kube.RequireHostClusterAvailable(ctx, s.db, hostIDs, clusterID); err != nil {
+		return err
 	}
 	if snapshot.Input.Action == "join" {
 		var current model.KubernetesCluster

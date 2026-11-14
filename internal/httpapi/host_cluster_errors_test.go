@@ -19,6 +19,7 @@ func TestHostSaveReportsKubernetesIdentityErrorsWithoutPrivateDetails(t *testing
 		status int
 		code   string
 	}{
+		{kube.ErrHostClusterOccupied, http.StatusConflict, "host_cluster_occupied"},
 		{kube.ErrClusterHostMismatch, http.StatusBadRequest, "kubernetes_cluster_host_mismatch"},
 		{kube.ErrClusterHostCheckUnavailable, http.StatusBadGateway, "kubernetes_cluster_host_check_unavailable"},
 	} {

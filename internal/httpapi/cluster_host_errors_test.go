@@ -20,6 +20,7 @@ func TestKubernetesHostValidationErrorsAreSafeAndActionable(t *testing.T) {
 		status int
 		code   string
 	}{
+		{"occupied", kube.ErrHostClusterOccupied, http.StatusConflict, "host_cluster_occupied"},
 		{"mismatch", kube.ErrClusterHostMismatch, http.StatusBadRequest, "kubernetes_cluster_host_mismatch"},
 		{"unavailable", kube.ErrClusterHostCheckUnavailable, http.StatusBadGateway, "kubernetes_cluster_host_check_unavailable"},
 	} {

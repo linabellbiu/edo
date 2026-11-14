@@ -42,6 +42,13 @@ func (s *Service) AppendHosts(ctx context.Context, clusterID string, hostIDs []s
 		if err := verifyHostSnapshots(tx, verified); err != nil {
 			return err
 		}
+		ids := make([]string, 0, len(verified))
+		for _, host := range verified {
+			ids = append(ids, host.ID)
+		}
+		if err := RequireHostClusterAvailable(ctx, tx, ids, current.ID); err != nil {
+			return err
+		}
 		now := time.Now().UTC()
 		for _, host := range verified {
 			var existing model.HostCapability

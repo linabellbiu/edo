@@ -14,7 +14,7 @@ import (
 	"edo/internal/model"
 )
 
-func TestClusterHostLinksCanBeTransferredAndRemovedWithoutChangingResources(t *testing.T) {
+func TestClusterHostLinksRejectTransferAndCanBeRemovedWithoutChangingResources(t *testing.T) {
 	service := newKubeTestService(t, time.Second)
 	ctx := context.Background()
 	clusterA := linkedClusterFixture(t, service, "cluster-a", "")
@@ -46,14 +46,14 @@ func TestClusterHostLinksCanBeTransferredAndRemovedWithoutChangingResources(t *t
 	if capability.Status != model.HostCapabilityReady || capability.Version != "v1.35.5" {
 		t.Fatalf("重复保存不应清除已检查状态: %+v", capability)
 	}
-	if err := service.SetHosts(ctx, clusterB.ID, []string{host.ID}); err != nil {
+	if err := service.SetHosts(ctx, clusterB.ID, []string{host.ID}); !errors.Is(err, ErrHostClusterOccupied) {
 		t.Fatal(err)
 	}
 	linked, err := service.LinkedHosts(ctx, []string{clusterA.ID, clusterB.ID})
-	if err != nil || len(linked[clusterA.ID]) != 0 || len(linked[clusterB.ID]) != 1 || linked[clusterB.ID][0].ID != host.ID {
-		t.Fatalf("主机关系应原子转移到新集群: %+v, %v", linked, err)
+	if err != nil || len(linked[clusterA.ID]) != 1 || len(linked[clusterB.ID]) != 0 || linked[clusterA.ID][0].ID != host.ID {
+		t.Fatalf("已有集群归属不能被覆盖: %+v, %v", linked, err)
 	}
-	if err := service.SetHosts(ctx, clusterB.ID, []string{}); err != nil {
+	if err := service.SetHosts(ctx, clusterA.ID, []string{}); err != nil {
 		t.Fatal(err)
 	}
 	var capabilities []model.HostCapability

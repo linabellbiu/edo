@@ -2,12 +2,15 @@ package kube
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
 
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -15,6 +18,50 @@ import (
 )
 
 var ErrInvalidClusterHosts = errors.New("请选择当前项目中的远程主机")
+
+var ErrHostClusterOccupied = errors.New("所选主机已关联其他集群，一台主机只能属于一个集群")
+
+// RequireHostClusterAvailable 只核对 EDO 已保存的归属，不访问远程主机；调用方先验证主机数据范围。
+func RequireHostClusterAvailable(ctx context.Context, db *gorm.DB, hostIDs []string, clusterID string) error {
+	if len(hostIDs) == 0 {
+		return nil
+	}
+	var occupied int64
+	err := db.WithContext(ctx).Model(&model.HostCapability{}).Where("host_id IN ? AND kind = ? AND runtime_id <> ? AND runtime_id <> ?", hostIDs, model.HostCapabilityKubernetes, "", clusterID).Count(&occupied).Error
+	if err != nil {
+		slog.ErrorContext(ctx, "查询主机集群归属失败", "operation", "host_cluster_availability", "host_ids", hostIDs, "cluster_id", clusterID, "err", err)
+		return ErrClusterHostCheckUnavailable
+	}
+	if occupied > 0 {
+		slog.WarnContext(ctx, "主机已被其他集群占用", "operation", "host_cluster_availability", "host_ids", hostIDs, "cluster_id", clusterID)
+		return ErrHostClusterOccupied
+	}
+	// k3d 宿主机不是容器节点，不能靠节点关联表达归属；复用仍存在连接的安装记录。
+	var installations []model.K3sInstallation
+	err = db.WithContext(ctx).Select("uuid", "cluster_id", "hosts").
+		Where("action = ? AND cluster_id <> ? AND cluster_id IN (?)", "create", clusterID, db.WithContext(ctx).Model(&model.KubernetesCluster{}).Select("uuid")).
+		Where(datatypes.JSONQuery("preview").Equals("k3d", "mode")).Find(&installations).Error
+	if err != nil {
+		slog.ErrorContext(ctx, "查询 k3d 安装主机归属失败", "operation", "host_cluster_availability", "host_ids", hostIDs, "err", err)
+		return ErrClusterHostCheckUnavailable
+	}
+	for _, installation := range installations {
+		var hosts []struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(installation.Hosts, &hosts); err != nil {
+			slog.ErrorContext(ctx, "读取 k3d 安装主机归属失败", "operation", "host_cluster_availability", "installation_id", installation.ID, "err", err)
+			return ErrClusterHostCheckUnavailable
+		}
+		for _, host := range hosts {
+			if slices.Contains(hostIDs, host.ID) {
+				slog.WarnContext(ctx, "主机已有 k3d 集群", "operation", "host_cluster_availability", "host_id", host.ID, "cluster_id", installation.ClusterID)
+				return ErrHostClusterOccupied
+			}
+		}
+	}
+	return nil
+}
 
 // LinkedHost 只返回关联主机的展示字段，不包含 SSH 凭据。
 type LinkedHost struct {
@@ -58,7 +105,7 @@ func (s *Service) LinkedHosts(ctx context.Context, clusterIDs []string) (map[str
 	return result, nil
 }
 
-// SetHosts 只修改主机与集群的关系。每台主机最多关联一个集群，选中已关联的主机时原子转移关系。
+// SetHosts 只修改主机与集群的关系，不能覆盖主机已有的其他集群归属。
 // 空列表解除当前集群的全部主机关联，集群连接与主机的 SSH/Docker 能力均保留。
 func (s *Service) SetHosts(ctx context.Context, id string, hostIDs []string) error {
 	ctx, cancel := s.hostValidationContext(ctx)
@@ -109,6 +156,9 @@ func replaceClusterHosts(tx *gorm.DB, cluster *model.KubernetesCluster, requeste
 				return ErrClusterHostCheckUnavailable
 			}
 		}
+	}
+	if err := RequireHostClusterAvailable(tx.Statement.Context, tx, hostIDs, cluster.ID); err != nil {
+		return err
 	}
 	removed := tx.Where("kind = ? AND runtime_id = ?", model.HostCapabilityKubernetes, cluster.ID)
 	if len(hostIDs) > 0 {

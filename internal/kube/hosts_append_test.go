@@ -159,7 +159,7 @@ func TestAppendHostsEnforcesProjectDepartmentAndHostBoundaries(t *testing.T) {
 	}
 }
 
-func TestAppendHostsTransfersOnlyRequestedTargetAndKeepsVerifiedStatus(t *testing.T) {
+func TestAppendHostsRejectsTransferAndKeepsVerifiedStatus(t *testing.T) {
 	service := newKubeTestService(t, time.Second)
 	a := linkedClusterFixture(t, service, "append-transfer-a", "")
 	b := linkedClusterFixture(t, service, "append-transfer-b", "")
@@ -181,17 +181,17 @@ func TestAppendHostsTransfersOnlyRequestedTargetAndKeepsVerifiedStatus(t *testin
 	if capability.Status != model.HostCapabilityReady || capability.Version != "v1.35.5" || !capability.UseSudo {
 		t.Fatal("repeating an association must retain the checked capability state")
 	}
-	if err := service.AppendHosts(context.Background(), b.ID, []string{target.ID}); err != nil {
+	if err := service.AppendHosts(context.Background(), b.ID, []string{target.ID}); !errors.Is(err, ErrHostClusterOccupied) {
 		t.Fatal(err)
 	}
-	assertAppendHostIDs(t, service, a.ID, []string{other.ID})
-	assertAppendHostIDs(t, service, b.ID, []string{target.ID})
+	assertAppendHostIDs(t, service, a.ID, []string{target.ID, other.ID})
+	assertAppendHostIDs(t, service, b.ID, nil)
 	capability = model.HostCapability{}
 	if err := service.db.Where("host_id = ? AND kind = ?", target.ID, model.HostCapabilityKubernetes).First(&capability).Error; err != nil {
 		t.Fatal(err)
 	}
-	if capability.Status != model.HostCapabilityUnchecked || capability.Version != "" || capability.UseSudo {
-		t.Fatal("moving a relationship must reset the checked capability state")
+	if capability.Status != model.HostCapabilityReady || capability.Version != "v1.35.5" || !capability.UseSudo {
+		t.Fatal("rejected transfer must retain the original capability state")
 	}
 }
 

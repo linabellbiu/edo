@@ -470,6 +470,8 @@ func (h clusterHandler) writeKubernetesError(c *gin.Context, operation string, e
 		writeError(c, http.StatusBadRequest, "invalid_kubernetes_cluster", kube.ErrInvalidCluster.Error())
 	case errors.Is(err, kube.ErrInvalidClusterHosts):
 		writeError(c, http.StatusBadRequest, "invalid_kubernetes_cluster_hosts", kube.ErrInvalidClusterHosts.Error())
+	case errors.Is(err, kube.ErrHostClusterOccupied):
+		writeError(c, http.StatusConflict, "host_cluster_occupied", kube.ErrHostClusterOccupied.Error())
 	case errors.Is(err, kube.ErrClusterHostMismatch):
 		writeError(c, http.StatusBadRequest, "kubernetes_cluster_host_mismatch", kube.ErrClusterHostMismatch.Error())
 	case errors.Is(err, kube.ErrClusterHostCheckUnavailable):

@@ -270,7 +270,7 @@ func safeFailure(err error) string {
 	if errors.Is(err, ErrPreflightFailed) {
 		return preflightFailureMessage(err)
 	}
-	for _, safe := range []error{ErrUninstallPermission, ErrUninstallUnsupported, ErrUninstallChanged, ErrUninstallConfirmation, ErrUninstallIncomplete, ErrPermission, ErrHostChanged, ErrTargetVersionChanged, ErrPreflightRequired, ErrHostBusy, ErrExistingInstallation, ErrRemote, ErrReadiness, ErrInvalidInput, kube.ErrJoinUnsupported} {
+	for _, safe := range []error{ErrUninstallPermission, ErrUninstallUnsupported, ErrUninstallChanged, ErrUninstallConfirmation, ErrUninstallIncomplete, ErrPermission, ErrHostChanged, ErrTargetVersionChanged, ErrPreflightRequired, ErrHostBusy, ErrExistingInstallation, ErrRemote, ErrReadiness, ErrInvalidInput, kube.ErrJoinUnsupported, kube.ErrHostClusterOccupied} {
 		if errors.Is(err, safe) {
 			return safe.Error()
 		}

@@ -56,6 +56,9 @@ func (s *Service) ValidateHostForSave(ctx context.Context, clusterID string, hos
 	if host.IsBuiltin || host.Mode != model.HostModeSSH || host.ProjectID != "" && host.ProjectID != cluster.ProjectID || host.DepartmentID != "" && host.DepartmentID != cluster.DepartmentID {
 		return nil, ErrInvalidClusterHosts
 	}
+	if err := RequireHostClusterAvailable(ctx, s.db, []string{host.ID}, cluster.ID); err != nil {
+		return nil, err
+	}
 	if err := s.validateHosts(ctx, cluster, []model.Host{host}, nil); err != nil {
 		return nil, err
 	}
@@ -68,7 +71,11 @@ func (s *Service) ValidateHostForSave(ctx context.Context, clusterID string, hos
 		if !sameClusterConnection(snapshot, current) {
 			return ErrClusterHostCheckUnavailable
 		}
-		return nil
+		var hostRows []model.Host
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("uuid").Where("uuid = ?", host.ID).Find(&hostRows).Error; err != nil {
+			return ErrClusterHostCheckUnavailable
+		}
+		return RequireHostClusterAvailable(tx.Statement.Context, tx, []string{host.ID}, current.ID)
 	}, nil
 }
 
@@ -122,6 +129,9 @@ func (s *Service) validateHostSelection(ctx context.Context, cluster *model.Kube
 		if host.IsBuiltin || host.Mode != model.HostModeSSH || host.ProjectID != cluster.ProjectID || host.DepartmentID != cluster.DepartmentID {
 			return nil, ErrInvalidClusterHosts
 		}
+	}
+	if err := RequireHostClusterAvailable(ctx, s.db, ids, cluster.ID); err != nil {
+		return nil, err
 	}
 	if err := s.validateHosts(ctx, cluster, hosts, connection); err != nil {
 		return nil, err

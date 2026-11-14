@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"edo/internal/kube"
 	"edo/internal/model"
 )
 
@@ -178,5 +179,43 @@ func TestExplicitKubernetesAssociationRefreshUsesClusterAPIWithoutSSHOrHostBinar
 	}
 	if current := readCapability(); current.RuntimeID != capability.RuntimeID || current.Status != model.HostCapabilityReady {
 		t.Fatalf("API 恢复后应继续使用原集群关联: %+v", current)
+	}
+}
+
+func TestKubernetesHostUpdateCannotOverwriteAnotherCluster(t *testing.T) {
+	service, _, _ := newHostTestService(t)
+	service.kubernetes = &validatingClusterProbe{}
+	input := hostTestInput()
+	tested, err := service.Test(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.TestToken = tested.Token
+	created, err := service.Create(context.Background(), "admin", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := input.KubernetesClusterID
+	input.KubernetesClusterID = "another-cluster"
+	input.Name = "不能保存的名称"
+	tested, err = service.TestExisting(context.Background(), created.Host.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.TestToken = tested.Token
+	if _, err := service.Update(context.Background(), created.Host.ID, input); !errors.Is(err, kube.ErrHostClusterOccupied) {
+		t.Fatalf("host edit transferred cluster: %v", err)
+	}
+	saved, err := service.Get(context.Background(), created.Host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Host.Name != created.Host.Name {
+		t.Fatal("rejected edit changed host")
+	}
+	for _, capability := range saved.Capabilities {
+		if capability.Kind == model.HostCapabilityKubernetes && capability.RuntimeID != original {
+			t.Fatal("rejected edit changed cluster")
+		}
 	}
 }

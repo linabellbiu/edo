@@ -256,6 +256,8 @@ func (h k3sHandler) writeError(c *gin.Context, operation string, err error) {
 		status, code, message = http.StatusNotFound, "k3s_installation_not_found", k3s.ErrNotFound.Error()
 	case errors.Is(err, kube.ErrClusterExists):
 		status, code, message = http.StatusConflict, "kubernetes_cluster_exists", kube.ErrClusterExists.Error()
+	case errors.Is(err, kube.ErrHostClusterOccupied):
+		status, code, message = http.StatusConflict, "host_cluster_occupied", kube.ErrHostClusterOccupied.Error()
 	case errors.Is(err, kube.ErrJoinUnsupported):
 		status, code, message = http.StatusBadRequest, "k3s_join_unsupported", "当前集群不支持 K3s 主机安装，请使用对应的节点加入方式"
 	case errors.Is(err, k3s.ErrPlanExpired):

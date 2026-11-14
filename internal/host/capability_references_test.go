@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func TestLocalExecRemovalIgnoresRetainedDockerTarget(t *testing.T) {
 				t.Fatalf("关闭本地执行改变了 Docker 能力: %+v", updated.Capabilities)
 			}
 			var stored model.DeploymentTarget
-			if err := db.First(&stored, "uuid = ?", target.ID).Error; err != nil || stored != baseline {
+			if err := db.First(&stored, "uuid = ?", target.ID).Error; err != nil || !reflect.DeepEqual(stored, baseline) {
 				t.Fatalf("能力变更不应修改发布目标: %+v err=%v", stored, err)
 			}
 		})

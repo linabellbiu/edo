@@ -45,6 +45,9 @@ func (s *Service) normalizeK3d(ctx context.Context, input Input) (Input, []Host,
 	if err != nil {
 		return input, nil, nil, nil, nil, err
 	}
+	if err := kube.RequireHostClusterAvailable(ctx, s.db, []string{host.ID}, ""); err != nil {
+		return input, nil, nil, nil, nil, err
+	}
 	options := K3dOptions{APIPort: 16443, BindAddress: host.Address}
 	if input.K3d != nil {
 		options = *input.K3d

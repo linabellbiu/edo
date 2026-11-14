@@ -52,7 +52,7 @@ func (e *installationFailure) Error() string {
 	if name == "" {
 		name = "安装检查"
 	}
-	for _, safe := range []error{ErrDownloaderMissing, ErrExistingInstallation} {
+	for _, safe := range []error{ErrDownloaderMissing, ErrExistingInstallation, kube.ErrHostClusterOccupied} {
 		if errors.Is(e.cause, safe) {
 			return safe.Error()
 		}
