@@ -188,23 +188,15 @@ test('新建与重开表单默认官方来源，显式来源选择保持独立�
   }
 })
 
-test('表单与确认计划明确官方脚本、宿主机原生服务和默认containerd，中英文模板均有效',()=>{
+test('原生安装表单与确认页不重复展示脚本说明，保留默认运行时提示',()=>{
   const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
   const {descriptor,errors}=parse(source)
   assert.deepEqual(errors,[])
   assert.deepEqual(compileTemplate({source:descriptor.template.content,filename:'K3sProvisionDrawer.vue',id:'native-k3s-install'}).errors,[])
+  assert.doesNotMatch(descriptor.template.content,/nativeInstallTitle|nativeInstallHint|nativeInstallConfirmTitle|nativeInstallConfirmHint/)
+  assert.ok(descriptor.template.content.includes("t('k8s.nativeRuntimeHint')"))
   const {kubernetesZh:zh,kubernetesEn:en}=loadFrontend('../src/locales/kubernetes.ts')
-  for(const key of ['nativeInstallTitle','nativeInstallHint','nativeRuntimeHint','nativeInstallConfirmTitle','nativeInstallConfirmHint']){
-    assert.equal(typeof zh[key],'string',key);assert.equal(typeof en[key],'string',key)
-    assert.ok(descriptor.template.content.includes(`t('k8s.${key}')`),key)
-  }
-  for(const locale of [zh,en]){
-    assert.match(locale.nativeInstallHint,/https:\/\/get\.k3s\.io/)
-    assert.match(locale.nativeInstallHint,/SSH/);assert.match(locale.nativeInstallHint,/systemd\/OpenRC/)
-    assert.match(locale.nativeInstallHint,/Docker\/k3d/);assert.match(locale.nativeRuntimeHint,/containerd/)
-  }
-  assert.match(zh.nativeInstallHint,/宿主机/);assert.match(zh.nativeInstallHint,/不.*Docker\/k3d/)
-  assert.match(en.nativeInstallHint,/host/);assert.match(en.nativeInstallHint,/No Docker\/k3d/)
+  for(const locale of [zh,en])assert.match(locale.nativeRuntimeHint,/containerd/)
 })
 
 test('原生安装不要求Docker主机能力，默认不注入运行时参数且保留官方自选cri-dockerd',async()=>{

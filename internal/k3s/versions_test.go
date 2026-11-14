@@ -55,7 +55,7 @@ func TestJoinPreviewPinsTargetVersionForDefaultAndUnspecifiedCustomVersion(t *te
 			if snapshot.TargetVersion != plan.Version || snapshot.Input.Installer["INSTALL_K3S_VERSION"] != plan.Version {
 				t.Fatal("reviewed input must retain target and pinned install versions")
 			}
-			if len(plan.Warnings) < 2 {
+			if !strings.Contains(strings.Join(plan.Warnings, "\n"), "安装版本与选项目录版本不同") {
 				t.Fatal("schema-version compatibility warning must survive target-version defaulting")
 			}
 		})

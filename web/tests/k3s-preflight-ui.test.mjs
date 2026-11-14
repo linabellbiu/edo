@@ -64,10 +64,10 @@ test('抽屉与报告限制网格最小宽度，窄屏长文本不能撑宽焦�
 })
 
 const ast=parse(read('../src/components/K3sProvisionDrawer.vue')).descriptor.template.ast
-test('检测中或已有报告不叠加长安装介绍，原生与k3d分支使用相同门控',()=>{
+test('仅k3d保留安装介绍，检测中或已有报告不叠加说明',()=>{
   const introductions=ast.children.filter(node=>node.type===1&&node.tag==='a-drawer').flatMap(node=>node.children).filter(node=>node.type===1&&node.props.some(prop=>prop.type===6&&prop.name==='class'&&prop.value?.content==='provision-content')).flatMap(node=>node.children).filter(node=>node.type===1&&node.tag==='a-alert'&&node.props.some(prop=>prop.type===7&&prop.name==='bind'&&prop.arg?.content==='description'&&/nativeInstallHint|k3dInstallHint/.test(prop.exp?.content??'')))
-  assert.equal(introductions.length,2)
-  for(const node of introductions){const condition=node.props.find(prop=>prop.type===7&&['if','else-if'].includes(prop.name))?.exp?.content??'';assert.match(condition,/!installation&&!visiblePreflight&&!checking/)}
+  assert.equal(introductions.length,1)
+  for(const node of introductions){const condition=node.props.find(prop=>prop.type===7&&['if','else-if'].includes(prop.name))?.exp?.content??'';assert.match(condition,/!installation&&!visiblePreflight&&!checking&&displayMode==='k3d'/)}
 })
 let footer
 function find(node){if(node.type===1&&node.tag==='template'&&node.props.some(p=>p.type===7&&p.name==='slot'&&p.arg?.content==='footer'))footer=node;for(const child of node.children??[])find(child)}

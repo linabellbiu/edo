@@ -537,7 +537,6 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 		}
 		plan.Commands = append(plan.Commands, command)
 	}
-	plan.Warnings = append(plan.Warnings, "将在所选主机执行 K3s 官方安装脚本并启动系统服务，不覆盖已有 K3s 配置。")
 	if input.Mode == "k3d" {
 		plan.Version = k3dK3sVersion
 		plan.ServerConfig, plan.AgentConfig = "", ""

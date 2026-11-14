@@ -362,8 +362,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
   <a-drawer :open="open" :title="title" width="min(1060px,96vw)" :closable="!busy||checking" :mask-closable="!busy||checking" @close="close">
     <div class="provision-content">
       <a-steps :current="currentStep" size="small" :items="displayMode==='k3d'?[{title:'安装配置'},{title:'安装前检测'},{title:'确认计划'},{title:'执行结果'}]:[{title:'安装配置'},{title:'确认安装'},{title:'安装进度'}]" />
-      <a-alert v-if="!installation&&!visiblePreflight&&!checking&&displayMode==='native'" type="info" show-icon :message="t('k8s.nativeInstallTitle')" :description="t('k8s.nativeInstallHint')" />
-      <a-alert v-else-if="!installation&&!visiblePreflight&&!checking" type="info" show-icon :message="t('k8s.k3dInstallTitle')" :description="t('k8s.k3dInstallHint')" />
+      <a-alert v-if="!installation&&!visiblePreflight&&!checking&&displayMode==='k3d'" type="info" show-icon :message="t('k8s.k3dInstallTitle')" :description="t('k8s.k3dInstallHint')" />
       <a-alert v-if="!canExecute" type="warning" show-icon message="需要主机读取、集群执行和关联权限，以及对应的创建权限。" />
       <a-alert v-if="loadError" type="error" show-icon message="安装配置读取失败" :description="loadError"><template #action><a-button size="small" @click="initialize">重试</a-button></template></a-alert>
       <div v-if="error" ref="errorRegion" tabindex="-1"><a-alert type="error" show-icon :message="error" /></div>
@@ -428,8 +427,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
         </a-form>
 
         <div v-else-if="plan&&!installation" class="plan-review">
-          <a-alert v-if="displayMode==='native'" type="info" show-icon :message="t('k8s.nativeInstallConfirmTitle')" :description="t('k8s.nativeInstallConfirmHint')" />
-          <a-alert v-else type="warning" show-icon :message="t('k8s.k3dInstallConfirmTitle')" :description="t('k8s.k3dSingleHostWarning')" />
+          <a-alert v-if="displayMode==='k3d'" type="warning" show-icon :message="t('k8s.k3dInstallConfirmTitle')" :description="t('k8s.k3dSingleHostWarning')" />
           <a-alert v-if="!planModeValid" type="error" show-icon :message="t('k8s.installModeMismatch')" />
           <a-alert v-if="!planSourceValid" type="error" show-icon :message="t('k8s.installSourceMismatch')" />
           <dl class="plan-facts"><div><dt>{{ t('k8s.installMode') }}</dt><dd>{{ t(displayMode==='k3d'?'k8s.installModeK3d':'k8s.installModeNative') }}</dd></div><template v-if="displayMode==='k3d'"><div><dt>{{ t('k8s.k3dTopologyLabel') }}</dt><dd>{{ t('k8s.k3dTopology', { agents: k3dConfig?.agents ?? '—' }) }}</dd></div><div><dt>{{ t('k8s.k3dBindAddress') }}</dt><dd>{{ k3dConfig?.bind_address || '—' }}</dd></div><div><dt>{{ t('k8s.k3dApiPort') }}</dt><dd>{{ k3dConfig?.api_port ?? '—' }}</dd></div></template></dl>
