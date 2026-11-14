@@ -8,12 +8,12 @@
 | FL-02 | 失败记录之后有超过十条成功任务 | 请求上一失败日志 | 服务端先按项目、操作者、动作/目标集群与失败状态筛选，再取自增 ID 最新一条；成功、其他用户/项目/动作不混入。真实数据库及正常 HTTP 入口回归通过 |
 | FL-03 | 夹具模拟本次安装失败 | 生成计划→开始安装→失败→关闭→重开 | 回到安装配置，本次失败仅成为上一失败日志；不重放安装。浏览器及回归通过 |
 | FL-04 | 夹具模拟当前安装仍在运行 | 关闭并重开 | 继续同一个已受理任务的真实进度，不重置或重新提交。浏览器及回归通过 |
-| FL-05 | 读取中切换项目/关闭/撤权、读取失败 | 延迟返回日志或进度 | 迟到响应丢弃，撤权清空；日志读取错误不阻止正常配置。前端回归通过 |
+| FL-05 | 读取中切换项目/安装模式/节点角色、关闭/撤权、读取失败 | 延迟返回日志或进度 | 迟到响应丢弃，撤权清空；日志读取错误不阻止正常配置。前端回归通过 |
 | FL-06 | 已卸载并移除连接的失败历史 | 查询任务/尝试管理 | 保留历史 UUID 与日志，不再返回不存在连接的管理对象；前端不以历史 UUID 导航。后端与前端回归通过 |
 | FL-07 | 浅色、深色、390 px 窄屏 | 键盘展开日志并检查布局 | 原生折叠、纯文本、64 KiB 上限、滚动及可见焦点保留，当前步骤始终为配置，抽屉未横向撑宽。浏览器及编译模板回归通过 |
 
 后端：`go test -race ./internal/k3s ./internal/httpapi -run 'Test(LastFailure|K3sHTTPLastFailure|Worker|K3dWorker|Uninstall|K3sUninstall)' -count=1 -timeout 180s` 通过。
 
-前端：`node --test web/tests/k3s-provision.test.mjs web/tests/k3s-preflight-ui.test.mjs web/tests/k3s-progress.test.mjs web/tests/k3s-uninstall.test.mjs` 共 123 项通过，`npm run build` 通过。
+前端：`node --test web/tests/k3s-provision.test.mjs web/tests/k3s-preflight-ui.test.mjs web/tests/k3s-progress.test.mjs web/tests/k3s-uninstall.test.mjs` 共 124 项通过，`npm run build` 通过。
 
 浏览器仅访问隔离夹具，所有安装请求在内存中处理，不连接真实主机。截图为 `/tmp/edo-last-failure-light.png`、`/tmp/edo-last-failure-dark-mobile.png`；浅色抽屉横向范围 220～1280 px，390 px 窄屏范围 15.609～390 px，正文与日志均未横向溢出。

@@ -1160,3 +1160,17 @@ test('已结束任务重新打开回到配置，已移除连接的历史UUID不�
     try{await ctx.open();ctx.ready();await ctx.state.preview();await ctx.state.execute();ctx.state.manageCreatedCluster();assert.equal(ctx.replacements.length,0);ctx.props.open=false;await settle();ctx.props.open=true;await settle();assert.equal(ctx.state.currentStep.value,0);assert.equal(ctx.state.installation.value,undefined)}finally{ctx.stop()}
   }
 })
+
+
+test('切换安装模式或加入角色后继续读取上一失败日志，丢弃被取消的旧响应',async()=>{
+  for(const action of ['create','join']){
+    const pending=deferred();let reads=0
+    const ctx=harness({action,api:{getLastFailedK3sInstallation:()=>++reads===1?pending.promise:Promise.resolve({id:'latest',action,status:'failed',logs:'本范围的最新失败日志'})}})
+    try{
+      await ctx.open();if(action==='create')ctx.state.form.mode='k3d';else ctx.state.form.join_role='server';await settle()
+      assert.equal(ctx.state.previousFailureLogs.value.text,'本范围的最新失败日志');assert.equal(ctx.state.failureLoading.value,false)
+      pending.resolve({id:'old',action,status:'failed',logs:'被取消的旧响应'});await settle()
+      assert.equal(ctx.state.previousFailureLogs.value.text,'本范围的最新失败日志');assert.equal(ctx.state.installation.value,undefined)
+    }finally{ctx.stop()}
+  }
+})

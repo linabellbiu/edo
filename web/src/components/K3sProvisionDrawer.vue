@@ -332,7 +332,7 @@ watch(()=>form.mode,(mode,previous)=>{
   modeDrafts[previous]={...JSON.parse(JSON.stringify(form)),mode:previous}
   cancelRequests();busy.value=false;loading.value=false;plan.value=undefined;preflight.value=undefined;error.value=''
   restoringMode=true;Object.assign(form,{...(modeDrafts[mode]??emptyForm()),mode});restoringMode=false
-  if(props.open&&!catalog.value)void initialize()
+  if(props.open){if(!catalog.value)void initialize();else void loadPreviousFailure()}
 },{flush:'sync'})
 watch(()=>form.server_host_id,(id,previous)=>{
   if(isK3d.value&&(!form.k3d.bind_address||form.k3d.bind_address===defaultK3dBindAddress(hosts.value.find(host=>host.id===previous))))form.k3d.bind_address=defaultK3dBindAddress(hosts.value.find(host=>host.id===id))
@@ -342,7 +342,7 @@ watch(()=>form.join_role,()=>{
   cancelRequests();busy.value=false;loading.value=false
   Object.assign(form,{join_host_ids:[],server_token:'',server_options:{},agent_options:{},installer:{},overrides:''})
   optionTab.value=joinMaster.value?'server':'agent';plan.value=undefined;preflight.value=undefined;error.value=''
-  if(props.open&&!catalog.value)void initialize()
+  if(props.open){if(!catalog.value)void initialize();else void loadPreviousFailure()}
 })
 watch(()=>props.open,open=>{
   if(!open){form.server_token='';cancelRequests();busy.value=false;checking.value=false;loading.value=false;if(!installation.value){preflight.value=undefined;checkedInput.value='';checkedContext.value=''}return}
