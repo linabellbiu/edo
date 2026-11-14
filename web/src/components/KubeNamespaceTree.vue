@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ChevronDown, ChevronRight, Search } from 'lucide-vue-next'
+import { ChevronDown, ChevronRight, RefreshCw, Search } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import type { KubeCluster } from '@/api/kubernetes'
 
@@ -34,6 +34,10 @@ function toggleNamespace(name: string, checked: boolean) {
   else selected.delete(name)
   emit('selection', [...selected].sort())
 }
+function refreshNamespaces() {
+  if (props.disabled || props.loading || !namespaceEnabled.value || !currentCluster.value?.is_active) return
+  emit('retry')
+}
 </script>
 
 <template>
@@ -47,10 +51,10 @@ function toggleNamespace(name: string, checked: boolean) {
           <label v-if="namespaceEnabled" class="namespace-cluster-checkbox" :class="{'is-disabled':disabled||!item.is_active}"><input type="checkbox" :checked="item.id===cluster&&all" :indeterminate.prop="item.id===cluster&&!all&&selected.length>0" :aria-checked="item.id===cluster&&!all&&selected.length>0?'mixed':undefined" :disabled="disabled||!item.is_active" :aria-label="t('k8s.selectClusterNamespaces',{name:item.name})" @change="toggleAll(item)" /></label>
           <a-radio v-else name="kube-workspace-cluster" :checked="item.id===cluster" :disabled="disabled||!item.is_active" :aria-label="item.name" @change="chooseCluster(item.id)" />
           <button type="button" class="namespace-cluster-name" :class="{inactive:!item.is_active}" :disabled="disabled||!item.is_active" :title="item.name" @click="chooseCluster(item.id)">{{ item.name }}</button>
+          <button v-if="namespaceEnabled&&item.id===cluster" type="button" class="namespace-refresh" :aria-label="t(loading?'k8s.refreshingNamespaces':'k8s.refreshNamespaces',{name:item.name})" :title="t('k8s.refreshNamespaces',{name:item.name})" :aria-busy="Boolean(loading)" :disabled="disabled||!item.is_active||loading" @click="refreshNamespaces"><RefreshCw aria-hidden="true" :size="14" :class="{'is-spinning':loading}" /></button>
         </div>
         <div v-if="namespaceEnabled&&expanded===item.id&&item.id===cluster" class="namespace-children">
-          <a-spin v-if="loading" size="small" class="namespace-loading"/>
-          <div v-if="error" class="namespace-error" role="alert"><span>{{ error }}</span><a-button type="link" size="small" :disabled="disabled" @click="emit('retry')">{{ t('k8s.refresh') }}</a-button></div>
+          <div v-if="error" class="namespace-error" role="alert">{{ error }}</div>
           <div v-for="name in visibleNamespaces" :key="name" class="namespace-tree-item" :class="{selected:all||selected.includes(name),'is-disabled':disabled}">
             <a-checkbox :checked="all||selected.includes(name)" :disabled="disabled" :aria-label="name" @change="toggleNamespace(name,$event.target.checked)"><span :title="name">{{ name }}</span></a-checkbox>
           </div>
@@ -79,13 +83,16 @@ h3{margin:0;font-size:13px;font-weight:600;color:var(--kube-text)}
 .namespace-cluster-checkbox.is-disabled{cursor:not-allowed}
 .namespace-cluster-checkbox input{width:16px;height:16px;margin:0;accent-color:var(--kube-link);cursor:inherit}
 .namespace-cluster-checkbox input:focus-visible{outline:2px solid var(--kube-focus);outline-offset:3px}
-.namespace-expander,.namespace-cluster-name{border:0;background:none;color:var(--kube-text);cursor:pointer;font:inherit;text-align:left;border-radius:3px}
+.namespace-expander,.namespace-cluster-name,.namespace-refresh{border:0;background:none;color:var(--kube-text);cursor:pointer;font:inherit;text-align:left;border-radius:3px}
+.namespace-refresh{display:grid;place-items:center;width:24px;min-height:28px;padding:2px;flex-shrink:0;color:var(--kube-muted)}
+.namespace-refresh .is-spinning{animation:namespace-refresh-spin 1s linear infinite}
+@keyframes namespace-refresh-spin{to{transform:rotate(360deg)}}
 .namespace-expander{display:grid;place-items:center;width:24px;min-height:28px;padding:2px;color:var(--kube-muted);flex-shrink:0}
 .namespace-cluster-name{padding:4px 2px;min-height:28px;font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 .namespace-tree-branch.active>.namespace-cluster-row:not(.is-disabled) .namespace-cluster-name{color:var(--kube-link)}
-.namespace-cluster-name:not(:disabled):hover,.namespace-expander:not(:disabled):hover{background:var(--kube-hover);color:var(--kube-link)}
-.namespace-cluster-name:disabled,.namespace-expander:disabled,.scope-toggle:disabled{cursor:not-allowed;color:var(--kube-muted);opacity:.55}
-.namespace-cluster-name:focus-visible,.namespace-expander:focus-visible,.scope-toggle:focus-visible{outline:2px solid var(--kube-focus);outline-offset:1px}
+.namespace-cluster-name:not(:disabled):hover,.namespace-expander:not(:disabled):hover,.namespace-refresh:not(:disabled):hover{background:var(--kube-hover);color:var(--kube-link)}
+.namespace-cluster-name:disabled,.namespace-expander:disabled,.scope-toggle:disabled,.namespace-refresh:disabled{cursor:not-allowed;color:var(--kube-muted);opacity:.55}
+.namespace-cluster-name:focus-visible,.namespace-expander:focus-visible,.scope-toggle:focus-visible,.namespace-refresh:focus-visible{outline:2px solid var(--kube-focus);outline-offset:1px}
 .namespace-children{padding-left:24px;padding-top:4px}
 .namespace-tree-item{display:flex;align-items:center;min-height:34px;padding:4px 6px;border-radius:4px;color:var(--kube-muted);font-size:13px}
 .namespace-tree-item :deep(.ant-checkbox-wrapper)>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -96,7 +103,7 @@ h3{margin:0;font-size:13px;font-weight:600;color:var(--kube-text)}
 .namespace-tree-item :deep(.ant-checkbox-wrapper){display:flex;align-items:center;line-height:1.6;width:100%;min-width:0;color:inherit;font-size:13px}
 .namespace-selection-hint{margin:0;border-top:1px solid var(--kube-border);padding-top:8px;font-size:12px;color:var(--kube-muted)}
 .namespace-empty,.namespace-error{font-size:12px;color:var(--kube-muted);overflow-wrap:anywhere;padding:8px 0;margin:0;line-height:1.6}
-.namespace-loading{padding:12px}.namespace-error{color:var(--kube-danger)}
+.namespace-error{color:var(--kube-danger)}
 @media(max-width:1000px){.kube-namespace-tree{position:static;max-height:280px}.namespace-tree-scroll{max-height:180px;min-height:0}.scope-heading{flex-wrap:wrap}.scope-toggle{display:flex;align-items:center;justify-content:space-between;flex:1;gap:8px;min-height:28px;min-width:160px;padding:3px 5px;border:1px solid var(--kube-border);border-radius:4px;background:var(--kube-surface-soft);color:var(--kube-text);font:inherit;font-size:12px;text-align:right;cursor:pointer}.scope-toggle>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.scope-toggle small{font:inherit;color:var(--kube-muted)}.scope-toggle svg{flex-shrink:0;transition:transform .12s}.scope-toggle svg.expanded{transform:rotate(180deg)}.scope-options:not(.is-open){display:none}}
-@media(prefers-reduced-motion:reduce){.scope-toggle svg{transition:none}}
+@media(prefers-reduced-motion:reduce){.scope-toggle svg{transition:none}.namespace-refresh .is-spinning{animation:none}}
 </style>

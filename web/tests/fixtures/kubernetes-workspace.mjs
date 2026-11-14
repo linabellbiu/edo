@@ -24,7 +24,12 @@ client.defaults.adapter = async config => {
   const path = url.pathname
   let response
   if (path === '/kubernetes/clusters') response = { clusters: inventoryClusters }
-  else if (/^\/kubernetes\/clusters\/[^/]+\/namespaces$/.test(path)) response = { namespaces: ['preview', 'staging'] }
+  else if (/^\/kubernetes\/clusters\/[^/]+\/namespaces$/.test(path)) {
+    const delay = Math.min(5000, Math.max(0, Number(new URLSearchParams(location.search).get('namespace_refresh_ms')) || 0))
+    if (params.fresh && delay) await new Promise(resolve => setTimeout(resolve, delay))
+    config.signal?.throwIfAborted()
+    response = { namespaces: ['preview', 'staging'] }
+  }
   else if (path.endsWith('/rbac')) {
     const enabled = new URLSearchParams(location.search).get('rbac') === 'enabled'
     response = { cluster_id: 'local-preview', enabled, desired_enabled: enabled, revision: 1, status: enabled ? 'synced' : 'disabled', last_error: '', grants: [], roles: [], catalog: [], namespaces: ['preview', 'staging'] }
