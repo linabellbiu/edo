@@ -1,9 +1,11 @@
 import {AxiosError} from 'axios'
+import {parseDocument} from 'yaml'
 import {createPreflightPreview,preflightPreviewHostID} from './k3s-preflight-data.mjs'
 
 // 只模拟确认与失败展示，不执行远端安装，不透传任何请求。
 export function createOfficialPreview({calls=[],progress=false,failureLog=false,review=false}={}){
   const base=createPreflightPreview('passed',{calls}),planID='official-fixture-plan'
+  if(review)base.hosts.push({...base.hosts[0],id:'22222222-2222-4222-8222-222222222222',name:'前端验收工作节点',address:'192.0.2.25'})
   let plan,installation
   const response=(config,data)=>({config,data:JSON.parse(JSON.stringify(data)),status:200,statusText:'OK',headers:{}})
   const reject=config=>{throw new AxiosError('官方流程夹具拒绝未登记请求','FIXTURE_REJECTED',config,undefined,{status:400,data:{message:'官方流程夹具拒绝未登记请求'}})}
@@ -22,8 +24,15 @@ export function createOfficialPreview({calls=[],progress=false,failureLog=false,
       const sources={download_source:body.download_source,installer_url:domestic?'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh':'https://get.k3s.io',artifact_url:domestic?'https://rancher-mirror.rancher.cn/k3s':'https://github.com/k3s-io/k3s/releases/download',...(domestic?{mirror:'cn'}:{}),system_image_registry:''}
       plan={id:planID,action:'create',mode:'native',name:body.name,version:'v1.37.1+k3s1',endpoint:'https://192.0.2.24:6443',expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:preflightPreviewHostID,name:'前端测试主机',address:'192.0.2.24',role:'server'}],sources,server_config:body.datastore==='etcd'?'cluster-init: true':'node-label:\n  - edo.dev/fixture=true',commands:[`curl -sfL ${sources.installer_url} -o /tmp/install.sh\n${domestic?'INSTALL_K3S_MIRROR=cn ':''}sh /tmp/install.sh server`],warnings:[]}
       if(review){
+        const serverOptions={...body.server_options,...parseDocument(body.overrides||'').toJS({maxAliasCount:0})?.server}
+        if(serverOptions['disable-agent']===true)plan.server_config+='\ndisable-agent: true\n'
         plan.hosts[0].name='前端验收控制平面主机-用于检查长名称与完整配置'
-        plan.hosts[0].config=(body.datastore==='etcd'?'cluster-init: true\n':'')+'node-label:\n  - edo.dev/installation=fixture-installation\n  - edo.dev/host='+preflightPreviewHostID+'\ntls-san:\n  - 192.0.2.24\n'
+        plan.hosts[0].config=(body.datastore==='etcd'?'cluster-init: true\n':'')+(serverOptions['disable-agent']===true?'disable-agent: true\n':'')+'node-label:\n  - edo.dev/installation=fixture-installation\n  - edo.dev/host='+preflightPreviewHostID+'\ntls-san:\n  - 192.0.2.24\n'
+        for(const id of body.agent_host_ids??[]){
+          const worker=base.hosts.find(host=>host.id===id&&host.id!==preflightPreviewHostID)
+          if(!worker)return reject(config)
+          plan.hosts.push({id:worker.id,name:worker.name,address:worker.address,role:'agent',config:'node-label:\n  - edo.dev/role=worker\n'})
+        }
       }
       return response(config,plan)
     }

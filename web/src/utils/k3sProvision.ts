@@ -1,5 +1,5 @@
 import type { InfrastructureHost } from '@/api/infrastructure'
-import type { K3sInstallation, K3sOption, K3sJoinRole } from '@/api/k3s'
+import type { K3sInstallation, K3sOption, K3sJoinRole, K3sPlanHost } from '@/api/k3s'
 import { parseDocument } from 'yaml'
 
 export function k3sOptionGroups(options: K3sOption[], query: string) {
@@ -49,6 +49,21 @@ export function k3sInstallationLabel(status?: K3sInstallation['status'], action?
 
 export function k3sHostRoleLabel(role?: string) {
   return role === 'server' ? '控制平面（Master）' : role === 'agent' ? '工作节点（Worker）' : '节点'
+}
+
+export function k3sPlanHostRoleLabels(host: K3sPlanHost, serverConfig = '') {
+  const roles = [k3sHostRoleLabel(host.role)]
+  if (host.role !== 'server') return roles
+  const config = host.config || serverConfig
+  if (config.trim()) {
+    try {
+      const document = parseDocument(config, {uniqueKeys:true})
+      if (document.errors.length) return roles
+      const options = document.toJS({maxAliasCount:0})
+      if (!options || typeof options !== 'object' || Array.isArray(options) || !k3sServerAgentEnabled(options)) return roles
+    } catch { return roles }
+  }
+  return [...roles, k3sHostRoleLabel('agent')]
 }
 
 export const k3sMasterRawArgumentOptions = ['etcd-arg','kube-apiserver-arg','kube-controller-manager-arg','kube-scheduler-arg','kube-cloud-controller-manager-arg','kube-controller-arg','kube-cloud-controller-arg','cloud-controller-manager-arg'] as const

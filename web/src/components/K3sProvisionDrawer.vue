@@ -7,7 +7,7 @@ import { listHosts, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import {
   getK3sCatalog, getK3sInstallation, getLastFailedK3sInstallation, checkK3sPreflight, previewK3sPlan, startK3sInstallation,
-  type K3sCatalog, type K3sInstallation, type K3sPlan, type K3sPlanInput, type K3sPreflightReport, type K3sPreflightCheck, type K3sJoinRole, type K3sInstallMode, type K3dConfig, type K3sDownloadSource,
+  type K3sCatalog, type K3sInstallation, type K3sPlan, type K3sPlanHost, type K3sPlanInput, type K3sPreflightReport, type K3sPreflightCheck, type K3sJoinRole, type K3sInstallMode, type K3dConfig, type K3sDownloadSource,
 } from '@/api/k3s'
 import K3sOptionFields from '@/components/K3sOptionFields.vue'
 import K3sPreflightReportView from '@/components/K3sPreflightReport.vue'
@@ -16,8 +16,7 @@ import HostDrawer from '@/components/HostDrawer.vue'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import { hasCustomK3sDatastore } from '@/utils/k3sDatastore'
 import { useAuthStore } from '@/stores/auth'
-import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sHostRoleLabel, k3sInstallationLabel, k3sInstallationLogView, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, k3sServerAgentEnabled, validateK3sOverrides } from '@/utils/k3sProvision'
-import { formatDateTime } from '@/utils/time'
+import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sInstallationLabel, k3sInstallationLogView, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, k3sPlanHostRoleLabels, k3sServerAgentEnabled, validateK3sOverrides } from '@/utils/k3sProvision'
 import { defaultK3dBindAddress, validK3dBindAddress } from '@/utils/k3dProvision'
 
 const props = withDefaults(defineProps<{open:boolean;action?:'create'|'join';cluster?:string;endpoint?:string;hosts?:InfrastructureHost[]}>(), {
@@ -88,15 +87,13 @@ const frozenSources = computed(() => installation.value?installation.value.sourc
 const sourceFacts = computed(() => {
   const sources=frozenSources.value
   return [
-    {key:'download_source',label:t('k8s.installDownloadSource'),value:sources?.download_source==='official'?t('k8s.downloadOfficial'):sources?.download_source==='official_cn'?t('k8s.downloadOfficialCn'):t('k8s.sourceNotRecorded')},
     {key:'installer_url',label:t('k8s.installerSourceURL'),value:sources?.installer_url||t('k8s.sourceNotRecorded')},
     {key:'artifact_url',label:t('k8s.artifactSourceURL'),value:sources?.artifact_url||t('k8s.sourceNotRecorded')},
     {key:'system_image_registry',label:t('k8s.systemImageSource'),value:typeof sources?.system_image_registry==='string'?(sources.system_image_registry||t('k8s.systemImageOfficial')):t(props.action==='join'?'k8s.systemImageInheritedUnrecorded':'k8s.sourceNotRecorded')},
-    ...(sources?.mirror?[{key:'mirror',label:t('k8s.installerMirror'),value:sources.mirror}]:[]),
   ]
 })
-const summarySourceFacts = computed(()=>sourceFacts.value.filter(fact=>['download_source','system_image_registry'].includes(fact.key)))
-const downloadSourceFacts = computed(()=>sourceFacts.value.filter(fact=>!['download_source','system_image_registry'].includes(fact.key)))
+const summarySourceFacts = computed(()=>sourceFacts.value.filter(fact=>fact.key==='system_image_registry'))
+const downloadSourceFacts = computed(()=>sourceFacts.value.filter(fact=>fact.key!=='system_image_registry'))
 const k3dEndpoint = computed(() => {const address=form.k3d.bind_address.trim();return validK3dBindAddress(address)?`https://${address}:${form.k3d.api_port}`:''})
 const joinMaster = computed(() => props.action==='join'&&form.join_role==='server')
 const joinHostSelection = computed({
@@ -107,6 +104,10 @@ const showServerOptions = computed(() => !isK3d.value&&(props.action==='create'|
 const showAgentOptions = computed(() => !isK3d.value&&(props.action==='create'||!joinMaster.value))
 const customDatastore = computed(() => props.action==='create'&&form.profile==='custom'&&hasCustomK3sDatastore(form.server_options,form.overrides))
 const selectedHosts = computed(() => hosts.value.filter(host=>props.action==='join'?form.join_host_ids.includes(host.id):host.id===form.server_host_id||!isK3d.value&&form.worker_host_ids.includes(host.id)))
+const reviewHosts = computed(() => {
+  const targets: K3sPlanHost[] = plan.value?.hosts ?? selectedHosts.value
+  return targets.map(host=>({...host,roleLabels:displayMode.value==='k3d'?[t('k8s.k3dHost')]:k3sPlanHostRoleLabels(host,plan.value?.server_config)}))
+})
 const hasHostConfig = computed(() => plan.value?.hosts?.some(host=>Boolean(host.config)))
 const endpointPlaceholder = computed(() => k3sAutomaticEndpoint(hosts.value.find(host=>host.id===form.server_host_id),form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:'')||'https://192.168.1.10:6443')
 const canManageClusterResources = computed(() => auth.canAny(['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read']))
@@ -433,7 +434,6 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
               <div v-if="plan.version"><dt>安装版本</dt><dd><code>{{ plan.version }}</code></dd></div>
               <div v-if="action==='join'&&plan.target_version"><dt>目标集群版本</dt><dd><code>{{ plan.target_version }}</code></dd></div>
               <div><dt>API 地址</dt><dd><code>{{ plan.endpoint||form.endpoint }}</code></dd></div>
-              <div><dt>计划有效期</dt><dd>{{ formatDateTime(plan.expires_at,'zh-CN') }}</dd></div>
               <template v-if="displayMode==='k3d'">
                 <div><dt>{{ t('k8s.k3dTopologyLabel') }}</dt><dd>{{ t('k8s.k3dTopology', { agents: k3dConfig?.agents ?? '—' }) }}</dd></div>
                 <div><dt>{{ t('k8s.k3dBindAddress') }}</dt><dd><code>{{ k3dConfig?.bind_address || '—' }}</code></dd></div>
@@ -445,7 +445,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
           <section class="review-section" aria-label="目标主机">
             <h4 class="review-section-heading"><Server :size="15" aria-hidden="true" />目标主机</h4>
             <ul class="plan-hosts" tabindex="0" aria-label="安装目标主机">
-              <li v-for="host in plan.hosts||selectedHosts" :key="host.id"><span class="review-host-identity"><strong>{{ host.name }}</strong><code>{{ host.address }}</code></span><a-tag>{{ displayMode==='k3d'?t('k8s.k3dHost'):k3sHostRoleLabel('role' in host?String(host.role):undefined) }}</a-tag></li>
+              <li v-for="host in reviewHosts" :key="host.id"><span class="review-host-identity"><strong>{{ host.name }}</strong><code>{{ host.address }}</code></span><span class="review-host-roles"><a-tag v-for="role in host.roleLabels" :key="role">{{ role }}</a-tag></span></li>
             </ul>
           </section>
 
@@ -466,7 +466,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
             <div class="review-section-content configuration-stack">
               <template v-if="displayMode==='native'">
                 <template v-if="hasHostConfig">
-                  <YamlCodeEditor v-for="host in plan.hosts?.filter(item=>item.config)" :key="`${plan.id}:${host.id}`" :model-value="host.config||''" readonly fullscreen collapsible default-collapsed :label="`最终主机配置：${host.name} · ${k3sHostRoleLabel(host.role)}`"><template #toolbar><span>{{ host.name }}</span><a-tag>{{ k3sHostRoleLabel(host.role) }}</a-tag></template></YamlCodeEditor>
+                  <YamlCodeEditor v-for="host in reviewHosts.filter(item=>item.config)" :key="`${plan.id}:${host.id}`" :model-value="host.config||''" readonly fullscreen collapsible default-collapsed :label="`最终主机配置：${host.name} · ${host.roleLabels.join('、')}`"><template #toolbar><span>{{ host.name }}</span><a-tag v-for="role in host.roleLabels" :key="role">{{ role }}</a-tag></template></YamlCodeEditor>
                 </template>
                 <YamlCodeEditor v-if="!hasHostConfig&&plan.server_config" :model-value="plan.server_config" readonly fullscreen collapsible default-collapsed label="控制平面最终配置"><template #toolbar><span>控制平面最终配置</span></template></YamlCodeEditor>
                 <YamlCodeEditor v-if="!hasHostConfig&&plan.agent_config" :model-value="plan.agent_config" readonly fullscreen collapsible default-collapsed label="工作节点最终配置"><template #toolbar><span>工作节点最终配置</span></template></YamlCodeEditor>
@@ -503,4 +503,5 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
 .provision-content .form-columns,.provision-content .plan-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.plan-review,.installation-result{grid-template-columns:minmax(0,1fr);min-width:0}.plan-review>*,.installation-result>*{min-width:0}@media(max-width:650px){.provision-content .form-columns,.provision-content .plan-facts{grid-template-columns:minmax(0,1fr)}}
 
 .plan-review .review-section{min-width:0}.plan-review .review-section-heading{display:flex;align-items:center;gap:8px;margin:0;padding:9px 14px;border-block:1px solid var(--edo-border);background:color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface));color:var(--edo-text);font-size:14px;font-weight:600}.review-section-heading>svg{flex-shrink:0;color:var(--edo-primary)}.review-section-content{padding:12px 14px;min-width:0}.review-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px;margin:0;min-width:0}.review-facts>div{display:flex;align-items:baseline;gap:10px;min-width:0;font-size:13px;line-height:1.7}.review-facts dt{flex:0 0 88px;color:var(--edo-muted);font-size:12px}.review-facts dd{flex:1;min-width:0;margin:0;overflow-wrap:anywhere}.review-facts code{font-size:12px}.review-facts .ant-tag{margin:0}.plan-review .plan-hosts{list-style:none;margin:0;padding:0;border:0;border-radius:0;max-height:240px;overflow:auto}.plan-hosts>li{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--edo-border);font-size:13px}.plan-hosts>li:last-child{border-bottom:0}.review-host-identity{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 14px;min-width:0}.review-host-identity strong{min-width:0;overflow-wrap:anywhere;font-weight:500}.review-host-identity code{min-width:0;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.plan-hosts>li .ant-tag{margin:0;white-space:normal;text-align:center}.review-disclosure{min-width:0}.review-disclosure summary{width:fit-content;max-width:100%;cursor:pointer;font-size:12px;line-height:1.8;color:var(--edo-text);overflow-wrap:anywhere}.download-addresses{margin-top:12px;padding-top:10px;border-top:1px solid var(--edo-border)}.review-disclosure[open]>summary{margin-bottom:10px}.download-facts{grid-template-columns:minmax(0,1fr)}.download-facts dt{flex-basis:112px}.configuration-stack{display:grid;gap:12px}.review-configurations :deep(.yaml-editor-heading){font-size:13px;overflow-wrap:anywhere}.review-configurations :deep(.yaml-editor-heading .ant-tag){margin:0}.review-configurations :deep(.yaml-code-editor .cm-scroller){min-height:112px;max-height:320px}.plan-review .review-commands pre{padding:12px;max-height:240px;min-width:0;font:12px/1.7 SFMono-Regular,Consolas,monospace}.review-disclosure summary:focus-visible,.plan-hosts:focus-visible,.review-commands pre:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}@media(max-width:650px){.review-facts{grid-template-columns:minmax(0,1fr);gap:10px}.review-facts dt{flex-basis:88px}.download-facts>div{display:grid;grid-template-columns:minmax(0,1fr);gap:2px}.download-facts dt{flex-basis:auto}.review-host-identity{display:grid;gap:2px}.review-section-content{padding:12px}.plan-hosts>li{padding:10px 12px;gap:8px}}
+.review-host-roles{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px 6px;max-width:280px;min-width:0}@media(max-width:650px){.plan-hosts>li{grid-template-columns:minmax(0,1fr)}.review-host-roles{justify-content:flex-start;max-width:100%}}
 </style>

@@ -104,6 +104,33 @@ test('主机回填只补空值，控制平面和Worker任一入口可先选，�
   }finally{ctx.stop()}
 })
 
+test('确认角色按最终配置展示：Server 默认兼任 Worker，显式禁用 Agent 时只显示 Master',()=>{
+  const server={id:'1',name:'Host 1',role:'server'}
+  const both=['控制平面（Master）','工作节点（Worker）'],master=['控制平面（Master）']
+  assert.deepEqual(helpers.k3sPlanHostRoleLabels(server),both)
+  assert.deepEqual(helpers.k3sPlanHostRoleLabels(server,'disable-agent: false'),both)
+  assert.deepEqual(helpers.k3sPlanHostRoleLabels(server,'disable-agent: true'),master)
+  assert.deepEqual(helpers.k3sPlanHostRoleLabels({...server,config:'disable-agent: false'},'disable-agent: true'),both,'主机最终配置优先')
+  assert.deepEqual(helpers.k3sPlanHostRoleLabels({...server,config:'disable-agent: true'},'disable-agent: false'),master)
+  for(const config of ['disable-agent: [','disable-agent: true\ndisable-agent: false','- invalid','null'])assert.deepEqual(helpers.k3sPlanHostRoleLabels({...server,config}),master,'无法确认配置时不伪造 Worker')
+  assert.deepEqual(helpers.k3sPlanHostRoleLabels({...server,role:'agent'}),['工作节点（Worker）'])
+})
+
+test('确认页同时展示同机双角色及独立 Worker，不增加重复 Agent 安装，k3d 仍只显示宿主机',async()=>{
+  const payloads=[],ctx=harness({api:{previewK3sPlan:async body=>{payloads.push(body);return body.mode==='k3d'?k3dPlan(body.k3d):({...plan(),hosts:[...plan().hosts,...body.agent_host_ids.map(id=>({...host(id),role:'agent'}))]})}}})
+  try{
+    await ctx.open();ctx.ready();await ctx.state.preview()
+    assert.deepEqual(ctx.state.reviewHosts.value.map(host=>[host.id,host.roleLabels]),[['1',['控制平面（Master）','工作节点（Worker）']]])
+    assert.deepEqual(payloads[0].agent_host_ids,[])
+    ctx.state.plan.value=undefined;ctx.state.workerHostSelection.value=['2'];await settle();await ctx.state.preview()
+    assert.deepEqual(ctx.state.reviewHosts.value.map(host=>[host.id,host.roleLabels]),[['1',['控制平面（Master）','工作节点（Worker）']],['2',['工作节点（Worker）']]])
+    assert.deepEqual(payloads.at(-1).agent_host_ids,['2'])
+    ctx.state.form.mode='k3d';await settle();ctx.ready();await settle();await ctx.state.preview()
+    assert.deepEqual(ctx.state.reviewHosts.value.map(host=>host.roleLabels),[['k8s.k3dHost']])
+    assert.equal(ctx.requests.some(request=>request.method==='start'),false)
+  }finally{ctx.stop()}
+})
+
 test('A/A回填后用户改为A/B即分别保留，再改控制平面、删除Worker或切换模式均不覆盖',async()=>{
   const ctx=harness()
   try{
@@ -615,10 +642,11 @@ test('计划和执行结果仅展示冻结来源，旧记录未记录且加入�
       Object.assign(ctx.state.form,{download_source:'official',system_image_source:'official',custom_system_image_registry:''})
       assert.deepEqual(ctx.state.frozenSources.value,sources)
       assert.equal(ctx.state.sourceFacts.value.find(item=>item.label==='k8s.systemImageSource').value,'frozen.example/team')
-      assert.equal(ctx.state.sourceFacts.value.find(item=>item.label==='k8s.installDownloadSource').value,'k8s.downloadOfficialCn')
+      assert.equal(ctx.state.sourceFacts.value.find(item=>item.key==='installer_url').value,sources.installer_url)
+      assert.equal(ctx.state.sourceFacts.value.some(item=>['download_source','mirror'].includes(item.key)),false)
       ctx.state.installation.value={id:'old-run',status:'succeeded'}
       assert.equal(ctx.state.frozenSources.value,undefined)
-      assert.equal(ctx.state.sourceFacts.value.find(item=>item.label==='k8s.installDownloadSource').value,'k8s.sourceNotRecorded')
+      assert.equal(ctx.state.sourceFacts.value.find(item=>item.key==='installer_url').value,'k8s.sourceNotRecorded')
       assert.equal(ctx.state.sourceFacts.value.find(item=>item.label==='k8s.systemImageSource').value,action==='join'?'k8s.systemImageInheritedUnrecorded':'k8s.sourceNotRecorded')
     }finally{ctx.stop()}
   }
