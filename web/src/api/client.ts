@@ -46,6 +46,12 @@ const selectedProject = () => typeof localStorage === 'undefined' ? '' : localSt
 const projectChangedMessage = '项目已切换，请刷新页面后重试'
 const contextRequest = (config: InternalAxiosRequestConfig) => /^\/?auth(?:\/|$)/.test(config.url ?? '') || config.method === 'get' && config.url === '/projects'
 
+function clusterResourceDenied(config: InternalAxiosRequestConfig, data: unknown) {
+  if (!/^\/?kubernetes\/clusters\/[^/?#]+(?:[/?#]|$)/.test(config.url ?? '') || !data || typeof data !== 'object' || !('code' in data)) return false
+  // 集群自身的 RBAC 拒绝不会因重读 EDO 项目权限而恢复，保留在对应页面处理。
+  return data.code === 'kubernetes_resource_forbidden' || data.code === 'kubernetes_rbac_forbidden'
+}
+
 client.interceptors.request.use(config => {
   if (!contextRequest(config)) {
     if (!authorizationFresh) throw new axios.AxiosError('正在重新核验权限，请稍后重试', 'EDO_AUTHORIZATION_PENDING', config)
@@ -85,7 +91,7 @@ client.interceptors.response.use(response => {
   if (axios.isAxiosError(error) && error.code === 'EDO_AUTHORIZATION_PENDING') throw error
   if (axios.isAxiosError(error) && responseAuthorizationChanged(error.config)) throw new axios.AxiosError('授权状态已更新，请重新读取', 'EDO_AUTHORIZATION_CHANGED', error.config)
   if (axios.isAxiosError(error) && responseProjectChanged(error.config)) throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', error.config)
-  if (axios.isAxiosError(error) && error.response?.status === 403 && error.config && !contextRequest(error.config) && typeof window !== 'undefined') {
+  if (axios.isAxiosError(error) && error.response?.status === 403 && error.config && !contextRequest(error.config) && !clusterResourceDenied(error.config, error.response.data) && typeof window !== 'undefined') {
     // 只通知当前范围重新核验权限；原请求仍失败，尤其不能自动重放写操作。
     window.dispatchEvent(new CustomEvent('edo:permissions-stale', { detail: { project: selectedProject() } }))
   }

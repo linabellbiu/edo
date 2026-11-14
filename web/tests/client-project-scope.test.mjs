@@ -78,6 +78,42 @@ test('当前业务403通知权限核验，原始POST只发送一次；认证403�
   assert.equal(events.length, 1)
 })
 
+test('集群自身的授权拒绝保留局部403，不触发全站权限核验或重放请求', async () => {
+  for (const code of ['kubernetes_resource_forbidden', 'kubernetes_rbac_forbidden']) {
+    const window = new EventTarget(), events = [], h = harness({ window })
+    window.addEventListener('edo:permissions-stale', event => { events.push(event.detail); h.module.setAuthorizationFreshness(false) })
+    let calls = 0
+    h.client.defaults.adapter = async config => {
+      calls++
+      throw new axios.AxiosError('denied', 'ERR_BAD_REQUEST', config, undefined, { status: 403, config, data: { code, message: '没有读取此集群资源的权限' } })
+    }
+    for (const path of ['/kubernetes/clusters/test/namespaces', '/kubernetes/clusters/test/resources/pods']) {
+      await assert.rejects(h.client.get(path), error => error.response?.status === 403 && error.response.data.code === code)
+    }
+    await assert.rejects(h.client.post('/kubernetes/clusters/test/resources/deployments', {}), error => error.response?.status === 403)
+    assert.equal(calls, 3)
+    assert.deepEqual(events, [])
+  }
+})
+
+test('Kubernetes 的项目级拒绝和未知403仍核验权限，集群错误码不能影响其他接口', async () => {
+  for (const [url, code] of [
+    ['/kubernetes/clusters/test/namespaces', 'forbidden'],
+    ['/kubernetes/clusters/test/namespaces', 'authorization_changed'],
+    ['/kubernetes/clusters/test/namespaces', undefined],
+    ['/applications', 'kubernetes_rbac_forbidden'],
+    ['/kubernetes/clusters', 'kubernetes_rbac_forbidden'],
+  ]) {
+    const window = new EventTarget(), events = [], h = harness({ window })
+    window.addEventListener('edo:permissions-stale', event => events.push(event.detail))
+    h.client.defaults.adapter = async config => {
+      throw new axios.AxiosError('denied', 'ERR_BAD_REQUEST', config, undefined, { status: 403, config, data: { code } })
+    }
+    await assert.rejects(h.client.get(url), error => error.response?.status === 403)
+    assert.deepEqual(events, [{ project: 'project-a' }])
+  }
+})
+
 test('旧项目403不会请求刷新新项目权限，正常2xx响应保持原数据对象', async () => {
   const window = new EventTarget(), events = [], h = harness({ window })
   window.addEventListener('edo:permissions-stale', event => events.push(event.detail))
