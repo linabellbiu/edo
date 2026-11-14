@@ -20,7 +20,7 @@ import (
 )
 
 // 托管资源契约变化后，已有计划必须重新预检并确认。
-const preflightVersion = 3
+const preflightVersion = 4
 
 // PreflightTimeout bounds the complete multi-host read-only check. HTTP callers
 // use the same budget instead of the server's shorter ordinary request limit.
@@ -223,11 +223,18 @@ func (s *Service) runPreflight(ctx context.Context, input Input, hosts []Host) (
 				report.Hosts[index] = failedHostPreflight(selected)
 				return
 			}
+			privilege, privilegeErr := s.transport.ProbePrivileges(probeCtx, current, bundle)
+			if blocked := privilegePreflight(selected, privilege, privilegeErr); blocked != nil {
+				report.Hosts[index] = *blocked
+				return
+			}
 			output, err := s.transport.Read(probeCtx, current, bundle, preflightProbeScript(selected, input, endpointReady))
 			if err != nil {
 				slog.ErrorContext(probeCtx, "读取 K3s 主机预检失败", "operation", "k3s_preflight_read", "host_id", selected.ID, "err", err)
 			}
 			report.Hosts[index] = parsePreflightProbe(selected, output, err)
+			privilege = completedPrivilege(privilege, report.Hosts[index].Checks, err)
+			report.Hosts[index].Privilege = &privilege
 			if isServerJoin(input) && report.Hosts[index].Passed {
 				peerScript, peerErr := serverPeerProbeScript(input.serverJoin)
 				peerOutput := ""

@@ -38,6 +38,10 @@ type uninstallTransport struct {
 	afterRun  func()
 }
 
+func (t *uninstallTransport) ProbePrivileges(context.Context, model.Host, sshclient.Bundle) (HostPrivilege, error) {
+	return HostPrivilege{}, ErrRemote
+}
+
 func (t *uninstallTransport) Read(ctx context.Context, _ model.Host, _ sshclient.Bundle, script string) (string, error) {
 	t.reads++
 	if t.afterRead != nil {

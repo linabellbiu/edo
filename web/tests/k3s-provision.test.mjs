@@ -1087,3 +1087,36 @@ test('高级数据库连接按YAML优先级回显，默认安装忽略隐藏草�
   const join=harness({action:'join'})
   try{await join.open();join.ready();assert.equal(join.state.input().datastore,undefined)}finally{join.stop()}
 })
+
+test('权限报告提供准确主机配置入口，保留安装草稿，保存后必须重新检测且不自动安装',async()=>{
+  const blocked=()=>{const report=preflightReport(false);report.hosts[0].privilege={distribution:'Ubuntu 24.04',account:'standard',sudo:'passwordless',sudo_enabled:false,ready:false,message:'账号可以 sudo，但 EDO 未启用',guidance:['打开主机配置','测试连接并保存']};return report}
+  const ctx=harness({assumeDetected:false,api:{checkK3sPreflight:async()=>blocked()}})
+  try{
+    await ctx.open();ctx.ready();ctx.state.form.name='保留安装草稿';ctx.state.form.datastore='etcd';await settle()
+    await ctx.state.checkPreflight();assert.equal(ctx.state.canPreview.value,false)
+    ctx.state.configurePrivilegeHost('2');assert.equal(ctx.state.hostConfigOpen.value,false)
+    ctx.state.configurePrivilegeHost('1');assert.equal(ctx.state.hostConfigOpen.value,true)
+    assert.equal(ctx.state.privilegeEditingHost.value.id,'1');assert.equal(ctx.state.canCheck.value,false)
+    await ctx.state.privilegeHostSaved();assert.equal(ctx.state.hostConfigOpen.value,false)
+    assert.equal(ctx.state.preflight.value,undefined);assert.equal(ctx.state.checkedInput.value,'')
+    assert.equal(ctx.state.form.name,'保留安装草稿');assert.equal(ctx.state.form.datastore,'etcd');assert.equal(ctx.state.form.server_host_id,'1')
+    assert.equal(ctx.requests.some(item=>['preview','start'].includes(item.method)),false)
+    ctx.state.preflight.value=blocked();ctx.state.configurePrivilegeHost('1');assert.equal(ctx.state.hostConfigOpen.value,true)
+    ctx.storage.project='changed';ctx.listeners.get('edo:projects-changed')?.({type:'edo:projects-changed'});await settle()
+    assert.equal(ctx.state.hostConfigOpen.value,false);assert.equal(ctx.state.privilegeEditingHost.value,undefined)
+  }finally{ctx.stop()}
+})
+
+test('权限检测数据缺失或与通过状态矛盾时阻断，正常环境失败仍保留已验证的权限事实',async()=>{
+  const ctx=harness({assumeDetected:false})
+  try{
+    await ctx.open();ctx.ready()
+    const report=preflightReport();report.hosts[0].privilege={distribution:'CentOS 9',account:'standard',sudo:'not_installed',sudo_enabled:false,ready:false,message:'没有 sudo',guidance:[]}
+    ctx.state.preflight.value=report;ctx.state.checkedInput.value=ctx.state.signature.value;ctx.state.checkedContext.value=ctx.state.context.value
+    assert.equal(ctx.state.canPreview.value,false)
+    assert.equal(ctx.state.readPreflight({...report,hosts:[{...report.hosts[0],privilege:{...report.hosts[0].privilege,sudo:'invented'}}]}),undefined)
+    report.passed=false;report.hosts[0].passed=false;report.hosts[0].checks=[preflightCheck('failed')]
+    report.hosts[0].privilege={...report.hosts[0].privilege,account:'root',sudo:'not_needed',ready:true}
+    assert.ok(ctx.state.readPreflight(report));assert.equal(ctx.state.reportPassed(report),false)
+  }finally{ctx.stop()}
+})

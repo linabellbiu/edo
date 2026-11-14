@@ -1,6 +1,7 @@
 package k3s
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -24,6 +25,10 @@ import (
 
 // 本地 SSH 对端使用真实 POSIX shell 和受控 sudo 桩，不需要或修改宿主机授权。
 func sudoShellPeer(t *testing.T, environment []string) (model.Host, <-chan remoteCall) {
+	return sudoShellPeerWithKey(t, environment, nil)
+}
+
+func sudoShellPeerWithKey(t *testing.T, environment []string, publicKey ssh.PublicKey) (model.Host, <-chan remoteCall) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -39,6 +44,14 @@ func sudoShellPeer(t *testing.T, environment []string) (model.Host, <-chan remot
 		}
 		return nil, nil
 	}}
+	if publicKey != nil {
+		configuration.PublicKeyCallback = func(metadata ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if metadata.User() != "operator" || !bytes.Equal(key.Marshal(), publicKey.Marshal()) {
+				return nil, errors.New("测试公钥不匹配")
+			}
+			return nil, nil
+		}
+	}
 	configuration.AddHostKey(signer)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

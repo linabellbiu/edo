@@ -23,13 +23,14 @@ type PreflightCheck struct {
 }
 
 type HostPreflight struct {
-	HostID   string                `json:"host_id"`
-	HostName string                `json:"host_name"`
-	Role     string                `json:"role"`
-	Hostname string                `json:"hostname"`
-	Passed   bool                  `json:"passed"`
-	Checks   []PreflightCheck      `json:"checks"`
-	Identity hostidentity.Identity `json:"-"`
+	HostID    string                `json:"host_id"`
+	HostName  string                `json:"host_name"`
+	Role      string                `json:"role"`
+	Hostname  string                `json:"hostname"`
+	Passed    bool                  `json:"passed"`
+	Checks    []PreflightCheck      `json:"checks"`
+	Identity  hostidentity.Identity `json:"-"`
+	Privilege *HostPrivilege        `json:"privilege,omitempty"`
 }
 
 type preflightCheckDefinition struct{ id, name, passed, failed, warning string }

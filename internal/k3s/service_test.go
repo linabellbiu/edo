@@ -46,6 +46,18 @@ type fakeTransport struct {
 	kubeconfig string
 }
 
+func privilegeFixture(host model.Host, bundle sshclient.Bundle) HostPrivilege {
+	value := HostPrivilege{Distribution: "Ubuntu 24.04", Account: "standard", Sudo: "passwordless", SudoEnabled: bundle.UseSudo}
+	if host.SSHUsername == "root" {
+		value.Account, value.Sudo = "root", "not_needed"
+	}
+	return describePrivilege(value)
+}
+
+func (f *fakeTransport) ProbePrivileges(_ context.Context, host model.Host, bundle sshclient.Bundle) (HostPrivilege, error) {
+	return privilegeFixture(host, bundle), nil
+}
+
 func (f *fakeTransport) Run(_ context.Context, _ model.Host, _ sshclient.Bundle, script string, _ io.Writer) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

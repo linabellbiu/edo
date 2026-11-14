@@ -12,6 +12,7 @@ import {
 import K3sOptionFields from '@/components/K3sOptionFields.vue'
 import K3sPreflightReportView from '@/components/K3sPreflightReport.vue'
 import K3sInstallationProgress from '@/components/K3sInstallationProgress.vue'
+import HostDrawer from '@/components/HostDrawer.vue'
 import { hasCustomK3sDatastore } from '@/utils/k3sDatastore'
 import { useAuthStore } from '@/stores/auth'
 import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sHostRoleLabel, k3sInstallationLabel, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, k3sServerAgentEnabled, validateK3sOverrides } from '@/utils/k3sProvision'
@@ -35,6 +36,7 @@ const loading = ref(false),busy = ref(false),error = ref(''),loadError = ref('')
 const recent = ref<K3sInstallation[]>([]),recentError = ref(''),recentLoading = ref(false)
 const plan = ref<K3sPlan>(),installation = ref<K3sInstallation>(),optionTab = ref('server'),now = ref(Date.now())
 const preflight = ref<K3sPreflightReport>()
+const hostConfigOpen=ref(false),privilegeEditingHost=ref<InfrastructureHost>()
 const checking=ref(false),checkedInput=ref(''),checkedContext=ref('')
 const preflightView=ref<{focus:()=>void}>(),errorRegion=ref<HTMLElement>()
 const emptyForm = () => ({
@@ -105,7 +107,7 @@ const hasHostConfig = computed(() => plan.value?.hosts?.some(host=>Boolean(host.
 const endpointPlaceholder = computed(() => k3sAutomaticEndpoint(hosts.value.find(host=>host.id===form.server_host_id),form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:'')||'https://192.168.1.10:6443')
 const canManageClusterResources = computed(() => auth.canAny(['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read']))
 const canExecute = computed(() => auth.canAny([props.action==='create'?'cluster.create':'kubernetes.node.create'])&&auth.canAny(['cluster.execute'])&&auth.canAny(['cluster.update'])&&auth.canAny(['cluster.read','deployment.read']))
-const canCheck = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!loading.value&&!busy.value&&sourceInputValid.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id&&(!isK3d.value||validK3dConfig(form.k3d))):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
+const canCheck = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!hostConfigOpen.value&&!loading.value&&!busy.value&&sourceInputValid.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id&&(!isK3d.value||validK3dConfig(form.k3d))):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
 const canPreview = computed(() => canCheck.value&&reportPassed(preflight.value)&&checkedInput.value===signature.value&&checkedContext.value===context.value)
 const running = computed(() => k3sInstallationRunning(installation.value))
 const planExpired = computed(() => Boolean(plan.value)&&(!Number.isFinite(Date.parse(plan.value!.expires_at))||Date.parse(plan.value!.expires_at)<=now.value))
@@ -164,13 +166,19 @@ function readPreflight(value:unknown):K3sPreflightReport|undefined {
   }
   if(typeof report.passed!=='boolean'||typeof report.checked_at!=='string'||!Number.isFinite(Date.parse(report.checked_at))||!Array.isArray(report.checks)||!report.checks.every(validCheck)||!Array.isArray(report.hosts))return
   if(!report.hosts.every(host=>host&&typeof host.host_id==='string'&&typeof host.host_name==='string'&&['server','agent','host'].includes(host.role)&&typeof host.hostname==='string'&&typeof host.passed==='boolean'&&Array.isArray(host.checks)&&host.checks.every(validCheck)))return
+  if(!report.hosts.every(host=>{
+    const value=host.privilege
+    if(value===undefined)return true
+    if(!value||typeof value.distribution!=='string'||value.distribution.length>80||!['root','standard','unknown'].includes(value.account)||!['not_needed','not_installed','passwordless','password','unverified','denied','unknown'].includes(value.sudo)||typeof value.sudo_enabled!=='boolean'||typeof value.ready!=='boolean'||typeof value.message!=='string'||value.message.length>1024||!Array.isArray(value.guidance)||value.guidance.length>6||!value.guidance.every(step=>typeof step==='string'&&step.length<=512))return false
+    return !value.ready||value.account==='root'&&value.sudo==='not_needed'||value.account==='standard'&&value.sudo_enabled&&['passwordless','password'].includes(value.sudo)
+  }))return
   return report
 }
 function failurePreflight(error:unknown) {
   return readPreflight((error as {response?:{data?:{preflight?:unknown}}}|undefined)?.response?.data?.preflight)
 }
 function reportPassed(report?:K3sPreflightReport) {
-  return Boolean(report?.passed&&report.hosts.length&&report.hosts.every(host=>host.passed&&host.checks.length&&host.checks.every(check=>check.status!=='failed'))&&report.checks.every(check=>check.status!=='failed'))
+  return Boolean(report?.passed&&report.hosts.length&&report.hosts.every(host=>host.passed&&(!host.privilege||host.privilege.ready)&&host.checks.length&&host.checks.every(check=>check.status!=='failed'))&&report.checks.every(check=>check.status!=='failed'))
 }
 function reportMatchesHosts(report:K3sPreflightReport,payload:K3sPlanInput) {
   const expected=payload.action==='join'?(payload.join_host_ids??[]).map(id=>({id,role:payload.join_role??'agent'})):[{id:payload.server_host_id,role:payload.mode==='k3d'?'host':'server'},...(payload.mode==='k3d'?[]:(payload.agent_host_ids??[]).map(id=>({id,role:'agent'})))]
@@ -299,6 +307,20 @@ function configureAgain() {
   plan.value=undefined;preflight.value=undefined;checkedInput.value='';checkedContext.value='';installation.value=undefined;completedID='';error.value='';pollError.value=''
   if(props.action==='create')form.mode=mode
 }
+function configurePrivilegeHost(id:string) {
+  if(!props.open||busy.value||!canExecute.value||!auth.canAny(['cluster.update']))return
+  const result=visiblePreflight.value?.hosts.find(host=>host.host_id===id)
+  const host=selectedHosts.value.find(host=>host.id===id)
+  if(!result?.privilege||result.privilege.ready||!host)return
+  privilegeEditingHost.value=host;hostConfigOpen.value=true
+}
+async function privilegeHostSaved() {
+  if(!props.open||!hostConfigOpen.value||!canExecute.value)return
+  hostConfigOpen.value=false;privilegeEditingHost.value=undefined
+  plan.value=undefined;preflight.value=undefined;checkedInput.value='';checkedContext.value='';error.value=''
+  await initialize()
+}
+watch([context,()=>props.open,canExecute,signature],()=>{hostConfigOpen.value=false;privilegeEditingHost.value=undefined},{flush:'sync'})
 function close() {if(!busy.value||checking.value)emit('update:open',false)}
 function manageCreatedCluster() {
   const id=installation.value?.cluster?.id??installation.value?.cluster_id
@@ -345,7 +367,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
       <a-alert v-if="loadError" type="error" show-icon message="安装配置读取失败" :description="loadError"><template #action><a-button size="small" @click="initialize">重试</a-button></template></a-alert>
       <div v-if="error" ref="errorRegion" tabindex="-1"><a-alert type="error" show-icon :message="error" /></div>
       <a-alert v-if="checking" type="info" show-icon message="正在进行安装前检测" description="只读检测所选主机，不会安装或自动修复。" role="status" />
-      <K3sPreflightReportView v-if="visiblePreflight&&!installation" ref="preflightView" :report="visiblePreflight" :mode="displayMode" :standalone="!plan" />
+      <K3sPreflightReportView v-if="visiblePreflight&&!installation" ref="preflightView" :report="visiblePreflight" :mode="displayMode" :standalone="!plan" :can-configure-host="canExecute&&auth.canAny(['cluster.update'])" @configure-host="configurePrivilegeHost" />
       <section v-if="recent.length||recentError||recentLoading" class="recent-operations">
         <details :open="!installation">
           <summary>最近安装任务 <span v-if="recent.length">{{ recent.length }}</span></summary>
@@ -438,6 +460,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
     </div>
     <template #footer><div class="provision-footer"><a-button :disabled="busy&&!checking" @click="close">{{ checking?'取消检测':running?'关闭窗口':'关闭' }}</a-button><a-button v-if="plan&&!installation" :disabled="busy" @click="plan=undefined;preflight=undefined;checkedInput='';checkedContext=''"><ChevronLeft :size="14" />返回配置</a-button><a-button v-if="installation&&!running" :disabled="busy" @click="configureAgain">{{ displayMode==='k3d'?t('k8s.k3dConfigureAgain'):installation.status==='succeeded'?'继续添加':'重新配置' }}</a-button><template v-if="!plan&&!installation"><a-button :type="canPreview?'default':'primary'" :loading="checking" :disabled="!canCheck" @click="checkPreflight">{{ preflight?'重新检测':'安装前检测' }}</a-button><a-button type="primary" :loading="busy&&!checking" :disabled="!canPreview" @click="preview">生成安装计划</a-button></template><a-button v-else-if="plan&&!installation" type="primary" :loading="busy" :disabled="planExpired||!canExecute||!planPreflightPassed||!planModeValid||!planSourceValid" @click="execute">开始安装</a-button></div></template>
   </a-drawer>
+  <HostDrawer v-if="privilegeEditingHost&&props.open&&canExecute" v-model:open="hostConfigOpen" :host="privilegeEditingHost" :can-test="auth.canAny(['cluster.execute'])" @saved="privilegeHostSaved" />
 </template>
 
 <style scoped>

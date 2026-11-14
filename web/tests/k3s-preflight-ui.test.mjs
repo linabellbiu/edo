@@ -151,3 +151,16 @@ test('最近任务刷新局部链接色在明暗主题及正常悬停聚焦下�
     assert.ok(contrast(primary,background)>=3,`${name}焦点轮廓须达3:1`)
   }
 })
+
+test('发行版与root/sudo权限按主机就地展示，失败有引导和受权限控制的配置入口',async()=>{
+  for(const distribution of ['Ubuntu 24.04','CentOS 9']){
+    const value=report();value.passed=false;value.hosts[0].passed=false
+    value.hosts[0].checks=[{id:'privilege',name:'安装权限',status:'failed',message:'重复的权限检查文字'}]
+    value.hosts[0].privilege={distribution,account:'standard',sudo:'passwordless',sudo_enabled:false,ready:false,message:'当前账号可以 sudo，但 EDO 未开启安装提权。',guidance:['打开主机配置勾选“使用 sudo 执行 Docker / 安装操作”','测试连接并保存，再重新检测']}
+    let html=await render(Report,{report:value,canConfigureHost:true})
+    assert.match(html,new RegExp(distribution));assert.match(html,/NAS测试主机/);assert.match(html,/安装权限未就绪/);assert.match(html,/打开主机配置/);assert.match(html,/<ol>/);assert.doesNotMatch(html,/重复的权限检查文字|未发现不满足项/)
+    html=await render(Report,{report:value,canConfigureHost:false});assert.doesNotMatch(html,/<button/);assert.match(html,/请联系有主机编辑权限的管理员/)
+    value.passed=true;value.hosts[0].passed=true;value.hosts[0].checks=[check('privilege')];value.hosts[0].privilege={...value.hosts[0].privilege,account:'root',sudo:'not_needed',ready:true,message:'当前账号已验证具有 root 管理员权限，无需 sudo。',guidance:[]}
+    html=await render(Report,{report:value});assert.match(html,/无需 sudo/);assert.match(html,/安装权限已就绪/);assert.doesNotMatch(html,/<ol>|<button/)
+  }
+})

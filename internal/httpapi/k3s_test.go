@@ -28,10 +28,27 @@ import (
 )
 
 type k3sHTTPTestTransport struct {
-	reads, runs atomic.Int32
-	statuses    map[string]string
-	extraOutput string
-	delay       time.Duration
+	reads, runs    atomic.Int32
+	privilegeCalls atomic.Int32
+	privilege      *k3s.HostPrivilege
+	statuses       map[string]string
+	extraOutput    string
+	delay          time.Duration
+}
+
+func (transport *k3sHTTPTestTransport) ProbePrivileges(_ context.Context, host model.Host, bundle sshclient.Bundle) (k3s.HostPrivilege, error) {
+	transport.privilegeCalls.Add(1)
+	if transport.privilege != nil {
+		return *transport.privilege, nil
+	}
+	value := k3s.HostPrivilege{Distribution: "Ubuntu 24.04", Account: "standard", Sudo: "passwordless", SudoEnabled: bundle.UseSudo, Ready: bundle.UseSudo, Message: "当前账号可以免密 sudo。", Guidance: []string{}}
+	if host.SSHUsername == "root" {
+		value.Account, value.Sudo, value.Ready = "root", "not_needed", true
+	} else if !bundle.UseSudo {
+		value.Message = "当前账号可以免密使用 sudo，但 EDO 未启用安装提权。"
+		value.Guidance = []string{"勾选“使用 sudo 执行 Docker / 安装操作”，测试连接并保存后重新检测。"}
+	}
+	return value, nil
 }
 
 var k3sHTTPPreflightCheckIDs = []string{
@@ -556,17 +573,26 @@ func TestK3sHTTPPreflightAndPlanExplainSudoRequirement(t *testing.T) {
 					}
 					continue
 				}
-				var body errorResponse
-				if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Code != "invalid_k3s_config" {
-					t.Fatalf("未返回配置校验错误: %d %s", response.Code, response.Body.String())
-				}
-				for _, detail := range []string{"sudo-check-host", "非 root", "使用 sudo 执行 Docker / 安装操作", "测试连接并保存"} {
-					if !strings.Contains(body.Message, detail) {
-						t.Fatalf("缺少操作指引 %s: %s", detail, body.Message)
+				var report k3s.PreflightReport
+				if strings.HasSuffix(path, "/preflight") {
+					if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &report) != nil {
+						t.Fatalf("未返回权限检测报告: %d %s", response.Code, response.Body.String())
 					}
+				} else {
+					var body struct {
+						Code      string              `json:"code"`
+						Preflight k3s.PreflightReport `json:"preflight"`
+					}
+					if response.Code != http.StatusConflict || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Code != "k3s_preflight_failed" {
+						t.Fatalf("权限未就绪仍创建计划: %d %s", response.Code, response.Body.String())
+					}
+					report = body.Preflight
 				}
-				if strings.Contains(response.Body.String(), "private-sudo-check-password") || transport.reads.Load() != 0 || transport.runs.Load() != 0 {
-					t.Fatal("阻断后仍读取主机或泄露凭据")
+				if report.Passed || len(report.Hosts) != 1 || report.Hosts[0].Privilege == nil || report.Hosts[0].Privilege.Ready || !strings.Contains(strings.Join(report.Hosts[0].Privilege.Guidance, " "), "使用 sudo 执行 Docker / 安装操作") {
+					t.Fatal("缺少准确权限状态及修复引导")
+				}
+				if strings.Contains(response.Body.String(), "private-sudo-check-password") || transport.reads.Load() != 0 || transport.runs.Load() != 0 || transport.privilegeCalls.Load() == 0 {
+					t.Fatal("权限未就绪仍执行完整检测或泄露凭据")
 				}
 				for name, count := range k3sHTTPPreflightState(t, db) {
 					if count != before[name] {

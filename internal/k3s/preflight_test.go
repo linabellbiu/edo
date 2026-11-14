@@ -27,6 +27,13 @@ type preflightReadTransport struct {
 	read func(context.Context, model.Host, sshclient.Bundle, string) (string, error)
 }
 
+func (t preflightReadTransport) ProbePrivileges(ctx context.Context, host model.Host, bundle sshclient.Bundle) (HostPrivilege, error) {
+	if t.Transport != nil {
+		return t.Transport.ProbePrivileges(ctx, host, bundle)
+	}
+	return privilegeFixture(host, bundle), nil
+}
+
 func (t preflightReadTransport) Read(ctx context.Context, host model.Host, bundle sshclient.Bundle, script string) (string, error) {
 	return t.read(ctx, host, bundle, script)
 }

@@ -85,7 +85,7 @@ func TestK3sHTTPStandaloneCheckRequiresPermissionsBeforeSSH(t *testing.T) {
 			actor := loginForDepartmentTest(t, router, "preflight-check-limited")
 			before := k3sHTTPPreflightState(t, db)
 			response := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/preflight", k3dHTTPInput("权限检测"), actor)
-			if response.Code != http.StatusForbidden || transport.reads.Load() != 0 || transport.runs.Load() != 0 {
+			if response.Code != http.StatusForbidden || transport.reads.Load() != 0 || transport.runs.Load() != 0 || transport.privilegeCalls.Load() != 0 {
 				t.Fatalf("权限不足仍连接了主机: %d", response.Code)
 			}
 			for name, count := range k3sHTTPPreflightState(t, db) {
@@ -110,7 +110,7 @@ func TestK3sHTTPStandaloneCheckRejectsOtherProjectHostWithoutProbe(t *testing.T)
 		t.Fatal(err)
 	}
 	response := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/preflight", k3dHTTPInput("项目检测"), admin)
-	if response.Code != http.StatusConflict || transport.reads.Load() != 0 || transport.runs.Load() != 0 {
+	if response.Code != http.StatusConflict || transport.reads.Load() != 0 || transport.runs.Load() != 0 || transport.privilegeCalls.Load() != 0 {
 		t.Fatalf("跨项目主机被检测: %d", response.Code)
 	}
 }

@@ -181,4 +181,5 @@ type Authorizer interface {
 type Transport interface {
 	Run(context.Context, model.Host, sshclient.Bundle, string, io.Writer) error
 	Read(context.Context, model.Host, sshclient.Bundle, string) (string, error)
+	ProbePrivileges(context.Context, model.Host, sshclient.Bundle) (HostPrivilege, error)
 }

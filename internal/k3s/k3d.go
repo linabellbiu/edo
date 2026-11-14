@@ -134,11 +134,18 @@ func (s *Service) runK3dPreflight(ctx context.Context, input Input, hosts []Host
 		slog.ErrorContext(ctx, "读取 k3d 预检主机失败", "operation", "k3d_preflight_load_host", "host_id", hosts[0].ID, "err", err)
 		return nil, err
 	}
+	privilege, privilegeErr := s.transport.ProbePrivileges(ctx, host, bundle)
+	if blocked := privilegePreflight(hosts[0], privilege, privilegeErr); blocked != nil {
+		report.Hosts = append(report.Hosts, *blocked)
+		return report, nil
+	}
 	output, err := s.transport.Read(ctx, host, bundle, k3dPreflightScript(input))
 	if err != nil {
 		slog.ErrorContext(ctx, "读取 k3d 主机预检失败", "operation", "k3d_preflight_read", "host_id", hosts[0].ID, "err", err)
 	}
 	checked := parseHostPreflight(hosts[0], output, err, k3dPreflightDefinitions)
+	privilege = completedPrivilege(privilege, checked.Checks, err)
+	checked.Privilege = &privilege
 	report.Hosts = append(report.Hosts, checked)
 	report.Passed = checked.Passed
 	return report, nil

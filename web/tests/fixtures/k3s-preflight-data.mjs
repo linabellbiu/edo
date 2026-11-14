@@ -1,12 +1,12 @@
 import { AxiosError, CanceledError } from 'axios'
 
-export const preflightPreviewScenarios=['passed','warning','failed','delay','denied','sudo']
+export const preflightPreviewScenarios=['passed','warning','failed','delay','denied','sudo','centos']
 export const preflightPreviewHostID='11111111-1111-4111-8111-111111111111'
 const permissions=['cluster.read','cluster.create','cluster.execute','cluster.update','kubernetes.node.create']
 const clone=value=>JSON.parse(JSON.stringify(value))
 export function createPreflightPreview(scenario='passed',{calls=[],delay=30_000,now=()=>Date.now()}={}){
   if(!preflightPreviewScenarios.includes(scenario))scenario='passed'
-  const hosts=[{id:preflightPreviewHostID,name:'前端测试主机',address:'192.0.2.24',mode:'ssh',ssh_port:22,ssh_username:'preview',ssh_auth_type:'password',ssh_host_key_fingerprint:'SHA256:fixture-not-used',architecture:'amd64',environment_ids:[],is_builtin:false,is_active:true,capabilities:[],credential_configured:true,use_sudo:true}]
+  const hosts=[{id:preflightPreviewHostID,name:'前端测试主机',address:'192.0.2.24',mode:'ssh',ssh_port:22,ssh_username:'preview',ssh_auth_type:'password',ssh_host_key_fingerprint:'SHA256:fixture-not-used',architecture:'amd64',environment_ids:[],is_builtin:false,is_active:true,capabilities:[{kind:'ssh',status:'ready'}],credential_configured:true,use_sudo:!['sudo','centos'].includes(scenario)}]
   const catalog={version:'v1.37.1+k3s1',default_version:'v1.37.1+k3s1',catalog_version:'frontend-fixture',sources:[],server:[],agent:[],installer:[]}
   const response=(config,data)=>({config,data:clone(data),status:200,statusText:'OK',headers:{}})
   const reject=(config,message,status=400)=>{throw new AxiosError(message,'FIXTURE_REJECTED',config,undefined,{config,status,statusText:'Fixture rejected',headers:{},data:{message}})}
@@ -24,8 +24,10 @@ export function createPreflightPreview(scenario='passed',{calls=[],delay=30_000,
       {id:'cni_ports',name:'端口配置',status:'passed',message:'前端夹具：仅模拟端口要求；未探测真实网络。'},
     ]
     checks.push({id:'component_images',name:'系统组件镜像配置',status:scenario==='warning'?'warning':'passed',message:scenario==='warning'?'前端夹具：镜像来源可配置，但未实际拉取；请在真实主机检测。':'前端夹具：仅模拟配置满足，未进行实际镜像拉取。'})
+    const privilege=['sudo','centos'].includes(scenario)?{distribution:scenario==='centos'?'CentOS 9':'Ubuntu 24.04',account:'standard',sudo:scenario==='centos'?'not_installed':'passwordless',sudo_enabled:false,ready:false,message:scenario==='centos'?'当前使用普通账号，主机未安装 sudo，暂时无法安装 K3s。':'当前账号可以免密使用 sudo，但尚未允许 EDO 在安装时使用该权限。',guidance:[...(scenario==='centos'?['请联系主机管理员安装 sudo，通过 wheel 组或 sudoers 授权当前账号，或改用 root 账号连接。']:[]),'打开这台主机的配置，勾选“使用 sudo 执行 Docker / 安装操作”。','点击“测试连接”，成功后保存，再返回这里重新检测。']}:undefined
+    if(privilege)checks.push({id:'privilege',name:'安装所需的管理员权限',status:'failed',message:privilege.message})
     const passed=!checks.some(check=>check.status==='failed')
-    return {checked_at:new Date(now()).toISOString(),passed,checks:[],hosts:selected.map(host=>({host_id:host.id,host_name:'前端测试主机',hostname:'fixture-host',role:host.role,passed,checks}))}
+    return {checked_at:new Date(now()).toISOString(),passed,checks:[],hosts:selected.map(host=>({host_id:host.id,host_name:'前端测试主机',hostname:'fixture-host',role:host.role,passed,checks,...(privilege?{privilege}:{})}))}
   }
   async function adapter(config){
     if(config.signal?.aborted)throw new CanceledError('前端检测已取消',config)
@@ -37,7 +39,6 @@ export function createPreflightPreview(scenario='passed',{calls=[],delay=30_000,
     if(method==='get'&&path==='/kubernetes/k3s/installations'){call.outcome='fixture';return response(config,{installations:[]})}
     if(method==='post'&&path==='/kubernetes/k3s/preflight'){
       if(scenario==='denied'){call.outcome='rejected';return reject(config,'前端夹具：无安装检测权限',403)}
-      if(scenario==='sudo'){call.outcome='rejected';return reject(config,'主机“前端测试主机”使用非 root 账号，请先在主机编辑页勾选“使用 sudo 执行 Docker / 安装操作”，测试连接并保存后重新检测',400)}
       const payload=typeof config.data==='string'?JSON.parse(config.data):config.data
       if(scenario==='delay')await new Promise((resolve,rejectPromise)=>{
         const finish=()=>{config.signal?.removeEventListener('abort',cancel);resolve()},timer=setTimeout(finish,delay)

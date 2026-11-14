@@ -91,6 +91,16 @@ export interface K3sHostPreflight {
   hostname: string
   passed: boolean
   checks: K3sPreflightCheck[]
+  privilege?: K3sHostPrivilege
+}
+export interface K3sHostPrivilege {
+  distribution: string
+  account: 'root' | 'standard' | 'unknown'
+  sudo: 'not_needed' | 'not_installed' | 'passwordless' | 'password' | 'unverified' | 'denied' | 'unknown'
+  sudo_enabled: boolean
+  ready: boolean
+  message: string
+  guidance: string[]
 }
 export interface K3sPreflightReport {
   checked_at: string

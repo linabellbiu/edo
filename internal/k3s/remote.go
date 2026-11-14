@@ -43,13 +43,20 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 		return ErrRemote
 	}
 	defer client.Close()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = client.Close() })
+	defer stopCancellation()
 	command := "sh -se"
 	input := io.Reader(strings.NewReader(script))
-	if host.SSHUsername != "root" {
-		if !bundle.UseSudo {
+	needsSudo := host.SSHUsername != "root"
+	if needsSudo && !bundle.UseSudo {
+		uid, err := privilegeCommand(client, "id -u", "")
+		if err != nil || strings.TrimSpace(uid) != "0" {
 			logSSHTransportFailure(ctx, host.ID, "sudo_required", ErrInvalidInput)
 			return ErrRemote
 		}
+		needsSudo = false
+	}
+	if needsSudo {
 		probe, err := client.NewSession()
 		if err != nil {
 			logSSHTransportFailure(ctx, host.ID, "sudo_probe_session", err)
