@@ -64,6 +64,18 @@ func (s *Service) subjectPlan(ctx context.Context, cluster *model.KubernetesClus
 				return ErrRBACSyncPending
 			}
 			plan.authorization = &clusterAuthorization{Enforced: false}
+			if fresh != nil {
+				codes := []string{}
+				for code, permitted := range fresh.Permissions {
+					if permitted {
+						codes = append(codes, code)
+					}
+				}
+				sort.Strings(codes)
+				plan.authorization.CacheKey = cluster.ProjectID + "/" + userID
+				plan.authorization.Version = rbacHash([]any{"application", clusterQueryVersion(cluster), policy.Revision, fresh.Digest})
+				plan.authorization.Permissions = map[string][]string{"": codes}
+			}
 			return nil
 		}
 		if !policy.DesiredEnabled || policy.Status != "synced" && policy.Status != "pending" && policy.Status != "error" {

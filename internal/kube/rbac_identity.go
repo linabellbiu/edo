@@ -119,9 +119,9 @@ func (s *Service) invalidateClusterActorQueries(ctx context.Context, cluster *mo
 
 func (a *clusterAuthorization) enforced() bool { return a != nil && a.Enforced }
 
-// 管理员连接同样绑定操作者及实时授权，不能与普通身份共享缓存。
+// 应用层授权及管理员连接也绑定操作者版本，不能与其他身份共享缓存。
 func (a *clusterAuthorization) identityBound() bool {
-	return a != nil && (a.Enforced || a.Administrator)
+	return a != nil && (a.Enforced || a.Administrator || a.CacheKey != "" && a.Version != "")
 }
 
 func (a *clusterAuthorization) has(namespace, permission string) bool {

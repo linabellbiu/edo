@@ -235,6 +235,7 @@ func (entry *resourceObserver) change(value any, eventType string) {
 }
 
 func (q *clusterQueries) publish(event ResourceChange) {
+	q.overviewEpoch.Add(1)
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	def, known := ResourceType(event.Resource)
@@ -357,12 +358,17 @@ func (s *Service) listResourcePage(ctx context.Context, clusterID string, def Re
 	if err != nil {
 		return nil, err
 	}
+	return s.listAuthorizedResourcePage(ctx, q, def, namespace, options, cacheLimit)
+}
+
+// 聚合查询复用已读取的集群与授权；实际原生请求继续经过实时权限校验。
+func (s *Service) listAuthorizedResourcePage(ctx context.Context, q *clusterQueries, def ResourceDefinition, namespace string, options metav1.ListOptions, cacheLimit int64) (*unstructured.UnstructuredList, error) {
 	// An actor with no namespace grant gets an empty selector without issuing
 	// a native namespace request. Actual namespace reads remain scope checked.
 	if q.authorization.enforced() && def.Resource == "namespaces" && !q.authorization.has("", "kubernetes.config.read") && len(q.authorization.Namespaces) == 0 {
 		return &unstructured.UnstructuredList{Items: []unstructured.Unstructured{}}, nil
 	}
-	ctx, _, err = authorizeResourceQuery(ctx, q, def, namespace, "read", true)
+	ctx, _, err := authorizeResourceQuery(ctx, q, def, namespace, "read", true)
 	if err != nil {
 		return nil, err
 	}
@@ -408,6 +414,7 @@ func (s *Service) invalidateResourceQueries(clusterID, resource string) {
 	}
 	s.queries.mu.Unlock()
 	for _, q := range queries {
+		q.overviewEpoch.Add(1)
 		q.mu.Lock()
 		for key, entry := range q.watchers {
 			if resource == "namespaces" || entry.definition.Resource == resource {

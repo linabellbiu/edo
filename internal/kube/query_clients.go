@@ -68,6 +68,9 @@ type clusterQueries struct {
 	metrics            *utilcache.Expiring
 	metricRequests     singleflight.Group
 	metricsEpoch       atomic.Uint64
+	overviews          *utilcache.LRUExpireCache
+	overviewRequests   singleflight.Group
+	overviewEpoch      atomic.Uint64
 	watchSlots         chan struct{}
 	backoff            *flowcontrol.Backoff
 	clusterID          string
@@ -241,7 +244,7 @@ func (s *Service) newClusterQueries(ctx, lookupCtx context.Context, cluster *mod
 		return nil, err
 	}
 	child, cancel := context.WithCancel(ctx)
-	result := &clusterQueries{clusterID: cluster.ID, connectionVersion: clusterQueryVersion(cluster), authorization: cloneClusterAuthorization(authorization), scope: identityScope(lookupCtx, cluster), internal: internalClusterAccess(lookupCtx), version: authorizedQueryVersion(cluster, authorization, internalClusterAccess(lookupCtx)), config: cfg, ctx: child, cancel: cancel, watchers: map[string]*resourceObserver{}, subscribers: map[chan ResourceChange]resourceSubscription{}, metrics: utilcache.NewExpiring(), backoff: flowcontrol.NewBackOff(time.Second, 30*time.Second), activeAccess: map[string]*activeClusterAccess{}}
+	result := &clusterQueries{clusterID: cluster.ID, connectionVersion: clusterQueryVersion(cluster), authorization: cloneClusterAuthorization(authorization), scope: identityScope(lookupCtx, cluster), internal: internalClusterAccess(lookupCtx), version: authorizedQueryVersion(cluster, authorization, internalClusterAccess(lookupCtx)), config: cfg, ctx: child, cancel: cancel, watchers: map[string]*resourceObserver{}, subscribers: map[chan ResourceChange]resourceSubscription{}, metrics: utilcache.NewExpiring(), overviews: utilcache.NewLRUExpireCache(maxOverviewEntries), backoff: flowcontrol.NewBackOff(time.Second, 30*time.Second), activeAccess: map[string]*activeClusterAccess{}}
 	result.lastUsed.Store(time.Now().UnixNano())
 	result.ephemeral = s.queries == nil || s.queries.ctx == nil
 	if result.authorization.enforced() {
@@ -316,11 +319,15 @@ func (s *Service) listMetrics(ctx context.Context, id, kind, namespace string) (
 	if err != nil {
 		return nil, err
 	}
+	return s.listMetricsForQuery(ctx, q, kind, namespace)
+}
+
+func (s *Service) listMetricsForQuery(ctx context.Context, q *clusterQueries, kind, namespace string) (*unstructured.UnstructuredList, error) {
 	definition, ok := ResourceType(kind)
 	if !ok {
 		return nil, ErrInvalidResource
 	}
-	ctx, _, err = authorizeResourceQuery(ctx, q, definition, namespace, "read", true)
+	ctx, _, err := authorizeResourceQuery(ctx, q, definition, namespace, "read", true)
 	if err != nil {
 		return nil, err
 	}

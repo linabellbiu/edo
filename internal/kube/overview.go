@@ -3,6 +3,8 @@ package kube
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -67,6 +69,17 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 	if err != nil {
 		return nil, err
 	}
+	if query.authorization.identityBound() && !query.authorization.enforced() && !query.authorization.Administrator {
+		// 未启用原生 RBAC 时也使用这次批量加载的数据库权限收紧旧候选权限。
+		allowed = maps.Clone(allowed)
+		for code := range allowed {
+			allowed[code] = allowed[code] && slices.Contains(query.authorization.Permissions[""], code)
+		}
+	}
+	return s.cachedOverview(ctx, query, namespace, allowed)
+}
+
+func (s *Service) collectOverview(ctx context.Context, query *clusterQueries, namespace string, allowed map[string]bool) (*Overview, error) {
 	result := &Overview{Counts: map[string]ResourceCount{}, Nodes: []NodeStatistics{}, Phases: map[string]int{}, Usage: map[string]map[string]ResourceUsage{}, MetricsState: map[string]string{}, CollectedAt: time.Now().UTC(), Errors: map[string]error{}}
 	podsByNode := map[string]int64{}
 	podState := "no_permission"
@@ -84,7 +97,7 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 		count := ResourceCount{State: "ok"}
 		continuation := ""
 		for page := 0; ; page++ {
-			items, listErr := s.listResourceSnapshotPage(ctx, clusterID, def, ns, metav1.ListOptions{Limit: 500, Continue: continuation})
+			items, listErr := s.listAuthorizedResourcePage(ctx, query, def, ns, metav1.ListOptions{Limit: 500, Continue: continuation}, 10000)
 			if listErr != nil {
 				count.State = "unavailable"
 				result.Errors[def.Resource] = resourceError(def.Resource, listErr)
@@ -150,7 +163,7 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 	if allowed["kubernetes.node.read"] && allowed["kubernetes.workload.read"] && namespace != "*" {
 		// 节点用量不跟随命名空间筛选，避免把局部数量当成整个节点的占用。
 		var err error
-		podsByNode, err = s.listNodePodCounts(ctx, clusterID)
+		podsByNode, err = s.listNodePodCountsForQuery(ctx, query)
 		if err != nil {
 			result.Errors["node_pods"] = resourceError("pods", err)
 		} else {
@@ -179,7 +192,7 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 		if ns == "*" {
 			ns = ""
 		}
-		list, metricsErr := s.listMetrics(ctx, clusterID, kind, ns)
+		list, metricsErr := s.listMetricsForQuery(ctx, query, kind, ns)
 		if metricsErr != nil {
 			result.MetricsState[kind] = "unavailable"
 			if apierrors.IsForbidden(metricsErr) || apierrors.IsUnauthorized(metricsErr) || errors.Is(metricsErr, ErrRBACForbidden) {
@@ -271,6 +284,10 @@ func (s *Service) listNodePodCounts(ctx context.Context, clusterID string) (map[
 	if err != nil {
 		return nil, err
 	}
+	return s.listNodePodCountsForQuery(ctx, query)
+}
+
+func (s *Service) listNodePodCountsForQuery(ctx context.Context, query *clusterQueries) (map[string]int64, error) {
 	if query.authorization.enforced() {
 		return nil, ErrRBACForbidden
 	}
@@ -278,7 +295,7 @@ func (s *Service) listNodePodCounts(ctx context.Context, clusterID string) (map[
 	def, _ := ResourceType("pods")
 	continuation := ""
 	for page := 0; page < 20; page++ {
-		list, err := s.listResourceSnapshotPage(ctx, clusterID, def, "", metav1.ListOptions{Limit: 500, Continue: continuation})
+		list, err := s.listAuthorizedResourcePage(ctx, query, def, "", metav1.ListOptions{Limit: 500, Continue: continuation}, 10000)
 		if err != nil {
 			return nil, err
 		}
