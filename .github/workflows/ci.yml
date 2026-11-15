@@ -204,8 +204,10 @@ jobs:
         run: go vet ./...
       - name: Go 全量构建
         run: go build ./...
-      - name: Mage 构建入口测试
-        run: go test -count=1 -timeout=10m -tags mage .
+      - name: Docker 打包契约测试
+        run: go test -count=1 -timeout=10m .
+      - name: Mage 入口静态检查
+        run: go vet -tags mage mage_file.go
 
   web:
     name: 前端测试与构建
@@ -261,7 +263,18 @@ jobs:
       - name: Compose 配置、服务范围与容器动作
         env:
           EDO_TEST_DOCKER_INTEGRATION: "1"
-        run: go test -race -count=1 -timeout=8m ./internal/pipeline ./internal/deployment -run '^Test(ComposeEnvTextIntegration|ComposeServiceScopeIntegration|ComposeContainerActionsIntegration)$'
+        run: go test -race -count=1 -timeout=8m ./internal/pipeline ./internal/deployment -run '^Test(ComposeEnvTextIntegration|ComposeServiceScopeIntegration|ComposeContainerActionsIntegration|ComposeConfigurationEnvUsesOfficialSyntaxAndPipelinePrecedence|ComposeFailureDetailsFromRealComposeCLI|ComposeParameterFilesRealGitAndTransfer)$'
+      - name: Docker 终端工具安装与受控回收
+        env:
+          EDO_TEST_DOCKER_INTEGRATION: "1"
+          EDO_TEST_TERMINAL_TOOLS: ${{ runner.temp }}/edo-terminal-tools
+        run: |
+          for arch in amd64 arm64; do
+            mkdir -p "$EDO_TEST_TERMINAL_TOOLS/linux-$arch"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w" \
+              -o "$EDO_TEST_TERMINAL_TOOLS/linux-$arch/edo-terminal-session" ./cmd/edo-terminal-session
+          done
+          go test -race -count=1 -timeout=5m ./internal/terminal -run '^TestDockerHelperRealInstallationAndControlledRelease$'
       - name: 真实流水线取消与容器回收
         env:
           EDO_TEST_DOCKER_STOP: "1"

@@ -15,9 +15,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -742,6 +744,121 @@ func webDependencyStampPath(webRoot string) string {
 type localProcessSnapshot struct {
 	processGroupID int
 	identity       string
+}
+
+var errLocalProcessControlUnsupported = errors.New("Mage 本地进程控制仅支持 Linux 和 macOS")
+
+func configureLocalProcessCommand(command *exec.Cmd) error {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return errLocalProcessControlUnsupported
+	}
+	// 单文件保留跨平台编译能力，运行时设置 Unix 专有的 Setsid 字段。
+	attributes := &syscall.SysProcAttr{}
+	setsid := reflect.ValueOf(attributes).Elem().FieldByName("Setsid")
+	if !setsid.IsValid() || !setsid.CanSet() || setsid.Kind() != reflect.Bool {
+		return errLocalProcessControlUnsupported
+	}
+	setsid.SetBool(true)
+	command.SysProcAttr = attributes
+	return nil
+}
+
+func inspectLocalProcess(pid int) (localProcessSnapshot, error) {
+	switch runtime.GOOS {
+	case "linux":
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if errors.Is(err, os.ErrNotExist) {
+			return localProcessSnapshot{}, os.ErrProcessDone
+		}
+		if err != nil {
+			return localProcessSnapshot{}, err
+		}
+		closingParenthesis := strings.LastIndexByte(string(stat), ')')
+		if closingParenthesis < 0 {
+			return localProcessSnapshot{}, errors.New("无法解析 /proc 进程状态")
+		}
+		fields := strings.Fields(string(stat[closingParenthesis+1:]))
+		if len(fields) < 20 {
+			return localProcessSnapshot{}, errors.New("/proc 进程状态字段不足")
+		}
+		if fields[0] == "Z" {
+			return localProcessSnapshot{}, os.ErrProcessDone
+		}
+		processGroupID, err := strconv.Atoi(fields[2])
+		if err != nil || processGroupID <= 0 {
+			return localProcessSnapshot{}, errors.New("无法解析进程组编号")
+		}
+		bootID, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+		if err != nil {
+			return localProcessSnapshot{}, err
+		}
+		return localProcessSnapshot{
+			processGroupID: processGroupID,
+			identity:       strings.TrimSpace(string(bootID)) + ":" + fields[19],
+		}, nil
+	case "darwin":
+		output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "pgid=", "-o", "stat=", "-o", "lstart=").Output()
+		if err != nil {
+			if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 1 {
+				return localProcessSnapshot{}, os.ErrProcessDone
+			}
+			return localProcessSnapshot{}, err
+		}
+		status := strings.TrimSpace(string(output))
+		fields := strings.Fields(status)
+		if len(fields) < 3 || strings.HasPrefix(fields[1], "Z") {
+			return localProcessSnapshot{}, os.ErrProcessDone
+		}
+		processGroupID, err := strconv.Atoi(fields[0])
+		if err != nil || processGroupID <= 0 {
+			return localProcessSnapshot{}, errors.New("无法解析进程组编号")
+		}
+		// 保留 lstart 内部空格，兼容已有进程记录的启动身份。
+		identity := strings.TrimSpace(status[len(fields[0]):])
+		identity = strings.TrimSpace(identity[len(fields[1]):])
+		return localProcessSnapshot{processGroupID: processGroupID, identity: identity}, nil
+	default:
+		return localProcessSnapshot{}, errLocalProcessControlUnsupported
+	}
+}
+
+func signalLocalProcessGroup(processGroupID int, force bool) error {
+	signal := syscall.SIGTERM
+	if force {
+		signal = syscall.SIGKILL
+	}
+	err := sendLocalProcessGroupSignal(processGroupID, signal)
+	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}
+
+func localProcessGroupRunning(processGroupID int) (bool, error) {
+	err := sendLocalProcessGroupSignal(processGroupID, syscall.Signal(0))
+	if err == nil || errors.Is(err, syscall.EPERM) {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+		return false, nil
+	}
+	return false, err
+}
+
+func sendLocalProcessGroupSignal(processGroupID int, signal syscall.Signal) error {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return errLocalProcessControlUnsupported
+	}
+	if processGroupID <= 1 {
+		return errors.New("进程组编号无效，拒绝发送信号")
+	}
+	// Unix 使用负 PID 向整个进程组发信号；os.Process 避免引用平台专有函数。
+	process, err := os.FindProcess(-processGroupID)
+	if err != nil {
+		return err
+	}
+	defer process.Release()
+	return process.Signal(signal)
 }
 
 type localProcessRecord struct {

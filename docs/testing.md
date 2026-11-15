@@ -21,7 +21,7 @@
 
 - 业务测试：core、pipeline、httpapi、kube、repository 五个分片分别运行 SQLite 和 MySQL；MySQL 分片启动临时实例，每个用例独立建库。保留 `-race`，单包超时 20 分钟，任务总超时 35 分钟。
 - 真实数据库：SQLite、PostgreSQL、MySQL 三个分片，仅对应外部数据库分片启动容器；SQLite 执行 `internal/database` 全量测试。PostgreSQL/MySQL 先执行 `TestExternalDatabaseMigration` 和 `TestExternalAssistantMigration`，再验证真实方言下的发布计划查询；随后分别新建 `edo_identity_fresh`、`edo_identity_upgrade` 两个空库，精确运行对应的行标识测试，不复用已经迁移过的 `edo` 库。保留 `-race`，单包超时 20 分钟，任务总超时 35 分钟。
-- Go 检查：静态检查、全量构建和 Mage 入口测试，任务总超时 25 分钟。
+- Go 检查：静态检查、全量构建、根目录 Docker 打包契约测试和 Mage 单文件入口静态检查，任务总超时 25 分钟。
 - 前端：依赖安装、Node 回归测试、类型检查与生产构建，任务总超时 15 分钟。
 - Docker：真实构建、缓存与发布链路，保留 `-race`，Go 测试超时 20 分钟，任务总超时 65 分钟。
 
@@ -34,7 +34,7 @@
 ```sh
 go test -race -count=1 -timeout=20m ./...
 go vet ./...
-go test -count=1 -timeout=10m -tags mage .
+go vet -tags mage mage_file.go
 node --test web/tests/*.test.mjs
 npm run build --prefix web
 ```

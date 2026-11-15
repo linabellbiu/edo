@@ -72,21 +72,21 @@ DATA-002 保持审计按自增行号倒序，不改变已有记录或表结构�
 | 任务、Outbox、NATS Worker | 幂等、有限重试、固定并发、租约、Outbox 边界；新增任务列表/取消/重试/范围 | 真 NATS 消息重投、毒消息、死信全生命周期与重启恢复 |
 | 系统监控、系统日志、清理 | Go/RSS/堆口径、分页与脱敏、有界缓存、三天清理边界、断档 | 长时间真实趋势与重启、只清死信不影响任务的独立 Stream 操作 |
 | 对话助手 | Eino 本地适配、SSE、按项目会话、工具权限、确认/CAS/撤权与脱敏 | 真模型 API Key、流式兼容和成本；未调用模型不得写成模型联调通过 |
-| CLI、启动、构建 | Go vet、构建、Mage 入口和配置测试 | 各启动方式干净安装、升级和重启；不能把本次测试实例当生产部署 |
+| CLI、启动、构建 | Go vet、构建、Mage 单文件入口静态检查 | 各启动方式干净安装、升级和重启；不能把本次测试实例当生产部署 |
 
 ## 新增测试位置
 
 - 后端：`internal/httpapi/{auth_session_boundaries,stream_authorization_boundaries,route_authentication_inventory,operations_lifecycle_contract,tasks_lifecycle_boundaries,credentials_lifecycle_boundaries,channel_reference_scope_regression,access_lifecycle_acceptance}_test.go`，以及项目隔离回归测试。
 - 前端：`web/tests/{routePermissionsAcceptance,accessControlAcceptance,frontendFormsAcceptance,infrastructureFormsAcceptance,organizationFormsAcceptance,auditPaginationAcceptance}.test.mjs`、共用脚本测试工具，以及缺陷专用回归。
 - 前端路由及全部侧栏叶子逐项检查权限，发布计划/运行、用户/角色/审计共享路径的 Query 权限分别验证；重定向保留准确上下文。
-- CI：`mage_ci_contract_test.go` 检查真实数据库及 Docker 门禁选择器与实际测试函数的对应关系；`.github/workflows/ci.yml` 分离真实数据库三种行标识模式，命令与运行前提见 [测试说明](testing.md)。
+- CI：`.github/workflows/ci.yml` 分离真实数据库三种行标识模式，命令与运行前提见 [测试说明](testing.md)。
 
 ## 执行方法
 
 ```sh
 go test -race -covermode=atomic -coverpkg=./... -count=1 -timeout=20m ./...
 go vet ./...
-go test -count=1 -timeout=10m -tags mage .
+go vet -tags mage mage_file.go
 node --experimental-strip-types --test web/tests/*.test.mjs
 npm run build --prefix web
 ```

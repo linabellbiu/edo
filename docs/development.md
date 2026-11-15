@@ -13,6 +13,8 @@ npm --version
 mage -l
 ```
 
+Mage 任务统一维护在根目录的 `mage_file.go`。
+
 本地二进制、Mage 与开发 Compose 仍默认 SQLite，需手工配置固定加密密钥：
 
 ```bash
