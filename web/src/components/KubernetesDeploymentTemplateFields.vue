@@ -38,13 +38,15 @@ function port(index:number,patch:Partial<KubernetesDeploymentSettings['ports'][n
  <section class="kube-template-fields">
   <template v-if="modelValue">
    <section class="kube-config-section"><header>工作负载 <span v-if="resourceDisabled&&!disabled" class="permission-note">修改需要工作负载修改权限</span></header>
-    <div v-if="!modelValue.hpa?.enabled" class="kube-resource-grid"><a-form-item label="副本数"><a-input-number aria-label="副本数" :value="modelValue.replicas" :min="1" :max="100" :precision="0" :disabled="resourceDisabled" @update:value="update({replicas:Number($event)})"/></a-form-item></div>
     <div class="kube-resource-grid"><a-form-item label="CPU 申请"><KubernetesResourceQuantityInput label="CPU 申请" resource="cpu" :value="modelValue.cpu_request" :disabled="resourceDisabled" @update:value="update({cpu_request:$event})"/></a-form-item><a-form-item label="CPU 限制"><KubernetesResourceQuantityInput label="CPU 限制" resource="cpu" :value="modelValue.cpu_limit" :disabled="resourceDisabled" @update:value="update({cpu_limit:$event})"/></a-form-item><a-form-item label="内存申请"><KubernetesResourceQuantityInput label="内存申请" resource="memory" :value="modelValue.memory_request" :disabled="resourceDisabled" @update:value="update({memory_request:$event})"/></a-form-item><a-form-item label="内存限制"><KubernetesResourceQuantityInput label="内存限制" resource="memory" :value="modelValue.memory_limit" :disabled="resourceDisabled" @update:value="update({memory_limit:$event})"/></a-form-item></div>
-    <div class="kube-hpa-heading"><label for="kube-hpa-enabled">自动扩缩容（HPA）</label><a-switch id="kube-hpa-enabled" aria-label="自动扩缩容（HPA）" :checked="Boolean(modelValue.hpa?.enabled)" :disabled="resourceDisabled" @update:checked="hpa({enabled:$event})"/></div>
-    <template v-if="modelValue.hpa?.enabled">
+    <div class="kube-hpa-heading"><span>自动扩缩容（HPA）</span><a-switch aria-label="自动扩缩容（HPA）" :checked="Boolean(modelValue.hpa?.enabled)" :disabled="resourceDisabled" @update:checked="hpa({enabled:$event})"/></div>
+    <div class="kube-scaling-settings">
+     <div v-if="!modelValue.hpa?.enabled" class="kube-resource-grid"><a-form-item label="副本数"><a-input-number aria-label="副本数" :value="modelValue.replicas" :min="1" :max="100" :precision="0" :disabled="resourceDisabled" @update:value="update({replicas:Number($event)})"/></a-form-item></div>
+     <template v-else>
      <div class="kube-resource-grid"><a-form-item label="最小副本数"><a-input-number aria-label="HPA 最小副本数" :value="modelValue.hpa.min_replicas" :min="1" :max="100" :precision="0" :disabled="resourceDisabled" @update:value="hpa({min_replicas:Number($event)})"/></a-form-item><a-form-item label="最大副本数"><a-input-number aria-label="HPA 最大副本数" :value="modelValue.hpa.max_replicas" :min="1" :max="100" :precision="0" :disabled="resourceDisabled" @update:value="hpa({max_replicas:Number($event)})"/></a-form-item><a-form-item label="CPU 目标利用率"><a-input-number class="kube-hpa-target" aria-label="HPA CPU 目标利用率" :value="modelValue.hpa.cpu_utilization" :min="1" :max="1000" :precision="0" addon-after="%" placeholder="不启用" :disabled="resourceDisabled" @update:value="hpa({cpu_utilization:$event===null?undefined:Number($event)})"/></a-form-item><a-form-item label="内存目标利用率"><a-input-number class="kube-hpa-target" aria-label="HPA 内存目标利用率" :value="modelValue.hpa.memory_utilization" :min="1" :max="1000" :precision="0" addon-after="%" placeholder="不启用" :disabled="resourceDisabled" @update:value="hpa({memory_utilization:$event===null?undefined:Number($event)})"/></a-form-item></div>
      <span class="kube-service-note">利用率按资源申请量计算，需要 Metrics Server；至少配置一项。</span>
-    </template>
+     </template>
+    </div>
    </section>
    <section class="kube-config-section"><header>服务与网络 <span v-if="networkDisabled&&!disabled" class="permission-note">修改需要服务与网络修改权限</span></header>
     <a-form-item class="kube-service-type" label="服务类型" :validate-status="serviceType!=='ExternalName'&&serviceError?'error':undefined" :help="serviceType!=='ExternalName'?serviceError||undefined:undefined" :extra="serviceType==='LoadBalancer'?'需要集群提供负载均衡实现。':undefined"><a-select aria-label="服务类型" :value="serviceType" :disabled="networkDisabled" :options="serviceTypeOptions" @update:value="changeServiceType($event)"/></a-form-item>
@@ -91,7 +93,7 @@ function port(index:number,patch:Partial<KubernetesDeploymentSettings['ports'][n
 .kube-port-fields.has-node-port{grid-template-columns:minmax(100px,160px) 80px repeat(2,88px) 104px}
 .kube-port-fields :deep(.ant-form-item){min-width:0}
 .kube-port-fields :deep(.ant-select),.kube-port-fields :deep(.ant-input-number){width:100%}
-.kube-hpa-heading{display:flex;align-items:center;gap:12px;padding-top:4px}.kube-hpa-target{max-width:200px}.kube-hpa-target :deep(.ant-input-number){width:100%}
+.kube-hpa-heading{display:flex;align-items:center;gap:12px;padding-top:4px}.kube-scaling-settings{display:grid;gap:12px;min-width:0}.kube-hpa-target{max-width:200px}.kube-hpa-target :deep(.ant-input-number){width:100%}
 @container kube-port (max-width:491px){
  .kube-port-fields,.kube-port-fields.has-node-port{grid-template-columns:repeat(6,minmax(0,1fr));row-gap:12px}
  .kube-port-fields>:deep(.ant-form-item){grid-column:span 2}
