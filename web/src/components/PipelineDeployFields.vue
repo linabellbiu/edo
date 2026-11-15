@@ -10,6 +10,7 @@ import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vu
 import KubernetesDeploymentTemplateFields from '@/components/KubernetesDeploymentTemplateFields.vue'
 import {kubernetesResourceName,kubernetesContainerDefault} from '@/utils/kubernetesDeployment'
 import DeploymentHostSelection from '@/components/DeploymentHostSelection.vue'
+import {deploymentHostUnavailableReason} from '@/utils/deploymentHostAvailability'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import {deploymentParametersError} from '@/utils/deploymentCommandPreview'
@@ -23,6 +24,8 @@ const registryHost=ref<HTMLElement>(),groupsReady=ref(false)
 const plan=computed(()=>props.node.config.inline_deployment_plan)
 const availableHosts=computed(()=>allHosts.value.filter(host=>host.is_active&&host.capabilities.some(cap=>cap.kind===(host.mode==='local'?'local_exec':'ssh')&&cap.status==='ready')&&(plan.value?.kind!=='compose_stack'||host.capabilities.some(cap=>cap.kind==='docker'&&cap.status==='ready'&&cap.runtime_id))))
 const hostOptions=computed(()=>Object.fromEntries(environments.value.filter(group=>group.is_active).map(group=>[group.id,availableHosts.value.filter(host=>environmentIDsOf(host).includes(group.id))])))
+const hostTreeOptions=computed(()=>Object.fromEntries(environments.value.filter(group=>group.is_active).map(group=>[group.id,allHosts.value.filter(host=>environmentIDsOf(host).includes(group.id))])))
+const hostIssues=computed(()=>{const available=new Set(availableHosts.value.map(host=>host.id));return Object.fromEntries(allHosts.value.filter(host=>!available.has(host.id)).map(host=>[host.id,deploymentHostUnavailableReason(host,plan.value?.kind||'',true)]))})
 const groupHosts=computed(()=>hostOptions.value[plan.value?.deployment_target?.environment_id||'']||[])
 const execution=computed(()=>plan.value?.execution_config||{})
 const parametersError=computed(()=>deploymentParametersError(execution.value))
@@ -142,7 +145,7 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
 <template>
  <section v-if="plan" class="pipeline-deploy-fields">
   <a-alert v-if="error" type="warning" show-icon :message="error"/>
-  <DeploymentHostSelection v-if="plan.kind!=='kubernetes'" :groupID="plan.deployment_target?.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="plan.deployment_target?.host_ids" :legacyHostID="plan.deployment_target?.host_id" :hosts="groupHosts" :all-hosts="availableHosts" :host-options="hostOptions" :ready="groupsReady" :disabled="disabled" @change="target({environment_id:$event.groupID,host_ids:$event.hostIDs,host_id:undefined,runtime_id:undefined})" @update:model-value="target({host_ids:$event,host_id:undefined,runtime_id:undefined})"/>
+  <DeploymentHostSelection v-if="plan.kind!=='kubernetes'" :groupID="plan.deployment_target?.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="plan.deployment_target?.host_ids" :legacyHostID="plan.deployment_target?.host_id" :hosts="groupHosts" :all-hosts="allHosts" :host-options="hostTreeOptions" :host-issues="hostIssues" :ready="groupsReady" :disabled="disabled" @change="target({environment_id:$event.groupID,host_ids:$event.hostIDs,host_id:undefined,runtime_id:undefined})" @update:model-value="target({host_ids:$event,host_id:undefined,runtime_id:undefined})"/>
   <div ref="registryHost"/>
   <template v-if="plan.kind==='compose_stack'">
    <a-form-item label="compose.yaml 来源" required><a-radio-group :value="sourceKind" :disabled="disabled" :options="[{value:'repository',label:'仓库文件'},{value:'editor',label:'上传 / 编辑'},{value:'configuration',label:'配置文件'},{value:'upstream',label:'上游产物'}]" @update:value="source(String($event))"/></a-form-item>

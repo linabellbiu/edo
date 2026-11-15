@@ -13,6 +13,7 @@ import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vu
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
 import DeploymentHostSelection from '@/components/DeploymentHostSelection.vue'
+import {deploymentHostUnavailableReason} from '@/utils/deploymentHostAvailability'
 import { savedDeploymentRegistry } from '@/utils/deploymentExecution'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
@@ -297,7 +298,8 @@ const environmentByID = computed(() => new Map(environments.value.map(item => [i
 const hostByID = computed(() => new Map(hosts.value.map(item => [item.id, item])))
 const dockerByID = computed(() => new Map(docker.value.filter(item => item.is_active).map(item => [item.id, item])))
 const clusterByID = computed(() => new Map(clusters.value.filter(item => item.is_active).map(item => [item.id, item])))
-const deploymentHostOptions = computed(()=>Object.fromEntries(environments.value.filter(group=>group.is_active).map(group=>[group.id,hosts.value.filter(host=>host.is_active&&environmentIDsOf(host).includes(group.id)&&hostSupportsKind(host,form.kind))])))
+const deploymentHostOptions = computed(()=>Object.fromEntries(environments.value.filter(group=>group.is_active).map(group=>[group.id,hosts.value.filter(host=>environmentIDsOf(host).includes(group.id))])))
+const deploymentHostIssues = computed(()=>{const available=new Set(availableHosts.value.map(host=>host.id));return Object.fromEntries(hosts.value.filter(host=>!available.has(host.id)).map(host=>[host.id,deploymentHostUnavailableReason(host,form.kind)]))})
 const environmentHosts = computed(() => hosts.value
   .filter(host => host.is_active && environmentIDsOf(host).includes(form.environment_id)))
 const availableKindOptions = computed(() => kindOptions.map(option=>option.value==='compose_stack'&&form.kind==='compose'?{...option,value:'compose' as PlanKind}:option).filter(option=>(!props.inline||!props.inlineKinds||props.inlineKinds.includes(option.value))&&(form.reusable||environmentSupportsKind(option.value))))
@@ -1129,7 +1131,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         </div>
 
         <div v-if="!form.reusable&&form.kind!=='kubernetes'" class="host-target-section">
-          <DeploymentHostSelection :groupID="form.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :all-hosts="availableHosts" :host-options="deploymentHostOptions" :ready="!loading" :disabled="saving||!canReadEnvironments||!canReadHosts" @change="selectDeploymentTarget" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()">
+          <DeploymentHostSelection :groupID="form.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :all-hosts="hosts" :host-options="deploymentHostOptions" :host-issues="deploymentHostIssues" :ready="!loading" :disabled="saving||!canReadEnvironments||!canReadHosts" @change="selectDeploymentTarget" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()">
             <template #extra><a-button v-if="auth.canAny(['deployment.create'])" aria-label="创建主机组" title="创建主机组" @click="router.push('/hosts?create_group=1')"><Plus :size="15" /></a-button></template>
           </DeploymentHostSelection>
           <div v-if="!canReadEnvironments" class="permission-note">需要发布记录查看权限才能选择执行主机组。</div>

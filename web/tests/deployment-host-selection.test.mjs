@@ -74,9 +74,9 @@ test('未分组主机可选择，跨组移动或退出所有组后准确回显�
  const a={id:'a',name:'主机 A'},b={id:'b',name:'未分组主机'}
  const props=vue.reactive({...defaults,hosts:[a],allHosts:[a,b],hostOptions:{group:[a]},ready:true,modelValue:['a']})
  const h=component(props);t.after(h.stop)
- const ungrouped=h.state.treeData.value.find(node=>node.title==='未分组')
- assert.equal(ungrouped.children[0].hostID,'b')
- h.state.choose([{value:ungrouped.children[0].key}],[],{triggerValue:ungrouped.children[0].key,checked:true})
+ const ungrouped=h.state.treeData.value.find(node=>node.hostID==='b')
+ assert.ok(ungrouped&&!ungrouped.children)
+ h.state.choose([{value:ungrouped.key}],[],{triggerValue:ungrouped.key,checked:true})
  assert.deepEqual(h.events.at(-1).args,[{groupID:'group',hostIDs:['a','b']}])
  h.events.length=0
  props.hosts=[];props.hostOptions={group:[],other:[a]};props.groups=[...defaults.groups,{id:'other',name:'新组'}]
@@ -95,4 +95,55 @@ test('只有未分组主机且没有组时仍可保存精确选择，不选其�
  assert.ok(h.state.treeValue.value.some(node=>node.value==='host::a'))
  h.state.choose([{value:'host::b'}],[],{triggerValue:'host::b',checked:true})
  assert.deepEqual(h.events.at(-1).args,[{groupID:'',hostIDs:['a','b']}])
+})
+
+test('未归组及旧本地环境主机作为根级独立选项，逐台选择并保存回显',async t=>{
+ const local={id:'local',name:'本地',mode:'local'},remote={id:'remote',name:'独立主机'}
+ const props=vue.reactive({groups:[{id:'edo-local-environment',name:'本地环境'},...defaults.groups],hosts:[],allHosts:[local,remote,hosts[0]],hostOptions:{'edo-local-environment':[local],group:[hosts[0]]},ready:true,modelValue:[]})
+ const h=component(props);t.after(h.stop)
+ assert.ok(!h.state.treeData.value.some(node=>node.groupID==='edo-local-environment'))
+ assert.ok(!h.state.treeData.value.some(node=>node.title==='未分组'))
+ assert.deepEqual(h.state.treeData.value.filter(node=>node.hostID).map(node=>node.hostID),['local','remote'])
+ h.state.choose([{value:'host::local'}],[],{triggerValue:'host::local',checked:true})
+ props.modelValue=h.events.at(-1).args[0].hostIDs;await vue.nextTick()
+ h.state.choose([{value:'host::remote'}],[],{triggerValue:'host::remote',checked:true})
+ const saved=JSON.parse(JSON.stringify(h.events.at(-1).args[0]))
+ assert.deepEqual(saved,{groupID:'',hostIDs:['local','remote']})
+ props.modelValue=saved.hostIDs;await vue.nextTick()
+ assert.deepEqual(h.state.treeValue.value.filter(node=>node.value.startsWith('host::')).map(node=>node.value),['host::local','host::remote'])
+ assert.equal(h.state.error.value,'')
+})
+
+test('独立不可用主机保留原因且拒绝新增勾选，已选失效主机可单独取消',async t=>{
+ const props=vue.reactive({groups:[],hosts:[],allHosts:hosts,hostIssues:{b:'Docker 连接未就绪'},ready:true,modelValue:[]})
+ const h=component(props);t.after(h.stop)
+ const unavailable=h.state.treeData.value.find(node=>node.hostID==='b')
+ assert.equal(unavailable.unavailableReason,'Docker 连接未就绪');assert.equal(unavailable.disabled,true)
+ h.state.choose([{value:'host::a'}],[],{triggerValue:'host::a',checked:true})
+ assert.deepEqual(h.events.at(-1).args[0],{groupID:'',hostIDs:['a']})
+ const count=h.events.length;h.state.choose([{value:'host::b'}],[],{triggerValue:'host::b',checked:true});assert.equal(h.events.length,count)
+ props.modelValue=['a','b'];await vue.nextTick()
+ assert.deepEqual(h.state.missing.value,[]);assert.equal(h.state.error.value,'主机 B：Docker 连接未就绪')
+ assert.equal(h.state.treeData.value.find(node=>node.hostID==='b').disabled,false)
+ h.state.choose([{value:'host::a'}],[],{triggerValue:'host::b',checked:false})
+ assert.deepEqual(h.events.at(-1).args[0],{groupID:'',hostIDs:['a']})
+ h.state.choose(undefined)
+ assert.deepEqual(h.events.at(-1).args[0],{groupID:'',hostIDs:[]})
+})
+
+test('没有可用独立主机时仍展示主机和原因，已有分组内的不可用主机仍在原组',t=>{
+ const h=component({...defaults,hosts:[],allHosts:hosts,hostOptions:{group:[hosts[0]]},hostIssues:{a:'主机已停用',b:'SSH 连接未就绪'},ready:true,modelValue:[]});t.after(h.stop)
+ const independent=h.state.treeData.value.find(node=>node.hostID==='b')
+ assert.equal(independent.disabled,true);assert.equal(independent.children,undefined)
+ assert.equal(h.state.treeData.value[0].children[0].hostID,'a')
+})
+
+test('不可用原因按当前部署所需能力解释，不读取或回显凭据',()=>{
+ const {deploymentHostUnavailableReason:reason}=loadFrontend('../src/utils/deploymentHostAvailability.ts')
+ const host={is_active:true,mode:'ssh',capabilities:[{kind:'ssh',status:'ready'}]}
+ assert.equal(reason({...host,is_active:false},'script'),'主机已停用')
+ assert.equal(reason({...host,capabilities:[]},'script'),'SSH 连接未就绪')
+ assert.equal(reason({...host,mode:'local',capabilities:[]},'compose_stack'),'本地执行能力未就绪')
+ assert.equal(reason(host,'compose_stack'),'未配置 Docker 能力')
+ assert.equal(reason({...host,capabilities:[...host.capabilities,{kind:'docker',status:'unreachable',runtime_id:'runtime'}]},'compose_stack'),'Docker 连接未就绪')
 })

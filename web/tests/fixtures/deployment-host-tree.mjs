@@ -13,9 +13,11 @@ import DeploymentPlanView from '/src/views/DeploymentPlanView.vue'
 import PipelineDeployFields from '/src/components/PipelineDeployFields.vue'
 // 隔离合成接口，仅保存当前浏览器内的数据，不连接生产或执行部署。
 const project='host-tree-preview'
-const host=(id,name,environment_ids)=>({id,name,environment_ids,mode:'ssh',address:'192.0.2.'+({a:10,b:11,c:12,d:13}[id]),ssh_port:22,is_active:true,capabilities:[{kind:'docker',runtime_id:'runtime-'+id,status:'ready'},{kind:'ssh',status:'ready'}]})
+const host=(id,name,environment_ids)=>({id,name,environment_ids,mode:'ssh',address:'192.0.2.'+({a:10,b:11,c:12,d:13,e:14,f:15}[id]),ssh_port:22,is_active:true,capabilities:[{kind:'docker',runtime_id:'runtime-'+id,status:'ready'},{kind:'ssh',status:'ready'}]})
 const hosts=[host('a','API 主机',['prod','staging']),host('b','任务主机',['prod']),host('c','预发布主机',['staging']),host('d','未分组执行主机',[])]
+hosts.push({...host('e','未分组 Docker 未就绪',[]),capabilities:[{kind:'ssh',status:'ready'},{kind:'docker',status:'unreachable',runtime_id:'runtime-e'}]}, {...host('f','旧本地环境主机',['edo-local-environment']),address:'192.0.2.15'})
 const groups=[{id:'root',name:'研发',is_active:true,hosts:[]},{id:'prod',parent_id:'root',name:'生产',is_active:true,hosts:hosts.slice(0,2)},{id:'staging',parent_id:'root',name:'预发布',is_active:true,hosts:[hosts[0],hosts[2]]}]
+groups.push({id:'edo-local-environment',name:'本地环境',is_active:true,hosts:[hosts.at(-1)]})
 if(sessionStorage.getItem('edo.host-tree-moved')==='yes'){hosts[0].environment_ids=['staging'];groups.find(group=>group.id==='prod').hosts=hosts.filter(host=>host.environment_ids.includes('prod'))}
 const original={id:'plan',name:'树形主机选择验收',kind:'compose_stack',is_active:true,timeout_seconds:600,compose_yaml:'services:\n  api:\n    image: example/api:${EDO_IMAGE_TAG}\n',deployment_target_id:'target',deployment_target:{id:'target',platform:'ssh',environment_id:'prod',host_ids:['a','b'],rollout_timeout:600},execution_config:{deployment_registry_id:'registry',deployment_input_version:1,deployment_inputs:[],compose:{project_name:'preview',tag_variable:'${EDO_IMAGE_TAG}',services:[]}}}
 const clone=value=>JSON.parse(JSON.stringify(value));let saved=JSON.parse(sessionStorage.getItem('edo.host-tree-plan')||'null')||clone(original)
