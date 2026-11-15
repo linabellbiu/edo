@@ -272,7 +272,7 @@ const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
   { value: 'script', label: '主机脚本', hint: '通过 SSH 执行部署脚本。上游文件制品先暂存到目标主机，脚本可用 ${EDO_ARTIFACT_PATH} 读取文件，并用 ${EDO_ARTIFACT_DIGEST} 校验摘要。' },
   { value: 'docker', label: 'Docker 容器', hint: '选择上游构建镜像，或从镜像仓库指定镜像与 Tag。部署时固定镜像 Digest，按已保存的参数创建或更新容器。' },
   { value: 'compose_stack', label: 'Docker Compose', hint: '按 compose.yaml 中配置的镜像和服务部署' },
-  { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '配置可复用的工作负载、资源、网络和健康检查参数；方案可设置默认镜像仓库，镜像与 Tag 在流水线部署阶段设置。' },
+  { value: 'kubernetes', label: 'Kubernetes', hint: '配置可复用的工作负载、资源、网络和健康检查参数；方案可设置默认镜像仓库，镜像与 Tag 在流水线部署阶段设置。' },
 ]
 const kindNames: Record<PlanKind, string> = { ...Object.fromEntries(kindOptions.map(item => [item.value, item.label])), compose: 'Docker Compose' } as Record<PlanKind, string>
 function planIcon(kind: PlanKind) { return kind === 'compose_stack' ? 'docker' : planPlatform(kind) }

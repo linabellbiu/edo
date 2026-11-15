@@ -112,7 +112,7 @@ const DEFAULT_RUNTIME_IMAGE = 'alpine:3.22'
 const DEFAULT_TAG_PATTERN = 'v*'
 const runtimeImageOptions = ['alpine:3.22', 'node:24-alpine', 'golang:1.26-alpine', 'python:3.14-alpine', 'maven:3.9-eclipse-temurin-21-alpine'].map(value => ({ value }))
 const deploymentKindNames: Record<DeploymentPlanKind, string> = {
-  script: '自定义部署', docker: 'Docker 容器', compose: 'Docker Compose', compose_stack: 'Docker Compose', kubernetes: 'Kubernetes Deployment',
+  script: '自定义部署', docker: 'Docker 容器', compose: 'Docker Compose', compose_stack: 'Docker Compose', kubernetes: 'Kubernetes',
 }
 const defaultNotificationTitle = 'EDO｜{{application.name}}｜{{task.name}}｜{{task.status}}'
 const defaultNotificationMessage = [
