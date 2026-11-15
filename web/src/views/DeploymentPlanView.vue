@@ -1124,7 +1124,6 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           <header><b>1</b><div><strong>方案信息<DeploymentFieldHelp text="使用能直接辨认用途和主机组的名称。" label="方案信息说明" /></strong></div></header>
           <div class="form-grid">
             <a-form-item class="span-2" label="方案名称" required><a-input v-model:value="form.name" placeholder="例如：生产后端部署" /></a-form-item>
-            <a-form-item v-if="!inline" class="span-2"><a-checkbox v-model:checked="form.reusable" :disabled="Boolean(editingID && plans.find(item=>item.id===editingID)?.deployment_target_id)">{{ t('delivery.reusable') }}</a-checkbox><DeploymentFieldHelp :text="t('delivery.reusableHint')" label="复用方案说明" /></a-form-item>
             <a-form-item class="span-2" label="说明"><a-input v-model:value="form.description" placeholder="这套方案用于哪些应用或场景" /></a-form-item>
           </div>
         </div>
