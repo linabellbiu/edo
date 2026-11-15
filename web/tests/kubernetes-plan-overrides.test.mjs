@@ -51,10 +51,9 @@ test('恢复网络覆盖需要网络权限，保持工作负载配置可独立�
  const h=componentHarness('../src/components/KubernetesPlanStageFields.vue',{props,codes:['workflow.update','kubernetes.workload.update'],modules:{'@/utils/kubernetesPlanOverride':utils}});t.after(h.stop)
  assert.equal(h.state.canRestore.value,false);h.state.restore();assert.deepEqual(h.events,[])
 })
-test('高级配置关闭探针产生删除补丁，模板锁定及无权限事件不发出',t=>{
- const props=vue.reactive({modelValue:defaults(),disabled:false,lockTemplate:true})
+test('高级配置关闭探针产生删除补丁，无权限事件不发出',t=>{
+ const props=vue.reactive({modelValue:defaults(),disabled:false})
  const h=componentHarness('../src/components/KubernetesDeploymentTemplateFields.vue',{props,codes:['kubernetes.workload.update']});t.after(h.stop)
- h.state.selectTemplate('existing');assert.deepEqual(h.events,[])
  h.state.toggleProbe('readiness_probe',true);props.modelValue=h.events.at(-1).args[0]
  assert.equal(props.modelValue.readiness_probe.port,8080)
  const plan=base();plan.execution_config.kubernetes=JSON.parse(JSON.stringify(props.modelValue))

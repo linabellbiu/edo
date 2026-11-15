@@ -2,8 +2,8 @@
 import {computed} from 'vue'
 import {useAuthStore} from '@/stores/auth'
 import type {KubernetesDeploymentSettings} from '@/types/pipeline'
-import {defaultKubernetesDeployment,kubernetesDeploymentRuntimeError} from '@/utils/kubernetesDeployment'
-const props=defineProps<{modelValue?:KubernetesDeploymentSettings;disabled?:boolean;lockTemplate?:boolean}>()
+import {kubernetesDeploymentRuntimeError} from '@/utils/kubernetesDeployment'
+const props=defineProps<{modelValue?:KubernetesDeploymentSettings;disabled?:boolean}>()
 const emit=defineEmits<{'update:modelValue':[value:KubernetesDeploymentSettings|undefined]}>()
 const auth=useAuthStore()
 const resourceDisabled=computed(()=>props.disabled||!auth.canAny(['kubernetes.workload.update']))
@@ -18,14 +18,12 @@ function toggleProbe(key:ProbeKey,enabled:boolean){update({[key]:enabled?{kind:'
 function probe(key:ProbeKey,patch:Partial<Probe>){const current=props.modelValue?.[key];if(current)update({[key]:{...current,...patch}})}
 function probeKind(key:ProbeKey,kind:Probe['kind']){probe(key,kind==='tcp'?{kind,path:undefined,scheme:undefined}:{kind,path:'/',scheme:'HTTP'})}
 function lines(value:unknown):string[]|undefined {const text=String(value||'');return text?text.split(/\r?\n/):undefined}
-function selectTemplate(value:string){if(!props.lockTemplate&&!resourceDisabled.value)emit('update:modelValue',value==='web'?defaultKubernetesDeployment():undefined)}
 function strategy(value:string){update({strategy:value as KubernetesDeploymentSettings['strategy'],...(value==='Recreate'?{max_surge:undefined,max_unavailable:undefined}:{})})}
 
 function port(index:number,patch:Partial<KubernetesDeploymentSettings['ports'][number]>){if(!networkDisabled.value&&props.modelValue)update({ports:props.modelValue.ports.map((item,i)=>i===index?{...item,...patch}:item)})}
 </script>
 <template>
  <section class="kube-template-fields">
-  <a-form-item label="部署模板" required><a-select :value="modelValue?'web':'existing'" :disabled="disabled||lockTemplate||!auth.canAny(['kubernetes.workload.update'])" :options="[{value:'web',label:'内置标准模板'},{value:'existing',label:'更新已有 Deployment 镜像'}]" @update:value="selectTemplate(String($event))"/></a-form-item>
   <template v-if="modelValue">
    <section class="kube-config-section"><header>工作负载 <span v-if="resourceDisabled&&!disabled" class="permission-note">修改需要工作负载修改权限</span></header>
     <div class="kube-resource-grid"><a-form-item label="副本数"><a-input-number aria-label="副本数" :value="modelValue.replicas" :min="1" :max="100" :precision="0" :disabled="resourceDisabled" @update:value="update({replicas:Number($event)})"/></a-form-item></div>
