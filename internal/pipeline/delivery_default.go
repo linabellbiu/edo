@@ -78,6 +78,9 @@ func BuiltinDelivery(kind model.DeploymentPlanKind) (BuiltinDeliveryDefinition, 
 		plan.ComposeYAML = "services:\n  app:\n    image: ${EDO_IMAGE}\n    restart: unless-stopped\n"
 		plan.ServiceName = "app"
 	}
+	if kind == model.DeploymentPlanKubernetes {
+		plan.ExecutionConfig = &model.DeploymentExecutionConfig{Kubernetes: model.DefaultKubernetesDeploymentSettings()}
+	}
 	if kind == model.DeploymentPlanScript {
 		plan.Script = builtinDeliveryScript
 	}

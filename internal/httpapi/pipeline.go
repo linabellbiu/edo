@@ -11,6 +11,7 @@ import (
 
 	"edo/internal/cicd"
 	"edo/internal/deployment"
+	"edo/internal/kube"
 	"edo/internal/model"
 	"edo/internal/pipeline"
 	"edo/internal/realtime"
@@ -787,6 +788,14 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusUnprocessableEntity, "image_registry_login_failed", pipeline.ErrRegistryLoginFailed.Error())
 	case errors.Is(err, pipeline.ErrRegistryConnectionFailed):
 		writeError(c, http.StatusBadGateway, "image_registry_connection_failed", pipeline.ErrRegistryConnectionFailed.Error())
+	case errors.Is(err, pipeline.ErrKubernetesTemplatePermission):
+		writeError(c, http.StatusForbidden, "kubernetes_template_permission_denied", pipeline.ErrKubernetesTemplatePermission.Error())
+	case errors.Is(err, model.ErrKubernetesDeploymentSettings):
+		writeError(c, http.StatusBadRequest, "invalid_kubernetes_template", model.ErrKubernetesDeploymentSettings.Error())
+	case errors.Is(err, kube.ErrDeploymentTemplateConflict):
+		writeError(c, http.StatusConflict, "kubernetes_target_conflict", kube.ErrDeploymentTemplateConflict.Error())
+	case errors.Is(err, kube.ErrDeploymentTemplateCheck):
+		writeError(c, http.StatusBadRequest, "kubernetes_template_check_failed", kube.ErrDeploymentTemplateCheck.Error())
 	case errors.Is(err, pipeline.ErrDeploymentRegistryRequired):
 		writeError(c, http.StatusBadRequest, "deployment_registry_required", pipeline.ErrDeploymentRegistryRequired.Error())
 	case errors.Is(err, pipeline.ErrDeploymentRegistryUnavailable):

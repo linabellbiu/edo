@@ -23,6 +23,7 @@ function harness(t, denied = [], props = {}, query = {}) {
   const auth = vue.reactive({ loaded: true, user: { id: 'test-user', department_id: 'test-department', project_id: 'test-project', permissions }, canAny: codes => codes.some(code => auth.user.permissions.includes(code)) })
   let state
   const modules = {
+ '@/utils/kubernetesDeployment': loadFrontend('../src/utils/kubernetesDeployment.ts'),
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
     'vue-i18n': { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) },
     'vue-router': { useRoute: () => route, useRouter: () => ({ resolve: () => ({ href: '/resource' }), async replace(value){replacements.push(value);route.query={...value.query}} }) },

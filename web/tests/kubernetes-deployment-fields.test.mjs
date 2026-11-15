@@ -41,3 +41,23 @@ test('上游镜像按UUID绑定，以阶段和任务位置区分近似名称，�
  assert.deepEqual(h.state.imageBuildOptions.value.at(-1),{value:'no-registry',label:'原上游镜像不可用，请重新选择',disabled:true})
  assert.deepEqual(h.events,[])
 })
+test('命名空间与Deployment默认应用名，容器名来自选定镜像；不覆盖手动输入',async t=>{
+ const h=harness();t.after(h.stop);await settle()
+ h.props.applicationName='order_api'
+ h.props.buildNodes=[{id:'image',name:'构建',type:'build',config:{image_name:'services/order_backend',inline_build:{kind:'dockerfile',image_registry_id:'registry'}}}]
+ await settle()
+ const target=h.events.at(-1).args[0].inline_deployment_plan.deployment_target
+ assert.equal(target.namespace,'order-api');assert.equal(target.workload_name,'order-api');assert.equal(target.container_name,'order-backend')
+ h.props.node.config.inline_deployment_plan.deployment_target={...target,namespace:'manual',container_name:'manual-api'}
+ h.props.buildNodes[0].config.image_name='changed';await settle()
+ assert.equal(h.props.node.config.inline_deployment_plan.deployment_target.namespace,'manual');assert.equal(h.props.node.config.inline_deployment_plan.deployment_target.container_name,'manual-api')
+})
+test('标准模板使用约定资源，默认端口全部关闭；无RBAC不能通过事件修改网络',async t=>{
+ const {loadFrontend}=await import('./acceptanceHarness.mjs')
+ const defaults=loadFrontend('../src/utils/kubernetesDeployment.ts').defaultKubernetesDeployment()
+ assert.deepEqual([defaults.replicas,defaults.cpu_request,defaults.memory_request,defaults.cpu_limit,defaults.memory_limit],[1,'200m','300Mi','1','1Gi'])
+ assert.equal(defaults.node_port,false);assert.deepEqual(defaults.ports.map(p=>[p.enabled,p.port,p.target_port]),[[false,8080,8080],[false,8888,8888]])
+ const h=componentHarness('../src/components/KubernetesDeploymentTemplateFields.vue',{props:{modelValue:defaults,disabled:false}});t.after(h.stop)
+ assert.equal(h.state.resourceDisabled.value,true);assert.equal(h.state.networkDisabled.value,true)
+ h.state.port(0,{enabled:true});assert.deepEqual(h.events,[])
+})

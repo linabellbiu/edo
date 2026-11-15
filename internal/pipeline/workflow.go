@@ -124,13 +124,14 @@ type workflowBuildPlanSnapshot struct {
 }
 
 type workflowDeploymentPlanSnapshot struct {
-	ID             string                      `json:"id"`
-	Kind           model.DeploymentPlanKind    `json:"kind"`
-	Script         string                      `json:"script,omitempty"`
-	ComposeYAML    string                      `json:"compose_yaml,omitempty"`
-	ServiceName    string                      `json:"service_name,omitempty"`
-	DockerConfig   model.DockerContainerConfig `json:"docker_config,omitempty"`
-	TimeoutSeconds int                         `json:"timeout_seconds"`
+	Kubernetes     *model.KubernetesDeploymentSettings `json:"kubernetes,omitempty"`
+	ID             string                              `json:"id"`
+	Kind           model.DeploymentPlanKind            `json:"kind"`
+	Script         string                              `json:"script,omitempty"`
+	ComposeYAML    string                              `json:"compose_yaml,omitempty"`
+	ServiceName    string                              `json:"service_name,omitempty"`
+	DockerConfig   model.DockerContainerConfig         `json:"docker_config,omitempty"`
+	TimeoutSeconds int                                 `json:"timeout_seconds"`
 }
 
 type workflowDeploymentTargetSnapshot struct {
@@ -1012,6 +1013,11 @@ func (s *Service) validateWorkflow(
 				} else if !deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 					issues = append(issues, WorkflowIssue{Code: "deployment_plan_target_mismatch", Message: fmt.Sprintf("部署任务“%s”的执行方式与目标不匹配", node.Name), NodeID: node.ID, StageID: stage.ID})
 				} else {
+					if application != nil && plan.ExecutionConfig != nil && plan.ExecutionConfig.Kubernetes != nil {
+						if err := s.deployments.KubernetesTemplateCheck(ctx, target, application.ID, plan.ExecutionConfig.Kubernetes); err != nil {
+							issues = append(issues, WorkflowIssue{Code: "kubernetes_template_target_invalid", Message: err.Error(), NodeID: node.ID, StageID: stage.ID})
+						}
+					}
 					available, err := s.deploymentEnvironmentAvailable(ctx, s.db, target, "pipeline_workflow_validate_environment")
 					if err != nil {
 						issues = append(issues, WorkflowIssue{Code: "deployment_environment_check_failed", Message: errDeploymentEnvironmentCheckFailed.Error(), NodeID: node.ID, StageID: stage.ID})
@@ -1030,6 +1036,7 @@ func (s *Service) validateWorkflow(
 		issues = append(issues, WorkflowIssue{Code: "ambiguous_artifact_source", Message: "部署任务需要选择已完成阶段的构建制品；并行构建时请明确选择来源任务"})
 	}
 	issues = append(issues, validateWorkflowArtifactFlow(tasks, activeBuildPlans, activeDeploymentPlans, activeTargets)...)
+	issues = append(issues, checkDuplicateKubernetesTargets(stages, activeDeploymentPlans, activeTargets)...)
 	issues = append(issues, validateUpstreamArtifactStages(stages)...)
 	return uniqueIssues(issues)
 }
@@ -1454,6 +1461,9 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			authorityID = workflow.CreatedBy
 		}
 	}
+	authorityScope, _ := projectdatabase.DepartmentScopeFromContext(variableContext)
+	authorityScope.UserID = authorityID
+	variableContext = projectdatabase.WithDepartmentScope(variableContext, authorityScope)
 	buildPlans := make(map[string]workflowBuildPlanSnapshot)
 	deploymentPlans := make(map[string]workflowDeploymentPlanSnapshot)
 	deploymentTargets := make(map[string]workflowDeploymentTargetSnapshot)
@@ -1508,7 +1518,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				var target model.DeploymentTarget
 				managedWorkingDirectory := false
 				if current.Config.InlineDeploymentPlan != nil {
-					inlinePlan, inlineTarget, resolveErr := s.resolveInlineDeploymentPlan(ctx, application, workflow.ID, *current, database)
+					inlinePlan, inlineTarget, resolveErr := s.resolveInlineDeploymentPlan(variableContext, application, workflow.ID, *current, database)
 					if resolveErr != nil {
 						return nil, resolveErr
 					}
@@ -1548,6 +1558,17 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				}
 				if err := resolveDeploymentBuildBindings(current, resolved.Stages); err != nil {
 					return nil, err
+				}
+				if current.Config.Kubernetes != nil {
+					authScope, _ := projectdatabase.DepartmentScopeFromContext(variableContext)
+					authScope.UserID = authorityID
+					checkCtx := projectdatabase.WithDepartmentScope(variableContext, authScope)
+					if err := s.validateKubernetesTemplateConfiguration(checkCtx, database, current.Config.Kubernetes); err != nil {
+						return nil, err
+					}
+					if err := s.deployments.WithTransaction(database).KubernetesTemplateCheck(checkCtx, target, application.ID, current.Config.Kubernetes); err != nil {
+						return nil, err
+					}
 				}
 				available, environmentErr := s.deploymentEnvironmentAvailable(ctx, database, target, "pipeline_run_environment_validate")
 				if environmentErr != nil {
@@ -1599,7 +1620,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					target.WorkloadName = workloadName
 				}
 				deploymentPlans[current.ID] = workflowDeploymentPlanSnapshot{
-					ID: plan.ID, Kind: plan.Kind, Script: plan.Script,
+					ID: plan.ID, Kind: plan.Kind, Script: plan.Script, Kubernetes: current.Config.Kubernetes,
 					ComposeYAML: plan.ComposeYAML, ServiceName: plan.ServiceName,
 					DockerConfig:   dockerConfig,
 					TimeoutSeconds: plan.TimeoutSeconds,
@@ -1747,6 +1768,10 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			tasks = append(tasks, task)
 		}
 		resolved.Stages[i].Tasks = tasks
+	}
+	if duplicates := checkDuplicateKubernetesTargets(resolved.Stages, resolvedDeploymentPlans, resolvedDeploymentTargets); len(duplicates) > 0 {
+		s.logger.WarnContext(ctx, "流水线包含重复 Kubernetes 部署目标", "operation", "kubernetes_template_duplicate", "application_id", application.ID, "err", ErrInvalidWorkflow)
+		return nil, ErrInvalidWorkflow
 	}
 	run, err := newWorkflowRun(application, &resolved, node, trigger, ref, commitSHA, actorID, message, now)
 	if err != nil {

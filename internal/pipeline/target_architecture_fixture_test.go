@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +27,14 @@ func configureKubernetesArchitectureFixture(t *testing.T, service *Service, clus
 			_, _ = io.WriteString(w, `{"gitVersion":"v1.35.2"}`)
 		case "/api/v1/nodes":
 			_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"NodeList","items":[{"metadata":{"name":"architecture-fixture"},"status":{"nodeInfo":{"architecture":"amd64","operatingSystem":"linux"}}}]}`)
+		case "/api/v1/namespaces/default", "/api/v1/namespaces/test":
+			_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"default","uid":"fixture-namespace","resourceVersion":"1"}}`)
 		default:
+			if r.Method == http.MethodGet && (strings.Contains(r.URL.Path, "/deployments/") || strings.Contains(r.URL.Path, "/services/")) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"Status","reason":"NotFound","code":404}`)
+				return
+			}
 			t.Errorf("架构 fixture 不应处理其他集群操作: %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
 		}

@@ -20,6 +20,7 @@ function harness(t, { active = false, publicMode = false, routeGuards = false, c
   const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', permissions: [...permissions], is_superuser: false }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
   let timerID = 0, now = 0
   const modules = {
+ '@/utils/kubernetesDeployment': loadFrontend('../src/utils/kubernetesDeployment.ts'),
     '@/utils/buildTarget': loadFrontend('../src/utils/buildTarget.ts'),
     uuid: { v4: uuidv4 },
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },

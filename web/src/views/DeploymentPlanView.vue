@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import KubernetesDeploymentTemplateFields from '@/components/KubernetesDeploymentTemplateFields.vue'
+import {defaultKubernetesDeployment,kubernetesResourceName,kubernetesContainerDefault} from '@/utils/kubernetesDeployment'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { FileUp, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
@@ -232,7 +234,7 @@ const composeFileInput = ref<HTMLInputElement>()
 const deploymentDrafts: Partial<Record<PlanKind, DeploymentDraft>> = {}
 const defaultComposeYAML = 'services:\n  app:\n    restart: unless-stopped\n'
 
-function emptyExecution(kind:PlanKind):DeploymentExecutionConfig { return kind==='compose_stack' ? {compose:{tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}} : {} }
+function emptyExecution(kind:PlanKind):DeploymentExecutionConfig { return kind==='kubernetes'?{kubernetes:defaultKubernetesDeployment()}:kind==='compose_stack' ? {compose:{tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}} : {} }
 function cloneExecution(value?:DeploymentExecutionConfig):DeploymentExecutionConfig|undefined { return value===undefined ? undefined : JSON.parse(JSON.stringify(value)) }
 const form = reactive({
   execution_config: {} as DeploymentExecutionConfig | undefined,
@@ -652,9 +654,9 @@ function emptyDeploymentDraft(kind: PlanKind): DeploymentDraft {
     host_id: '',
     working_directory: '',
     runtime_id: '',
-    namespace: 'default',
-    workload_name: '',
-    container_name: '',
+    namespace: kind==='kubernetes'?kubernetesResourceName(props.applicationName||''):'default',
+    workload_name: kind==='kubernetes'?kubernetesResourceName(props.applicationName||''):'',
+    container_name: kind==='kubernetes'?kubernetesContainerDefault(props.applicationName||'',props.buildNodes?.length===1?props.buildNodes[0]:undefined):'',
     docker_port_mappings: [emptyDockerPort()],
     docker_environment_variables: [],
     docker_volume_mounts: [],
@@ -1283,6 +1285,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
             </a-form-item>
 
           </template>
+          <KubernetesDeploymentTemplateFields v-if="form.kind==='kubernetes'" :model-value="form.execution_config?.kubernetes" :disabled="!canUseForm()" @update:model-value="updateExecution({...form.execution_config,kubernetes:$event})"/>
           <DeploymentExecutionFields :model-value="form.execution_config || {}" :plan="executionPlan" :disabled="!canUseForm()" :edit-permission="executionPermission" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :hide-script="form.kind==='script'" :registry-target="registryHost" @update:timeout-seconds="form.timeout_seconds=$event" @update:model-value="updateExecution" />
           </template>
         </div>

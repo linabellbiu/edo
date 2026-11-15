@@ -29,56 +29,57 @@ type DeploymentConfigBinding struct {
 }
 
 type WorkflowNodeConfig struct {
-	DeploymentRegistryID   string                     `json:"deployment_registry_id,omitempty"`
-	ExecutionHostID        string                     `json:"execution_host_id,omitempty"` // 仅由运行快照生成，不接受用户指定。
-	ComposeSource          *WorkflowComposeSource     `json:"compose_source,omitempty"`
-	InlineBuild            *BuildPlan                 `json:"inline_build,omitempty"`
-	BuildOutputs           []WorkflowBuildOutput      `json:"build_outputs,omitempty"`
-	RuntimeServices        []WorkflowRuntimeService   `json:"runtime_services,omitempty"`
-	ArtifactBuildPlanID    string                     `json:"artifact_build_plan_id,omitempty"`
-	DeploymentInputVersion int                        `json:"deployment_input_version,omitempty"`
-	DeploymentInputs       []DeploymentInput          `json:"deployment_inputs,omitempty"`
-	DeploymentScript       string                     `json:"deployment_script,omitempty"`
-	DeploymentTagReference string                     `json:"deployment_tag_reference,omitempty"`
-	ConfigurationFiles     []DeploymentConfigFile     `json:"configuration_files,omitempty"`
-	ConfigurationDirectory string                     `json:"configuration_directory,omitempty"` // 仅用于读取旧运行快照。
-	DeploymentParameters   string                     `json:"deployment_parameters,omitempty"`
-	StatusWriteback        bool                       `json:"status_writeback,omitempty"`
-	Branch                 string                     `json:"branch,omitempty"`
-	Events                 []string                   `json:"events,omitempty"`
-	TagPattern             string                     `json:"tag_pattern,omitempty"`
-	PRTargetPattern        string                     `json:"pr_target_pattern,omitempty"`
-	PRSourcePattern        string                     `json:"pr_source_pattern,omitempty"`
-	PRActions              []string                   `json:"pr_actions,omitempty"`
-	BuildPlanID            string                     `json:"build_plan_id,omitempty"`
-	ImageName              string                     `json:"image_name,omitempty"`
-	ImageTag               string                     `json:"image_tag,omitempty"`
-	ImageBuildNodeID       string                     `json:"image_build_node_id,omitempty"`    // 仅保留历史配置与运行快照。
-	ComposeBuildBindings   []ComposeBuildBinding      `json:"compose_build_bindings,omitempty"` // 仅保留历史配置与运行快照。
-	TargetStage            *string                    `json:"target_stage,omitempty"`           // nil 沿用方案，空字符串明确构建最终阶段。
-	BuildPlatform          string                     `json:"build_platform,omitempty"`         // 空值沿用构建方案的平台。
-	DeploymentPlanID       string                     `json:"deployment_plan_id,omitempty"`
-	InlineDeploymentPlan   *WorkflowDeploymentPlan    `json:"inline_deployment_plan,omitempty"`
-	DeploymentSource       string                     `json:"deployment_source,omitempty"`
-	Script                 string                     `json:"script,omitempty"`
-	RuntimeImage           string                     `json:"runtime_image,omitempty"`
-	ToolchainLanguage      string                     `json:"toolchain_language,omitempty"`
-	ToolchainVersion       string                     `json:"toolchain_version,omitempty"`
-	WorkingDirectory       string                     `json:"working_directory,omitempty"`
-	TimeoutSeconds         int                        `json:"timeout_seconds,omitempty"`
-	EnvironmentVariables   map[string]string          `json:"environment_variables,omitempty"`
-	VariableNames          []string                   `json:"variable_names,omitempty"`
-	VariableEnvironmentID  string                     `json:"variable_environment_id,omitempty"`
-	ArtifactNodeID         string                     `json:"artifact_node_id,omitempty"`
-	ArtifactNodeIDs        []string                   `json:"artifact_node_ids,omitempty"`
-	ComposeImages          []ComposeImageBinding      `json:"compose_images,omitempty"`
-	Compose                *ComposeDeploymentSettings `json:"compose,omitempty"`
-	Reports                []WorkflowReportConfig     `json:"reports,omitempty"`
-	Check                  *WorkflowCheckConfig       `json:"check,omitempty"`
-	Cache                  *WorkflowCacheConfig       `json:"cache,omitempty"`
-	Migration              *WorkflowMigrationConfig   `json:"migration,omitempty"`
-	Description            string                     `json:"description,omitempty"`
-	Notifications          []WorkflowNotificationRule `json:"notifications,omitempty"`
+	Kubernetes             *KubernetesDeploymentSettings `json:"kubernetes,omitempty"`
+	DeploymentRegistryID   string                        `json:"deployment_registry_id,omitempty"`
+	ExecutionHostID        string                        `json:"execution_host_id,omitempty"` // 仅由运行快照生成，不接受用户指定。
+	ComposeSource          *WorkflowComposeSource        `json:"compose_source,omitempty"`
+	InlineBuild            *BuildPlan                    `json:"inline_build,omitempty"`
+	BuildOutputs           []WorkflowBuildOutput         `json:"build_outputs,omitempty"`
+	RuntimeServices        []WorkflowRuntimeService      `json:"runtime_services,omitempty"`
+	ArtifactBuildPlanID    string                        `json:"artifact_build_plan_id,omitempty"`
+	DeploymentInputVersion int                           `json:"deployment_input_version,omitempty"`
+	DeploymentInputs       []DeploymentInput             `json:"deployment_inputs,omitempty"`
+	DeploymentScript       string                        `json:"deployment_script,omitempty"`
+	DeploymentTagReference string                        `json:"deployment_tag_reference,omitempty"`
+	ConfigurationFiles     []DeploymentConfigFile        `json:"configuration_files,omitempty"`
+	ConfigurationDirectory string                        `json:"configuration_directory,omitempty"` // 仅用于读取旧运行快照。
+	DeploymentParameters   string                        `json:"deployment_parameters,omitempty"`
+	StatusWriteback        bool                          `json:"status_writeback,omitempty"`
+	Branch                 string                        `json:"branch,omitempty"`
+	Events                 []string                      `json:"events,omitempty"`
+	TagPattern             string                        `json:"tag_pattern,omitempty"`
+	PRTargetPattern        string                        `json:"pr_target_pattern,omitempty"`
+	PRSourcePattern        string                        `json:"pr_source_pattern,omitempty"`
+	PRActions              []string                      `json:"pr_actions,omitempty"`
+	BuildPlanID            string                        `json:"build_plan_id,omitempty"`
+	ImageName              string                        `json:"image_name,omitempty"`
+	ImageTag               string                        `json:"image_tag,omitempty"`
+	ImageBuildNodeID       string                        `json:"image_build_node_id,omitempty"`    // 仅保留历史配置与运行快照。
+	ComposeBuildBindings   []ComposeBuildBinding         `json:"compose_build_bindings,omitempty"` // 仅保留历史配置与运行快照。
+	TargetStage            *string                       `json:"target_stage,omitempty"`           // nil 沿用方案，空字符串明确构建最终阶段。
+	BuildPlatform          string                        `json:"build_platform,omitempty"`         // 空值沿用构建方案的平台。
+	DeploymentPlanID       string                        `json:"deployment_plan_id,omitempty"`
+	InlineDeploymentPlan   *WorkflowDeploymentPlan       `json:"inline_deployment_plan,omitempty"`
+	DeploymentSource       string                        `json:"deployment_source,omitempty"`
+	Script                 string                        `json:"script,omitempty"`
+	RuntimeImage           string                        `json:"runtime_image,omitempty"`
+	ToolchainLanguage      string                        `json:"toolchain_language,omitempty"`
+	ToolchainVersion       string                        `json:"toolchain_version,omitempty"`
+	WorkingDirectory       string                        `json:"working_directory,omitempty"`
+	TimeoutSeconds         int                           `json:"timeout_seconds,omitempty"`
+	EnvironmentVariables   map[string]string             `json:"environment_variables,omitempty"`
+	VariableNames          []string                      `json:"variable_names,omitempty"`
+	VariableEnvironmentID  string                        `json:"variable_environment_id,omitempty"`
+	ArtifactNodeID         string                        `json:"artifact_node_id,omitempty"`
+	ArtifactNodeIDs        []string                      `json:"artifact_node_ids,omitempty"`
+	ComposeImages          []ComposeImageBinding         `json:"compose_images,omitempty"`
+	Compose                *ComposeDeploymentSettings    `json:"compose,omitempty"`
+	Reports                []WorkflowReportConfig        `json:"reports,omitempty"`
+	Check                  *WorkflowCheckConfig          `json:"check,omitempty"`
+	Cache                  *WorkflowCacheConfig          `json:"cache,omitempty"`
+	Migration              *WorkflowMigrationConfig      `json:"migration,omitempty"`
+	Description            string                        `json:"description,omitempty"`
+	Notifications          []WorkflowNotificationRule    `json:"notifications,omitempty"`
 }
 
 // ComposeBuildBinding 是当前流水线中的显式构建关联，不修改公共部署方案。

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Sortable from 'sortablejs'
+import {defaultKubernetesDeployment,kubernetesResourceName} from '@/utils/kubernetesDeployment'
 import { v4 as uuidv4 } from 'uuid'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type ComponentPublicInstance } from 'vue'
 import { message, Modal } from 'ant-design-vue'
@@ -360,7 +361,8 @@ function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): Workfl
     const kind=definition?.id==='compose-deploy'?'compose_stack':definition?.id==='kubernetes-deploy'?'kubernetes':'script'
     if(kind==='compose_stack')config.compose_source={kind:'repository',path:''}
     config.deployment_source='inline'
-    config.inline_deployment_plan={name:definition?.label||'自定义部署',kind,script:kind==='script'?'set -eu\n# 在这里填写部署命令\n':undefined,compose_yaml:'',timeout_seconds:600,deployment_target:{platform:kind==='kubernetes'?'kubernetes':'ssh',environment_id:'',working_directory:kind==='script'?'/tmp':undefined},execution_config:kind==='kubernetes'?undefined:{deployment_input_version:1,deployment_inputs:[],compose:kind==='compose_stack'?{tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}:undefined}}
+    config.inline_deployment_plan={name:definition?.label||'自定义部署',kind,script:kind==='script'?'set -eu\n# 在这里填写部署命令\n':undefined,compose_yaml:'',timeout_seconds:600,deployment_target:{platform:kind==='kubernetes'?'kubernetes':'ssh',environment_id:'',working_directory:kind==='script'?'/tmp':undefined},execution_config:kind==='kubernetes'?{kubernetes:defaultKubernetesDeployment()}:{deployment_input_version:1,deployment_inputs:[],compose:kind==='compose_stack'?{tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}:undefined}}
+    if(kind==='kubernetes'&&config.inline_deployment_plan.deployment_target){const name=kubernetesResourceName(editorApplication.value?.name||'');config.inline_deployment_plan.deployment_target.namespace=name;config.inline_deployment_plan.deployment_target.workload_name=name}
   }
   const node: WorkflowNode = {
     id: uid(type), type, name: definition?.label || (type === 'deploy' ? '自定义部署' : taskMeta[type].label), config,

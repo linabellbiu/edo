@@ -1176,6 +1176,21 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			}
 		}
 	case record.Platform == model.DeploymentKubernetes:
+		cfg, configErr := s.kubernetesTemplateSnapshot(ctx, &record)
+		if configErr != nil {
+			err = configErr
+			break
+		}
+		if cfg != nil {
+			if values := releaseEnvironment(ctx); values != nil {
+				ctx = kube.WithReleaseVariables(ctx, values)
+			}
+			if err = s.requireExecutionPermission(ctx, &record); err != nil {
+				return s.failExecutionAuthorization(ctx, &record, err)
+			}
+			previousImage, err = s.runKubernetesTemplate(ctx, &record, cfg, command)
+			break
+		}
 		var identity kube.DeploymentImageIdentity
 		identity, err = s.kubernetesExecutionIdentity(ctx, &record)
 		if err != nil {
@@ -1351,6 +1366,12 @@ func sshCommandFailureDetails(err error, exitCode *int) (string, string) {
 
 func kubernetesFailureDetails(err error) (string, string) {
 	switch {
+	case errors.Is(err, kube.ErrDeploymentTemplateConflict):
+		return "kubernetes_target_conflict", kube.ErrDeploymentTemplateConflict.Error()
+	case errors.Is(err, kube.ErrDeploymentTemplateCheck):
+		return "kubernetes_template_check_failed", kube.ErrDeploymentTemplateCheck.Error()
+	case errors.Is(err, kube.ErrRBACForbidden), errors.Is(err, kube.ErrResourceForbidden):
+		return "kubernetes_permission_denied", "没有 Kubernetes 模板所需的资源操作权限，请检查 RBAC 授权"
 	case errors.Is(err, kube.ErrDeploymentConfigInvalid), errors.Is(err, kube.ErrInvalidCluster), errors.Is(err, kube.ErrClusterNotFound), errors.Is(err, kube.ErrKubeconfigRequired), errors.Is(err, kube.ErrUnsafeKubeconfig), errors.Is(err, ErrInvalidTarget):
 		return "kubernetes_deployment_config_invalid", "Kubernetes 部署配置无效，请检查集群、命名空间、工作负载和容器配置"
 	case errors.Is(err, kube.ErrClusterUnreachable):

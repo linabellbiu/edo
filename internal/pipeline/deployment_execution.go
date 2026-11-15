@@ -21,6 +21,9 @@ func (s *Service) validateDeploymentExecutionReferences(ctx context.Context, con
 	if len(databases) > 0 {
 		queryDB = databases[0]
 	}
+	if err := s.validateKubernetesTemplateConfiguration(ctx, queryDB, config.Kubernetes); err != nil {
+		return err
+	}
 	check := func(value any, id string) error {
 		if id == "" {
 			return nil
@@ -72,6 +75,15 @@ func (s *Service) validateDeploymentExecutionReferences(ctx context.Context, con
 func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML string, config *model.DeploymentExecutionConfig) error {
 	if config == nil {
 		return nil
+	}
+	if config.Kubernetes != nil {
+		if kind != model.DeploymentPlanKubernetes {
+			slog.Warn("非 Kubernetes 部署不能使用集群模板", "operation", "kubernetes_template_normalize", "kind", kind, "err", ErrInvalidDeploymentPlan)
+			return ErrInvalidDeploymentPlan
+		}
+		if err := model.ValidateKubernetesDeploymentSettings(config.Kubernetes); err != nil {
+			return err
+		}
 	}
 	node := model.WorkflowNode{ID: "deployment-plan", Name: "部署方案", Type: model.WorkflowNodeDeploy, Config: config.NodeConfig()}
 	if len(config.DeploymentRegistryID) > 36 {

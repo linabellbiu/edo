@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"edo/internal/database"
 	"edo/internal/deployment"
 	"edo/internal/model"
 	"edo/internal/sshdeploy"
@@ -54,10 +55,14 @@ func TestInlineDeploymentPlansStayInWorkflowAndFreezeExecution(t *testing.T) {
 			}
 			targetInput := deploymentPlanTargetInput(t, s, model.DeploymentTarget{Name: "流水线自定义目标", Platform: platform, EnvironmentID: "inline-environment", HostID: "inline-host", RuntimeID: "inline-runtime", WorkingDirectory: "/srv/inline", Namespace: "default", WorkloadName: "inline-app", ContainerName: "app", RolloutTimeout: 120})
 			if kind == model.DeploymentPlanKubernetes {
+				ctx = deliveryTestContext()
 				targetInput.EnvironmentID = ""
 				targetInput.HostID = ""
 			}
 			definition := &model.WorkflowDeploymentPlan{Name: "当前流水线部署", Kind: kind, TimeoutSeconds: 120, Script: "printf original", ComposeYAML: "services:\n  app:\n    restart: unless-stopped\n", ServiceName: "app", DeploymentTarget: &model.DeploymentTarget{Platform: platform, EnvironmentID: targetInput.EnvironmentID, HostID: targetInput.HostID, RuntimeID: targetInput.RuntimeID, WorkingDirectory: targetInput.WorkingDirectory, Namespace: targetInput.Namespace, WorkloadName: targetInput.WorkloadName, ContainerName: targetInput.ContainerName}}
+			if kind == model.DeploymentPlanKubernetes {
+				definition.ExecutionConfig = &model.DeploymentExecutionConfig{Kubernetes: model.DefaultKubernetesDeploymentSettings()}
+			}
 			if model.RequiresDeploymentRegistry(kind) {
 				definition.ExecutionConfig = &model.DeploymentExecutionConfig{DeploymentRegistryID: deploymentRegistry.ID, ArtifactBuildPlanID: build.ID}
 			}
@@ -113,6 +118,15 @@ func TestInlineDeploymentPlansStayInWorkflowAndFreezeExecution(t *testing.T) {
 			planID, targetID := model.InlineDeploymentIdentity(app.Workflow.ID, deployID)
 			if snapshot.DeploymentPlans[deployID].ID != planID || snapshot.DeploymentPlans[deployID].Kind != kind || snapshot.DeploymentTargets[deployID].ID != targetID {
 				t.Fatal("自定义方案未完整冻结为可执行快照")
+			}
+			if kind == model.DeploymentPlanKubernetes && (snapshot.DeploymentPlans[deployID].Kubernetes == nil || snapshot.DeploymentPlans[deployID].Kubernetes.CPURequest != "200m" || snapshot.DeploymentPlans[deployID].Kubernetes.NodePort) {
+				t.Fatal("Kubernetes 模板未完整冻结")
+			}
+			if kind == model.DeploymentPlanKubernetes {
+				automationCtx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{ProjectID: app.ProjectID, DepartmentID: app.DepartmentID})
+				if _, autoErr := s.newResolvedWorkflowRun(automationCtx, app, app.Workflow, app.Workflow.Source, "poll", "refs/heads/main", "0123456789012345678901234567890123456789", "system", "", time.Now().UTC()); autoErr != nil {
+					t.Fatal("自动触发未沿用冻结授权人的模板权限", autoErr)
+				}
 			}
 			if kind == model.DeploymentPlanComposeStack && (snapshot.DeploymentTargets[deployID].WorkingDirectory != "/home/edo-test/edo/inline_compose_stack/config" || !snapshot.DeploymentTargets[deployID].ManagedWorkingDirectory || homeProbe.calls != 1 || definition.DeploymentTarget.WorkingDirectory != "") {
 				t.Fatal("自动目录应固定在运行快照中，不能写回方案或变更已有资源")

@@ -28,7 +28,12 @@ export interface DeploymentInput {
  tag?:string
 }
 
+export interface KubernetesDeploymentSettings {
+ template:'web';replicas:number;cpu_request:string;memory_request:string;cpu_limit:string;memory_limit:string;node_port:boolean;ports:Array<{name:'http'|'tcp';enabled:boolean;port:number;target_port:number;node_port?:number}>
+}
+
 export interface WorkflowNodeConfig {
+ kubernetes?:KubernetesDeploymentSettings
  // 仅保留历史任务关联，新运行不读取。
  image_build_node_id?: string
  compose_build_bindings?: Array<{service:string;build_node_id:string}>
@@ -84,7 +89,7 @@ export interface WorkflowNodeConfig {
 export type DeploymentExecutionConfig = Pick<WorkflowNodeConfig,
   | 'deployment_input_version' | 'deployment_inputs' | 'deployment_script' | 'deployment_tag_reference'
   | 'deployment_registry_id' | 'configuration_files' | 'deployment_parameters' | 'environment_variables' | 'variable_names'
-  | 'artifact_node_id' | 'artifact_build_plan_id' | 'artifact_node_ids' | 'compose_images' | 'compose'>
+  | 'artifact_node_id' | 'artifact_build_plan_id' | 'artifact_node_ids' | 'compose_images' | 'compose' | 'kubernetes'>
 
 export interface WorkflowDeploymentPlan {
   execution_config?:DeploymentExecutionConfig
