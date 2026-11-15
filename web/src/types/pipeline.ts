@@ -124,6 +124,7 @@ export interface WorkflowDeploymentPlan {
 }
 
 export interface WorkflowNode {
+  disabled?: boolean
   id: string
   type: WorkflowNodeType
   name: string

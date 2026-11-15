@@ -166,9 +166,6 @@ func (s *Service) CreateWorkflowTemplate(ctx context.Context, actorID string, in
 }
 
 func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, input WorkflowTemplateInput) (*WorkflowTemplateResult, error) {
-	if err := sanitizeWorkflowTemplateInput(&input); err != nil {
-		return nil, err
-	}
 	var existingForValidation model.ReleaseWorkflowTemplate
 	if err := s.db.WithContext(ctx).First(&existingForValidation, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -179,21 +176,31 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 	if existingForValidation.Revision != input.Revision {
 		return nil, ErrWorkflowTemplateRevisionConflict
 	}
+	if input.TaskID != "" {
+		input.Name, input.Description = existingForValidation.Name, existingForValidation.Description
+		if err := isolateWorkflowTaskSave(&input.WorkflowInput, existingForValidation.Source, existingForValidation.Stages); err != nil {
+			return nil, s.workflowMutationError(ctx, "workflow_template_task_save", "", id, err)
+		}
+	}
+	if err := sanitizeWorkflowTemplateInput(&input); err != nil {
+		return nil, err
+	}
 	retainWorkflowPlanSnapshots(input.Stages, existingForValidation.Stages)
 
-	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, input.Stages); err != nil {
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflowSaveStages(input.WorkflowInput)); err != nil {
 		return nil, err
 	}
 	issues := s.validateWorkflowTemplate(ctx, input.SchemaVersion, input.Source, input.Stages)
-	if hasWorkflowIssue(issues, "deployment_override_permission_denied") {
-		return &WorkflowTemplateResult{Valid: false, Issues: issues}, ErrKubernetesTemplatePermission
+	saveIssues := workflowTaskSaveIssues(input.WorkflowInput, issues)
+	if hasWorkflowIssue(saveIssues, "deployment_override_permission_denied") {
+		return &WorkflowTemplateResult{Valid: false, Issues: saveIssues}, ErrKubernetesTemplatePermission
 	}
-	if len(issues) > 0 && (input.Activate || hasWorkflowSaveBlockingIssue(issues)) {
+	if len(saveIssues) > 0 && (input.Activate || hasWorkflowSaveBlockingIssue(saveIssues)) {
 		return &WorkflowTemplateResult{WorkflowTemplate: &model.ReleaseWorkflowTemplate{
 			ID: id, SchemaVersion: input.SchemaVersion, Name: input.Name,
 			Description: input.Description, Revision: input.Revision,
 			Source: input.Source, Stages: input.Stages,
-		}, Valid: false, Issues: issues}, ErrInvalidWorkflow
+		}, Valid: false, Issues: saveIssues}, ErrInvalidWorkflow
 	}
 	sourceJSON, _ := json.Marshal(input.Source)
 	stagesJSON, _ := json.Marshal(input.Stages)
@@ -225,7 +232,7 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 			Updates(map[string]any{
 				"schema_version": input.SchemaVersion, "name": input.Name, "description": input.Description,
 				"source": string(sourceJSON), "stages": string(stagesJSON),
-				"is_active": input.Activate, "revision": input.Revision + 1,
+				"is_active": workflowActiveAfterSave(existing.IsActive, input.WorkflowInput), "revision": input.Revision + 1,
 				"updated_by": actorID, "updated_at": now,
 			})
 		if result.Error != nil {

@@ -157,13 +157,15 @@ test('流水线隐藏重复构建方式，独立方案编辑保留类型选择�
  }
 })
 
-test('任务操作区在常规和高级配置外提供保存入口，只读隐藏，已启用状态仍明确更新',async()=>{
+test('任务操作区在常规和高级配置外提供独立保存入口，只读隐藏，不附带启用',async()=>{
  const find=node=>node.tag==='footer'&&node.props?.some(prop=>prop.name==='class'&&prop.value?.content==='panel-property-actions')?node:node.children?.map(find).find(Boolean)
  const actions=find(baseParse(editorTemplate)).loc.source
  for(const active of [false,true]){
-  const html=await render(actions,{canUpdate:true,workflow:{is_active:active},saving:false,saveState:'有未保存更改',requestSave(){},closePanel(){}})
+  const html=await render(actions,{canUpdate:true,workflow:{is_active:active},saving:false,saveState:'有未保存更改',requestTaskSave(){},closePanel(){}})
   assert.match(html,/aria-label="任务配置操作"/)
-  assert.match(html,active?/保存并更新/:/保存/)
+  assert.match(html,/保存/)
+  assert.doesNotMatch(html,/保存并启用|保存并更新/)
+  assert.match(actions,/@click="requestTaskSave"/)
   assert.match(html,/role="status"/)
  }
  const readonly=await render(actions,{canUpdate:false})

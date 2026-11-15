@@ -155,10 +155,11 @@ type WorkflowNotificationRule struct {
 }
 
 type WorkflowNode struct {
-	ID     string             `json:"id"`
-	Type   WorkflowNodeType   `json:"type"`
-	Name   string             `json:"name"`
-	Config WorkflowNodeConfig `json:"config"`
+	Disabled bool               `json:"disabled,omitempty"`
+	ID       string             `json:"id"`
+	Type     WorkflowNodeType   `json:"type"`
+	Name     string             `json:"name"`
+	Config   WorkflowNodeConfig `json:"config"`
 }
 
 type WorkflowStage struct {

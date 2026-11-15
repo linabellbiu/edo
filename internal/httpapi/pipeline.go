@@ -40,8 +40,10 @@ type workflowCreateRequest struct {
 }
 
 type workflowRequest struct {
+	SaveOnly      bool                  `json:"save_only"`
+	TaskID        string                `json:"task_id" binding:"max=64"`
 	SchemaVersion uint16                `json:"schema_version" binding:"required,eq=1"`
-	Name          string                `json:"name" binding:"required,max=128"`
+	Name          string                `json:"name" binding:"required_without=TaskID,max=128"`
 	Revision      uint64                `json:"revision"`
 	Activate      bool                  `json:"activate"`
 	Source        model.WorkflowNode    `json:"source" binding:"required"`
@@ -49,8 +51,10 @@ type workflowRequest struct {
 }
 
 type workflowTemplateRequest struct {
+	SaveOnly      bool                  `json:"save_only"`
+	TaskID        string                `json:"task_id" binding:"max=64"`
 	SchemaVersion uint16                `json:"schema_version" binding:"required,eq=1"`
-	Name          string                `json:"name" binding:"required,max=128"`
+	Name          string                `json:"name" binding:"required_without=TaskID,max=128"`
 	Description   string                `json:"description" binding:"max=500"`
 	Revision      uint64                `json:"revision"`
 	Activate      bool                  `json:"activate"`
@@ -908,6 +912,7 @@ func toWorkflowTemplateInput(request workflowTemplateRequest) pipeline.WorkflowT
 	return pipeline.WorkflowTemplateInput{
 		Description: request.Description,
 		WorkflowInput: pipeline.WorkflowInput{
+			SaveOnly: request.SaveOnly, TaskID: request.TaskID,
 			SchemaVersion: request.SchemaVersion, Name: request.Name, Revision: request.Revision, Activate: request.Activate,
 			Source: request.Source, Stages: request.Stages,
 		},
@@ -916,6 +921,7 @@ func toWorkflowTemplateInput(request workflowTemplateRequest) pipeline.WorkflowT
 
 func toWorkflowInput(request workflowRequest) pipeline.WorkflowInput {
 	return pipeline.WorkflowInput{
+		SaveOnly: request.SaveOnly, TaskID: request.TaskID,
 		SchemaVersion: request.SchemaVersion, Name: request.Name, Revision: request.Revision, Activate: request.Activate,
 		Source: request.Source, Stages: request.Stages,
 	}

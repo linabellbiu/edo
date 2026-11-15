@@ -148,7 +148,7 @@ func (s *Service) deliveryTemplate(ctx context.Context, id string) (*model.Relea
 		return nil, err
 	}
 	build, deploy := 0, 0
-	for _, node := range workflowTasks(item.Stages) {
+	for _, node := range workflowTasks(enabledWorkflowStages(item.Stages)) {
 		if node.Type == model.WorkflowNodeBuild {
 			build++
 		}

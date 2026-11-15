@@ -95,7 +95,7 @@ func inlineBuildPlansForWorkflow(workflow *model.ReleaseWorkflow) map[string]mod
 		return result
 	}
 	for _, node := range workflowTasks(workflow.Stages) {
-		if node.Type != model.WorkflowNodeBuild || node.Config.InlineBuild == nil {
+		if node.Disabled || node.Type != model.WorkflowNodeBuild || node.Config.InlineBuild == nil {
 			continue
 		}
 		plan := *node.Config.InlineBuild

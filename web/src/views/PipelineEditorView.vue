@@ -6,7 +6,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, t
 import { message, Modal } from 'ant-design-vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import {
-  Bell, CheckCircle2, ChevronLeft, CircleDot, GitBranch, GripVertical, Layers3, LibraryBig,
+  Bell, CheckCircle2, ChevronLeft, CircleAlert, CircleDot, GitBranch, GripVertical, Layers3, LibraryBig,
   Maximize2, Minimize2, Package, Pencil, Plus, Rocket, Save, Scan, Search,
   ShieldCheck, TerminalSquare, Trash2, X,
 } from 'lucide-vue-next'
@@ -214,7 +214,7 @@ function resetScope(reload=true) {
   applications.value=[];templates.value=[];buildPlans.value=[];deploymentPlans.value=[];notificationChannels.value=[];builtinVariables.value=[];workflow.value=null;sources.value=[];stages.value=[];issues.value=[]
   selectedNodeID.value='';selectedStageID.value='';libraryStageID.value='';panelMode.value='closed';propertyTab.value='common';presetOpen.value=false;presetContext='';saveConfirmOpen.value=false;saveConfirmSubmitting.value=false
   notificationChannelModalOpen.value=false;notificationChannelSubmitting.value=false;notificationChannelForm.name='';notificationChannelForm.endpoint='';notificationChannelForm.token='';notificationChannelForm.title=defaultNotificationTitle;notificationChannelForm.message=defaultNotificationMessage;notificationChannelForm.allow_http=false
-  for(const values of [environmentVariableTexts,environmentVariableErrors,buildFieldErrors,notificationTemplateTargets])Object.keys(values).forEach(key=>delete values[key])
+  for(const values of [environmentVariableTexts,environmentVariableErrors,buildFieldErrors,notificationTemplateTargets,taskSaveErrors])Object.keys(values).forEach(key=>delete values[key])
   dirty.value=false;editVersion++;saving.value=false;autoSaving.value=false;autoSaveFailed.value=false;switching.value=false;loading.value=false;builtinVariableLoading.value=false;builtinVariableError.value=''
   applicationID.value=typeof route.query.application==='string'?route.query.application:'';workflowID.value=typeof route.query.workflow==='string'?route.query.workflow:'';templateID.value=typeof route.query.template==='string'?route.query.template:''
   scopeError.value=!selectedProject()?'请先选择项目，再管理流水线。':selectedProject()!==auth.user?.project_id?'正在切换项目，请等待项目权限加载完成。':!auth.canAny(['workflow.read'])?'当前项目没有查看流水线的权限。':''
@@ -269,6 +269,21 @@ const codeSourceName = computed(() => editorApplication.value?.repository?.name 
 const allNodes = computed(() => [...sources.value, ...stages.value.flatMap(stage => stage.tasks)])
 const selectedNode = computed(() => allNodes.value.find(item => item.id === selectedNodeID.value) || null)
 const selectedTask = computed(() => selectedNode.value && isTaskType(selectedNode.value.type) ? selectedNode.value : null)
+const taskSaveErrors = reactive<Record<string, string>>({})
+const taskIssuesByID = computed(() => {
+  const result: Record<string, WorkflowIssue[]> = {}
+  for (const task of stages.value.flatMap(stage => stage.tasks)) {
+    const messages = issues.value.filter(issue => issue.node_id === task.id).map(issue => issue.message)
+    const local = taskFormIssue(task)
+    if (local) messages.push(local.error)
+    if (taskSaveErrors[task.id]) messages.push(taskSaveErrors[task.id])
+    const unique = [...new Set(messages)]
+    if (unique.length) result[task.id] = unique.map(message => ({ code: 'task_configuration', node_id: task.id, message }))
+  }
+  return result
+})
+const selectedTaskIssues = computed(() => selectedTask.value ? taskIssuesByID.value[selectedTask.value.id] || [] : [])
+const exceptionalTaskCount = computed(() => Object.keys(taskIssuesByID.value).length)
 const selectedStage = computed(() => selectedTask.value
   ? stages.value.find(stage => stage.tasks.some(task => task.id === selectedTask.value?.id)) || null
   : null)
@@ -370,7 +385,7 @@ function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): Workfl
     if(kind==='kubernetes'&&config.inline_deployment_plan.deployment_target){const name=kubernetesResourceName(editorApplication.value?.name||'');config.inline_deployment_plan.deployment_target.namespace=name;config.inline_deployment_plan.deployment_target.workload_name=name}
   }
   const node: WorkflowNode = {
-    id: uid(type), type, name: definition?.label || (type === 'deploy' ? '自定义部署' : taskMeta[type].label), config,
+    id: uid(type), type, name: definition?.label || (type === 'deploy' ? '自定义部署' : taskMeta[type].label), disabled: false, config,
   }
   if (type === 'shell') environmentVariableTexts[node.id] = ''
   return node
@@ -434,6 +449,7 @@ function loadGraph(value: Workflow, loadedIssues: WorkflowIssue[], scope = captu
   workflow.value = value
   Object.keys(environmentVariableTexts).forEach(key => delete environmentVariableTexts[key])
   Object.keys(environmentVariableErrors).forEach(key => delete environmentVariableErrors[key])
+  Object.keys(taskSaveErrors).forEach(key => delete taskSaveErrors[key])
   graphToDraft(value)
   issues.value = loadedIssues || []
   selectedNodeID.value = ''
@@ -644,40 +660,49 @@ async function openPresetSelector() {
   if(currentScope(scope)&&canCreate.value){presetContext=scope.identity;presetOpen.value=true}
 }
 
-function payload(activate: boolean) {
+function payload(activate: boolean, taskID = '') {
   const graph = compileGraph()
   const result: Record<string, unknown> = {
     schema_version: 1,
-    name: workflow.value?.name || '',
+    ...(!taskID ? { name: workflow.value?.name || '' } : {}),
     revision: workflow.value?.revision || 0,
     activate,
-    source: graph.source,
-    stages: graph.stages,
+    save_only: !activate,
+    ...(taskID ? { task_id: taskID } : {}),
+    source: taskID ? cloneWorkflowValue(workflow.value?.source) : graph.source,
+    stages: taskID ? graph.stages.map(stage => ({ ...stage, tasks: stage.tasks.filter(task => task.id === taskID) })) : graph.stages,
   }
-  if (publicMode.value) result.description = workflow.value?.description || ''
+  if (publicMode.value && !taskID) result.description = workflow.value?.description || ''
   return result
 }
 
-function firstEnvironmentVariableError() {
+function taskFormIssue(task: WorkflowNode) {
+  const plan = task.config.inline_build || buildPlans.value.find(plan => plan.id === task.config.build_plan_id)
+  const targetError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerTargetError(task.config.target_stage ?? plan.target_stage) : ''
+  const platformError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerBuildPlatformError(task.config.build_platform || plan.platform) : ''
+  if (task.type === 'deploy') {
+    const base = deploymentPlans.value.find(plan => plan.id === task.config.deployment_plan_id)
+    const deployment = task.config.inline_deployment_plan || (base && (task.config.deployment_override?.plan_snapshot?.kind || base.kind) === 'kubernetes' ? effectiveKubernetesPlan(base, task.config.deployment_override) : undefined)
+    const cfg = deployment?.execution_config?.kubernetes
+    const runtimeError = cfg ? kubernetesDeploymentRuntimeError(cfg) : ''
+    if (runtimeError) return { task, error: runtimeError, tab: 'common' as const }
+  }
+  const error = targetError || platformError || environmentVariableErrors[task.id] || buildFieldErrors[task.id]
+  if (error) return { task, error, tab: targetError || platformError || !buildFieldErrors[task.id] ? 'advanced' as const : 'common' as const }
+  return null
+}
+
+function firstEnvironmentVariableError(taskID = '') {
   for (const task of stages.value.flatMap(stage => stage.tasks)) {
-    const plan = task.config.inline_build || buildPlans.value.find(plan => plan.id === task.config.build_plan_id)
-    const targetError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerTargetError(task.config.target_stage ?? plan.target_stage) : ''
-    const platformError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerBuildPlatformError(task.config.build_platform || plan.platform) : ''
-    if(task.type==='deploy'){
- const base=deploymentPlans.value.find(plan=>plan.id===task.config.deployment_plan_id)
- const deployment=task.config.inline_deployment_plan||(base&&(task.config.deployment_override?.plan_snapshot?.kind||base.kind)==='kubernetes'?effectiveKubernetesPlan(base,task.config.deployment_override):undefined)
- const cfg=deployment?.execution_config?.kubernetes
- const runtimeError=cfg?kubernetesDeploymentRuntimeError(cfg):''
- if(runtimeError)return {task,error:runtimeError,tab:'common' as const}
- }
-    const error = targetError || platformError || environmentVariableErrors[task.id] || buildFieldErrors[task.id]
-    if (error) return { task, error, tab: targetError || platformError || !buildFieldErrors[task.id] ? 'advanced' as const : 'common' as const }
+    if (taskID && task.id !== taskID) continue
+    const issue = taskFormIssue(task)
+    if (issue) return issue
   }
   return null
 }
 
-function ensureEnvironmentVariablesValid(showMessage: boolean) {
-  const invalid = firstEnvironmentVariableError()
+function ensureEnvironmentVariablesValid(showMessage: boolean, taskID = '') {
+  const invalid = firstEnvironmentVariableError(taskID)
   if (!invalid) return true
   if (showMessage) {
     selectNode(invalid.task.id)
@@ -703,17 +728,18 @@ async function validateGraph() {
   }
 }
 
-async function save(activate: boolean, automatic = false): Promise<boolean> {
+async function save(activate: boolean, automatic = false, taskID = ''): Promise<boolean> {
   if (!scopeCan('workflow.update') || !workflow.value || saving.value || !draftReady(!automatic)) return false
   if (automatic && (activate || workflow.value.is_active)) return false
-  if (!ensureEnvironmentVariablesValid(!automatic)) {
+  if (!ensureEnvironmentVariablesValid(!automatic, taskID)) {
     if (automatic) autoSaveFailed.value = true
     return false
   }
   const scope=captureScope(),isPublic=publicMode.value,requestTemplateID=templateID.value,requestApplicationID=applicationID.value,requestApplicationWorkflowID=workflowID.value
   const requestVersion = editVersion
   const requestWorkflowID = workflow.value.id
-  const requestPayload = payload(activate)
+  const requestPayload = payload(activate, taskID)
+  if (taskID) delete taskSaveErrors[taskID]
   const previousTemplateID = selectedTemplateID.value
   autoSaving.value = automatic
   saving.value = true
@@ -731,7 +757,22 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
       const templateIndex = templates.value.findIndex(item => item.id === saved.id)
       if (templateIndex >= 0) templates.value[templateIndex] = saved
     } else updateApplicationWorkflow(saved)
-    if (automatic && workflow.value?.id === requestWorkflowID) {
+    if (taskID && workflow.value?.id === requestWorkflowID) {
+      const name = workflow.value.name, description = workflow.value.description
+      workflow.value = { ...saved, name, description }
+      if (editVersion === requestVersion) {
+        const savedTask = saved.stages.flatMap(stage => stage.tasks).find(task => task.id === taskID)
+        if (savedTask) {
+          for (const stage of stages.value) {
+            const index = stage.tasks.findIndex(task => task.id === taskID)
+            if (index >= 0) stage.tasks[index] = cloneWorkflowValue(savedTask)
+          }
+        }
+      }
+      dirty.value = draftDiffersFromSaved(saved)
+      issues.value = result.data.issues || []
+      autoSaveFailed.value = false
+    } else if (automatic && workflow.value?.id === requestWorkflowID) {
       // 自动保存只同步持久化元数据，保留输入控件和尚未提交的新草稿。
       workflow.value = { ...saved, name: workflow.value.name, description: workflow.value.description }
       dirty.value = editVersion !== requestVersion
@@ -748,10 +789,12 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
       dirty.value = true
     }
     if (!automatic) {
-      if (!isPublic && previousTemplateID && !saved.workflow_template_id) {
+      if (taskID) {
+        message.success('任务已保存')
+      } else if (!isPublic && previousTemplateID && !saved.workflow_template_id) {
         message.success('应用流水线已保存为自定义配置，后续不再跟随原流水线更新。')
       } else {
-        message.success(activate ? '流水线已启用，新运行将按当前阶段顺序执行。' : '草稿已保存')
+        message.success(activate ? '流水线已启用，新运行将按当前阶段顺序执行。' : '流水线已保存')
       }
     }
     savedSuccessfully = true
@@ -771,6 +814,7 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
       }
       message.error(`${activate ? '无法启用' : '无法保存'}：${summarizeIssues(responseIssues)}`)
     } else {
+      if (taskID) taskSaveErrors[taskID] = apiErrorMessage(error)
       message.error(apiErrorMessage(error))
     }
     if (automatic) autoSaveFailed.value = true
@@ -779,9 +823,30 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
     if(currentScope(scope)){
       saving.value=false;autoSaving.value=false
       // 失败保留草稿，等再次编辑或手动保存；只有成功期间的新输入才继续防抖保存。
-      if(savedSuccessfully&&dirty.value)scheduleAutoSave()
+      if(savedSuccessfully&&dirty.value&&!taskID)scheduleAutoSave()
     }
   }
+}
+
+function draftDiffersFromSaved(saved: Workflow) {
+  const source = cloneWorkflowValue(saved.source)
+  if (!source.config.tag_pattern && !source.config.events?.includes('tag')) source.config.tag_pattern = DEFAULT_TAG_PATTERN
+  const signature = (value: unknown) => JSON.stringify(value, (_key, item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item
+    return Object.fromEntries(Object.entries(item).filter(([key, value]) => !(key === 'disabled' && value === false)).sort(([a], [b]) => a.localeCompare(b)))
+  })
+  return signature({ name: workflow.value?.name, description: workflow.value?.description || '', ...compileGraph() }) !==
+    signature({ name: saved.name, description: saved.description || '', ...compileGraph([source], saved.stages) })
+}
+
+function requestTaskSave() {
+  if (selectedTask.value) void save(false, false, selectedTask.value.id)
+  else requestSave()
+}
+
+function focusFirstTaskIssue() {
+  const task = stages.value.flatMap(stage => stage.tasks).find(task => taskIssuesByID.value[task.id]?.length)
+  if (task) selectNode(task.id)
 }
 
 function requestSave() {
@@ -798,7 +863,7 @@ async function confirmSaveUpdate() {
   const scope=captureScope()
   saveConfirmSubmitting.value = true
   try {
-    if (await save(true)&&currentScope(scope)) saveConfirmOpen.value = false
+    if (await save(false)&&currentScope(scope)) saveConfirmOpen.value = false
   } finally {
     if(currentScope(scope))saveConfirmSubmitting.value = false
   }
@@ -823,7 +888,6 @@ function replaceNode(id: string, update: Partial<WorkflowNode>, config?: Partial
       break
     }
   }
-  issues.value = issues.value.filter(item => item.node_id !== id)
   markDirty()
 }
 
@@ -1556,6 +1620,7 @@ onBeforeRouteLeave(async () => {
         </label>
         <a-tag v-if="!publicMode && workflow" >{{ selectedTemplateID ? '跟随项目共用流水线' : '自定义' }}</a-tag>
         <a-tag v-if="workflow" :color="workflow.is_active ? 'success' : 'default'">{{ workflow.is_active ? '已启用' : '草稿' }}</a-tag>
+        <button v-if="exceptionalTaskCount" type="button" class="pipeline-task-issues-entry" :disabled="saving" @click="focusFirstTaskIssue"><CircleAlert :size="14" aria-hidden="true" />存在异常任务（{{ exceptionalTaskCount }}）</button>
         <span v-if="workflow" class="save-indicator" :class="{ failed: autoSaveFailed, pending: dirty }"><i />{{ saveState }}</span>
       </div>
       <div class="pipeline-command-actions">
@@ -1642,7 +1707,7 @@ onBeforeRouteLeave(async () => {
                       <div class="parallel-task-row" :data-task-id="task.id">
                         <article
                           class="pipeline-task-card"
-                          :class="{ selected: selectedNodeID === task.id, issue: issues.some(item => item.node_id === task.id) }"
+                          :class="{ selected: selectedNodeID === task.id, issue: taskIssuesByID[task.id]?.length, disabled: task.disabled }"
                           :data-task-id="task.id"
                           :style="{ '--task-color': taskMeta[task.type as TaskNodeType]?.color || '#718096' }"
                           :title="taskSummary(task)"
@@ -1652,9 +1717,10 @@ onBeforeRouteLeave(async () => {
                           @keydown.enter.prevent="selectNode(task.id)"
                           @keydown.space.prevent="selectNode(task.id)"
                         >
+                          <span v-if="taskIssuesByID[task.id]?.length" class="task-card-issue"><CircleAlert :size="12" aria-hidden="true" />配置异常</span>
                           <button v-if="canUpdate" class="task-drag-handle" type="button" aria-label="拖动任务" @click.stop><GripVertical :size="14" /></button>
                           <span class="task-icon"><component :is="taskMeta[task.type as TaskNodeType]?.icon || CircleDot" :size="17" /></span>
-                          <span class="task-copy"><strong>{{ task.name }}</strong><small>{{ taskSummary(task) }}</small></span>
+                          <span class="task-copy"><strong>{{ task.name }}</strong><small>{{ task.disabled ? '已关闭' : taskSummary(task) }}</small></span>
                         </article>
                       </div>
                     </template>
@@ -1777,12 +1843,20 @@ onBeforeRouteLeave(async () => {
           <header>
             <div><small>{{ selectedNode.type === 'trigger' ? '代码源' : '流水线任务' }}</small><strong>{{ selectedNode.type === 'trigger' ? '编辑代码源' : '编辑任务' }}</strong></div>
             <div class="panel-header-actions">
+              <span v-if="selectedTask" class="task-enabled-control">
+                <span>{{ selectedTask.disabled ? '已关闭' : '已开启' }}</span>
+                <a-switch :checked="!selectedTask.disabled" :disabled="!canEdit" aria-label="启用当前任务" @update:checked="updateSelectedNode({ disabled: !$event })" />
+              </span>
               <a-button v-if="selectedTask" class="task-library-entry" @click="openTaskLibrary(selectedStage?.id)"><LibraryBig :size="15" aria-hidden="true" />任务库</a-button>
               <a-button v-if="canUpdate && selectedNode.type !== 'trigger'" type="text" danger @click="removeTask(selectedNode.id)"><Trash2 :size="15" /></a-button>
               <a-button type="text" aria-label="关闭任务配置" @click="closePanel"><X :size="17" /></a-button>
             </div>
           </header>
           <div class="panel-property-body">
+          <section v-if="selectedTaskIssues.length" class="task-config-issues" role="alert" aria-label="当前任务配置异常">
+            <div><CircleAlert :size="16" aria-hidden="true" /><strong>任务配置异常</strong></div>
+            <ul><li v-for="issue in selectedTaskIssues" :key="issue.message">{{ issue.message }}</li></ul>
+          </section>
           <div class="panel-tabs" role="tablist" aria-label="任务配置分区">
             <button type="button" :class="{ active: propertyTab === 'common' }" role="tab" :aria-selected="propertyTab === 'common'" @click="propertyTab = 'common'">{{ selectedNode.type==='deploy' ? '部署配置' : '常规配置' }}</button>
             <button type="button" :class="{ active: propertyTab === 'advanced' }" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">{{ selectedNode.type==='deploy' ? '通知' : '通知及高级配置' }}</button>
@@ -1956,12 +2030,12 @@ onBeforeRouteLeave(async () => {
             />
             <a-alert v-else-if="!['build','deploy'].includes(selectedNode.type) && !selectedNode.config.check && !selectedNode.config.migration" class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
           </a-form>
-          <a-alert v-for="(issue, index) in issues.filter(item => item.node_id === selectedNode?.id)" :key="`${issue.code}-${index}`" type="warning" :message="issue.message" show-icon />
+          <template v-if="!selectedTask"><a-alert v-for="(issue, index) in issues.filter(item => item.node_id === selectedNode?.id)" :key="`${issue.code}-${index}`" type="warning" :message="issue.message" show-icon /></template>
           </div>
           <footer v-if="canUpdate" class="panel-property-actions" aria-label="任务配置操作">
             <span class="panel-save-state" role="status">{{ saveState }}</span>
             <a-button html-type="button" :disabled="saving" @click="closePanel">关闭</a-button>
-            <a-button type="primary" html-type="button" :loading="saving" @click="requestSave">{{ workflow?.is_active ? '保存并更新' : '保存' }}</a-button>
+            <a-button type="primary" html-type="button" :loading="saving" @click="requestTaskSave">保存</a-button>
           </footer>
         </template>
 
@@ -1981,7 +2055,7 @@ onBeforeRouteLeave(async () => {
       <p class="save-confirm-copy">保存后对新运行生效，不影响正在执行的流水线。</p>
       <template #footer>
         <a-button html-type="button" :disabled="saveConfirmSubmitting" @click="saveConfirmOpen = false">取消</a-button>
-        <a-button type="primary" html-type="button" :loading="saveConfirmSubmitting" :disabled="!canUpdate" @click.stop="confirmSaveUpdate">保存并启用</a-button>
+        <a-button type="primary" html-type="button" :loading="saveConfirmSubmitting" :disabled="!canUpdate" @click.stop="confirmSaveUpdate">保存并更新</a-button>
       </template>
     </a-modal>
     <a-modal
@@ -2025,7 +2099,16 @@ onBeforeRouteLeave(async () => {
 <style scoped>
 .linked-deployment-label{display:inline-flex;align-items:center;gap:8px}.linked-deployment-label>a{color:var(--edo-primary);text-decoration:none}.linked-deployment-label>a:hover{text-decoration:underline}.linked-deployment-label>a:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}
 
-.pipeline-editor-page { display: flex; height: calc(100dvh - 124px); min-height: 0; flex-direction: column; overflow: hidden; }
+.pipeline-editor-page { --pipeline-issue-color: #b42332; display: flex; height: calc(100dvh - 124px); min-height: 0; flex-direction: column; overflow: hidden; }
+:global([data-theme="dark"] .pipeline-editor-page) { --pipeline-issue-color: #ff929b; }
+.pipeline-task-issues-entry { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 3px 7px; border: 1px solid var(--edo-border); border-radius: 5px; color: var(--pipeline-issue-color); background: var(--edo-surface); cursor: pointer; font-size: 12px; }
+.pipeline-task-issues-entry:focus-visible { outline: 2px solid var(--edo-primary); outline-offset: 2px; }
+.pipeline-task-issues-entry:disabled { cursor: default; opacity: .6; }
+.task-card-issue { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; padding: 0 2px 5px; border-bottom: 1px solid var(--edo-border); color: var(--pipeline-issue-color); font-size: 11px; }
+.task-config-issues { padding: 12px 16px; border-bottom: 1px solid var(--edo-border); color: var(--pipeline-issue-color); }
+.task-config-issues > div { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.task-config-issues ul { margin: 6px 0 0; padding-left: 22px; font-size: 12px; line-height: 1.6; }
+.task-config-issues li { overflow-wrap: anywhere; }
 .pipeline-command { display: flex; min-height: 52px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; padding: 7px 10px; }
 .pipeline-command-main, .pipeline-command-actions, .board-toolbar > div { display: flex; align-items: center; gap: 8px; }
 .pipeline-command { flex: 0 0 auto; }
@@ -2102,7 +2185,8 @@ onBeforeRouteLeave(async () => {
 .pipeline-task-card { --task-color:var(--edo-primary); position: relative; z-index: 2; display: grid; width: 154px; min-width: 154px; min-height: 62px; align-items: center; grid-template-columns: 16px 32px minmax(0,1fr); gap: 6px; padding: 8px 9px 8px 5px; border: 1px solid var(--edo-border); border-radius: 7px; background: var(--edo-surface-soft); box-shadow: 0 3px 10px rgb(25 35 55 / 6%); cursor: pointer; }
 .pipeline-task-card:hover, .pipeline-task-card.selected { border-color: var(--task-color); background: var(--edo-surface); box-shadow: 0 0 0 2px color-mix(in srgb,var(--task-color) 12%,transparent); }
 .pipeline-task-card:focus-visible { outline: 2px solid var(--edo-primary); outline-offset: 2px; }
-.pipeline-task-card.issue { box-shadow: inset 0 0 0 1px #e7a23b; }
+.pipeline-task-card.disabled .task-icon { color: var(--edo-muted); background: var(--edo-surface-soft); }
+.task-enabled-control { display: inline-flex; align-items: center; gap: 8px; color: var(--edo-muted); font-size: 12px; white-space: nowrap; }
 .task-icon { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 7px; color: var(--task-color); background: color-mix(in srgb,var(--task-color) 12%,var(--edo-surface)); }
 .task-copy { min-width: 0; }
 .task-copy small, .task-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

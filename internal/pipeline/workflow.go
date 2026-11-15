@@ -49,6 +49,8 @@ var (
 )
 
 type WorkflowInput struct {
+	SaveOnly      bool
+	TaskID        string
 	SchemaVersion uint16
 	Name          string
 	Revision      uint64
@@ -386,23 +388,30 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 	if err != nil {
 		return nil, err
 	}
+	if input.TaskID != "" {
+		input.Name = workflow.Name
+		if err := isolateWorkflowTaskSave(&input, workflow.Source, workflow.Stages); err != nil {
+			return nil, s.workflowMutationError(ctx, "workflow_task_save", applicationID, workflowID, err)
+		}
+	}
 	if err := sanitizeWorkflowInput(&input); err != nil {
 		return nil, err
 	}
 	retainWorkflowPlanSnapshots(input.Stages, workflow.Stages)
 
-	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, input.Stages); err != nil {
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflowSaveStages(input)); err != nil {
 		return nil, err
 	}
 	issues := s.validateWorkflow(ctx, application, input.SchemaVersion, input.Source, input.Stages)
-	if hasWorkflowIssue(issues, "deployment_override_permission_denied") {
-		return &WorkflowResult{Valid: false, Issues: issues}, ErrKubernetesTemplatePermission
+	saveIssues := workflowTaskSaveIssues(input, issues)
+	if hasWorkflowIssue(saveIssues, "deployment_override_permission_denied") {
+		return &WorkflowResult{Valid: false, Issues: saveIssues}, ErrKubernetesTemplatePermission
 	}
-	if len(issues) > 0 && (input.Activate || hasWorkflowSaveBlockingIssue(issues)) {
+	if len(saveIssues) > 0 && (input.Activate || hasWorkflowSaveBlockingIssue(saveIssues)) {
 		return &WorkflowResult{Workflow: &model.ReleaseWorkflow{
 			ID: workflow.ID, ApplicationID: application.ID, SchemaVersion: input.SchemaVersion,
 			Name: input.Name, Revision: input.Revision, Source: input.Source, Stages: input.Stages,
-		}, Valid: false, Issues: issues}, ErrInvalidWorkflow
+		}, Valid: false, Issues: saveIssues}, ErrInvalidWorkflow
 	}
 
 	now := time.Now().UTC()
@@ -445,7 +454,7 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 			Where("uuid = ? AND revision = ?", existing.ID, existing.Revision).
 			Updates(map[string]any{
 				"schema_version": input.SchemaVersion, "name": input.Name,
-				"source": string(sourceJSON), "stages": string(stagesJSON), "is_active": input.Activate,
+				"source": string(sourceJSON), "stages": string(stagesJSON), "is_active": workflowActiveAfterSave(existing.IsActive, input),
 				"workflow_template_id": "", "workflow_template_revision": 0,
 				"revision": existing.Revision + 1, "updated_by": actorID, "updated_at": now,
 			})
@@ -791,8 +800,8 @@ func (s *Service) validateWorkflow(
 	source model.WorkflowNode,
 	stages []model.WorkflowStage,
 ) []WorkflowIssue {
-	stages = tagOnlyWorkflowStages(stages)
-	issues := make([]WorkflowIssue, 0)
+	issues := workflowStructureIssues(source, stages)
+	stages = enabledWorkflowStages(tagOnlyWorkflowStages(stages))
 	if schemaVersion != model.WorkflowSchemaVersion {
 		return []WorkflowIssue{{Code: "unsupported_schema_version", Message: "流水线结构版本无效"}}
 	}
@@ -1014,7 +1023,7 @@ func (s *Service) validateWorkflow(
 		}
 	}
 	if len(tasks) == 0 {
-		issues = append(issues, WorkflowIssue{Code: "missing_task", Message: "流水线至少需要一个任务"})
+		issues = append(issues, WorkflowIssue{Code: "missing_task", Message: "流水线至少需要一个已开启的任务"})
 	}
 	stageIDs := make(map[string]struct{}, len(stages))
 	for stageIndex := range stages {
@@ -1365,7 +1374,7 @@ func workflowHasManualReleaseSource(workflow *model.ReleaseWorkflow) bool {
 func workflowHasApprovalNode(stages []model.WorkflowStage) bool {
 	for i := range stages {
 		for j := range stages[i].Tasks {
-			if stages[i].Tasks[j].Type == model.WorkflowNodeApproval {
+			if !stages[i].Tasks[j].Disabled && stages[i].Tasks[j].Type == model.WorkflowNodeApproval {
 				return true
 			}
 		}
@@ -1511,7 +1520,15 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		return nil, ErrInvalidWorkflow
 	}
 	resolved := *workflow
-	resolved.Stages = tagOnlyWorkflowStages(workflow.Stages)
+	if dependencyIssues := workflowDisabledDependencyIssues(workflow.Stages); len(dependencyIssues) > 0 {
+		s.logger.WarnContext(ctx, "流水线引用了已关闭任务", "operation", "workflow_run_disabled_dependency", "workflow_id", workflow.ID, "node_id", dependencyIssues[0].NodeID, "err", ErrInvalidWorkflow)
+		return nil, fmt.Errorf("%w：%s", ErrInvalidWorkflow, dependencyIssues[0].Message)
+	}
+	resolved.Stages = enabledWorkflowStages(tagOnlyWorkflowStages(workflow.Stages))
+	if len(resolved.Stages) == 0 {
+		s.logger.WarnContext(ctx, "流水线没有已开启的任务", "operation", "workflow_run_enabled_tasks", "workflow_id", workflow.ID, "err", ErrInvalidWorkflow)
+		return nil, ErrInvalidWorkflow
+	}
 	for i := range resolved.Stages {
 		for j := range resolved.Stages[i].Tasks {
 			resolved.Stages[i].Tasks[j].Config.ConfigurationDirectory = ""

@@ -400,7 +400,7 @@ func manualArtifactBuildNodes(workflow *model.ReleaseWorkflow, build model.Build
 	if stored.Kind != expectedKind {
 		return model.WorkflowNode{}, model.WorkflowNode{}, false
 	}
-	tasks := workflowTasks(workflow.Stages)
+	tasks := workflowTasks(enabledWorkflowStages(workflow.Stages))
 	type candidate struct {
 		build  model.WorkflowNode
 		resume model.WorkflowNode

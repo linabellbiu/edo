@@ -2063,7 +2063,7 @@ func pipelineExecutionConfiguredForWorkflow(application *model.Application, work
 		return false
 	}
 	return workflow.SchemaVersion == model.WorkflowSchemaVersion &&
-		workflow.Source.Type == model.WorkflowNodeTrigger && workflowTaskCount(workflow.Stages) > 0
+		workflow.Source.Type == model.WorkflowNodeTrigger && workflowTaskCount(enabledWorkflowStages(workflow.Stages)) > 0
 }
 
 func pipelineExecutionIncompleteMessage(application *model.Application) string {
@@ -2077,8 +2077,8 @@ func pipelineExecutionIncompleteMessageForWorkflow(application *model.Applicatio
 	}
 	if workflow == nil || !workflow.IsActive {
 		missing = append(missing, "已启用的流水线")
-	} else if workflowTaskCount(workflow.Stages) == 0 {
-		missing = append(missing, "流水线任务")
+	} else if workflowTaskCount(enabledWorkflowStages(workflow.Stages)) == 0 {
+		missing = append(missing, "已开启的流水线任务")
 	}
 	if len(missing) == 0 {
 		return ErrPipelineIncomplete.Error()

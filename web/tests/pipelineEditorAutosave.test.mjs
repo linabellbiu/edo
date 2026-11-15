@@ -62,7 +62,7 @@ function harness(t, { active = false, publicMode = false, routeGuards = false, c
   t.after(() => { timers.clear(); scope.stop() })
   function succeed(index, issues = []) {
     const request = requests[index]
-    const saved = { ...structuredClone(initial), ...structuredClone(request.payload), revision: Number(request.payload.revision) + 1, is_active: request.payload.activate, workflow_template_id: '' }
+    const saved = { ...structuredClone(initial), ...structuredClone(request.payload), revision: Number(request.payload.revision) + 1, is_active: request.payload.save_only ? initial.is_active : request.payload.activate, workflow_template_id: '' }
     request.resolve({ data: { workflow: saved, workflow_template: saved, issues } })
   }
   const flush = () => new Promise(resolve => setImmediate(resolve))
@@ -90,6 +90,98 @@ function addDraft(state) {
   state.templates.value.push(draft)
   return draft
 }
+
+test('任务独立保存不触发启用，不被其他任务错误阻断，也不清除其他任务草稿', async t => {
+  for (const publicMode of [false, true]) {
+    const h = harness(t, { active: true, publicMode })
+    const persisted = JSON.parse(JSON.stringify(h.state.workflow.value))
+    h.state.workflow.value.name = ''
+    h.state.stages.value[0].tasks.push({ id: 'unfinished', type: 'build', name: '其他未完成任务', config: {} })
+    h.state.buildFieldErrors.unfinished = '其他任务尚未配置'
+    h.state.selectNode('build')
+    h.state.updateSelectedNode({ disabled: true, name: '关闭的当前任务' })
+    h.state.requestTaskSave()
+    assert.equal(h.state.saveConfirmOpen.value, false)
+    assert.equal(h.requests.length, 1)
+    assert.equal(h.requests[0].payload.task_id, 'build')
+    assert.equal(h.requests[0].payload.activate, false)
+    assert.equal(h.requests[0].payload.save_only, true)
+    assert.equal(h.requests[0].payload.name, undefined, '其他名称草稿不应进入任务保存请求')
+    assert.equal(h.requests[0].payload.stages.flatMap(stage => stage.tasks).length, 1)
+    assert.equal(h.requests[0].payload.stages[0].tasks[0].disabled, true)
+    persisted.stages[0].tasks[0] = JSON.parse(JSON.stringify(h.requests[0].payload.stages[0].tasks[0]))
+    persisted.revision++
+    h.requests[0].resolve({ data: { workflow: persisted, workflow_template: persisted, issues: [] } })
+    await h.flush()
+    assert.equal(h.state.workflow.value.is_active, true)
+    assert.equal(h.state.selectedNode.value.disabled, true)
+    assert.equal(h.state.stages.value[0].tasks[1].id, 'unfinished')
+    assert.equal(h.state.buildFieldErrors.unfinished, '其他任务尚未配置')
+    assert.equal(h.state.dirty.value, true)
+    await h.advance(5000)
+    assert.equal(h.requests.length, 1, '独立保存后不应连带提交其他任务草稿')
+    assert.ok(h.messages.some(item => item.value === '任务已保存'))
+  }
+})
+
+test('新任务默认开启，关闭保存后重开、修改及再次保存保持关闭', async t => {
+  const h = harness(t, { active: true })
+  assert.equal(h.state.createTaskNode('shell').disabled, false)
+  h.state.selectNode('build')
+  h.state.updateSelectedNode({ disabled: true })
+  const first = h.state.save(false, false, 'build')
+  h.succeed(0)
+  assert.equal(await first, true)
+  assert.equal(h.state.dirty.value, false)
+  h.state.loadGraph(JSON.parse(JSON.stringify(h.state.workflow.value)), [])
+  h.state.selectNode('build')
+  assert.equal(h.state.selectedNode.value.disabled, true)
+  h.state.updateSelectedNode({ name: '再次修改' })
+  const second = h.state.save(false, false, 'build')
+  assert.equal(h.requests[1].payload.stages[0].tasks[0].disabled, true)
+  h.succeed(1)
+  assert.equal(await second, true)
+  assert.equal(h.state.selectedNode.value.disabled, true)
+  assert.equal(h.state.workflow.value.is_active, true)
+})
+
+test('任务顶部和流水线异常数量共用当前任务问题，点击流水线提醒定位异常任务', t => {
+  const h = harness(t, { active: true })
+  h.state.stages.value[0].tasks.push({ id: 'other', type: 'build', name: '另一任务', config: {} })
+  h.state.issues.value = [
+    { code: 'missing_plan', node_id: 'build', message: '请选择部署方案' },
+    { code: 'other_check', node_id: 'build', message: '请选择部署方案' },
+  ]
+  h.state.buildFieldErrors.other = '请选择构建方案'
+  assert.equal(h.state.exceptionalTaskCount.value, 2)
+  h.state.focusFirstTaskIssue()
+  assert.equal(h.state.selectedNodeID.value, 'build')
+  assert.deepEqual(h.state.selectedTaskIssues.value.map(issue => issue.message), ['请选择部署方案'])
+  h.state.updateSelectedNode({}, {})
+  assert.equal(h.state.exceptionalTaskCount.value, 2, '挂载或编辑回调不能在重新检查前清除真实错误')
+  h.state.issues.value = []
+  assert.equal(h.state.exceptionalTaskCount.value, 1)
+  h.state.focusFirstTaskIssue()
+  assert.equal(h.state.selectedNodeID.value, 'other')
+  delete h.state.buildFieldErrors.other
+  assert.equal(h.state.exceptionalTaskCount.value, 0)
+  assert.deepEqual(h.state.selectedTaskIssues.value, [])
+})
+
+test('任务保存失败就地显示原因并保留草稿，项目失效后清理旧任务错误', async t => {
+  const h = harness(t, { active: true })
+  h.state.selectNode('build')
+  h.state.updateSelectedNode({ name: '保留当前草稿' })
+  const pending = h.state.save(false, false, 'build')
+  h.requests[0].reject({ response: { status: 409, data: { message: '流水线已被其他人修改，请刷新后再保存' } } })
+  assert.equal(await pending, false)
+  assert.equal(h.state.selectedNode.value.name, '保留当前草稿')
+  assert.equal(h.state.exceptionalTaskCount.value, 1)
+  assert.match(h.state.selectedTaskIssues.value[0].message, /已被其他人修改/)
+  h.state.resetScope(false)
+  assert.equal(h.state.exceptionalTaskCount.value, 0)
+  assert.deepEqual(Object.keys(h.state.taskSaveErrors), [])
+})
 
 test('普通 HTTP 缺少 randomUUID 时仍可连续新增阶段与多个并行任务，保存重开不丢失', async t => {
   const crypto = { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) }
@@ -506,7 +598,8 @@ test('公共流水线草稿也保留编辑上下文；已启用流水线只允�
   assert.equal(active.state.saveConfirmOpen.value, true)
   assert.equal(active.requests.length, 0)
   const explicitSave = active.state.confirmSaveUpdate()
-  assert.equal(active.requests[0].payload.activate, true)
+  assert.equal(active.requests[0].payload.activate, false)
+  assert.equal(active.requests[0].payload.save_only, true)
   assert.equal(active.state.canEdit.value, false)
   active.succeed(0)
   await explicitSave

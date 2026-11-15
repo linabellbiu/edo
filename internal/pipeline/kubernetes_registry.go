@@ -62,8 +62,8 @@ func (s *Service) loadKubernetesRegistryImage(ctx context.Context, prepared *exe
 		if input.RegistryID == "" || input.RegistryID != current.Config.DeploymentRegistryID || input.RegistryID != original.RegistryID || input.Image != original.Image {
 			return ErrPipelineExecutionConfig
 		}
-		txService := *s
-		txService.db = tx
+		// 事务内只共享所需依赖，不复制服务的互斥锁和运行中状态。
+		txService := &Service{db: tx, secrets: s.secrets, logger: s.logger, deliveryAccess: s.deliveryAccess}
 		if err := txService.requirePipelineExecutionPermission(ctx, run, *snapshot); err != nil {
 			return err
 		}
