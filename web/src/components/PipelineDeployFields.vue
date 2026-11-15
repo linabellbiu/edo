@@ -17,10 +17,12 @@ import {deploymentParametersError} from '@/utils/deploymentCommandPreview'
 import {readKubeYaml} from '@/utils/kubernetesYaml'
 import type {WorkflowNode,WorkflowNodeConfig,WorkflowDeploymentPlan,DeploymentExecutionConfig,PipelineBuildPlan} from '@/types/pipeline'
 const props=defineProps<{node:WorkflowNode;disabled:boolean;applicationID?:string;applicationName?:string;branch?:string;buildNodes:WorkflowNode[];buildPlans?:PipelineBuildPlan[];buildTaskLabels?:Record<string,string>}>()
-const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>];invalid:[error:string]}>()
+const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>];invalid:[error:string];'validation-change':[nodeID:string,issues:string[]]}>()
 const auth=useAuthStore(),environments=ref<InfrastructureEnvironment[]>([]),configs=ref<Array<{id:string;name:string}>>([]),clusters=ref<InfrastructureCluster[]>([]),error=ref(''),services=ref<string[]>([]),serviceError=ref(''),serviceLoading=ref(false),repoPreviewCommit=ref('')
 const allHosts=ref<InfrastructureHost[]>([])
 const registryHost=ref<HTMLElement>(),groupsReady=ref(false)
+const hostValidationError=ref(''),kubernetesFieldError=ref('')
+const serviceValidationError=ref('')
 const plan=computed(()=>props.node.config.inline_deployment_plan)
 const availableHosts=computed(()=>allHosts.value.filter(host=>host.is_active&&host.capabilities.some(cap=>cap.kind===(host.mode==='local'?'local_exec':'ssh')&&cap.status==='ready')&&(plan.value?.kind!=='compose_stack'||host.capabilities.some(cap=>cap.kind==='docker'&&cap.status==='ready'&&cap.runtime_id))))
 const hostOptions=computed(()=>Object.fromEntries(environments.value.filter(group=>group.is_active).map(group=>[group.id,availableHosts.value.filter(host=>environmentIDsOf(host).includes(group.id))])))
@@ -48,7 +50,7 @@ const clusterOptions=computed(()=>{
 })
 let controller:AbortController|undefined,previewController:AbortController|undefined,timer:ReturnType<typeof setTimeout>|undefined
 const identity=()=>JSON.stringify([auth.user?.id,auth.user?.project_id,auth.user?.permissions,localStorage.getItem('edo.project')])
-const targetIdentity=()=>JSON.stringify([identity(),plan.value?.kind])
+const targetIdentity=()=>JSON.stringify([identity(),props.node.id,plan.value?.kind])
 watch(targetIdentity,async()=>{
  controller?.abort();previewController?.abort();controller=new AbortController()
  const current=targetIdentity(),signal=controller.signal,isKubernetes=plan.value?.kind==='kubernetes'
@@ -110,17 +112,17 @@ async function detectRepositoryPath(){
 }
 watch(detectionScope,detectRepositoryPath,{immediate:true})
 function yaml(value:string){update({compose_yaml:value})}
-async function upload(file:File){if(file.size>128*1024){serviceError.value='compose.yaml 不能超过 128 KiB';return false}const scope=identity(),nodeID=props.node.id,value=await file.text();if(!props.disabled&&scope===identity()&&nodeID===props.node.id){source('editor');yaml(value)}return false}
+async function upload(file:File){if(file.size>128*1024){serviceError.value=serviceValidationError.value='compose.yaml 不能超过 128 KiB';return false}const scope=identity(),nodeID=props.node.id,value=await file.text();if(!props.disabled&&scope===identity()&&nodeID===props.node.id){source('editor');yaml(value)}return false}
 async function preview(){
  previewController?.abort();previewController=new AbortController()
  const signal=previewController.signal,current=identity(),nodeID=props.node.id
- services.value=[];serviceError.value='';repoPreviewCommit.value=''
+ services.value=[];serviceError.value='';serviceValidationError.value='';repoPreviewCommit.value=''
  if(!plan.value||plan.value.kind!=='compose_stack')return
  const selected=props.node.config.compose_source
  let payload:Record<string,unknown>
  if(sourceKind.value==='editor'){
   const content=plan.value.compose_yaml||'',parsed=readKubeYaml(content)
-  if(parsed.issues.length||!parsed.object?.services){serviceError.value='请填写有效的 compose.yaml，并检查编辑器诊断';return}
+  if(parsed.issues.length||!parsed.object?.services){serviceError.value=serviceValidationError.value='请填写有效的 compose.yaml，并检查编辑器诊断';return}
   payload={content}
  }else{
   if(!selected)return
@@ -134,18 +136,27 @@ async function preview(){
  try{
   const {data}=await client.post(path,payload,{signal,timeout:35_000})
   if(!signal.aborted&&current===identity()&&nodeID===props.node.id){services.value=data.services;repoPreviewCommit.value=data.commit_sha||''}
- }catch(e){if(!signal.aborted&&current===identity()&&nodeID===props.node.id)serviceError.value=apiErrorMessage(e)}
+ }catch(e){if(!signal.aborted&&current===identity()&&nodeID===props.node.id)serviceError.value=serviceValidationError.value=apiErrorMessage(e)}
  finally{if(!signal.aborted&&nodeID===props.node.id)serviceLoading.value=false}
 }
 
-watch(()=>JSON.stringify([identity(),props.node.id,props.node.config.compose_source,plan.value?.compose_yaml,plan.value?.deployment_target?.environment_id,props.applicationID,props.branch]),()=>{clearTimeout(timer);previewController?.abort();services.value=[];serviceLoading.value=false;timer=setTimeout(preview,500)},{immediate:true})
+watch(()=>JSON.stringify([identity(),props.node.id,props.node.config.compose_source,plan.value?.compose_yaml,plan.value?.deployment_target?.environment_id,props.applicationID,props.branch]),()=>{clearTimeout(timer);previewController?.abort();services.value=[];serviceValidationError.value='';serviceLoading.value=false;timer=setTimeout(preview,500)},{immediate:true})
+const validationIssues=computed(()=>[...new Set([
+ error.value,
+ plan.value?.kind!=='kubernetes'?hostValidationError.value:'',
+ parametersError.value,
+ plan.value?.kind==='compose_stack'?serviceValidationError.value:'',
+ plan.value?.kind==='compose_stack'&&sourceKind.value==='repository'&&!props.node.config.compose_source?.path?repositoryDetectionMessage.value:'',
+ plan.value?.kind==='kubernetes'?kubernetesFieldError.value:'',
+].filter(Boolean))])
+watch(()=>[props.node.id,validationIssues.value] as const,([nodeID,issues])=>emit('validation-change',nodeID,issues),{immediate:true})
 onBeforeUnmount(()=>{stopRepositoryDetection();controller?.abort();previewController?.abort();clearTimeout(timer)})
 function binding(index:number,patch:Partial<{name:string;restart_script:string;recreate_script:string}>){change({runtime_services:runtimeServices.value.map((v,i)=>i===index?{...v,...patch}:v)})}
 </script>
 <template>
  <section v-if="plan" class="pipeline-deploy-fields">
   <a-alert v-if="error" type="warning" show-icon :message="error"/>
-  <DeploymentHostSelection v-if="plan.kind!=='kubernetes'" :groupID="plan.deployment_target?.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="plan.deployment_target?.host_ids" :legacyHostID="plan.deployment_target?.host_id" :hosts="groupHosts" :all-hosts="allHosts" :host-options="hostTreeOptions" :host-issues="hostIssues" :ready="groupsReady" :disabled="disabled" @change="target({environment_id:$event.groupID,host_ids:$event.hostIDs,host_id:undefined,runtime_id:undefined})" @update:model-value="target({host_ids:$event,host_id:undefined,runtime_id:undefined})"/>
+  <DeploymentHostSelection v-if="plan.kind!=='kubernetes'" :groupID="plan.deployment_target?.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="plan.deployment_target?.host_ids" :legacyHostID="plan.deployment_target?.host_id" :hosts="groupHosts" :all-hosts="allHosts" :host-options="hostTreeOptions" :host-issues="hostIssues" :ready="groupsReady" :disabled="disabled" @validation-change="hostValidationError=$event" @change="target({environment_id:$event.groupID,host_ids:$event.hostIDs,host_id:undefined,runtime_id:undefined})" @update:model-value="target({host_ids:$event,host_id:undefined,runtime_id:undefined})"/>
   <div ref="registryHost"/>
   <template v-if="plan.kind==='compose_stack'">
    <a-form-item label="compose.yaml 来源" required><a-radio-group :value="sourceKind" :disabled="disabled" :options="[{value:'repository',label:'仓库文件'},{value:'editor',label:'上传 / 编辑'},{value:'configuration',label:'配置文件'},{value:'upstream',label:'上游产物'}]" @update:value="source(String($event))"/></a-form-item>
@@ -155,7 +166,7 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
    <template v-else><a-form-item label="上游构建产出环境变量" required><a-input :value="node.config.compose_source?.artifact_reference || (node.config.compose_source?.artifact_name?'${'+node.config.compose_source.artifact_name+'}':'')" :disabled="disabled" placeholder="例如 ${BUILD_ARTIFACT}" @update:value="change({compose_source:{kind:'upstream',artifact_reference:String($event),path:node.config.compose_source?.path||'compose.yaml'}})"/></a-form-item><a-form-item label="产物内文件路径" required><a-input :value="node.config.compose_source?.path" :disabled="disabled" placeholder="deploy/compose.yaml" @update:value="change({compose_source:{...node.config.compose_source!,path:String($event)}})"/></a-form-item></template>
    <a-alert v-if="serviceError" :type="sourceKind==='upstream'?'info':'warning'" show-icon :message="serviceError"/>
   </template>
-  <template v-else-if="plan.kind==='kubernetes'"><DeploymentConfigurationFields :config="execution" :deploymentPlan="plan" :applicationID="applicationID" :applicationName="applicationName" :disabled="disabled" edit-permission="workflow.update" :registry-target="registryHost" hide-script @change="updateExecution($event)"/><a-form-item label="集群" required><a-select :value="plan.deployment_target?.runtime_id||undefined" :disabled="disabled||!auth.canAny(['cluster.read'])" :options="clusterOptions" show-search option-filter-prop="label" placeholder="选择 Kubernetes 集群" @update:value="target({runtime_id:String($event),environment_id:'',host_ids:undefined,host_id:undefined})"/></a-form-item><a-form-item label="命名空间" required><a-input :value="plan.deployment_target?.namespace" :disabled="disabled" @update:value="target({namespace:String($event)})"/></a-form-item><a-form-item label="Deployment" required><a-input :value="plan.deployment_target?.workload_name" :disabled="disabled" @update:value="target({workload_name:String($event)})"/></a-form-item><a-form-item label="容器名称" required><a-input :value="plan.deployment_target?.container_name" :disabled="disabled" @update:value="target({container_name:String($event)})"/></a-form-item><KubernetesDeploymentTemplateFields @invalid="emit('invalid',$event)" :model-value="execution.kubernetes" :disabled="disabled" @update:model-value="updateExecution({kubernetes:$event})"/></template>
+  <template v-else-if="plan.kind==='kubernetes'"><DeploymentConfigurationFields :config="execution" :deploymentPlan="plan" :applicationID="applicationID" :applicationName="applicationName" :disabled="disabled" edit-permission="workflow.update" :registry-target="registryHost" hide-script @change="updateExecution($event)"/><a-form-item label="集群" required><a-select :value="plan.deployment_target?.runtime_id||undefined" :disabled="disabled||!auth.canAny(['cluster.read'])" :options="clusterOptions" show-search option-filter-prop="label" placeholder="选择 Kubernetes 集群" @update:value="target({runtime_id:String($event),environment_id:'',host_ids:undefined,host_id:undefined})"/></a-form-item><a-form-item label="命名空间" required><a-input :value="plan.deployment_target?.namespace" :disabled="disabled" @update:value="target({namespace:String($event)})"/></a-form-item><a-form-item label="Deployment" required><a-input :value="plan.deployment_target?.workload_name" :disabled="disabled" @update:value="target({workload_name:String($event)})"/></a-form-item><a-form-item label="容器名称" required><a-input :value="plan.deployment_target?.container_name" :disabled="disabled" @update:value="target({container_name:String($event)})"/></a-form-item><KubernetesDeploymentTemplateFields @invalid="kubernetesFieldError=$event;emit('invalid',$event)" :model-value="execution.kubernetes" :disabled="disabled" @update:model-value="updateExecution({kubernetes:$event})"/></template>
   <template v-else>
    <a-form-item required><DeploymentScriptEditor :model-value="plan.script||''" kind="script" :disabled="disabled" edit-permission="workflow.update" @update:model-value="update({script:$event})"/></a-form-item>
    <a-form-item label="工作目录"><a-input :value="plan.deployment_target?.working_directory" :disabled="disabled" placeholder="例如 /srv/my_app" @update:value="target({working_directory:String($event)})"/></a-form-item>

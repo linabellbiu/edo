@@ -183,6 +183,34 @@ test('任务保存失败就地显示原因并保留草稿，项目失效后清�
   assert.deepEqual(Object.keys(h.state.taskSaveErrors), [])
 })
 
+test('字段连接异常同步到任务和流水线，关闭面板后保留，不阻止独立保存或切换任务', async t => {
+  const h=harness(t,{active:true})
+  const node={id:'compose',name:'Compose',type:'deploy',config:{}}
+  h.state.stages.value[0].tasks.push(node)
+  h.state.selectNode('compose')
+  h.state.deploymentValidationChanged('compose',['内网：Docker 连接未就绪','内网：Docker 连接未就绪'])
+  assert.equal(h.state.exceptionalTaskCount.value,1)
+  assert.deepEqual(h.state.selectedTaskIssues.value.map(issue=>issue.message),['内网：Docker 连接未就绪'])
+  assert.equal(h.state.dirty.value,false,'目标状态改变不应标记草稿已修改')
+  h.state.closePanel()
+  assert.equal(h.state.exceptionalTaskCount.value,1)
+  h.state.selectNode('build')
+  assert.equal(h.state.selectedNodeID.value,'build')
+  h.state.deploymentValidationChanged('missing',['过期任务响应'])
+  assert.equal(h.state.exceptionalTaskCount.value,1)
+  h.state.selectNode('compose')
+  const pending=h.state.save(false,false,'compose')
+  assert.equal(h.requests.length,1)
+  h.succeed(0);assert.equal(await pending,true)
+  assert.equal(h.state.exceptionalTaskCount.value,1,'保存配置成功不代表主机连接已恢复')
+  h.state.deploymentValidationChanged('compose',[])
+  assert.equal(h.state.exceptionalTaskCount.value,0)
+  h.state.deploymentValidationChanged('compose',['内网：Docker 连接未就绪'])
+  h.state.resetScope(false)
+  assert.deepEqual(Object.keys(h.state.deploymentValidationIssues),[])
+  assert.equal(h.state.exceptionalTaskCount.value,0)
+})
+
 test('普通 HTTP 缺少 randomUUID 时仍可连续新增阶段与多个并行任务，保存重开不丢失', async t => {
   const crypto = { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) }
   for (const publicMode of [false, true]) {

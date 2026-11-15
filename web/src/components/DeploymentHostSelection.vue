@@ -7,7 +7,7 @@ type Group={id:string;name:string;parent_id?:string}
 type Choice={groupID:string;hostIDs:string[]}
 type TreeNode={key:string;value:string;title:string;search:string;groupID:string;hostID?:string;address?:string;unavailableReason?:string;disabled?:boolean;missing?:boolean;checkable?:boolean;selectable?:boolean;children?:TreeNode[]}
 const props=defineProps<{modelValue?:string[]|null;legacyHostID?:string;groupID?:string;groups?:Group[];hostOptions?:Record<string,InfrastructureHost[]>;allHosts?:InfrastructureHost[];hostIssues?:Record<string,string>;hosts:InfrastructureHost[];ready:boolean;disabled?:boolean;groupOnly?:boolean}>()
-const emit=defineEmits<{'update:modelValue':[value:string[]];change:[value:Choice]}>()
+const emit=defineEmits<{'update:modelValue':[value:string[]];change:[value:Choice];'validation-change':[error:string]}>()
 const selected=computed(()=>props.modelValue??(props.legacyHostID?[props.legacyHostID]:props.hosts.map(host=>host.id)))
 const available=computed(()=>props.allHosts??[...new Map([...Object.values(props.hostOptions||{}).flat(),...props.hosts].map(host=>[host.id,host])).values()])
 const missing=computed(()=>selected.value.filter(id=>!available.value.some(host=>host.id===id)))
@@ -91,6 +91,7 @@ const error=computed(()=>{
  if(unavailable)return `${unavailable.name}：${props.hostIssues?.[unavailable.id]}`
  return !selected.value.length?'请至少勾选一台执行主机':''
 })
+watch(error,value=>emit('validation-change',value),{immediate:true})
 </script>
 <template>
  <a-form-item label="执行主机组" required :validate-status="error?'error':undefined" :help="error||undefined">

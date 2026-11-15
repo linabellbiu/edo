@@ -3,6 +3,7 @@ import test from 'node:test'
 import * as vue from 'vue'
 import {componentHarness} from './acceptanceHarness.mjs'
 
+const mutationEvents=h=>h.events.filter(event=>event.name!=='validation-change')
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
 function harness({source={kind:'repository',path:''},disabled=false,codes=['workflow.read','workflow.update','repository.read'],post}={}){
@@ -17,18 +18,18 @@ test('空仓库路径自动填入检测到的真实文件名，只改任务草�
  const h=harness();t.after(h.close);await settle()
  assert.equal(h.detections().length,1)
  assert.deepEqual(h.detections()[0].body,{ref:'main'})
- assert.deepEqual(h.events,[{name:'change',args:[{compose_source:{kind:'repository',path:'docker-compose.yaml'}}]}])
+ assert.deepEqual(mutationEvents(h),[{name:'change',args:[{compose_source:{kind:'repository',path:'docker-compose.yaml'}}]}])
  assert.equal(h.requests.some(request=>/pipeline-runs|deployment-plans|\/workflows\//.test(request.path)),false)
 })
 
 test('已有路径保持原值；切换仓库来源先留空再检测，不猜测compose.yaml',async t=>{
  const existing=harness({source:{kind:'repository',path:'deploy/custom.yml'}});t.after(existing.close);await settle()
- assert.equal(existing.detections().length,0);assert.deepEqual(existing.events,[])
+ assert.equal(existing.detections().length,0);assert.deepEqual(mutationEvents(existing),[])
  const h=harness({source:undefined});t.after(h.close)
  h.props.node.config.compose_source=undefined;await settle()
  h.events.length=0
  h.state.source('repository')
- assert.deepEqual(h.events.at(-1).args,[{compose_source:{kind:'repository',path:''}}])
+ assert.deepEqual(mutationEvents(h).at(-1).args,[{compose_source:{kind:'repository',path:''}}])
 })
 
 test('检测期间手动输入或清空立即取消，迟到结果不覆盖用户路径',async t=>{
@@ -37,7 +38,7 @@ test('检测期间手动输入或清空立即取消，迟到结果不覆盖用�
   h.state.repositoryPath(value)
   assert.equal(h.detections()[0].options.signal.aborted,true)
   pending.resolve({data:{path:'compose.yaml'}});await settle()
-  assert.deepEqual(h.events,[{name:'change',args:[{compose_source:{kind:'repository',path:value}}]}])
+  assert.deepEqual(mutationEvents(h),[{name:'change',args:[{compose_source:{kind:'repository',path:value}}]}])
   assert.equal(h.state.repositoryDetecting.value,false)
  }
 })
@@ -59,22 +60,22 @@ test('切换项目、应用、任务、分支、来源及撤权后拒绝旧响�
   change(h);await settle()
   assert.equal(original.options.signal.aborted,true)
   old.resolve({data:{path:'compose.yaml'}});await settle()
-  assert.deepEqual(h.events,[])
+  assert.deepEqual(mutationEvents(h),[])
  }
  const pending=deferred(),closed=harness({post:()=>pending.promise})
  closed.close();assert.equal(closed.detections()[0].options.signal.aborted,true)
- pending.resolve({data:{path:'compose.yaml'}});await settle();assert.deepEqual(closed.events,[])
+ pending.resolve({data:{path:'compose.yaml'}});await settle();assert.deepEqual(mutationEvents(closed),[])
 })
 
 test('未找到和读取失败明确提示且允许手填；只读或无编辑权限不自动改写',async t=>{
  for(const [response,message] of [[()=>Promise.resolve({data:{path:''}}),'仓库根目录未找到 Compose 文件，请手动填写相对路径'],[()=>Promise.reject(new Error('代码仓库读取失败')),'代码仓库读取失败']]){
   const h=harness({post:response});t.after(h.close);await settle()
-  assert.equal(h.state.repositoryDetectionMessage.value,message);assert.deepEqual(h.events,[])
+  assert.equal(h.state.repositoryDetectionMessage.value,message);assert.deepEqual(mutationEvents(h),[])
   h.state.repositoryPath('deploy/compose.yml');assert.equal(h.state.repositoryDetectionMessage.value,'')
-  assert.equal(h.events.at(-1).args[0].compose_source.path,'deploy/compose.yml')
+  assert.equal(mutationEvents(h).at(-1).args[0].compose_source.path,'deploy/compose.yml')
  }
  for(const patch of [{disabled:true},{codes:['workflow.read','repository.read']}]){
-  const h=harness(patch);t.after(h.close);await settle();assert.equal(h.detections().length,0);assert.deepEqual(h.events,[])
+  const h=harness(patch);t.after(h.close);await settle();assert.equal(h.detections().length,0);assert.deepEqual(mutationEvents(h),[])
  }
 })
 

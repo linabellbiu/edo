@@ -136,6 +136,7 @@ const libraryBuildDrafts=new Map<string,string>()
 const buildSourceDrafts=new Map<string,'inline'|'plan'>()
 const changingBuildPlanNodeID=ref('')
 const buildFieldErrors=reactive<Record<string,string>>({})
+const deploymentValidationIssues=reactive<Record<string,string[]>>({})
 const deploymentPlans = ref<DeploymentPlan[]>([])
 const inlineDeploymentOpen=ref(false),inlineDeploymentNodeID=ref('')
 const inlineDeploymentDrafts=new Map<string,WorkflowDeploymentPlan>()
@@ -214,7 +215,7 @@ function resetScope(reload=true) {
   applications.value=[];templates.value=[];buildPlans.value=[];deploymentPlans.value=[];notificationChannels.value=[];builtinVariables.value=[];workflow.value=null;sources.value=[];stages.value=[];issues.value=[]
   selectedNodeID.value='';selectedStageID.value='';libraryStageID.value='';panelMode.value='closed';propertyTab.value='common';presetOpen.value=false;presetContext='';saveConfirmOpen.value=false;saveConfirmSubmitting.value=false
   notificationChannelModalOpen.value=false;notificationChannelSubmitting.value=false;notificationChannelForm.name='';notificationChannelForm.endpoint='';notificationChannelForm.token='';notificationChannelForm.title=defaultNotificationTitle;notificationChannelForm.message=defaultNotificationMessage;notificationChannelForm.allow_http=false
-  for(const values of [environmentVariableTexts,environmentVariableErrors,buildFieldErrors,notificationTemplateTargets,taskSaveErrors])Object.keys(values).forEach(key=>delete values[key])
+  for(const values of [environmentVariableTexts,environmentVariableErrors,buildFieldErrors,notificationTemplateTargets,taskSaveErrors,deploymentValidationIssues])Object.keys(values).forEach(key=>delete values[key])
   dirty.value=false;editVersion++;saving.value=false;autoSaving.value=false;autoSaveFailed.value=false;switching.value=false;loading.value=false;builtinVariableLoading.value=false;builtinVariableError.value=''
   applicationID.value=typeof route.query.application==='string'?route.query.application:'';workflowID.value=typeof route.query.workflow==='string'?route.query.workflow:'';templateID.value=typeof route.query.template==='string'?route.query.template:''
   scopeError.value=!selectedProject()?'请先选择项目，再管理流水线。':selectedProject()!==auth.user?.project_id?'正在切换项目，请等待项目权限加载完成。':!auth.canAny(['workflow.read'])?'当前项目没有查看流水线的权限。':''
@@ -274,6 +275,7 @@ const taskIssuesByID = computed(() => {
   const result: Record<string, WorkflowIssue[]> = {}
   for (const task of stages.value.flatMap(stage => stage.tasks)) {
     const messages = issues.value.filter(issue => issue.node_id === task.id).map(issue => issue.message)
+    messages.push(...(deploymentValidationIssues[task.id] || []))
     const local = taskFormIssue(task)
     if (local) messages.push(local.error)
     if (taskSaveErrors[task.id]) messages.push(taskSaveErrors[task.id])
@@ -443,6 +445,7 @@ function cloneWorkflowValue<T>(value: T): T {
 
 function loadGraph(value: Workflow, loadedIssues: WorkflowIssue[], scope = captureScope()) {
   if (!currentScope(scope)) return
+  if(workflow.value?.id!==value.id)Object.keys(deploymentValidationIssues).forEach(key=>delete deploymentValidationIssues[key])
   inlineDeploymentDrafts.clear();libraryDeploymentDrafts.clear();libraryDeploymentOverrides.clear();changingDeploymentPlanNodeID.value=''
   inlineBuildDrafts.clear();libraryBuildDrafts.clear();buildSourceDrafts.clear();changingBuildPlanNodeID.value='';Object.keys(buildFieldErrors).forEach(key=>delete buildFieldErrors[key])
   loadedContext.value = scope.identity
@@ -1044,6 +1047,11 @@ function canLeaveDeploymentDraft(){
  return true
 }
 function deploymentFieldError(error:string){const node=selectedNode.value;if(node?.type!=='deploy')return;buildFieldErrors[node.id]=error;if(error)markDirty()}
+function deploymentValidationChanged(nodeID:string,messages:string[]){
+ if(!scopeAllowed()||loadedContext.value!==scopeIdentity()||!stages.value.some(stage=>stage.tasks.some(task=>task.id===nodeID&&task.type==='deploy')))return
+ if(messages.length)deploymentValidationIssues[nodeID]=[...new Set(messages)]
+ else delete deploymentValidationIssues[nodeID]
+}
 function selectNode(id: string) {
   if(id!==selectedNodeID.value&&!canLeaveDeploymentDraft())return
   selectedNodeID.value = id
@@ -1385,6 +1393,7 @@ function changeDeploymentSource(value:'inline'|'plan'){
   const node=selectedNode.value
   if(!node||node.type!=='deploy'||!canEdit.value)return
   if(deploymentSource(node)===value)return
+  delete deploymentValidationIssues[node.id]
   if(node.config.inline_deployment_plan)inlineDeploymentDrafts.set(node.id,JSON.parse(JSON.stringify(node.config.inline_deployment_plan)))
   if(value==='inline'&&!inlineDeploymentDrafts.has(node.id)&&selectedLibraryDeploymentPlan.value){const base=selectedLibraryDeploymentPlan.value;inlineDeploymentDrafts.set(node.id,JSON.parse(JSON.stringify(base.kind==='kubernetes'?effectiveKubernetesPlan(base,node.config.deployment_override):base)))}
   if(node.config.deployment_plan_id){libraryDeploymentDrafts.set(node.id,node.config.deployment_plan_id);libraryDeploymentOverrides.set(node.id+'/'+node.config.deployment_plan_id,node.config.deployment_override?JSON.parse(JSON.stringify(node.config.deployment_override)):undefined)}
@@ -1757,7 +1766,7 @@ onBeforeRouteLeave(async () => {
         </div>
 
         <footer class="board-footer">
-          <div><a-tag :color="issues.length || !draftStructureValid ? 'warning' : 'success'">{{ issues.length ? `${issues.length} 个问题` : draftStructureValid ? '结构正常' : '流程尚未完成' }}</a-tag><span>{{ saveState }}</span></div>
+          <div><a-tag :color="exceptionalTaskCount || issues.length || !draftStructureValid ? 'warning' : 'success'">{{ exceptionalTaskCount ? `存在异常任务（${exceptionalTaskCount}）` : issues.length ? `${issues.length} 个问题` : draftStructureValid ? '结构正常' : '流程尚未完成' }}</a-tag><span>{{ saveState }}</span></div>
           <small v-if="canUpdate">拖动阶段可调整执行顺序，拖动任务可调整并行分支的位置。</small>
         </footer>
       </main>
@@ -1934,14 +1943,14 @@ onBeforeRouteLeave(async () => {
               <a-form-item label="配置来源"><a-radio-group :value="deploymentSource(selectedNode)" :disabled="!canEdit" :options="[{value:'inline',label:'自定义方案'},{value:'plan',label:'选择部署方案'}]" @update:value="changeDeploymentSource($event)"/></a-form-item>
               <a-form-item v-if="deploymentSource(selectedNode)==='plan'"><template #label><span class="linked-deployment-label">部署方案<a-button v-if="selectedNode.config.deployment_plan_id" type="link" size="small" :disabled="!canEdit||!canReadDeploymentPlan" @click="unlockDeploymentPlanSelection">更换方案</a-button><a-button v-if="canCreateDeploymentPlan" type="link" size="small" :disabled="!canEdit" @click="createDeploymentPlan">新建方案</a-button><a v-if="canModifyDeploymentPlan" :href="'/deployment-plans?plan='+encodeURIComponent(selectedLibraryDeploymentPlan?.id||'')+'&amp;edit=1'" aria-label="修改通用部署方案" @click.prevent="modifyLinkedDeploymentPlan">修改方案</a></span></template><a-select :value="selectedNode.config.deployment_plan_id||undefined" :options="deploymentPlanOptions(selectedNode.id)" show-search option-filter-prop="label" :disabled="!canEdit||!canReadDeploymentPlan||Boolean(selectedNode.config.deployment_plan_id&&changingDeploymentPlanNodeID!==selectedNode.id)" placeholder="选择通用部署方案" @update:value="changeLibraryDeploymentPlan(String($event))"/></a-form-item>
 
-              <PipelineDeployFields @invalid="deploymentFieldError" v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
+              <PipelineDeployFields @invalid="deploymentFieldError" @validation-change="deploymentValidationChanged" v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :key="selectedNode.id" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
               <template v-else-if="selectedNode.config.inline_deployment_plan">
                 <a-form-item><template #label><span class="linked-deployment-label">原部署配置<a-button type="link" size="small" :disabled="!canUpdate" @click="editInlineDeployment">修改</a-button></span></template><span>{{selectedNode.config.inline_deployment_plan.name}}</span></a-form-item>
                 <DeploymentPlanReferencePreview :plan="{...selectedNode.config.inline_deployment_plan,id:'inline'}" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
               <template v-else-if="selectedNode.config.deployment_plan_id">
                 <p v-if="!selectedLibraryDeploymentPlan" class="field-error" role="alert">原部署方案不可用</p>
-                <KubernetesPlanStageFields @invalid="deploymentFieldError" v-if="selectedLibraryDeploymentPlan?.kind==='kubernetes'" :node="selectedNode" :plan="selectedLibraryDeploymentPlan" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
+                <KubernetesPlanStageFields @invalid="deploymentFieldError" @validation-change="deploymentValidationChanged" v-if="selectedLibraryDeploymentPlan?.kind==='kubernetes'" :key="selectedNode.id" :node="selectedNode" :plan="selectedLibraryDeploymentPlan" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
                 <DeploymentPlanReferencePreview v-else-if="selectedLibraryDeploymentPlan" :plan="selectedLibraryDeploymentPlan" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
             </template>
