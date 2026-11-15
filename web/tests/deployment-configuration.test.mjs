@@ -163,3 +163,25 @@ test('Kubernetes 已保存仓库缺少镜像行时，用户输入会生成准确
  assert.deepEqual(h.props.config.deployment_inputs,[{kind:'registry',registry_id:'registry',image:'api',tag:'${EDO_IMAGE_TAG}'}])
  const count=h.events.length;await h.state.setDeploymentRegistry('unknown');assert.equal(h.events.length,count)
 })
+
+test('Kubernetes方案仅保存默认仓库，阶段继承后再填写镜像与Tag',async t=>{
+ const get=path=>({data:path==='/image-registries'?{image_registries:[{id:'registry',name:'默认仓库',is_active:true,project_id:'project'},{id:'other',name:'另一仓库',is_active:true,project_id:'project'}]}:path.includes('/deployment-options')?{options:['api']}:{variables:[]}})
+ const template=await harness(get);t.after(template.stop)
+ template.props.deploymentPlan={kind:'kubernetes'};template.props.registryOnly=true
+ template.props.config={deployment_input_version:1,deployment_inputs:[]};await settle()
+ await template.state.setDeploymentRegistry('registry')
+ assert.equal(template.props.config.deployment_registry_id,'registry')
+ assert.deepEqual(template.props.config.deployment_inputs,[])
+ assert.ok(template.requests.every(row=>!row.path.includes('/deployment-options')))
+ const saved=JSON.parse(JSON.stringify(template.props.config))
+ const stage=await harness(get);t.after(stage.stop)
+ stage.props.deploymentPlan={kind:'kubernetes'};stage.props.config=JSON.parse(JSON.stringify(saved));await settle()
+ await stage.state.registryOptions(-1,false)
+ assert.deepEqual(stage.state.optionsByRow.value[0].images,['api'])
+ await stage.state.chooseImage(0,'api');stage.state.update(0,{tag:'v2'})
+ assert.equal(stage.props.config.deployment_inputs[0].registry_id,'registry')
+ assert.deepEqual(saved.deployment_inputs,[])
+ template.props.config.deployment_inputs=[{kind:'registry',registry_id:'registry',image:'old-api',tag:'old-tag'}]
+ await template.state.setDeploymentRegistry('other')
+ assert.equal(template.props.config.deployment_registry_id,'other');assert.deepEqual(template.props.config.deployment_inputs,[])
+})

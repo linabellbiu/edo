@@ -271,7 +271,7 @@ const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
   { value: 'script', label: '主机脚本', hint: '通过 SSH 执行部署脚本。上游文件制品先暂存到目标主机，脚本可用 ${EDO_ARTIFACT_PATH} 读取文件，并用 ${EDO_ARTIFACT_DIGEST} 校验摘要。' },
   { value: 'docker', label: 'Docker 容器', hint: '选择上游构建镜像，或从镜像仓库指定镜像与 Tag。部署时固定镜像 Digest，按已保存的参数创建或更新容器。' },
   { value: 'compose_stack', label: 'Docker Compose', hint: '按 compose.yaml 中配置的镜像和服务部署' },
-  { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '配置可复用的工作负载、资源、网络和健康检查参数；镜像仓库、镜像与 Tag 在流水线部署阶段设置。' },
+  { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '配置可复用的工作负载、资源、网络和健康检查参数；方案可设置默认镜像仓库，镜像与 Tag 在流水线部署阶段设置。' },
 ]
 const kindNames: Record<PlanKind, string> = { ...Object.fromEntries(kindOptions.map(item => [item.value, item.label])), compose: 'Docker Compose' } as Record<PlanKind, string>
 function planIcon(kind: PlanKind) { return kind === 'compose_stack' ? 'docker' : planPlatform(kind) }
@@ -1112,7 +1112,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         </dl>
       </section>
       <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly fullscreen collapsible default-collapsed label="compose.yaml"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
-      <a-form v-if="detailPlan?.execution_config" layout="vertical"><DeploymentExecutionFields hide-kubernetes-image-source :model-value="detailPlan.execution_config" :plan="detailPlan" disabled :hide-script="detailPlan.kind==='script' && !detailPlan.execution_config.deployment_script" /></a-form>
+      <a-form v-if="detailPlan?.execution_config" layout="vertical"><DeploymentExecutionFields kubernetes-registry-only :model-value="detailPlan.execution_config" :plan="detailPlan" disabled :hide-script="detailPlan.kind==='script' && !detailPlan.execution_config.deployment_script" /></a-form>
     </ResourceDetailDrawer>
 
     <a-drawer v-model:open="formOpen" :title="inline?'流水线自定义部署方案':editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">
@@ -1287,7 +1287,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
 
           </template>
           <KubernetesDeploymentTemplateFields v-if="form.kind==='kubernetes'" :model-value="form.execution_config?.kubernetes" :disabled="!canUseForm()" @update:model-value="updateExecution({...form.execution_config,kubernetes:$event})"/>
-          <DeploymentExecutionFields hide-kubernetes-image-source :model-value="form.execution_config || {}" :plan="executionPlan" :disabled="!canUseForm()" :edit-permission="executionPermission" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :hide-script="form.kind==='script'" :registry-target="registryHost" @update:timeout-seconds="form.timeout_seconds=$event" @update:model-value="updateExecution" />
+          <DeploymentExecutionFields kubernetes-registry-only :model-value="form.execution_config || {}" :plan="executionPlan" :disabled="!canUseForm()" :edit-permission="executionPermission" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :hide-script="form.kind==='script'" :registry-target="registryHost" @update:timeout-seconds="form.timeout_seconds=$event" @update:model-value="updateExecution" />
           </template>
         </div>
       </a-form>

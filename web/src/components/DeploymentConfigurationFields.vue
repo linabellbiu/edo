@@ -9,7 +9,7 @@ import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 import { validConfigurationPath } from '@/utils/deploymentCommandPreview'
 import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
-const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: Pick<DeploymentCommandPlan,'kind'>; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; registryTarget?:HTMLElement; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}> }>()
+const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: Pick<DeploymentCommandPlan,'kind'>; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; registryOnly?:boolean; registryTarget?:HTMLElement; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}> }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
 const auth = useAuthStore()
 type Configuration = { id: string; name: string; kind: string; version: number; is_active: boolean; project_id: string; application_id?: string; environment_id?: string }
@@ -20,6 +20,7 @@ let revision = 0, controller: AbortController | undefined
 const optionRequests = new Map<number, AbortController>()
 function identity() { return JSON.stringify([auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser, auth.authorizationState, props.applicationID, props.environmentID, props.deploymentPlan?.kind, localStorage.getItem('edo.project')]) }
 const kubernetesImage = computed(() => props.deploymentPlan?.kind === 'kubernetes')
+const kubernetesRegistryOnly = computed(() => kubernetesImage.value&&props.registryOnly)
 const canRead = computed(() => !kubernetesImage.value && auth.authorizationState === 'ready' && auth.canAny(['delivery_variable.read']))
 const canReadRegistry = computed(() => auth.canAny(['image_registry.read']) && auth.canAny(['image_registry.execute']))
 const canEdit = computed(() => !props.disabled && auth.canAny([props.editPermission || 'workflow.update']) && !!auth.user?.project_id && auth.user.project_id === localStorage.getItem('edo.project'))
@@ -72,6 +73,7 @@ const deploymentRegistryOptions = computed(() => {
 async function setDeploymentRegistry(id:string){
  if(!canEdit.value||!canReadRegistry.value||!registries.value.some(item=>item.id===id))return
  const index=primaryRegistryIndex.value
+ if(kubernetesRegistryOnly.value){change({deployment_registry_id:id,...(index>=0&&selected.value[index]?.registry_id!==id?{deployment_inputs:selected.value.filter(input=>input.kind!=='registry')}:{} )});return}
  if(index>=0){
   const input=selected.value[index]!
   if(input.registry_id===id){change({deployment_registry_id:id});return}
@@ -97,6 +99,8 @@ function configurationOptions(index: number) { return configurations.value.filte
 async function chooseRegistry(index: number, registry: string) { if(!canReadRegistry.value)return;optionRequests.get(index)?.abort(); delete optionsByRow.value[index]; if(managesRegistry.value&&index===primaryRegistryIndex.value)change({deployment_registry_id:registry,deployment_inputs:selected.value.map((item,i)=>i===index?{...item,registry_id:registry,image:'',tag:''}:item)});else update(index,{registry_id:registry,image:'',tag:''}); await nextTick(); await registryOptions(index,false) }
 async function chooseImage(index: number, image: string) { if(!canReadRegistry.value)return;if(kubernetesImage.value&&index<0&&deploymentRegistry.value){change({deployment_registry_id:deploymentRegistry.value,deployment_inputs:[{kind:'registry',registry_id:deploymentRegistry.value,image,tag:'${EDO_IMAGE_TAG}'}]});return} optionRequests.get(index)?.abort(); if (optionsByRow.value[index]) optionsByRow.value[index]!.tags = []; update(index,{image,tag:kubernetesImage.value?(selected.value[index]?.tag||'${EDO_IMAGE_TAG}'):''}) }
 async function registryOptions(index: number, tags: boolean) {
+ if(!canReadRegistry.value||!canEdit.value)return
+ if(kubernetesImage.value&&!kubernetesRegistryOnly.value&&index<0&&deploymentRegistry.value&&!tags){change({deployment_registry_id:deploymentRegistry.value,deployment_inputs:[{kind:'registry',registry_id:deploymentRegistry.value,image:'',tag:'${EDO_IMAGE_TAG}'}]});await nextTick();index=primaryRegistryIndex.value}
  const input = selected.value[index]; if (!input?.registry_id || !canReadRegistry.value || !canEdit.value || tags && !input.image) return
  optionRequests.get(index)?.abort(); const controller = new AbortController(); optionRequests.set(index, controller); const scope = identity(), source = JSON.stringify(input)
  const state = optionsByRow.value[index] ||= { images: [], tags: [], error: '', loading: false }; state.loading = true; state.error = ''
@@ -111,13 +115,13 @@ async function registryOptions(index: number, tags: boolean) {
 <template>
  <section class="deployment-configuration" :aria-label="kubernetesImage?'部署镜像':'部署文件与脚本'">
   <Teleport :to="registryTarget || 'body'" :disabled="!registryTarget">
-  <a-form-item v-if="managesRegistry" required :validate-status="!deploymentRegistry&&!loading?'error':undefined" :help="!savedRegistry&&!canEdit?'尚未保存镜像仓库，请修改部署方案并保存。':undefined">
+  <a-form-item v-if="managesRegistry" :required="!kubernetesRegistryOnly" :validate-status="!kubernetesRegistryOnly&&!deploymentRegistry&&!loading?'error':undefined" :help="!kubernetesRegistryOnly&&!savedRegistry&&!canEdit?'尚未保存镜像仓库，请修改部署方案并保存。':undefined">
    <template #label><span>镜像仓库<DeploymentFieldHelp text="选择并保存部署使用的镜像仓库，镜像名称和 Tag 由部署配置决定，不自动关联上游构建。" label="部署镜像仓库说明" /></span></template>
    <div class="registry-control"><a-select :value="deploymentRegistry" :loading="loading" :disabled="!canEdit||!canReadRegistry" :options="deploymentRegistryOptions" placeholder="选择镜像仓库" aria-label="部署镜像仓库" @update:value="setDeploymentRegistry(String($event))"/>
     <a-button v-if="!kubernetesImage&amp;&amp;primaryRegistryIndex&lt;0&amp;&amp;deploymentRegistry" type="link" size="small" :disabled="!canEdit||!canReadRegistry" @click="addRegistryImage">指定镜像与 Tag</a-button>
    </div>
   </a-form-item>
-  <div v-if="kubernetesImage" class="source-fields kubernetes-image-fields">
+  <div v-if="kubernetesImage&&!kubernetesRegistryOnly" class="source-fields kubernetes-image-fields">
    <a-form-item label="镜像" required><a-auto-complete aria-label="部署镜像" :value="primaryRegistryInput?.image" :disabled="!canEdit||!canReadRegistry||!deploymentRegistry" :options="(optionsByRow[primaryRegistryIndex]?.images||[]).map(value=>({value}))" placeholder="选择或输入镜像名称" @focus="registryOptions(primaryRegistryIndex,false)" @update:value="chooseImage(primaryRegistryIndex,String($event))"/></a-form-item>
    <a-form-item label="镜像 Tag" required><a-auto-complete aria-label="部署镜像 Tag" :value="primaryRegistryInput?.tag" :disabled="!canEdit||!canReadRegistry||!primaryRegistryInput?.image" :options="(optionsByRow[primaryRegistryIndex]?.tags||[]).map(value=>({value}))" placeholder="例如 v1.0.0 或 ${EDO_IMAGE_TAG}" @focus="registryOptions(primaryRegistryIndex,true)" @update:value="update(primaryRegistryIndex,{tag:String($event)})"/></a-form-item>
   </div>
