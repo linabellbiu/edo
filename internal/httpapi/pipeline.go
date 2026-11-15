@@ -796,6 +796,10 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusBadRequest, "invalid_kubernetes_template", model.ErrKubernetesDeploymentSettings.Error())
 	case errors.Is(err, kube.ErrDeploymentTemplateConflict):
 		writeError(c, http.StatusConflict, "kubernetes_target_conflict", kube.ErrDeploymentTemplateConflict.Error())
+	case errors.Is(err, kube.ErrDeploymentTemplateHeadlessType):
+		writeError(c, http.StatusConflict, "kubernetes_service_type_change_blocked", kube.ErrDeploymentTemplateHeadlessType.Error())
+	case errors.Is(err, kube.ErrDeploymentTemplateExternalNamePorts):
+		writeError(c, http.StatusBadRequest, "kubernetes_service_ports_required", kube.ErrDeploymentTemplateExternalNamePorts.Error())
 	case errors.Is(err, kube.ErrDeploymentTemplateCheck):
 		writeError(c, http.StatusBadRequest, "kubernetes_template_check_failed", kube.ErrDeploymentTemplateCheck.Error())
 	case errors.Is(err, pipeline.ErrDeploymentRegistryRequired):

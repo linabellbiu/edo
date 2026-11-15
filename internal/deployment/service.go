@@ -1370,6 +1370,10 @@ func kubernetesFailureDetails(err error) (string, string) {
 		return "kubernetes_target_conflict", kube.ErrDeploymentTemplateConflict.Error()
 	case errors.Is(err, kube.ErrDeploymentTemplateReference):
 		return "kubernetes_template_reference_unavailable", kube.ErrDeploymentTemplateReference.Error()
+	case errors.Is(err, kube.ErrDeploymentTemplateHeadlessType):
+		return "kubernetes_service_type_change_blocked", kube.ErrDeploymentTemplateHeadlessType.Error()
+	case errors.Is(err, kube.ErrDeploymentTemplateExternalNamePorts):
+		return "kubernetes_service_ports_required", kube.ErrDeploymentTemplateExternalNamePorts.Error()
 	case errors.Is(err, kube.ErrDeploymentTemplateCheck):
 		return "kubernetes_template_check_failed", kube.ErrDeploymentTemplateCheck.Error()
 	case errors.Is(err, kube.ErrRBACForbidden), errors.Is(err, kube.ErrResourceForbidden):

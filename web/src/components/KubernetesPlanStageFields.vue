@@ -7,7 +7,8 @@ import type {WorkflowDeploymentPlan,WorkflowDeploymentOverride,WorkflowNode,Work
 const props=defineProps<{node:WorkflowNode;plan:WorkflowDeploymentPlan&{id:string;is_active?:boolean};disabled:boolean;applicationID?:string;applicationName?:string;branch?:string;buildNodes:WorkflowNode[];buildPlans?:PipelineBuildPlan[];buildTaskLabels?:Record<string,string>}>()
 const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>];invalid:[error:string]}>()
 const auth=useAuthStore()
-const canRestore=computed(()=>canEdit.value&&auth.canAny(['kubernetes.workload.update'])&&(!('node_port' in (props.node.config.deployment_override?.kubernetes||{}))&&!('ports' in (props.node.config.deployment_override?.kubernetes||{}))||auth.canAny(['kubernetes.network.update'])))
+const networkOverrideKeys=['node_port','ports','service_type','external_name']
+const canRestore=computed(()=>canEdit.value&&auth.canAny(['kubernetes.workload.update'])&&(!networkOverrideKeys.some(key=>key in (props.node.config.deployment_override?.kubernetes||{}))||auth.canAny(['kubernetes.network.update'])))
 const effective=computed(()=>effectiveKubernetesPlan(props.plan,props.node.config.deployment_override))
 const editableNode=computed<WorkflowNode>(()=>({...props.node,config:{...props.node.config,inline_deployment_plan:effective.value}}))
 const canEdit=computed(()=>!props.disabled&&props.plan.is_active!==false)

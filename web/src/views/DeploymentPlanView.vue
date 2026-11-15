@@ -1115,7 +1115,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         </dl>
       </section>
       <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly fullscreen collapsible default-collapsed label="compose.yaml"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
-      <a-form v-if="detailPlan?.execution_config" layout="vertical"><DeploymentExecutionFields kubernetes-registry-only :model-value="detailPlan.execution_config" :plan="detailPlan" disabled :hide-script="detailPlan.kind==='script' && !detailPlan.execution_config.deployment_script" /></a-form>
+      <a-form v-if="detailPlan?.execution_config" layout="vertical"><KubernetesDeploymentTemplateFields v-if="detailPlan.kind==='kubernetes'" :model-value="detailPlan.execution_config.kubernetes" disabled/><DeploymentExecutionFields kubernetes-registry-only :model-value="detailPlan.execution_config" :plan="detailPlan" disabled :hide-script="detailPlan.kind==='script' && !detailPlan.execution_config.deployment_script" /></a-form>
     </ResourceDetailDrawer>
 
     <a-drawer v-model:open="formOpen" :title="inline?'流水线自定义部署方案':editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">

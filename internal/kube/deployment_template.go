@@ -49,7 +49,7 @@ func templateObject(value any) map[string]any {
 }
 func templateFailure(ctx context.Context, clusterID, namespace, name string, err error) error {
 	slog.WarnContext(ctx, "Kubernetes 模板部署失败", "operation", "kubernetes_template", "cluster_id", clusterID, "namespace", namespace, "workload_name", name, "err", err)
-	for _, stable := range []error{ErrDeploymentTemplateConflict, ErrDeploymentTemplateReference, ErrRBACForbidden, ErrRBACSyncPending, ErrResourceForbidden, ErrDeploymentRolloutTimeout, ErrDeploymentProgressDeadline, ErrDeploymentTargetChanged, ErrDeploymentStatusUnavailable, model.ErrKubernetesDeploymentSettings} {
+	for _, stable := range []error{ErrDeploymentTemplateConflict, ErrDeploymentTemplateReference, ErrDeploymentTemplateHeadlessType, ErrDeploymentTemplateExternalNamePorts, ErrRBACForbidden, ErrRBACSyncPending, ErrResourceForbidden, ErrDeploymentRolloutTimeout, ErrDeploymentProgressDeadline, ErrDeploymentTargetChanged, ErrDeploymentStatusUnavailable, model.ErrKubernetesDeploymentSettings} {
 		if errors.Is(err, stable) {
 			return stable
 		}
@@ -102,6 +102,9 @@ func (s *Service) deploymentTemplateState(ctx context.Context, t model.Deploymen
 			return nil, ErrDeploymentTemplateConflict
 		}
 	}
+	if err = checkDeploymentTemplateServiceType(state.service, cfg); err != nil {
+		return nil, err
+	}
 	require := func(kind, namespace string, existing map[string]any) error {
 		action := "create"
 		if existing != nil {
@@ -124,7 +127,7 @@ func (s *Service) deploymentTemplateState(ctx context.Context, t model.Deploymen
 	for _, p := range cfg.Ports {
 		enabled = enabled || p.Enabled
 	}
-	if enabled || state.service != nil {
+	if enabled || cfg.EffectiveServiceType() == "ExternalName" || state.service != nil {
 		if err = require("services", t.Namespace, state.service); err != nil {
 			return nil, err
 		}
@@ -157,8 +160,9 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 		protocol corev1.Protocol
 	}
 	containerPorts := map[containerPortKey]bool{}
+	serviceType := cfg.EffectiveServiceType()
 	for _, p := range cfg.Ports {
-		if p.Enabled {
+		if p.Enabled && serviceType != "ExternalName" {
 			protocol := corev1.Protocol(p.EffectiveProtocol())
 			key := containerPortKey{port: p.TargetPort, protocol: protocol}
 			if !containerPorts[key] {
@@ -170,7 +174,7 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 				http := "http"
 				sp.AppProtocol = &http
 			}
-			if cfg.NodePort {
+			if serviceType == "NodePort" || serviceType == "LoadBalancer" {
 				sp.NodePort = p.NodePort
 			}
 			servicePorts = append(servicePorts, sp)
@@ -252,59 +256,7 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 		desired["spec"].(map[string]any)["strategy"] = strategy
 	}
 	bindTemplateIdentity(desired, state.deployment)
-	var service map[string]any
-	if len(servicePorts) > 0 {
-		typ := corev1.ServiceTypeClusterIP
-		if cfg.NodePort {
-			typ = corev1.ServiceTypeNodePort
-		}
-		svc := &corev1.Service{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"}, ObjectMeta: metadata, Spec: corev1.ServiceSpec{Type: typ, Selector: labels, Ports: servicePorts}}
-		if state.service != nil && cfg.NodePort {
-			var live corev1.Service
-			_ = runtime.DefaultUnstructuredConverter.FromUnstructured(state.service, &live)
-			for i := range svc.Spec.Ports {
-				if svc.Spec.Ports[i].NodePort == 0 {
-					for _, p := range live.Spec.Ports {
-						protocol := p.Protocol
-						if protocol == "" {
-							protocol = corev1.ProtocolTCP
-						}
-						if p.Name == svc.Spec.Ports[i].Name && protocol == svc.Spec.Ports[i].Protocol {
-							svc.Spec.Ports[i].NodePort = p.NodePort
-						}
-					}
-				}
-			}
-		}
-		service = templateObject(svc)
-		// 重新开启服务时清除停用选择器，避免 MergePatch 残留条件导致没有后端。
-		if state.service != nil {
-			selector := service["spec"].(map[string]any)["selector"].(map[string]any)
-			if existing, ok := state.service["spec"].(map[string]any)["selector"].(map[string]any); ok {
-				for key := range existing {
-					if _, present := selector[key]; !present {
-						selector[key] = nil
-					}
-				}
-			}
-		}
-		bindTemplateIdentity(service, state.service)
-	} else if state.service != nil {
-		// 关闭全部端口时断开已有 Service 的选择器，保留资源及其身份供后续重新开启。
-		service = map[string]any{"apiVersion": "v1", "kind": "Service", "metadata": map[string]any{"name": t.WorkloadName, "namespace": t.Namespace}, "spec": map[string]any{"type": "ClusterIP", "selector": map[string]any{"edo.io/disabled": record.ID}}}
-		// MergePatch 用 null 清除之前的匹配键，防止旧选择器仍然生效。
-		var live corev1.Service
-		_ = runtime.DefaultUnstructuredConverter.FromUnstructured(state.service, &live)
-		for i := range live.Spec.Ports {
-			live.Spec.Ports[i].NodePort = 0
-		}
-		service["spec"].(map[string]any)["ports"] = templateObject(&live)["spec"].(map[string]any)["ports"]
-		selector := service["spec"].(map[string]any)["selector"].(map[string]any)
-		for key := range live.Spec.Selector {
-			selector[key] = nil
-		}
-		bindTemplateIdentity(service, state.service)
-	}
+	service := deploymentTemplateService(state.service, cfg, record.ID, metadata, labels, servicePorts)
 	validate := func(kind, name string, object map[string]any) error {
 		if object == nil {
 			return nil

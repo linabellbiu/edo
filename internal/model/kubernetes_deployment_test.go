@@ -66,6 +66,7 @@ func TestKubernetesTemplateDynamicPortsValidateNamesProtocolsAndLimits(t *testin
 			c.Ports = append(c.Ports, KubernetesDeploymentPort{Name: "api", Enabled: true, Port: 8080, TargetPort: 8081, Protocol: "TCP"})
 		},
 		"跨协议节点端口重复": func(c *KubernetesDeploymentSettings) {
+			c.NodePort = true
 			c.Ports[0].NodePort = 30080
 			c.Ports = append(c.Ports, KubernetesDeploymentPort{Name: "dns", Enabled: true, Port: 53, TargetPort: 53, Protocol: "UDP", NodePort: 30080})
 		},

@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"log/slog"
+	"net/netip"
 	"path"
 	"strconv"
 	"strings"
@@ -59,6 +60,8 @@ type KubernetesDeploymentSettings struct {
 	MemoryRequest                 string                       `json:"memory_request"`
 	CPULimit                      string                       `json:"cpu_limit"`
 	MemoryLimit                   string                       `json:"memory_limit"`
+	ServiceType                   string                       `json:"service_type,omitempty"`
+	ExternalName                  string                       `json:"external_name,omitempty"`
 	NodePort                      bool                         `json:"node_port"`
 	Ports                         []KubernetesDeploymentPort   `json:"ports"`
 }
@@ -67,13 +70,39 @@ func DefaultKubernetesDeploymentSettings() *KubernetesDeploymentSettings {
 	return &KubernetesDeploymentSettings{Template: "web", Replicas: 1, CPURequest: "200m", MemoryRequest: "300Mi", CPULimit: "1", MemoryLimit: "1Gi", Ports: []KubernetesDeploymentPort{{Name: "http", Port: 8080, TargetPort: 8080}}}
 }
 
+// EffectiveServiceType 显式类型优先，缺省时继续解释历史 NodePort 开关，不回写快照。
+func (c *KubernetesDeploymentSettings) EffectiveServiceType() string {
+	if c != nil {
+		if c.ServiceType != "" {
+			return c.ServiceType
+		}
+		if c.NodePort {
+			return "NodePort"
+		}
+	}
+	return "ClusterIP"
+}
+
 var ErrKubernetesDeploymentSettings = errors.New("Kubernetes 模板配置无效，请检查副本、资源、端口、启动参数和健康检查")
 
 func ValidateKubernetesDeploymentSettings(c *KubernetesDeploymentSettings) error {
 	if c == nil {
 		return nil
 	}
-	valid := c.Template == "web" && c.Replicas >= 1 && c.Replicas <= 100 && len(c.Ports) <= 32
+	serviceType := c.EffectiveServiceType()
+	valid := c.Template == "web" && c.Replicas >= 1 && c.Replicas <= 100 && len(c.Ports) <= 32 && len(c.ExternalName) <= 254
+	switch serviceType {
+	case "ClusterIP", "NodePort", "LoadBalancer":
+	case "ExternalName":
+		host := strings.TrimSuffix(c.ExternalName, ".")
+		_, ipErr := netip.ParseAddr(host)
+		valid = valid && host != "" && len(validation.IsDNS1123Subdomain(host)) == 0 && ipErr != nil
+		for _, label := range strings.Split(host, ".") {
+			valid = valid && len(validation.IsDNS1123Label(label)) == 0
+		}
+	default:
+		valid = false
+	}
 	for _, pair := range [][2]string{{c.CPURequest, c.CPULimit}, {c.MemoryRequest, c.MemoryLimit}} {
 		a, errA := resource.ParseQuantity(pair[0])
 		b, errB := resource.ParseQuantity(pair[1])
@@ -85,11 +114,14 @@ func ValidateKubernetesDeploymentSettings(c *KubernetesDeploymentSettings) error
 	}
 	names, ports, nodes := map[string]bool{}, map[servicePort]bool{}, map[int32]bool{}
 	for _, p := range c.Ports {
+		if serviceType == "ExternalName" {
+			continue // 外部 DNS 别名不使用端口，保留其他类型尚未填写完成的草稿。
+		}
 		protocol := p.EffectiveProtocol()
-		valid = valid && len(validation.IsValidPortName(p.Name)) == 0 && !names[p.Name] && len(validation.IsValidPortNum(int(p.Port))) == 0 && len(validation.IsValidPortNum(int(p.TargetPort))) == 0 && (protocol == "TCP" || protocol == "UDP" || protocol == "SCTP") && (p.NodePort == 0 || p.NodePort >= 30000 && p.NodePort <= 32767)
+		valid = valid && len(validation.IsValidPortName(p.Name)) == 0 && !names[p.Name] && len(validation.IsValidPortNum(int(p.Port))) == 0 && len(validation.IsValidPortNum(int(p.TargetPort))) == 0 && (protocol == "TCP" || protocol == "UDP" || protocol == "SCTP")
 		names[p.Name] = true
-		if p.NodePort != 0 {
-			valid = valid && !nodes[p.NodePort]
+		if (serviceType == "NodePort" || serviceType == "LoadBalancer") && p.NodePort != 0 {
+			valid = valid && p.NodePort >= 30000 && p.NodePort <= 32767 && !nodes[p.NodePort]
 			nodes[p.NodePort] = true
 		}
 		if p.Enabled {

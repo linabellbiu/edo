@@ -1,8 +1,24 @@
-import type {KubernetesDeploymentSettings,WorkflowNode} from '@/types/pipeline'
+import type {KubernetesDeploymentServiceType,KubernetesDeploymentSettings,WorkflowNode} from '@/types/pipeline'
 import {kubernetesCommonOptionsError} from '@/utils/kubernetesCommonOptions'
 
 export function defaultKubernetesDeployment():KubernetesDeploymentSettings {
- return {template:'web',replicas:1,cpu_request:'200m',memory_request:'300Mi',cpu_limit:'1',memory_limit:'1Gi',node_port:false,ports:[{name:'http',enabled:false,port:8080,target_port:8080}]}
+ return {template:'web',replicas:1,cpu_request:'200m',memory_request:'300Mi',cpu_limit:'1',memory_limit:'1Gi',node_port:false,service_type:'ClusterIP',ports:[{name:'http',enabled:false,port:8080,target_port:8080}]}
+}
+export function kubernetesServiceType(config?:Pick<KubernetesDeploymentSettings,'service_type'|'node_port'>):KubernetesDeploymentServiceType {
+ return config?.service_type||(config?.node_port?'NodePort':'ClusterIP')
+}
+export function kubernetesServiceUsesNodePort(config?:Pick<KubernetesDeploymentSettings,'service_type'|'node_port'>):boolean {
+ return ['NodePort','LoadBalancer'].includes(kubernetesServiceType(config))
+}
+export function kubernetesDeploymentServiceError(config:KubernetesDeploymentSettings):string {
+ if(config.service_type&&!['ClusterIP','NodePort','LoadBalancer','ExternalName'].includes(config.service_type))return '请选择有效的服务类型'
+ const name=config.external_name
+ if(name!==undefined&&(typeof name!=='string'||new TextEncoder().encode(name).length>254))return '外部域名最长 254 个字符'
+ if(kubernetesServiceType(config)!=='ExternalName')return ''
+ const host=(name||'').replace(/\.$/,'')
+ const ipv4=/^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$/.test(host)&&host.split('.').every(value=>Number(value)<=255)
+ if(!host||host.length>253||host.split('.').some(label=>label.length>63)||!/^([a-z0-9]([-a-z0-9]*[a-z0-9])?)(\.([a-z0-9]([-a-z0-9]*[a-z0-9])?))*$/.test(host)||ipv4)return '请输入小写 DNS 域名，例如 api.example.com，不能填写 IP、协议、端口或路径'
+ return ''
 }
 export function kubernetesResourceName(value:string){return value.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,63).replace(/-+$/g,'')}
 export function kubernetesContainerDefault(applicationName:string,build?:WorkflowNode){
@@ -13,6 +29,8 @@ export function kubernetesContainerDefault(applicationName:string,build?:Workflo
 
 export function kubernetesDeploymentPortError(config:KubernetesDeploymentSettings):string {
  if(!Array.isArray(config.ports)||config.ports.length>32)return '最多添加 32 个端口'
+ if(kubernetesServiceType(config)==='ExternalName')return ''
+ const usesNodePort=kubernetesServiceUsesNodePort(config)
  const names=new Set<string>(),services=new Set<string>(),nodes=new Set<number>()
  for(const [index,port]of config.ports.entries()){
   const prefix=`端口 ${index+1}：`
@@ -21,13 +39,15 @@ export function kubernetesDeploymentPortError(config:KubernetesDeploymentSetting
   names.add(port.name)
   if(!['TCP','UDP','SCTP'].includes(port.protocol||'TCP'))return prefix+'请选择有效协议'
   if(!Number.isInteger(port.port)||port.port<1||port.port>65535||!Number.isInteger(port.target_port)||port.target_port<1||port.target_port>65535)return prefix+'服务端口和容器端口应为 1–65535'
-  if(port.node_port!==undefined&&port.node_port!==0&&(!Number.isInteger(port.node_port)||port.node_port<30000||port.node_port>32767))return prefix+'节点端口应为 30000–32767，或留空自动分配'
-  if(port.enabled){const key=`${port.port}/${port.protocol||'TCP'}`;if(services.has(key))return prefix+'服务端口与协议重复';services.add(key);if(port.node_port){if(nodes.has(port.node_port))return prefix+'节点端口重复';nodes.add(port.node_port)}}
+  if(usesNodePort&&port.node_port!==undefined&&port.node_port!==0&&(!Number.isInteger(port.node_port)||port.node_port<30000||port.node_port>32767))return prefix+'节点端口应为 30000–32767，或留空自动分配'
+  if(usesNodePort&&port.node_port){if(nodes.has(port.node_port))return prefix+'节点端口重复';nodes.add(port.node_port)}
+  if(port.enabled){const key=`${port.port}/${port.protocol||'TCP'}`;if(services.has(key))return prefix+'服务端口与协议重复';services.add(key)}
  }
  return ''
 }
 
 export function kubernetesDeploymentRuntimeError(config:KubernetesDeploymentSettings):string {
+ const serviceError=kubernetesDeploymentServiceError(config);if(serviceError)return serviceError
  const portsError=kubernetesDeploymentPortError(config);if(portsError)return portsError
  const optionsError=kubernetesCommonOptionsError(config.options);if(optionsError)return optionsError
  const validArguments=(values?:string[])=>!values||(values.length<=64&&values.reduce((total,value)=>total+new TextEncoder().encode(value).length,0)<=32768&&values.every(value=>new TextEncoder().encode(value).length<=4096&&!/[\0\r\n]/.test(value)))

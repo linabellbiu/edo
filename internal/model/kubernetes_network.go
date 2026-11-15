@@ -8,26 +8,36 @@ import (
 // KubernetesDeploymentNetworkEqual 比较网络配置语义，不改写方案、草稿或历史快照。
 // 旧版关闭的两个示例与新版单个示例等价，主动删除全部端口仍属于配置变更。
 func KubernetesDeploymentNetworkEqual(a, b *KubernetesDeploymentSettings) bool {
-	leftNodePort, left := kubernetesNetworkComparison(a)
-	rightNodePort, right := kubernetesNetworkComparison(b)
-	return leftNodePort == rightNodePort && reflect.DeepEqual(left, right)
+	leftType, leftName, left := kubernetesNetworkComparison(a)
+	rightType, rightName, right := kubernetesNetworkComparison(b)
+	return leftType == rightType && leftName == rightName && reflect.DeepEqual(left, right)
 }
 
 // KubernetesDeploymentNetworkDefault 区分无需网络修改权限的默认配置与自定义端口。
 func KubernetesDeploymentNetworkDefault(c *KubernetesDeploymentSettings) bool {
-	nodePort, ports := kubernetesNetworkComparison(c)
-	return !nodePort && (len(ports) == 0 || kubernetesDefaultPortExample(ports))
+	serviceType, _, ports := kubernetesNetworkComparison(c)
+	return serviceType == "ClusterIP" && (len(ports) == 0 || kubernetesDefaultPortExample(ports))
 }
 
-func kubernetesNetworkComparison(c *KubernetesDeploymentSettings) (bool, []KubernetesDeploymentPort) {
+func kubernetesNetworkComparison(c *KubernetesDeploymentSettings) (string, string, []KubernetesDeploymentPort) {
 	if c == nil {
 		c = DefaultKubernetesDeploymentSettings()
 	}
+	serviceType := c.EffectiveServiceType()
+	if serviceType == "ExternalName" {
+		// 外部 DNS 别名不使用 Pod 选择器和端口草稿，也不沿用旧 NodePort 开关。
+		return serviceType, c.ExternalName, nil
+	}
 	ports := normalizedKubernetesNetworkPorts(c.Ports)
+	if serviceType == "ClusterIP" {
+		for index := range ports {
+			ports[index].NodePort = 0 // 当前类型不使用的节点端口仅是保留草稿。
+		}
+	}
 	if kubernetesDefaultPortExample(ports) {
 		ports = normalizedKubernetesNetworkPorts([]KubernetesDeploymentPort{{Name: "http", Port: 8080, TargetPort: 8080}})
 	}
-	return c.NodePort, ports
+	return serviceType, "", ports
 }
 
 func normalizedKubernetesNetworkPorts(input []KubernetesDeploymentPort) []KubernetesDeploymentPort {

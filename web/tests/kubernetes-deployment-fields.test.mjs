@@ -91,6 +91,62 @@ test('动态端口允许同号不同协议，拒绝重复名称、协议映射�
  cfg.ports[1].protocol='UDP';assert.match(utils.kubernetesDeploymentPortError(cfg),/协议重复/)
  cfg.ports[1].protocol='TCP';cfg.ports[1].name='dns';assert.match(utils.kubernetesDeploymentPortError(cfg),/名称重复/)
  cfg.ports[1].name='dns--tcp';assert.match(utils.kubernetesDeploymentPortError(cfg),/名称应为/)
- cfg.ports[1].name='dns-tcp';cfg.ports[0].node_port=30053;cfg.ports[1].node_port=30053;assert.match(utils.kubernetesDeploymentPortError(cfg),/节点端口重复/)
+ cfg.service_type='NodePort';cfg.ports[1].name='dns-tcp';cfg.ports[0].node_port=30053;cfg.ports[1].node_port=30053;assert.match(utils.kubernetesDeploymentPortError(cfg),/节点端口重复/)
  cfg.ports=[];assert.equal(utils.kubernetesDeploymentPortError(cfg),'')
+})
+
+test('服务类型显式值优先，旧NodePort布尔配置只解释不改写',async t=>{
+ const {loadFrontend}=await import('./acceptanceHarness.mjs'),utils=loadFrontend('../src/utils/kubernetesDeployment.ts')
+ assert.equal(utils.defaultKubernetesDeployment().service_type,'ClusterIP')
+ const legacy={...utils.defaultKubernetesDeployment(),service_type:undefined,node_port:true}
+ const original=JSON.stringify(legacy)
+ assert.equal(utils.kubernetesServiceType(legacy),'NodePort')
+ const props=vue.reactive({modelValue:legacy,disabled:false})
+ const h=componentHarness('../src/components/KubernetesDeploymentTemplateFields.vue',{props,codes:['kubernetes.workload.update','kubernetes.network.update']});t.after(h.stop)
+ await settle();assert.deepEqual(h.events,[]);assert.equal(JSON.stringify(legacy),original)
+ assert.equal(h.state.serviceType.value,'NodePort');assert.equal(h.state.usesNodePort.value,true)
+ for(const type of ['ClusterIP','LoadBalancer','ExternalName','NodePort']){
+  h.state.changeServiceType(type);props.modelValue=h.events.at(-1).args[0];await settle()
+  assert.equal(props.modelValue.service_type,type)
+  assert.equal(props.modelValue.node_port,true)
+  assert.equal(h.state.usesNodePort.value,['NodePort','LoadBalancer'].includes(type))
+ }
+ const denied=componentHarness('../src/components/KubernetesDeploymentTemplateFields.vue',{props:{modelValue:legacy,disabled:false},codes:['kubernetes.workload.update']});t.after(denied.stop)
+ denied.state.changeServiceType('LoadBalancer');denied.state.update({service_type:'ExternalName',external_name:'api.example.com'});assert.deepEqual(denied.events,[])
+})
+
+test('ExternalName要求DNS，隐藏端口草稿不执行且切回保留原配置',async t=>{
+ const {loadFrontend}=await import('./acceptanceHarness.mjs'),utils=loadFrontend('../src/utils/kubernetesDeployment.ts')
+ const props=vue.reactive({modelValue:{...utils.defaultKubernetesDeployment(),service_type:'NodePort',ports:[{name:'web',enabled:true,port:80,target_port:8080,node_port:30080}]},disabled:false})
+ const h=componentHarness('../src/components/KubernetesDeploymentTemplateFields.vue',{props,codes:['kubernetes.workload.update','kubernetes.network.update']});t.after(h.stop)
+ const ports=JSON.stringify(props.modelValue.ports)
+ h.state.changeServiceType('ExternalName');props.modelValue=h.events.at(-1).args[0];await settle()
+ assert.match(utils.kubernetesDeploymentServiceError(props.modelValue),/DNS/)
+ h.state.update({external_name:'api.example.com.'});props.modelValue=h.events.at(-1).args[0];await settle()
+ assert.equal(utils.kubernetesDeploymentRuntimeError(props.modelValue),'')
+ const count=h.events.length;h.state.addPort();h.state.removePort(0);h.state.port(0,{port:443});assert.equal(h.events.length,count)
+ h.state.changeServiceType('ClusterIP');props.modelValue=h.events.at(-1).args[0];await settle()
+ assert.equal(props.modelValue.external_name,'api.example.com.');assert.equal(JSON.stringify(props.modelValue.ports),ports)
+ const unfinished={...props.modelValue,service_type:'ExternalName',ports:[{name:'',enabled:true,port:0,target_port:0}]}
+ assert.equal(utils.kubernetesDeploymentRuntimeError(unfinished),'')
+ unfinished.service_type='ClusterIP';assert.match(utils.kubernetesDeploymentRuntimeError(unfinished),/端口/)
+ for(const name of ['api.example.com','api.example.com.','database'])assert.equal(utils.kubernetesDeploymentServiceError({...props.modelValue,service_type:'ExternalName',external_name:name}),'')
+ for(const name of ['', 'API.example.com','192.0.2.1','192.0.2.1.','::1','https://api.example.com','api.example.com:443','api.example.com/path','api.example.com..',' api.example.com'])assert.match(utils.kubernetesDeploymentServiceError({...props.modelValue,service_type:'ExternalName',external_name:name}),/DNS/)
+ assert.match(utils.kubernetesDeploymentServiceError({...props.modelValue,service_type:'ExternalName',external_name:'a'.repeat(255)}),/254/)
+ assert.match(utils.kubernetesDeploymentServiceError({...props.modelValue,service_type:'ExternalName',external_name:'a'.repeat(64)+'.example.com'}),/DNS/)
+ assert.equal(utils.kubernetesDeploymentServiceError({...props.modelValue,service_type:'ClusterIP',external_name:'unfinished://draft'}),'')
+ assert.match(utils.kubernetesDeploymentServiceError({...props.modelValue,service_type:'ClusterIP',external_name:'域'.repeat(100)}),/254/)
+ assert.match(utils.kubernetesDeploymentServiceError({...props.modelValue,service_type:'invalid'}),/服务类型/)
+})
+
+test('ClusterIP暂存节点端口不生效，NodePort与LoadBalancer均校验节点端口',async()=>{
+ const {loadFrontend}=await import('./acceptanceHarness.mjs'),utils=loadFrontend('../src/utils/kubernetesDeployment.ts')
+ const cfg={...utils.defaultKubernetesDeployment(),ports:[{name:'http',enabled:true,port:80,target_port:8080,node_port:80}]}
+ assert.equal(utils.kubernetesDeploymentPortError(cfg),'')
+ for(const type of ['NodePort','LoadBalancer']){
+  cfg.service_type=type;assert.match(utils.kubernetesDeploymentPortError(cfg),/节点端口/)
+  cfg.ports[0].node_port=30080;assert.equal(utils.kubernetesDeploymentPortError(cfg),'');cfg.ports[0].node_port=80
+ }
+ cfg.ports=[{name:'web',enabled:false,port:80,target_port:8080,node_port:30080},{name:'metrics',enabled:false,port:9090,target_port:9090,node_port:30080}]
+ assert.match(utils.kubernetesDeploymentPortError(cfg),/节点端口重复/)
 })

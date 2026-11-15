@@ -206,8 +206,10 @@ func (s *Service) validateDeploymentOverridePatchPermission(ctx context.Context,
 	}
 	_, ports := patch["ports"]
 	_, nodePort := patch["node_port"]
+	_, serviceType := patch["service_type"]
+	_, externalName := patch["external_name"]
 	fresh, err := access.FreshProjectPermissions(db, ctx, scope.UserID, scope.ProjectID)
-	if err != nil || !fresh.Permissions["kubernetes.workload.update"] || ((ports || nodePort) && !fresh.Permissions["kubernetes.network.update"]) {
+	if err != nil || !fresh.Permissions["kubernetes.workload.update"] || ((ports || nodePort || serviceType || externalName) && !fresh.Permissions["kubernetes.network.update"]) {
 		if err == nil {
 			err = access.ErrAccessDelegationDenied
 		}
@@ -226,6 +228,8 @@ func kubernetesWorkloadSettingsDiffer(base model.DeploymentPlan, effective *mode
 		after = *effective.ExecutionConfig.Kubernetes
 	}
 	before.NodePort, after.NodePort = false, false
+	before.ServiceType, after.ServiceType = "", ""
+	before.ExternalName, after.ExternalName = "", ""
 	before.Ports, after.Ports = nil, nil
 	return !reflect.DeepEqual(before, after)
 }

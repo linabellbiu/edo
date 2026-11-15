@@ -14,7 +14,7 @@ Kubernetes 部署方案本身就是用户可配置的通用模板，直接展示
 | --- | --- | --- |
 | 目标 | 集群、命名空间、Deployment、容器、镜像仓库、镜像与 Tag | 应用名与配置镜像补空字段，集群需明确选择 |
 | 工作负载 | 副本、CPU/内存申请和限制 | 沿用方案默认 |
-| 服务与网络 | 可增删端口、名称、TCP/UDP/SCTP、服务端口、容器端口、NodePort | 仅 HTTP 8080 示例且关闭，可删除 |
+| 服务与网络 | ClusterIP / NodePort / LoadBalancer / ExternalName；可增删端口、名称、TCP/UDP/SCTP、服务端口、容器端口及节点端口 | 默认 ClusterIP；仅 HTTP 8080 示例且关闭，可删除 |
 | 启动与发布 | 命令和参数数组、容器工作目录、镜像拉取策略、终止宽限期、滚动或重建策略、额外/不可用副本 | 沿用镜像与 Kubernetes 默认 |
 | 健康检查 | readiness、liveness、startup 的 HTTP/TCP 检测和等待/间隔/超时/失败阈值 | 默认关闭 |
 | 标签与注解 | 自定义工作负载和 Pod 标签、注解 | 不覆盖 EDO 资源身份和选择器 |
@@ -45,3 +45,13 @@ ConfigMap、Secret、PVC 与镜像拉取 Secret 只引用目标命名空间内�
 | KP-13 | 隔离 Kubernetes API fixture | 最终 Deployment/Pod 字段与参数一致，清空恢复默认只移除原EDO字段，不删除PVC/Secret或覆盖外部metadata |
 
 Kubernetes API fixture 及数据库集成回归不冒充真实集群部署验收。
+
+服务类型直接参考 Kuboard Service 基本配置的四个选项，不再使用单独的 NodePort 开关。NodePort 和 LoadBalancer 显示节点端口；ExternalName 只配置 DNS 别名，不转发到本 Deployment，隐藏端口草稿并保留供切回使用。LoadBalancer 需要集群提供对应的负载均衡实现。旧 `node_port` 配置按原语义读取，显式 `service_type` 优先，不在打开时改写方案或历史运行。服务类型和外部域名属于网络权限范围，阶段覆盖、恢复默认和切换来源均复核。
+
+切换类型复用原 Service 的 UID 与版本并经过 Kubernetes dry-run，不自动删除或重建。原生 API 不接受的不可变地址变更明确失败；已有 ExternalName 无端口时切回普通服务，需要至少启用一个端口，不能捏造端口或自动删服务。ExternalName 的 DNS 字段和普通服务的端口字段只在对应类型生效。
+
+| ID | 前置与角色 | 操作与预期 |
+| --- | --- | --- |
+| KP-14 | 方案和阶段网络修改权限 | 四种服务类型保存重开准确回显，默认 ClusterIP；ExternalName 域名与端口草稿切换不丢，共享方案不被反写 |
+| KP-15 | 旧 NodePort 方案及撤权 | 无显式类型时按旧布尔值回显，显式类型优先；类型或 DNS 覆盖恢复、删除及来源切换不能绕过网络权限 |
+| KP-16 | 隔离 Kubernetes API fixture | 四种真实 Service 请求及跨类型清理正确，ExternalName 无选择器或端口；UID/版本和上游拒绝继续生效 |

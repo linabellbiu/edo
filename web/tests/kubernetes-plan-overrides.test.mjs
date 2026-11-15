@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
+import {readFileSync} from 'node:fs'
 import * as vue from 'vue'
+import {compileScript,compileTemplate,parse} from '@vue/compiler-sfc'
+import {renderToString} from '@vue/server-renderer'
+import ts from 'typescript'
 import {loadFrontend,componentHarness} from './acceptanceHarness.mjs'
 const utils=loadFrontend('../src/utils/kubernetesPlanOverride.ts')
 const defaults=loadFrontend('../src/utils/kubernetesDeployment.ts').defaultKubernetesDeployment
@@ -96,4 +100,73 @@ test('环境挂载与调度方案默认按阶段差异覆盖，清空数组和�
  assert.equal(diff.kubernetes.options.labels.team,null)
  assert.equal(diff.kubernetes.options.min_ready_seconds,0)
  assert.equal(plan.execution_config.kubernetes.options.environment[0].value,'base')
+})
+
+test('Service类型和DNS按阶段差异保存，保留旧bool与端口草稿，不反写共享方案',()=>{
+ const plan=base();delete plan.execution_config.kubernetes.service_type;plan.execution_config.kubernetes.node_port=true
+ const original=JSON.stringify(plan)
+ const legacyOverride=utils.effectiveKubernetesPlan(plan,{kubernetes:{node_port:false}})
+ assert.equal(legacyOverride.execution_config.kubernetes.node_port,false)
+ assert.equal(legacyOverride.execution_config.kubernetes.service_type,undefined)
+ assert.deepEqual(utils.stageKubernetesOverride(plan,legacyOverride).kubernetes,{node_port:false})
+ const current=utils.effectiveKubernetesPlan(plan,{kubernetes:{service_type:'ExternalName',external_name:'api.example.com'}})
+ assert.equal(current.execution_config.kubernetes.service_type,'ExternalName')
+ assert.equal(current.execution_config.kubernetes.node_port,true)
+ assert.deepEqual(current.execution_config.kubernetes.ports,plan.execution_config.kubernetes.ports)
+ const diff=utils.stageKubernetesOverride(plan,current)
+ assert.deepEqual(diff.kubernetes,{service_type:'ExternalName',external_name:'api.example.com'})
+ const reopened=utils.effectiveKubernetesPlan(plan,diff)
+ assert.equal(reopened.execution_config.kubernetes.external_name,'api.example.com')
+ assert.equal(JSON.stringify(plan),original)
+ const clusterIP=utils.effectiveKubernetesPlan(plan,{kubernetes:{service_type:'ClusterIP',external_name:'saved.example.com'}})
+ assert.equal(clusterIP.execution_config.kubernetes.node_port,true,'旧bool不应覆盖显式类型，也不应在打开时被重写')
+ assert.equal(clusterIP.execution_config.kubernetes.service_type,'ClusterIP')
+ const cleared=utils.effectiveKubernetesPlan(current,{kubernetes:{external_name:null,service_type:'LoadBalancer'}})
+ const clearedDiff=utils.stageKubernetesOverride(current,cleared)
+ assert.equal(clearedDiff.kubernetes.external_name,null)
+ assert.equal(clearedDiff.kubernetes.service_type,'LoadBalancer')
+})
+
+test('恢复Service类型或DNS覆盖必须有网络权限，恢复后保留目标及镜像绑定',t=>{
+ for(const network of [{service_type:'LoadBalancer'},{external_name:'changed.example.com'},{service_type:'ClusterIP',external_name:null}]){
+  const props=vue.reactive({node:{id:'stage',type:'deploy',name:'部署',config:{deployment_plan_id:'shared',deployment_override:{deployment_target:target,deployment_registry_id:'registry',deployment_input_version:1,deployment_inputs:[{kind:'registry',registry_id:'registry',image:'api',tag:'v1'}],kubernetes:network,timeout_seconds:900}}},plan:base(),disabled:false,buildNodes:[]})
+  const denied=componentHarness('../src/components/KubernetesPlanStageFields.vue',{props,codes:['workflow.update','kubernetes.workload.update'],modules:{'@/utils/kubernetesPlanOverride':utils}});t.after(denied.stop)
+  assert.equal(denied.state.canRestore.value,false);denied.state.restore();assert.deepEqual(denied.events,[])
+  const allowed=componentHarness('../src/components/KubernetesPlanStageFields.vue',{props,codes:['workflow.update','kubernetes.workload.update','kubernetes.network.update'],modules:{'@/utils/kubernetesPlanOverride':utils}});t.after(allowed.stop)
+  allowed.state.restore()
+  const restored=allowed.events.at(-1).args[0].deployment_override
+  assert.equal(restored.kubernetes,undefined);assert.equal(restored.timeout_seconds,undefined)
+  assert.deepEqual(restored.deployment_target,target)
+  assert.deepEqual(restored.deployment_inputs,[{kind:'registry',registry_id:'registry',image:'api',tag:'v1'}])
+  assert.equal(restored.deployment_registry_id,'registry')
+ }
+})
+
+test('方案库详情真实模板以只读组件展示准确网络快照，旧bool配置不被补写',async()=>{
+ const source=readFileSync(new URL('../src/views/DeploymentPlanView.vue',import.meta.url),'utf8')
+ const start=source.indexOf('<ResourceDetailDrawer '),end=source.indexOf('</ResourceDetailDrawer>',start)
+ assert.ok(start>0&&end>start)
+ const template=source.slice(start,end+'</ResourceDetailDrawer>'.length)
+ const bindings=compileScript(parse(source).descriptor,{id:'plan-network-detail'}).bindings
+ const result=compileTemplate({source:template,filename:'DeploymentPlanView.vue',id:'plan-network-detail',compilerOptions:{bindingMetadata:bindings}})
+ assert.deepEqual(result.errors,[])
+ const code=ts.transpileModule(result.code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText
+ const module={exports:{}};new Function('require','module','exports',code)(()=>vue,module,module.exports)
+ const slot=vue.defineComponent({inheritAttrs:false,setup:(_,context)=>()=>vue.h('section',context.slots.default?.())})
+ for(const network of [{service_type:'ExternalName',external_name:'api.example.com',node_port:false},{service_type:'LoadBalancer',node_port:false},{node_port:true}]){
+  const plan=base();Object.assign(plan.execution_config.kubernetes,network)
+  if(!Object.hasOwn(network,'service_type'))delete plan.execution_config.kubernetes.service_type
+  const original=JSON.stringify(plan),shown=[]
+  const readOnly=vue.defineComponent({props:{modelValue:Object,disabled:Boolean},setup:props=>{shown.push({model:props.modelValue,disabled:props.disabled});return()=>vue.h('div',{'data-network-preview':props.modelValue.service_type||'legacy'})}})
+  const state=vue.proxyRefs({detailPlan:vue.ref(plan),detailOpen:vue.ref(true),canUpdate:vue.ref(false),t:key=>key,kindName:()=> 'Kubernetes',environmentName:()=> '',destinationName:()=> '',updatedTime:()=> '',deploymentConfiguration:()=>({summary:'通用部署方案'}),ResourceDetailDrawer:slot,KubernetesDeploymentTemplateFields:readOnly,DeploymentExecutionFields:slot,YamlCodeEditor:slot})
+  const app=vue.createSSRApp({render:()=>module.exports.render({},[],{},state,{}, {})})
+  for(const name of ['a-form','a-tag','a-button'])app.component(name,slot)
+  const html=await renderToString(app)
+  assert.equal(shown.length,1)
+  assert.equal(shown[0].disabled,true)
+  assert.equal(shown[0].model.external_name,network.external_name)
+  assert.equal(shown[0].model.node_port,network.node_port)
+  assert.ok(html.includes('data-network-preview'))
+  assert.equal(JSON.stringify(plan),original)
+ }
 })
