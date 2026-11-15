@@ -7,16 +7,37 @@ const previewModule=loadFrontend('../src/utils/deploymentCommandPreview.ts')
 
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
 async function harness(get){
- const events=[],requests=[],unmounts=[],storage={project:'project'},window=new EventTarget()
+ const events=[],validations=[],requests=[],unmounts=[],storage={project:'project'},window=new EventTarget()
  const auth=vue.reactive({authorizationState:'ready',user:{id:'actor',project_id:'project',department_id:'department',permissions:['workflow.update','delivery_variable.read','image_registry.read','image_registry.execute']},canAny(codes){return codes.some(code=>this.user.permissions.includes(code))}})
  const props=vue.reactive({config:{configuration_files:[]},applicationID:'app',applicationName:'订单应用',environmentID:'prod',disabled:false})
  const row=(id,patch={})=>({id,name:`${id}.env`,kind:'config_env',version:1,is_active:true,project_id:'project',application_id:'app',environment_id:'prod',...patch})
  const client={get:async(path,options)=>{requests.push({path,options});return get?get(path):{data:path==='/image-registries'?{image_registries:[]}:{variables:[row('selected'),row('legacy',{kind:'env'}),row('other-project',{project_id:'another'}),row('other-app',{application_id:'another'}),row('other-env',{environment_id:'test'})]}}}}
  const component=loadFrontend('../src/components/DeploymentConfigurationFields.vue',{'vue':{...vue,onMounted(){},onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/client':{__esModule:true,default:client},'@/api/resources':{apiErrorMessage:error=>error.message},'@/stores/auth':{useAuthStore:()=>auth},'@/utils/deploymentCommandPreview':previewModule},{localStorage:{getItem:()=>storage.project},window}).default
  const scope=vue.effectScope();let state
- scope.run(()=>{state=component.setup(props,{expose(){},emit:(name,patch)=>{events.push([name,patch]);Object.assign(props.config,patch)}})});await settle()
- return {state,props,auth,storage,events,requests,stop(){unmounts.forEach(fn=>fn());scope.stop()}}
+ scope.run(()=>{state=component.setup(props,{expose(){},emit:(name,patch)=>{if(name==='validation-change'){validations.push(patch);return}events.push([name,patch]);Object.assign(props.config,patch)}})});await settle()
+ return {state,props,auth,storage,events,validations,requests,stop(){unmounts.forEach(fn=>fn());scope.stop()}}
 }
+test('通用字段校验按实际来源汇总任意错误，不依赖主机、任务名或错误关键词',async t=>{
+ const h=await harness();t.after(h.stop)
+ h.props.reportValidation=true
+ h.props.config.deployment_input_version=1
+ h.props.config.deployment_inputs=[{kind:'configuration',configuration_id:'missing',path:'../bad'},{kind:'upstream',artifact_reference:'plain',path:'output.tar.gz'}]
+ h.state.error.value='配置服务暂不可用'
+ h.state.optionsByRow.value={2:{images:[],tags:[],loading:false,error:'远端返回的可展示校验信息'}}
+ await settle()
+ const messages=h.validations.at(-1)
+ assert.ok(messages.includes('配置服务暂不可用'))
+ assert.ok(messages.includes('远端返回的可展示校验信息'))
+ assert.ok(messages.some(value=>value.includes('原配置不可用')))
+ assert.ok(messages.some(value=>value.includes('相对路径')))
+ assert.ok(messages.some(value=>value.includes('变量引用')))
+ assert.deepEqual(h.events,[],'汇报错误不能修改任务配置')
+ h.state.error.value='';h.state.optionsByRow.value={}
+ h.props.config.deployment_inputs=[]
+ await settle()
+ assert.deepEqual(h.validations.at(-1),[])
+})
+
 test('部署显式选择配置 UUID 与配置文件路径，配置选择不混入旧变量或其他范围',async t=>{
  const h=await harness();t.after(h.stop)
  assert.deepEqual(h.state.configurationOptions(0).map(item=>item.value),['selected'])

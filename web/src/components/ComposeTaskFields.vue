@@ -8,8 +8,8 @@ import { useAuthStore } from '@/stores/auth'
 import { readKubeYaml } from '@/utils/kubernetesYaml'
 import type { WorkflowNode, WorkflowNodeConfig } from '@/types/pipeline'
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
-const props = defineProps<{ node: WorkflowNode; buildNodes: WorkflowNode[]; disabled: boolean; applicationID?: string; applicationName?: string; plan?: DeploymentCommandPlan; editPermission?: string; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}>; hideScript?: boolean; hideComposeSettings?:boolean; hideAdvanced?:boolean; registryOnly?:boolean; registryTarget?:HTMLElement }>()
-const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
+const props = defineProps<{ reportValidation?:boolean; node: WorkflowNode; buildNodes: WorkflowNode[]; disabled: boolean; applicationID?: string; applicationName?: string; plan?: DeploymentCommandPlan; editPermission?: string; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}>; hideScript?: boolean; hideComposeSettings?:boolean; hideAdvanced?:boolean; registryOnly?:boolean; registryTarget?:HTMLElement }>()
+const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>]; 'validation-change':[issues:string[]] }>()
 const auth = useAuthStore(), kind = ref(''), yaml = ref(''), error = ref(''), environmentID=ref('')
 const deploymentPlan = ref<DeploymentCommandPlan>()
 let request = 0, controller: AbortController | undefined
@@ -42,6 +42,13 @@ watch(configuredTag, value => { if (value !== tagReference.value) tagReference.v
 watch(() => props.node.id, () => { tagReference.value = variableReference(configuredTag.value) })
 function updateTag(value: string) { tagReference.value = value; if (kind.value === 'compose_stack') updateSettings({ tag_variable: value }); else change({ deployment_tag_reference: value }) }
 const services = computed(() => Object.keys(readKubeYaml(yaml.value).object?.services || {}).sort())
+const configurationIssues=ref<string[]>([])
+const validationIssues=computed(()=>[...new Set([
+ error.value,
+ ['docker','compose','compose_stack'].includes(kind.value)&&!validTagReference(tagReference.value)?'镜像 Tag：请使用变量引用，例如 ${EDO_IMAGE_TAG}':'',
+ ...configurationIssues.value,
+].filter(Boolean))])
+watch(()=>[props.reportValidation,validationIssues.value] as const,([report,issues])=>{if(report)emit('validation-change',issues)},{immediate:true})
 function change(config: Partial<WorkflowNodeConfig>) { if (!props.disabled && auth.canAny([props.editPermission || 'workflow.update'])) emit('change', config) }
 function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']>>) {
  change({ compose: { ...settings.value, ...patch, env_file: undefined }, compose_images: [], artifact_node_ids: [], artifact_node_id: '', artifact_build_plan_id: undefined })
@@ -59,7 +66,7 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
   <a-checkbox :checked="settings.use_sudo" :disabled="disabled" @change="updateSettings({use_sudo:$event.target.checked})">使用免密码 sudo 执行 Docker</a-checkbox>
  </section>
  <a-alert v-else-if="node.config.compose&&!hideComposeSettings" type="warning" show-icon message="当前任务含 Docker Compose 配置，请选择 Docker Compose 部署方案。"/>
- <DeploymentConfigurationFields :registry-only="registryOnly" v-if="['docker','compose','compose_stack','script','kubernetes'].includes(kind)" :config="node.config" :build-nodes="buildNodes" :build-plans="buildPlans" :edit-permission="editPermission" :hide-script="hideScript" :registry-target="registryTarget" :deploymentPlan="deploymentPlan" :applicationID="applicationID" :applicationName="applicationName" :environmentID="environmentID" :disabled="disabled" @change="change"/>
+ <DeploymentConfigurationFields :report-validation="reportValidation" @validation-change="configurationIssues=$event" :registry-only="registryOnly" v-if="['docker','compose','compose_stack','script','kubernetes'].includes(kind)" :config="node.config" :build-nodes="buildNodes" :build-plans="buildPlans" :edit-permission="editPermission" :hide-script="hideScript" :registry-target="registryTarget" :deploymentPlan="deploymentPlan" :applicationID="applicationID" :applicationName="applicationName" :environmentID="environmentID" :disabled="disabled" @change="change"/>
  <a-collapse v-if="!hideAdvanced && kind==='compose_stack'" class="deployment-advanced-options"><a-collapse-panel key="advanced" header="高级选项"><a-form-item label="健康检查地址"><a-input :value="settings.health_url" :disabled="disabled" @update:value="updateSettings({health_url:String($event||'')})"/></a-form-item></a-collapse-panel></a-collapse>
 </template>
 <style scoped>

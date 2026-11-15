@@ -7,8 +7,8 @@ import { useAuthStore } from '@/stores/auth'
 import type { DeploymentExecutionConfig, WorkflowDeploymentPlan, WorkflowNode, PipelineBuildPlan } from '@/types/pipeline'
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 
-const props = defineProps<{ modelValue: DeploymentExecutionConfig; plan: WorkflowDeploymentPlan; disabled?: boolean; editPermission?: string; applicationID?: string; applicationName?: string; buildNodes?: WorkflowNode[]; hideScript?: boolean; hideComposeSettings?:boolean; kubernetesRegistryOnly?:boolean; registryTarget?:HTMLElement; timeoutMin?:number }>()
-const emit = defineEmits<{ 'update:modelValue': [value: DeploymentExecutionConfig]; 'update:timeoutSeconds':[value:number] }>()
+const props = defineProps<{ reportValidation?:boolean; modelValue: DeploymentExecutionConfig; plan: WorkflowDeploymentPlan; disabled?: boolean; editPermission?: string; applicationID?: string; applicationName?: string; buildNodes?: WorkflowNode[]; hideScript?: boolean; hideComposeSettings?:boolean; kubernetesRegistryOnly?:boolean; registryTarget?:HTMLElement; timeoutMin?:number }>()
+const emit = defineEmits<{ 'update:modelValue': [value: DeploymentExecutionConfig]; 'update:timeoutSeconds':[value:number]; 'validation-change':[issues:string[]] }>()
 const auth = useAuthStore(), variables = ref<Array<{name:string;is_secret:boolean}>>([]), builds = ref<PipelineBuildPlan[]>([]), error = ref('')
 let controller: AbortController | undefined
 const permission = computed(() => props.editPermission || 'deployment_plan.update')
@@ -43,13 +43,16 @@ function updateHealthURL(value:string) {
   change({compose:{...(props.modelValue.compose || {tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}),health_url:value}})
 }
 function updateTimeout(value:number) { if(canEdit.value && auth.user?.project_id === localStorage.getItem('edo.project') && auth.canAny([permission.value]))emit('update:timeoutSeconds',value) }
+const taskFieldIssues=ref<string[]>([])
+const validationIssues=computed(()=>[...new Set([error.value,...taskFieldIssues.value].filter(Boolean))])
+watch(()=>[props.reportValidation,validationIssues.value] as const,([report,issues])=>{if(report)emit('validation-change',issues)},{immediate:true})
 </script>
 
 <template>
   <section class="deployment-execution-fields" aria-label="部署执行配置">
     <a-alert v-if="error" type="warning" show-icon :message="error" />
 
-    <ComposeTaskFields :registry-only="kubernetesRegistryOnly" :node="node" :plan="commandPlan" :build-nodes="buildNodes || []" :build-plans="builds" :disabled="!canEdit" :edit-permission="permission" :applicationID="applicationID" :applicationName="applicationName" :hide-script="hideScript" :hide-compose-settings="hideComposeSettings" :registry-target="registryTarget" hide-advanced @change="change" />
+    <ComposeTaskFields :report-validation="reportValidation" @validation-change="taskFieldIssues=$event" :registry-only="kubernetesRegistryOnly" :node="node" :plan="commandPlan" :build-nodes="buildNodes || []" :build-plans="builds" :disabled="!canEdit" :edit-permission="permission" :applicationID="applicationID" :applicationName="applicationName" :hide-script="hideScript" :hide-compose-settings="hideComposeSettings" :registry-target="registryTarget" hide-advanced @change="change" />
     <a-form-item v-if="plan.kind!=='kubernetes' && plan.kind!=='compose_stack' && !modelValue.deployment_script && modelValue.deployment_input_version!==1" label="构建制品来源">
       <a-select :value="modelValue.artifact_build_plan_id ? `plan:${modelValue.artifact_build_plan_id}` : modelValue.artifact_node_id ? `node:${modelValue.artifact_node_id}` : ''" :disabled="!canEdit" :options="sourceOptions" @update:value="selectSource(String($event || ''))" />
     </a-form-item>

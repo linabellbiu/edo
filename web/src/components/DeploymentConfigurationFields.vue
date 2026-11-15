@@ -9,8 +9,8 @@ import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 import { validConfigurationPath } from '@/utils/deploymentCommandPreview'
 import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
-const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: Pick<DeploymentCommandPlan,'kind'>; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; registryOnly?:boolean; registryTarget?:HTMLElement; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}> }>()
-const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
+const props = defineProps<{ reportValidation?:boolean; config: WorkflowNodeConfig; deploymentPlan?: Pick<DeploymentCommandPlan,'kind'>; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; registryOnly?:boolean; registryTarget?:HTMLElement; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}> }>()
+const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>]; 'validation-change':[issues:string[]] }>()
 const auth = useAuthStore()
 type Configuration = { id: string; name: string; kind: string; version: number; is_active: boolean; project_id: string; application_id?: string; environment_id?: string }
 type Registry = { id: string; name: string; namespace: string; project_id: string; is_active: boolean }
@@ -111,6 +111,23 @@ async function registryOptions(index: number, tags: boolean) {
  } catch (cause) { if (!controller.signal.aborted && scope === identity()) state.error = tags ? apiErrorMessage(cause) : '此仓库无法列出镜像，请输入准确镜像名称后选择 Tag。' }
  finally { if (optionRequests.get(index) === controller) state.loading = false }
 }
+const validationIssues=computed(()=>{
+ const issues=[error.value,...Object.values(optionsByRow.value).map(row=>row.error)].filter(Boolean)
+ if(!loading.value&&loadedIdentity.value===identity()){
+  if(managesRegistry.value&&!kubernetesRegistryOnly.value&&!deploymentRegistry.value)issues.push('请选择部署镜像仓库')
+  for(const [index,input] of selected.value.entries()){
+   const label=`文件来源 ${index+1}`
+   if(input.kind==='configuration'){
+    if(!canRead.value)issues.push(`${label}：没有查看配置的权限`)
+    else if(input.configuration_id&&!configurations.value.some(item=>item.id===input.configuration_id))issues.push(`${label}：原配置不可用，请检查适用范围或使用权限`)
+   }
+   if(input.kind==='upstream'&&invalidUpstreamReference(upstreamReference(input)))issues.push(`${label}：请使用变量引用，例如 \${BUILD_ARTIFACT}`)
+   if(input.kind!=='registry'&&input.path&&!validConfigurationPath(input.path))issues.push(`${label}：只填写相对路径，不能使用绝对路径、~/、.. 或保留目录 .edo`)
+  }
+ }
+ return [...new Set(issues)]
+})
+watch(()=>[props.reportValidation,validationIssues.value] as const,([report,issues])=>{if(report)emit('validation-change',issues)},{immediate:true})
 </script>
 <template>
  <section class="deployment-configuration" :aria-label="kubernetesImage?'部署镜像':'部署文件与脚本'">
