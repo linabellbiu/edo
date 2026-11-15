@@ -33,6 +33,7 @@ export interface KubernetesDeploymentProbe {kind:'http'|'tcp';port:number;path?:
 
 export type KubernetesDeploymentServiceType='ClusterIP'|'NodePort'|'LoadBalancer'|'ExternalName'
 export interface KubernetesDeploymentSettings {
+ hpa?:{enabled:boolean;min_replicas:number;max_replicas:number;cpu_utilization?:number;memory_utilization?:number}
  options?:KubernetesCommonOptions
  command?:string[];args?:string[];working_dir?:string;image_pull_policy?:''|'Always'|'IfNotPresent'|'Never';termination_grace_period_seconds?:number;strategy?:''|'RollingUpdate'|'Recreate';max_surge?:string;max_unavailable?:string;readiness_probe?:KubernetesDeploymentProbe;liveness_probe?:KubernetesDeploymentProbe;startup_probe?:KubernetesDeploymentProbe
  template:'web';replicas:number;cpu_request:string;memory_request:string;cpu_limit:string;memory_limit:string;node_port:boolean;service_type?:KubernetesDeploymentServiceType|'';external_name?:string;ports:Array<{name:string;enabled:boolean;port:number;target_port:number;node_port?:number;protocol?:''|'TCP'|'UDP'|'SCTP'}>

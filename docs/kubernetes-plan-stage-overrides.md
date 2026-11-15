@@ -13,7 +13,7 @@ Kubernetes 部署方案本身就是用户可配置的通用模板，直接展示
 | 分区 | 可配置内容 | 未设置时 |
 | --- | --- | --- |
 | 目标 | 集群、命名空间、Deployment、容器、镜像仓库、镜像与 Tag | 应用名与配置镜像补空字段，集群需明确选择 |
-| 工作负载 | 副本、CPU/内存申请和限制 | 沿用方案默认 |
+| 工作负载 | 固定副本、CPU/内存申请和限制；HPA 最小/最大副本及 CPU/内存目标利用率 | 默认固定 1 个副本，HPA 关闭 |
 | 服务与网络 | ClusterIP / NodePort / LoadBalancer / ExternalName；可增删端口、名称、TCP/UDP/SCTP、服务端口、容器端口及节点端口 | 默认 ClusterIP；仅名称为 http 的 8080 示例且关闭，名称可改、整行可删除 |
 | 启动与发布 | 命令和参数数组、容器工作目录、镜像拉取策略、终止宽限期、滚动或重建策略、额外/不可用副本 | 沿用镜像与 Kubernetes 默认 |
 | 健康检查 | readiness、liveness、startup 的 HTTP/TCP 检测和等待/间隔/超时/失败阈值 | 默认关闭 |
@@ -59,3 +59,11 @@ Kubernetes API fixture 及数据库集成回归不冒充真实集群部署验收
 选用方案是便捷填入部署阶段的初始配置，不是持续跟随方案库的动态绑定。已有引用第一次保存会固定完整配置；修改库方案前，服务端会在同一事务中给尚未固定的旧引用保留原配置，既不改参数也不推进流水线版本。新任务选用方案取得当前默认值。已有阶段修改不反写方案库，恢复初始参数回到原快照，运行继续冻结本次有效配置。来源可用性、项目和执行权限仍实时复核，不把配置隔离当成权限豁免。
 
 端口名称由用户填写，`http` 仅是可编辑的默认示例；分组标题使用端口序号。名称不决定网络或应用协议，也不作为 Service 名称；实际服务与容器声明使用用户保存的名称和协议。
+
+CPU 与内存的数值、单位在同一输入组中分开编辑：CPU 使用 m 或核，内存使用 MiB 或 GiB；提交仍是 Kubernetes 原始数量（例如 `200m`、`300Mi`），打开和查看不换算或回写旧值，数字编辑使用 Ant Design Vue 的 stringMode 保留精度。选择另一单位表示以该单位重新声明输入数值。
+
+自动扩缩容复用已有官方 `k8s.io/api/autoscaling/v2` 与 client-go，不引入新的解析包、控制器或 Helm 依赖。HPA 默认关闭，启用时初值为 1–3 个副本、CPU 80%，可选择 CPU 或内存利用率，也可同时使用；至少一项，利用率为正整数、最多 1000%，副本为 1–100。利用率基于资源申请量，需要集群已有 Metrics Server；EDO 不自动安装监控组件。配置随方案初始快照和阶段差异冻结，不修改其他流水线。
+
+运行创建/更新同名 `HorizontalPodAutoscaler` 并绑定准确 Deployment；首次部署使用最小副本，后续模板更新省略 replicas，不覆盖已扩缩的数量。就绪检查允许仅副本数变化，仍核验 UID、发布标识、完整模板及其他 spec，模板被他人修改时继续失败。关闭后下次部署只删除该目标由 EDO 管理的 HPA，携带 UID/resourceVersion，并恢复固定副本；不删除 Deployment 或 Pod。HPA 的读取、创建、更新、删除分别复用对应工作负载 RBAC，原生权限亦检查；同名、其他归属或不同名称控制同一目标时阻止执行。上游拒绝保留安全日志并标记失败，不冒充真实扩缩容已验证。
+
+参考：[Kubernetes HPA](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/) 与 [autoscaling/v2 API](https://kubernetes.io/docs/reference/kubernetes-api/autoscaling/horizontal-pod-autoscaler-v2/)。API fixture 验证对象、权限、关闭及发布并发边界，不代替真实集群的指标触发验收。

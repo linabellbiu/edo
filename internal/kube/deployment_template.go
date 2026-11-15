@@ -49,7 +49,7 @@ func templateObject(value any) map[string]any {
 }
 func templateFailure(ctx context.Context, clusterID, namespace, name string, err error) error {
 	slog.WarnContext(ctx, "Kubernetes 模板部署失败", "operation", "kubernetes_template", "cluster_id", clusterID, "namespace", namespace, "workload_name", name, "err", err)
-	for _, stable := range []error{ErrDeploymentTemplateConflict, ErrDeploymentTemplateReference, ErrDeploymentTemplateHeadlessType, ErrDeploymentTemplateExternalNamePorts, ErrRBACForbidden, ErrRBACSyncPending, ErrResourceForbidden, ErrDeploymentRolloutTimeout, ErrDeploymentProgressDeadline, ErrDeploymentTargetChanged, ErrDeploymentStatusUnavailable, model.ErrKubernetesDeploymentSettings} {
+	for _, stable := range []error{ErrDeploymentTemplateConflict, ErrDeploymentTemplateHPA, ErrDeploymentTemplateReference, ErrDeploymentTemplateHeadlessType, ErrDeploymentTemplateExternalNamePorts, ErrRBACForbidden, ErrRBACSyncPending, ErrResourceForbidden, ErrDeploymentRolloutTimeout, ErrDeploymentProgressDeadline, ErrDeploymentTargetChanged, ErrDeploymentStatusUnavailable, model.ErrKubernetesDeploymentSettings} {
 		if errors.Is(err, stable) {
 			return stable
 		}
@@ -57,7 +57,7 @@ func templateFailure(ctx context.Context, clusterID, namespace, name string, err
 	return ErrDeploymentTemplateCheck
 }
 
-type deploymentTemplateState struct{ namespace, deployment, service map[string]any }
+type deploymentTemplateState struct{ namespace, deployment, service, hpa map[string]any }
 
 // CheckDeploymentTemplate 只读核验重名资源和操作权限，不创建命名空间或工作负载。
 func (s *Service) CheckDeploymentTemplate(ctx context.Context, target model.DeploymentTarget, appID string, cfg *model.KubernetesDeploymentSettings) (resultErr error) {
@@ -133,6 +133,10 @@ func (s *Service) deploymentTemplateState(ctx context.Context, t model.Deploymen
 		}
 	}
 	if err = s.checkDeploymentTemplateOptions(ctx, t, cfg.Options); err != nil {
+		return nil, err
+	}
+	state.hpa, err = s.deploymentTemplateHPAState(ctx, t, appID, targetID, cfg, state.deployment)
+	if err != nil {
 		return nil, err
 	}
 	return state, nil
@@ -228,6 +232,17 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 	}
 	applyDeploymentTemplateOptions(workload, cfg.Options)
 	desired := templateObject(workload)
+	if cfg.AutoscalingEnabled() {
+		desired["metadata"].(map[string]any)["annotations"].(map[string]any)["edo.io/hpa-managed"] = "true"
+		if state.deployment == nil {
+			desired["spec"].(map[string]any)["replicas"] = int64(cfg.HPA.MinReplicas)
+		} else {
+			// MergePatch 省略副本字段，保留 HPA 此刻已经调节的数量。
+			delete(desired["spec"].(map[string]any), "replicas")
+		}
+	} else if state.deployment != nil {
+		desired["metadata"].(map[string]any)["annotations"].(map[string]any)["edo.io/hpa-managed"] = nil
+	}
 	clearDeploymentTemplateOptions(desired, state.deployment, cfg.Options)
 	// 可选配置恢复默认时，MergePatch 必须显式清除上一次模板写入的值。
 	desired["spec"].(map[string]any)["strategy"] = nil
@@ -252,6 +267,7 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 		desired["spec"].(map[string]any)["strategy"] = strategy
 	}
 	bindTemplateIdentity(desired, state.deployment)
+	hpa := deploymentTemplateHPA(state.hpa, cfg, metadata)
 	service := deploymentTemplateService(state.service, cfg, record.ID, metadata, labels, servicePorts)
 	validate := func(kind, name string, object map[string]any) error {
 		if object == nil {
@@ -270,10 +286,27 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 		if err = validate("services", t.WorkloadName, service); err != nil {
 			return "", "", err
 		}
+		if err = validate("horizontalpodautoscalers", t.WorkloadName, hpa); err != nil {
+			return "", "", err
+		}
 	}
 	if state.namespace == nil {
 		ns := &corev1.Namespace{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"}, ObjectMeta: metav1.ObjectMeta{Name: t.Namespace}}
 		if _, err = s.SaveResource(ctx, t.RuntimeID, "namespaces", "", t.Namespace, templateObject(ns), true); err != nil {
+			return "", "", err
+		}
+	}
+	if state.namespace == nil && hpa != nil {
+		if err = validate("horizontalpodautoscalers", t.WorkloadName, hpa); err != nil {
+			return "", "", err
+		}
+	}
+	if hpa == nil && state.hpa != nil {
+		meta := state.hpa["metadata"].(map[string]any)
+		objectUID, _ := meta["uid"].(string)
+		resourceVersion, _ := meta["resourceVersion"].(string)
+		identity := ResourceIdentity{UID: objectUID, ResourceVersion: resourceVersion}
+		if err = s.DeleteResource(ctx, t.RuntimeID, "horizontalpodautoscalers", t.Namespace, t.WorkloadName, identity); err != nil {
 			return "", "", err
 		}
 	}
@@ -306,7 +339,12 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 			return previous, uid, err
 		}
 	}
-	_, err = s.DeployImageIfCurrent(ctx, t.RuntimeID, t.Namespace, t.WorkloadName, t.ContainerName, record.Image, record.ID, timeout, DeploymentImageIdentity{UID: uid, Image: record.Image, DeploymentID: record.ID})
+	if hpa != nil {
+		if _, err = save("horizontalpodautoscalers", t.WorkloadName, hpa); err != nil {
+			return previous, uid, err
+		}
+	}
+	_, err = s.DeployImageIfCurrent(ctx, t.RuntimeID, t.Namespace, t.WorkloadName, t.ContainerName, record.Image, record.ID, timeout, DeploymentImageIdentity{UID: uid, Image: record.Image, DeploymentID: record.ID, allowReplicaChanges: cfg.AutoscalingEnabled()})
 	return previous, uid, err
 }
 func bindTemplateIdentity(desired, current map[string]any) {

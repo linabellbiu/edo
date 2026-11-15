@@ -21,6 +21,7 @@ func TestKubernetesServiceTypeErrorsKeepSafeActionableResponses(t *testing.T) {
 	}{
 		{kube.ErrDeploymentTemplateHeadlessType, http.StatusConflict, "kubernetes_service_type_change_blocked"},
 		{kube.ErrDeploymentTemplateExternalNamePorts, http.StatusBadRequest, "kubernetes_service_ports_required"},
+		{kube.ErrDeploymentTemplateHPA, http.StatusBadRequest, "kubernetes_hpa_configuration_failed"},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			recorder := httptest.NewRecorder()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -79,6 +80,7 @@ func (s *Service) deployImage(
 		}
 	}()
 	clientset := query.typed
+	var deployedSpec *appsv1.DeploymentSpec
 	var generation int64
 	var targetUID, targetContainer string
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -115,6 +117,8 @@ func (s *Service) deployImage(
 			FieldManager: "edo",
 		})
 		if err == nil {
+			deployedSpec = updated.Spec.DeepCopy()
+			deployedSpec.Replicas = nil
 			generation = updated.Generation
 			targetUID = string(updated.UID)
 			targetContainer = current.Spec.Template.Spec.Containers[containerIndex].Name
@@ -151,7 +155,15 @@ func (s *Service) deployImage(
 			return false, nil
 		}
 		lastReadErr = nil
-		if string(current.UID) != targetUID || current.Generation != generation ||
+		generationMatches := current.Generation == generation
+		observedGeneration := generation
+		if expected != nil && expected.allowReplicaChanges {
+			spec := current.Spec.DeepCopy()
+			spec.Replicas = nil
+			generationMatches = current.Generation >= generation && reflect.DeepEqual(spec, deployedSpec)
+			observedGeneration = current.Generation
+		}
+		if string(current.UID) != targetUID || !generationMatches ||
 			current.Spec.Template.Annotations["edo.io/deployment-id"] != deploymentID {
 			return false, ErrDeploymentTargetChanged
 		}
@@ -165,7 +177,7 @@ func (s *Service) deployImage(
 		if !matchingContainer {
 			return false, ErrDeploymentTargetChanged
 		}
-		if current.Status.ObservedGeneration < generation {
+		if current.Status.ObservedGeneration < observedGeneration {
 			return false, nil
 		}
 		for _, condition := range current.Status.Conditions {

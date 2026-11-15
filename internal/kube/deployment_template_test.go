@@ -34,6 +34,16 @@ func newTemplateAPIFixture(t *testing.T) (*Service, string, *templateAPIFixture)
 		defer f.mu.Unlock()
 		path := r.URL.Path
 		if r.Method == http.MethodGet {
+			if strings.HasSuffix(path, "/horizontalpodautoscalers") {
+				items := []any{}
+				for key, value := range f.objects {
+					if strings.HasPrefix(key, path+"/") {
+						items = append(items, value)
+					}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscalerList", "metadata": map[string]any{}, "items": items})
+				return
+			}
 			if value, ok := f.objects[path]; ok {
 				_ = json.NewEncoder(w).Encode(value)
 			} else {
@@ -60,6 +70,24 @@ func newTemplateAPIFixture(t *testing.T) (*Service, string, *templateAPIFixture)
 		} else if err := json.Unmarshal(body, &object); err != nil {
 			t.Error(err)
 			w.WriteHeader(400)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			old := f.objects[path]
+			if old == nil {
+				w.WriteHeader(404)
+				return
+			}
+			meta := old["metadata"].(map[string]any)
+			preconditions, _ := object["preconditions"].(map[string]any)
+			if preconditions["uid"] != meta["uid"] || preconditions["resourceVersion"] != meta["resourceVersion"] {
+				t.Error("删除未携带准确身份")
+				w.WriteHeader(409)
+				return
+			}
+			delete(f.objects, path)
+			f.writes++
+			_ = json.NewEncoder(w).Encode(map[string]any{"apiVersion": "v1", "kind": "Status", "status": "Success"})
 			return
 		}
 		meta := object["metadata"].(map[string]any)

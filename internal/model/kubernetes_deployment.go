@@ -42,6 +42,7 @@ type KubernetesDeploymentProbe struct {
 }
 
 type KubernetesDeploymentSettings struct {
+	HPA                           *KubernetesDeploymentHPA     `json:"hpa,omitempty"`
 	Options                       *KubernetesDeploymentOptions `json:"options,omitempty"`
 	Command                       []string                     `json:"command,omitempty"`
 	Args                          []string                     `json:"args,omitempty"`
@@ -66,6 +67,18 @@ type KubernetesDeploymentSettings struct {
 	Ports                         []KubernetesDeploymentPort   `json:"ports"`
 }
 
+type KubernetesDeploymentHPA struct {
+	Enabled           bool   `json:"enabled"`
+	MinReplicas       int32  `json:"min_replicas"`
+	MaxReplicas       int32  `json:"max_replicas"`
+	CPUUtilization    *int32 `json:"cpu_utilization,omitempty"`
+	MemoryUtilization *int32 `json:"memory_utilization,omitempty"`
+}
+
+func (c *KubernetesDeploymentSettings) AutoscalingEnabled() bool {
+	return c != nil && c.HPA != nil && c.HPA.Enabled
+}
+
 func DefaultKubernetesDeploymentSettings() *KubernetesDeploymentSettings {
 	return &KubernetesDeploymentSettings{Template: "web", Replicas: 1, CPURequest: "200m", MemoryRequest: "300Mi", CPULimit: "1", MemoryLimit: "1Gi", Ports: []KubernetesDeploymentPort{{Name: "http", Port: 8080, TargetPort: 8080}}}
 }
@@ -83,7 +96,7 @@ func (c *KubernetesDeploymentSettings) EffectiveServiceType() string {
 	return "ClusterIP"
 }
 
-var ErrKubernetesDeploymentSettings = errors.New("Kubernetes 模板配置无效，请检查副本、资源、端口、启动参数和健康检查")
+var ErrKubernetesDeploymentSettings = errors.New("Kubernetes 模板配置无效，请检查副本、资源、HPA、端口、启动参数和健康检查")
 
 func ValidateKubernetesDeploymentSettings(c *KubernetesDeploymentSettings) error {
 	if c == nil {
@@ -128,6 +141,13 @@ func ValidateKubernetesDeploymentSettings(c *KubernetesDeploymentSettings) error
 			key := servicePort{port: p.Port, protocol: protocol}
 			valid = valid && !ports[key]
 			ports[key] = true
+		}
+	}
+	if c.AutoscalingEnabled() {
+		hpa := c.HPA
+		valid = valid && hpa.MinReplicas >= 1 && hpa.MaxReplicas <= 100 && hpa.MinReplicas <= hpa.MaxReplicas && (hpa.CPUUtilization != nil || hpa.MemoryUtilization != nil)
+		for _, target := range []*int32{hpa.CPUUtilization, hpa.MemoryUtilization} {
+			valid = valid && (target == nil || *target >= 1 && *target <= 1000)
 		}
 	}
 	if valid && validKubernetesRuntimeSettings(c) && ValidateKubernetesDeploymentOptions(c.Options) == nil {

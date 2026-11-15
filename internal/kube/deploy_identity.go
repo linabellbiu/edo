@@ -13,9 +13,10 @@ var ErrDeploymentTargetChanged = errors.New("Kubernetes 工作负载已变化，
 
 // DeploymentImageIdentity 同时固定对象身份、目标容器镜像和发布归属。
 type DeploymentImageIdentity struct {
-	UID          string
-	Image        string
-	DeploymentID string
+	allowReplicaChanges bool
+	UID                 string
+	Image               string
+	DeploymentID        string
 }
 
 func (s *Service) DeploymentImageIdentity(ctx context.Context, clusterID, namespace, name, container string) (DeploymentImageIdentity, error) {

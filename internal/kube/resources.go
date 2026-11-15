@@ -44,6 +44,7 @@ var resourceDefinitions = []ResourceDefinition{
 	{"nodes", "Node", "v1", "nodes", false, "kubernetes.node", false, true, false},
 	{"namespaces", "Namespace", "v1", "config", false, "kubernetes.config", true, true, true},
 	{"deployments", "Deployment", "apps/v1", "workloads", true, "kubernetes.workload", true, true, true},
+	{"horizontalpodautoscalers", "HorizontalPodAutoscaler", "autoscaling/v2", "workloads", true, "kubernetes.workload", true, true, true},
 	{"statefulsets", "StatefulSet", "apps/v1", "workloads", true, "kubernetes.workload", true, true, true},
 	{"daemonsets", "DaemonSet", "apps/v1", "workloads", true, "kubernetes.workload", true, true, true},
 	{"jobs", "Job", "batch/v1", "workloads", true, "kubernetes.workload", true, false, true},

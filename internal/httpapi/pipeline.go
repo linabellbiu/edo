@@ -802,6 +802,8 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusBadRequest, "kubernetes_service_ports_required", kube.ErrDeploymentTemplateExternalNamePorts.Error())
 	case errors.Is(err, kube.ErrDeploymentTemplateCheck):
 		writeError(c, http.StatusBadRequest, "kubernetes_template_check_failed", kube.ErrDeploymentTemplateCheck.Error())
+	case errors.Is(err, kube.ErrDeploymentTemplateHPA):
+		writeError(c, http.StatusBadRequest, "kubernetes_hpa_configuration_failed", kube.ErrDeploymentTemplateHPA.Error())
 	case errors.Is(err, pipeline.ErrDeploymentRegistryRequired):
 		writeError(c, http.StatusBadRequest, "deployment_registry_required", pipeline.ErrDeploymentRegistryRequired.Error())
 	case errors.Is(err, pipeline.ErrDeploymentRegistryUnavailable):

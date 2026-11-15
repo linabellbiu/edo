@@ -47,6 +47,12 @@ export function kubernetesDeploymentPortError(config:KubernetesDeploymentSetting
 }
 
 export function kubernetesDeploymentRuntimeError(config:KubernetesDeploymentSettings):string {
+ const hpa=config.hpa
+ if(hpa?.enabled){
+  if(!Number.isInteger(hpa.min_replicas)||!Number.isInteger(hpa.max_replicas)||hpa.min_replicas<1||hpa.max_replicas>100||hpa.min_replicas>hpa.max_replicas)return 'HPA 最小和最大副本数应为 1–100，最大值不能小于最小值'
+  if(hpa.cpu_utilization===undefined&&hpa.memory_utilization===undefined)return 'HPA 至少配置一项 CPU 或内存目标利用率'
+  for(const value of [hpa.cpu_utilization,hpa.memory_utilization])if(value!==undefined&&(!Number.isInteger(value)||value<1||value>1000))return 'HPA 目标利用率应为 1–1000%'
+ }
  const serviceError=kubernetesDeploymentServiceError(config);if(serviceError)return serviceError
  const portsError=kubernetesDeploymentPortError(config);if(portsError)return portsError
  const optionsError=kubernetesCommonOptionsError(config.options);if(optionsError)return optionsError
