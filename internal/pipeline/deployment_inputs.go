@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	composetemplate "github.com/compose-spec/compose-go/v2/template"
 	distributionreference "github.com/distribution/reference"
 	"github.com/regclient/regclient"
 	registryconfig "github.com/regclient/regclient/config"
@@ -24,7 +25,7 @@ import (
 	"edo/internal/sshdeploy"
 )
 
-var ErrDeploymentInputs = errors.New("部署输入无效，请检查文件来源、相对路径和部署脚本")
+var ErrDeploymentInputs = errors.New("部署输入无效，请检查镜像仓库、镜像、Tag、文件来源和部署脚本")
 
 type workflowRegistryInput struct {
 	Index      int    `json:"index"`
@@ -33,7 +34,7 @@ type workflowRegistryInput struct {
 	Tag        string `json:"tag"`
 }
 
-func sanitizeDeploymentInputs(node *model.WorkflowNode) error {
+func sanitizeDeploymentInputs(node *model.WorkflowNode, allowTagTemplates ...bool) error {
 	c := &node.Config
 	if c.DeploymentInputVersion == 0 && len(c.DeploymentInputs) == 0 && c.DeploymentScript == "" {
 		return nil
@@ -85,7 +86,11 @@ func sanitizeDeploymentInputs(node *model.WorkflowNode) error {
 				return ErrDeploymentInputs
 			}
 		case "registry":
-			if input.RegistryID == "" || len(input.RegistryID) > 36 || len(input.Image) > 255 || len(input.Tag) > 128 || input.Path != "" || input.ConfigurationID != "" || input.ArtifactNodeID != "" || input.ArtifactBuildPlanID != "" || !validInputImage(input.Image, input.Tag) {
+			validImage := validInputImage(input.Image, input.Tag)
+			if len(allowTagTemplates) > 0 && allowTagTemplates[0] {
+				validImage = validRegistryInputTemplate(input.Image, input.Tag)
+			}
+			if input.RegistryID == "" || len(input.RegistryID) > 36 || len(input.Image) > 255 || len(input.Tag) > 128 || input.Path != "" || input.ConfigurationID != "" || input.ArtifactNodeID != "" || input.ArtifactBuildPlanID != "" || !validImage {
 				return ErrDeploymentInputs
 			}
 		default:
@@ -99,6 +104,22 @@ func sanitizeDeploymentInputs(node *model.WorkflowNode) error {
 	}
 	// 参数和所选文件一起保存，重启、重建复用成功部署快照。
 	return nil
+}
+
+// 只验证变量表达式结构，实际值在部署节点开始时按已授权的运行上下文解析。
+func validRegistryInputTemplate(image, tag string) bool {
+	if validInputImage(image, tag) {
+		return true
+	}
+	variables := composetemplate.ExtractVariables(map[string]any{"tag": tag}, nil)
+	if len(variables) == 0 {
+		return false
+	}
+	if _, legacy := variables["IMAGE_TAG"]; legacy {
+		return false
+	}
+	value, err := composetemplate.SubstituteWithOptions(tag, func(string) (string, bool) { return "edo-check", true }, composetemplate.WithoutLogging)
+	return err == nil && validInputImage(image, value)
 }
 
 func validInputImage(image, tag string) bool {

@@ -23,6 +23,21 @@ func (s *Service) prepareDeploymentInputs(ctx context.Context, prepared *executi
 	if prepared.node.Config.DeploymentInputVersion != 1 {
 		return closers, nil
 	}
+	if prepared.deploymentPlan.Kind == model.DeploymentPlanKubernetes {
+		// Kubernetes 使用已冻结镜像和 imagePullSecret，由集群运行时拉取，不访问宿主机 Docker。
+		if !model.UsesRegistryDeploymentImage(prepared.node.Config) || len(prepared.snapshot.RegistryInputs[prepared.node.ID]) != 1 {
+			return closers, s.deploymentInputError(prepared.node.ID, "kubernetes_registry_input_prepare", ErrDeploymentInputs)
+		}
+		if err := s.freezeSavedDeploymentRegistry(ctx, s.db, &prepared.node, prepared.deploymentPlan.Kind, prepared.snapshot.AuthorityID); err != nil {
+			return closers, err
+		}
+		image := prepared.snapshot.RegistryInputs[prepared.node.ID][0]
+		input := prepared.node.Config.DeploymentInputs[0]
+		if image.Index != 0 || image.RegistryID != prepared.node.Config.DeploymentRegistryID || input.RegistryID != image.RegistryID || input.Tag != image.Tag || prepared.artifact.ImageRef != image.ImageRef {
+			return closers, s.deploymentInputError(prepared.node.ID, "kubernetes_registry_input_binding", ErrDeploymentInputs)
+		}
+		return closers, nil
+	}
 	if !prepared.snapshot.IndependentDeploymentImages && referencesPipelineImageTag(prepared.node.Config.DeploymentScript) && prepared.deploymentPlan.Kind != model.DeploymentPlanComposeStack {
 		prior := []string{}
 		found := false

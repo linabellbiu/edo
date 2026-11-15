@@ -71,3 +71,12 @@ func SavedDeploymentRegistryID(config WorkflowNodeConfig) string {
 func RequiresDeploymentRegistry(kind DeploymentPlanKind) bool {
 	return kind == DeploymentPlanDocker || kind == DeploymentPlanCompose || kind == DeploymentPlanComposeStack
 }
+
+// UsesRegistryDeploymentImage 标识显式选择的单个镜像，不推断或迁移旧的上游构建配置。
+func UsesRegistryDeploymentImage(config WorkflowNodeConfig) bool {
+	return config.DeploymentInputVersion == 1 && len(config.DeploymentInputs) == 1 && config.DeploymentInputs[0].Kind == "registry"
+}
+
+func RequiresDeploymentRegistryForConfig(kind DeploymentPlanKind, config WorkflowNodeConfig) bool {
+	return RequiresDeploymentRegistry(kind) || kind == DeploymentPlanKubernetes && config.DeploymentInputVersion == 1
+}

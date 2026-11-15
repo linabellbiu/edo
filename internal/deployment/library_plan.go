@@ -70,6 +70,22 @@ func (s *Service) ResolveWorkflowLibraryPlan(ctx context.Context, base model.Dep
 		execution.ArtifactBuildPlanID = ""
 		execution.ArtifactNodeID = *override.ArtifactNodeID
 	}
+	if override != nil {
+		if override.DeploymentRegistryID != nil {
+			execution.DeploymentRegistryID = *override.DeploymentRegistryID
+		}
+		if override.DeploymentInputVersion != nil {
+			execution.DeploymentInputVersion = *override.DeploymentInputVersion
+		}
+		if override.DeploymentInputs != nil {
+			execution.DeploymentInputs = append([]model.DeploymentInput(nil), (*override.DeploymentInputs)...)
+		}
+	}
+	if execution.DeploymentInputVersion == 1 {
+		// 新显式镜像来源只使用用户选择的仓库，不继承库方案的旧构建绑定。
+		execution.ArtifactNodeID, execution.ArtifactBuildPlanID = "", ""
+		execution.ArtifactNodeIDs, execution.ComposeImages = nil, nil
+	}
 	plan, resolved, err := s.ResolveInlinePlan(ctx, &model.WorkflowDeploymentPlan{Name: copied.Name, Description: copied.Description, Kind: copied.Kind, TimeoutSeconds: timeout, ExecutionConfig: execution, DeploymentTarget: &targetCopy}, workflowID, nodeID)
 	if err != nil {
 		return fail(err)

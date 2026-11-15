@@ -97,7 +97,7 @@ const taskDefinitions: TaskDefinition[] = [
   { id: 'manual', type: 'manual', label: '人工放行', hint: '由操作人员确认后继续执行', group: '发布', color: '#8a62d2', icon: CheckCircle2 },
   { id: 'deploy', type: 'deploy', label: '自定义部署', hint: '执行部署脚本，按需手动关联 Docker 服务', group: '部署', color: '#28a875', icon: Rocket },
   { id: 'compose-deploy', type: 'deploy', label: 'docker-compose 部署', hint: '读取仓库、上传或配置产物中的定义并解析服务', group: '部署', color: '#28a875', icon: Rocket },
-  { id: 'kubernetes-deploy', type: 'deploy', label: 'Kubernetes 部署', hint: '将上游镜像部署到集群', group: '部署', color: '#28a875', icon: Rocket },
+  { id: 'kubernetes-deploy', type: 'deploy', label: 'Kubernetes 部署', hint: '将所选仓库镜像部署到集群', group: '部署', color: '#28a875', icon: Rocket },
   { id: 'shell', type: 'shell', label: 'Shell 脚本执行', hint: '在构建容器中运行脚本', group: '工具', color: '#3985c6', icon: TerminalSquare, presetScript: 'set -eu\n' },
 ]
 
@@ -365,7 +365,7 @@ function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): Workfl
     const kind=definition?.id==='compose-deploy'?'compose_stack':definition?.id==='kubernetes-deploy'?'kubernetes':'script'
     if(kind==='compose_stack')config.compose_source={kind:'repository',path:''}
     config.deployment_source='inline'
-    config.inline_deployment_plan={name:definition?.label||'自定义部署',kind,script:kind==='script'?'set -eu\n# 在这里填写部署命令\n':undefined,compose_yaml:'',timeout_seconds:600,deployment_target:{platform:kind==='kubernetes'?'kubernetes':'ssh',environment_id:'',working_directory:kind==='script'?'/tmp':undefined},execution_config:kind==='kubernetes'?{kubernetes:defaultKubernetesDeployment()}:{deployment_input_version:1,deployment_inputs:[],compose:kind==='compose_stack'?{tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}:undefined}}
+    config.inline_deployment_plan={name:definition?.label||'自定义部署',kind,script:kind==='script'?'set -eu\n# 在这里填写部署命令\n':undefined,compose_yaml:'',timeout_seconds:600,deployment_target:{platform:kind==='kubernetes'?'kubernetes':'ssh',environment_id:'',working_directory:kind==='script'?'/tmp':undefined},execution_config:kind==='kubernetes'?{kubernetes:defaultKubernetesDeployment(),deployment_input_version:1,deployment_inputs:[]}:{deployment_input_version:1,deployment_inputs:[],compose:kind==='compose_stack'?{tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}:undefined}}
     if(kind==='kubernetes'&&config.inline_deployment_plan.deployment_target){const name=kubernetesResourceName(editorApplication.value?.name||'');config.inline_deployment_plan.deployment_target.namespace=name;config.inline_deployment_plan.deployment_target.workload_name=name}
   }
   const node: WorkflowNode = {
@@ -1198,10 +1198,11 @@ function toolchainBuildArgument(language?: string) {
 }
 
 function deploymentPlanAcceptsBuild(plan: Pick<DeploymentPlan, 'kind'>, buildPlan?: PipelineBuildPlan) {
+  if (plan.kind === 'kubernetes') return true
   if (!buildPlan) return false
   if (plan.kind === 'script') return buildPlan.kind === 'script'
   if (buildPlan.kind !== 'dockerfile') return false
-  return plan.kind !== 'kubernetes' || Boolean(buildPlan.image_registry_id)
+  return true
 }
 
 function buildPlanBeforeTask(taskID: string) {

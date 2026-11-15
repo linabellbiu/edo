@@ -79,7 +79,7 @@ func BuiltinDelivery(kind model.DeploymentPlanKind) (BuiltinDeliveryDefinition, 
 		plan.ServiceName = "app"
 	}
 	if kind == model.DeploymentPlanKubernetes {
-		plan.ExecutionConfig = &model.DeploymentExecutionConfig{Kubernetes: model.DefaultKubernetesDeploymentSettings()}
+		plan.ExecutionConfig = &model.DeploymentExecutionConfig{DeploymentInputVersion: 1, Kubernetes: model.DefaultKubernetesDeploymentSettings()}
 	}
 	if kind == model.DeploymentPlanScript {
 		plan.Script = builtinDeliveryScript

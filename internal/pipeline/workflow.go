@@ -77,27 +77,28 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
-	DefaultTerminalTools           bool                                        `json:"default_terminal_tools,omitempty"`
-	DefaultContainerInit           bool                                        `json:"default_container_init,omitempty"`
-	PreserveComposeImageReferences bool                                        `json:"preserve_compose_image_references,omitempty"`
-	ImageTagIncludesName           bool                                        `json:"image_tag_includes_name,omitempty"` // 仅恢复曾使用完整镜像引用的历史运行。
-	IndependentDeploymentImages    bool                                        `json:"independent_deployment_images,omitempty"`
-	ExplicitDeploymentRegistries   bool                                        `json:"explicit_deployment_registries,omitempty"`
-	RegistryInputs                 map[string][]workflowRegistryInput          `json:"registry_inputs,omitempty"`
-	ApplicationConfigDirectory     string                                      `json:"application_config_directory,omitempty"`
-	DirectConfigurationPaths       bool                                        `json:"direct_configuration_paths,omitempty"`
-	ConfigurationBindings          map[string][]model.DeploymentConfigBinding  `json:"configuration_bindings,omitempty"`
-	ExecutionVersion               int                                         `json:"execution_version,omitempty"`
-	VariableBindings               map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
-	ReleasePolicies                map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
-	AuthorityID                    string                                      `json:"authority_id,omitempty"`
-	SchemaVersion                  uint16                                      `json:"schema_version"`
-	Source                         model.WorkflowNode                          `json:"source"`
-	Stages                         []model.WorkflowStage                       `json:"stages"`
-	BuildPlans                     map[string]workflowBuildPlanSnapshot        `json:"build_plans,omitempty"`
-	DeploymentPlans                map[string]workflowDeploymentPlanSnapshot   `json:"deployment_plans,omitempty"`
-	DeploymentTargets              map[string]workflowDeploymentTargetSnapshot `json:"deployment_targets,omitempty"`
-	ApprovalEnabled                bool                                        `json:"approval_enabled"`
+	DefaultTerminalTools             bool                                        `json:"default_terminal_tools,omitempty"`
+	DefaultContainerInit             bool                                        `json:"default_container_init,omitempty"`
+	PreserveComposeImageReferences   bool                                        `json:"preserve_compose_image_references,omitempty"`
+	ImageTagIncludesName             bool                                        `json:"image_tag_includes_name,omitempty"` // 仅恢复曾使用完整镜像引用的历史运行。
+	IndependentDeploymentImages      bool                                        `json:"independent_deployment_images,omitempty"`
+	ExplicitDeploymentRegistries     bool                                        `json:"explicit_deployment_registries,omitempty"`
+	DeferredKubernetesRegistryImages bool                                        `json:"deferred_kubernetes_registry_images,omitempty"`
+	RegistryInputs                   map[string][]workflowRegistryInput          `json:"registry_inputs,omitempty"`
+	ApplicationConfigDirectory       string                                      `json:"application_config_directory,omitempty"`
+	DirectConfigurationPaths         bool                                        `json:"direct_configuration_paths,omitempty"`
+	ConfigurationBindings            map[string][]model.DeploymentConfigBinding  `json:"configuration_bindings,omitempty"`
+	ExecutionVersion                 int                                         `json:"execution_version,omitempty"`
+	VariableBindings                 map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
+	ReleasePolicies                  map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
+	AuthorityID                      string                                      `json:"authority_id,omitempty"`
+	SchemaVersion                    uint16                                      `json:"schema_version"`
+	Source                           model.WorkflowNode                          `json:"source"`
+	Stages                           []model.WorkflowStage                       `json:"stages"`
+	BuildPlans                       map[string]workflowBuildPlanSnapshot        `json:"build_plans,omitempty"`
+	DeploymentPlans                  map[string]workflowDeploymentPlanSnapshot   `json:"deployment_plans,omitempty"`
+	DeploymentTargets                map[string]workflowDeploymentTargetSnapshot `json:"deployment_targets,omitempty"`
+	ApprovalEnabled                  bool                                        `json:"approval_enabled"`
 }
 
 type workflowBuildPlanSnapshot struct {
@@ -550,7 +551,7 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 	return nil
 }
 
-func sanitizeWorkflowNode(node *model.WorkflowNode) error {
+func sanitizeWorkflowNode(node *model.WorkflowNode, deploymentKinds ...model.DeploymentPlanKind) error {
 	node.Config.ExecutionHostID = ""
 	node.Config.BuildPlatform = strings.TrimSpace(node.Config.BuildPlatform)
 	if node.Config.BuildPlatform != "" {
@@ -582,7 +583,8 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 	if len(node.Config.DeploymentTagReference) > 131 || node.Config.DeploymentTagReference != "" && node.Type != model.WorkflowNodeDeploy {
 		return ErrInvalidWorkflow
 	}
-	if err := sanitizeDeploymentInputs(node); err != nil {
+	allowRegistryTagTemplates := len(deploymentKinds) > 0 && deploymentKinds[0] == model.DeploymentPlanKubernetes
+	if err := sanitizeDeploymentInputs(node, allowRegistryTagTemplates); err != nil {
 		return err
 	}
 	// 配置目录由应用确定；旧字段仅保留给已经存在的运行快照解码。
@@ -913,8 +915,8 @@ func (s *Service) validateWorkflow(
 				if node.Config.InlineDeploymentPlan != nil || model.HasWorkflowDeploymentOverride(node.Config.DeploymentOverride) {
 					node.Config.DeploymentPlanID = plan.ID
 				}
-				if model.RequiresDeploymentRegistry(plan.Kind) && model.SavedDeploymentRegistryID(node.Config) == "" {
-					issues = append(issues, WorkflowIssue{Code: "missing_deployment_registry", Message: "Docker 和 docker compose 部署必须选择并保存镜像仓库", NodeID: node.ID})
+				if model.RequiresDeploymentRegistryForConfig(plan.Kind, node.Config) && model.SavedDeploymentRegistryID(node.Config) == "" {
+					issues = append(issues, WorkflowIssue{Code: "missing_deployment_registry", Message: ErrDeploymentRegistryRequired.Error(), NodeID: node.ID})
 				}
 				if err := resolveDeploymentBuildBindings(node, stages); err != nil {
 					issues = append(issues, WorkflowIssue{Code: "invalid_deployment_build_binding", Message: "部署方案的上游构建或产物变量必须在前序阶段唯一匹配，请检查引用", NodeID: node.ID})
@@ -1038,8 +1040,8 @@ func (s *Service) validateWorkflow(
 					issues = append(issues, WorkflowIssue{Code: "invalid_deployment_tag_reference", Message: "镜像 Tag 请使用变量引用，例如 ${EDO_IMAGE_TAG}", NodeID: node.ID, StageID: stage.ID})
 				}
 				if node.Config.DeploymentInputVersion == 1 {
-					if plan.Kind == model.DeploymentPlanKubernetes {
-						issues = append(issues, WorkflowIssue{Code: "unsupported_deployment_inputs", Message: "部署文件和脚本只用于 Docker、Compose 和 Shell 部署", NodeID: node.ID, StageID: stage.ID})
+					if plan.Kind == model.DeploymentPlanKubernetes && validateKubernetesRegistryExecution(node.Config) != nil {
+						issues = append(issues, WorkflowIssue{Code: "unsupported_deployment_inputs", Message: "Kubernetes 部署仅支持单个仓库镜像，请检查镜像仓库、镜像和 Tag", NodeID: node.ID, StageID: stage.ID})
 					}
 					if len(shellcheck.Check(node.Config.DeploymentScript)) > 0 {
 						issues = append(issues, WorkflowIssue{Code: "invalid_deployment_script", Message: "部署脚本存在 Shell 语法错误，请检查标记位置", NodeID: node.ID, StageID: stage.ID})
@@ -1163,8 +1165,11 @@ func validateWorkflowArtifactFlow(
 			}
 		case model.WorkflowNodeDeploy:
 			kind := deploymentPlans[next.Config.DeploymentPlanID].Kind
-			if next.Config.DeploymentInputVersion == 1 && next.Config.DeploymentScript == "" && (kind == model.DeploymentPlanDocker || kind == model.DeploymentPlanCompose) && !hasRegistryDeploymentInput(next.Config) && next.Config.ArtifactNodeID == "" {
-				issues = append(issues, WorkflowIssue{Code: "missing_deployment_image", Message: "请在部署文件来源中选择镜像仓库、镜像与 Tag", NodeID: next.ID})
+			if next.Config.DeploymentInputVersion == 1 && next.Config.DeploymentScript == "" && (kind == model.DeploymentPlanDocker || kind == model.DeploymentPlanCompose || kind == model.DeploymentPlanKubernetes) && !hasRegistryDeploymentInput(next.Config) && next.Config.ArtifactNodeID == "" {
+				issues = append(issues, WorkflowIssue{Code: "missing_deployment_image", Message: "请选择镜像仓库、镜像与 Tag", NodeID: next.ID})
+				if kind == model.DeploymentPlanKubernetes {
+					continue
+				}
 			}
 			for _, input := range next.Config.DeploymentInputs {
 				if input.Kind == "upstream" {
@@ -1888,6 +1893,9 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	registryInputs := map[string][]workflowRegistryInput{}
 	for _, stage := range resolved.Stages {
 		for _, node := range stage.Tasks {
+			if deploymentPlans[node.ID].Kind == model.DeploymentPlanKubernetes && model.UsesRegistryDeploymentImage(node.Config) {
+				continue // 镜像可能由前序构建生成；在部署节点开始后解析 Tag 并冻结摘要。
+			}
 			bindings, inputErr := s.freezeDeploymentRegistryInputs(variableContext, database, node, authorityID)
 			if inputErr != nil {
 				return nil, inputErr
@@ -1898,15 +1906,16 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		}
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
-		DefaultTerminalTools:           true,
-		DefaultContainerInit:           true,
-		PreserveComposeImageReferences: true,
-		IndependentDeploymentImages:    true,
-		RegistryInputs:                 registryInputs,
-		ApplicationConfigDirectory:     configurationDirectory,
-		DirectConfigurationPaths:       true,
-		ExplicitDeploymentRegistries:   true,
-		SchemaVersion:                  resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
+		DefaultTerminalTools:             true,
+		DefaultContainerInit:             true,
+		PreserveComposeImageReferences:   true,
+		IndependentDeploymentImages:      true,
+		RegistryInputs:                   registryInputs,
+		ApplicationConfigDirectory:       configurationDirectory,
+		DirectConfigurationPaths:         true,
+		ExplicitDeploymentRegistries:     true,
+		DeferredKubernetesRegistryImages: true,
+		SchemaVersion:                    resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
 		ExecutionVersion: 2, VariableBindings: variableBindings, ConfigurationBindings: configurationBindings, ReleasePolicies: policies, AuthorityID: authorityID,
 		BuildPlans:      buildPlans,
 		DeploymentPlans: deploymentPlans, DeploymentTargets: deploymentTargets,

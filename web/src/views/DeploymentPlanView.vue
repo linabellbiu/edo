@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import KubernetesDeploymentTemplateFields from '@/components/KubernetesDeploymentTemplateFields.vue'
-import {defaultKubernetesDeployment,kubernetesResourceName,kubernetesContainerDefault,kubernetesDeploymentRuntimeError} from '@/utils/kubernetesDeployment'
+import {defaultKubernetesDeployment,kubernetesResourceName,kubernetesDeploymentRuntimeError} from '@/utils/kubernetesDeployment'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { FileUp, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
@@ -234,7 +234,7 @@ const composeFileInput = ref<HTMLInputElement>()
 const deploymentDrafts: Partial<Record<PlanKind, DeploymentDraft>> = {}
 const defaultComposeYAML = 'services:\n  app:\n    restart: unless-stopped\n'
 
-function emptyExecution(kind:PlanKind):DeploymentExecutionConfig { return kind==='kubernetes'?{kubernetes:defaultKubernetesDeployment()}:kind==='compose_stack' ? {compose:{tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}} : {} }
+function emptyExecution(kind:PlanKind):DeploymentExecutionConfig { return kind==='kubernetes'?{kubernetes:defaultKubernetesDeployment(),deployment_input_version:1,deployment_inputs:[]}:kind==='compose_stack' ? {compose:{tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}} : {} }
 function cloneExecution(value?:DeploymentExecutionConfig):DeploymentExecutionConfig|undefined { return value===undefined ? undefined : JSON.parse(JSON.stringify(value)) }
 const form = reactive({
   execution_config: {} as DeploymentExecutionConfig | undefined,
@@ -271,7 +271,7 @@ const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
   { value: 'script', label: '主机脚本', hint: '通过 SSH 执行部署脚本。上游文件制品先暂存到目标主机，脚本可用 ${EDO_ARTIFACT_PATH} 读取文件，并用 ${EDO_ARTIFACT_DIGEST} 校验摘要。' },
   { value: 'docker', label: 'Docker 容器', hint: '选择上游构建镜像，或从镜像仓库指定镜像与 Tag。部署时固定镜像 Digest，按已保存的参数创建或更新容器。' },
   { value: 'compose_stack', label: 'Docker Compose', hint: '按 compose.yaml 中配置的镜像和服务部署' },
-  { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '使用构建产物的镜像摘要更新 Deployment；构建方案需绑定集群能访问的镜像仓库。' },
+  { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '选择镜像仓库、镜像与 Tag，配置工作负载并供流水线复用。' },
 ]
 const kindNames: Record<PlanKind, string> = { ...Object.fromEntries(kindOptions.map(item => [item.value, item.label])), compose: 'Docker Compose' } as Record<PlanKind, string>
 function planIcon(kind: PlanKind) { return kind === 'compose_stack' ? 'docker' : planPlatform(kind) }
@@ -528,7 +528,7 @@ function legacyExecutionHandoff(plan:DeploymentPlan):DeploymentExecutionConfig|u
 }
 const executionPermission = computed(()=>props.inline ? 'workflow.update' : editingID.value ? 'deployment_plan.update' : 'deployment_plan.create')
 const executionPlan = computed<WorkflowDeploymentPlan>(()=>({name:form.name,kind:form.kind,timeout_seconds:form.timeout_seconds,compose_yaml:form.compose_yaml,script:form.script,deployment_target:{platform:platform.value,environment_id:form.environment_id,working_directory:form.working_directory}}))
-function updateExecution(value:DeploymentExecutionConfig) { if(canUseForm())form.execution_config=value }
+function updateExecution(value:DeploymentExecutionConfig) { if(!canUseForm())return;form.execution_config=value;if(form.kind==='kubernetes'&&!form.container_name){const image=value.deployment_inputs?.find(input=>input.kind==='registry')?.image;if(image)form.container_name=kubernetesResourceName(image.split('/').at(-1)||'')} }
 function edit(plan: DeploymentPlan) {
   reset()
   for (const kind of kindOptions) delete deploymentDrafts[kind.value]
@@ -656,7 +656,7 @@ function emptyDeploymentDraft(kind: PlanKind): DeploymentDraft {
     runtime_id: '',
     namespace: kind==='kubernetes'?kubernetesResourceName(props.applicationName||''):'default',
     workload_name: kind==='kubernetes'?kubernetesResourceName(props.applicationName||''):'',
-    container_name: kind==='kubernetes'?kubernetesContainerDefault(props.applicationName||'',props.buildNodes?.length===1?props.buildNodes[0]:undefined):'',
+    container_name: '',
     docker_port_mappings: [emptyDockerPort()],
     docker_environment_variables: [],
     docker_volume_mounts: [],
@@ -833,7 +833,8 @@ function validate() {
   reconcileExecutionTarget()
   if (!form.name.trim()) return '请输入方案名称'
   if(form.kind==='kubernetes'&&form.execution_config?.kubernetes){const error=kubernetesDeploymentRuntimeError(form.execution_config.kubernetes);if(error)return error}
-  if(['docker','compose','compose_stack'].includes(form.kind)&&!savedDeploymentRegistry(form.execution_config))return '请选择并保存镜像仓库'
+  if((['docker','compose','compose_stack'].includes(form.kind)||form.kind==='kubernetes'&&(form.execution_config?.deployment_input_version===1||form.execution_config?.deployment_registry_id))&&!savedDeploymentRegistry(form.execution_config))return '请选择并保存镜像仓库'
+  if(form.kind==='kubernetes'&&form.execution_config?.deployment_input_version===1){const image=form.execution_config.deployment_inputs?.find(input=>input.kind==='registry');if(!image?.image?.trim())return '请选择或输入部署镜像';if(!image.tag?.trim())return '请选择或输入镜像 Tag'}
   if (form.kind === 'compose_stack') {
     const parsed = readKubeYaml(form.compose_yaml)
     if (parsed.issues.length) return `Docker Compose YAML 无效：第 ${parsed.issues[0]!.line} 行，第 ${parsed.issues[0]!.column} 列`

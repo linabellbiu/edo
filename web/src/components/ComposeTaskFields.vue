@@ -59,7 +59,7 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
   <a-checkbox :checked="settings.use_sudo" :disabled="disabled" @change="updateSettings({use_sudo:$event.target.checked})">使用免密码 sudo 执行 Docker</a-checkbox>
  </section>
  <a-alert v-else-if="node.config.compose&&!hideComposeSettings" type="warning" show-icon message="当前任务含 Docker Compose 配置，请选择 Docker Compose 部署方案。"/>
- <DeploymentConfigurationFields v-if="['docker','compose','compose_stack','script'].includes(kind)" :config="node.config" :build-nodes="buildNodes" :build-plans="buildPlans" :edit-permission="editPermission" :hide-script="hideScript" :registry-target="registryTarget" :deploymentPlan="deploymentPlan" :applicationID="applicationID" :applicationName="applicationName" :environmentID="environmentID" :disabled="disabled" @change="change"/>
+ <DeploymentConfigurationFields v-if="['docker','compose','compose_stack','script','kubernetes'].includes(kind)" :config="node.config" :build-nodes="buildNodes" :build-plans="buildPlans" :edit-permission="editPermission" :hide-script="hideScript" :registry-target="registryTarget" :deploymentPlan="deploymentPlan" :applicationID="applicationID" :applicationName="applicationName" :environmentID="environmentID" :disabled="disabled" @change="change"/>
  <a-collapse v-if="!hideAdvanced && kind==='compose_stack'" class="deployment-advanced-options"><a-collapse-panel key="advanced" header="高级选项"><a-form-item label="健康检查地址"><a-input :value="settings.health_url" :disabled="disabled" @update:value="updateSettings({health_url:String($event||'')})"/></a-form-item></a-collapse-panel></a-collapse>
 </template>
 <style scoped>

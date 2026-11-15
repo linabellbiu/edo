@@ -14,7 +14,7 @@ let controller: AbortController | undefined
 const permission = computed(() => props.editPermission || 'deployment_plan.update')
 const canEdit = computed(() => !props.disabled && auth.canAny([permission.value]) && Boolean(auth.user?.project_id) && auth.user?.project_id === localStorage.getItem('edo.project'))
 const identity = () => JSON.stringify([auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser, localStorage.getItem('edo.project')])
-watch(identity, async () => {
+watch(() => JSON.stringify([identity(),props.plan.kind]), async () => {
   controller?.abort(); controller = new AbortController()
   const {signal} = controller, scope = identity(), project = auth.user?.project_id
   variables.value = []; builds.value = []; error.value = ''
@@ -22,7 +22,7 @@ watch(identity, async () => {
   const options = { signal, headers: { 'X-EDO-Project-ID': project } }
   const result = await Promise.allSettled([
     auth.canAny(['delivery_variable.read']) ? client.get('/delivery-variables', options) : Promise.resolve({data:{variables:[]}}),
-    auth.canAny(['build_plan.read']) ? client.get('/build-plans', options) : Promise.resolve({data:{build_plans:[]}}),
+    props.plan.kind!=='kubernetes'&&auth.canAny(['build_plan.read']) ? client.get('/build-plans', options) : Promise.resolve({data:{build_plans:[]}}),
   ])
   if (signal.aborted || scope !== identity()) return
   if (result[0].status === 'fulfilled') variables.value = result[0].value.data.variables.filter((item:{project_id:string;kind?:string;usage?:string}) => item.project_id === project && !item.kind?.startsWith('config_') && (!item.usage || item.usage === 'deploy'))
@@ -50,7 +50,7 @@ function updateTimeout(value:number) { if(canEdit.value && auth.user?.project_id
     <a-alert v-if="error" type="warning" show-icon :message="error" />
 
     <ComposeTaskFields :node="node" :plan="commandPlan" :build-nodes="buildNodes || []" :build-plans="builds" :disabled="!canEdit" :edit-permission="permission" :applicationID="applicationID" :applicationName="applicationName" :hide-script="hideScript" :hide-compose-settings="hideComposeSettings" :registry-target="registryTarget" hide-advanced @change="change" />
-    <a-form-item v-if="plan.kind!=='compose_stack' && !modelValue.deployment_script && modelValue.deployment_input_version!==1" label="构建制品来源">
+    <a-form-item v-if="plan.kind!=='kubernetes' && plan.kind!=='compose_stack' && !modelValue.deployment_script && modelValue.deployment_input_version!==1" label="构建制品来源">
       <a-select :value="modelValue.artifact_build_plan_id ? `plan:${modelValue.artifact_build_plan_id}` : modelValue.artifact_node_id ? `node:${modelValue.artifact_node_id}` : ''" :disabled="!canEdit" :options="sourceOptions" @update:value="selectSource(String($event || ''))" />
     </a-form-item>
     <slot name="before-advanced" />

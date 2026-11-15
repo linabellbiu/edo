@@ -101,7 +101,7 @@ func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML str
 		node.Config.ArtifactNodeIDs = nil
 		node.Config.ComposeImages = nil
 	}
-	err := sanitizeWorkflowNode(&node)
+	err := sanitizeWorkflowNode(&node, kind)
 	if err == nil && (!validDeploymentScriptVariables(node.Config.EnvironmentVariables) || len(shellcheck.Check(node.Config.DeploymentScript)) > 0 ||
 		node.Config.DeploymentTagReference != "" && node.Config.DeploymentTagReference != "${"+composeTagName(node.Config.DeploymentTagReference)+"}" || len(node.Config.ArtifactBuildPlanID) > 36 || node.Config.ArtifactBuildPlanID != "" && node.Config.ArtifactNodeID != "") {
 		err = ErrInvalidDeploymentPlan
@@ -112,8 +112,12 @@ func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML str
 	if err == nil && kind != model.DeploymentPlanComposeStack && node.Config.Compose != nil {
 		err = ErrInvalidDeploymentPlan
 	}
-	if err == nil && kind == model.DeploymentPlanKubernetes && (node.Config.DeploymentInputVersion != 0 || node.Config.DeploymentScript != "" || len(node.Config.ConfigurationFiles) > 0) {
-		err = ErrInvalidDeploymentPlan
+	if err == nil && kind == model.DeploymentPlanKubernetes {
+		err = validateKubernetesRegistryExecution(node.Config)
+		if err == nil && node.Config.DeploymentInputVersion == 1 {
+			node.Config.ArtifactNodeID, node.Config.ArtifactBuildPlanID = "", ""
+			node.Config.ArtifactNodeIDs, node.Config.ComposeImages = nil, nil
+		}
 	}
 	if err == nil && kind == model.DeploymentPlanComposeStack && composeYAML != "" && strings.TrimSpace(node.Config.DeploymentScript) == "" {
 		err = validateComposeBindingsYAML(composeYAML, node.Config)
@@ -129,6 +133,23 @@ func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML str
 		node.Config.Compose.TagVariable = "${" + composeTagName(node.Config.Compose.TagVariable) + "}"
 	}
 	*config = *model.DeploymentExecutionFromNode(node.Config)
+	return nil
+}
+
+func validateKubernetesRegistryExecution(config model.WorkflowNodeConfig) error {
+	if config.DeploymentScript != "" || len(config.ConfigurationFiles) > 0 || config.DeploymentParameters != "" {
+		return ErrInvalidDeploymentPlan
+	}
+	if config.DeploymentInputVersion == 0 {
+		return nil // 已保存的旧上游镜像配置继续按原规则执行。
+	}
+	if config.DeploymentInputVersion == 1 && len(config.DeploymentInputs) == 0 {
+		return nil // 通用方案可暂不绑定镜像；启用和执行仍要求补齐。
+	}
+	if !model.UsesRegistryDeploymentImage(config) || config.DeploymentRegistryID == "" || config.DeploymentInputs[0].RegistryID != config.DeploymentRegistryID {
+		slog.Warn("Kubernetes 部署需要准确的单个仓库镜像", "operation", "kubernetes_registry_execution_normalize", "err", ErrDeploymentInputs)
+		return ErrDeploymentInputs
+	}
 	return nil
 }
 

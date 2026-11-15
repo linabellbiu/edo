@@ -70,3 +70,17 @@ test('高级配置在保存前拒绝非法工作目录、探针路径和不可�
  assert.match(runtime({...defaults(),readiness_probe:{kind:'http',port:8080,path:'health'}}),/路径/)
  assert.equal(runtime({...defaults(),command:['/server'],args:['--port','8080'],strategy:'RollingUpdate',max_surge:'1',max_unavailable:'0',readiness_probe:{kind:'http',port:8080,path:'/ready'}}),'')
 })
+
+test('阶段独立覆盖仓库镜像和 Tag，重开和恢复资源默认保留准确镜像绑定',t=>{
+ const plan=base();Object.assign(plan.execution_config,{deployment_registry_id:'shared-registry',deployment_input_version:1,deployment_inputs:[{kind:'registry',registry_id:'shared-registry',image:'api',tag:'v1'}]})
+ const stage=utils.effectiveKubernetesPlan(plan);Object.assign(stage.execution_config,{deployment_registry_id:'stage-registry',deployment_input_version:1,deployment_inputs:[{kind:'registry',registry_id:'stage-registry',image:'stage-api',tag:'${EDO_IMAGE_TAG}'}]})
+ const override=utils.stageKubernetesOverride(plan,stage)
+ assert.equal(override.deployment_registry_id,'stage-registry')
+ assert.equal(override.deployment_inputs[0].image,'stage-api')
+ const reopened=utils.effectiveKubernetesPlan(plan,override)
+ assert.equal(reopened.execution_config.deployment_registry_id,'stage-registry')
+ assert.equal(plan.execution_config.deployment_registry_id,'shared-registry')
+ const props=vue.reactive({node:{id:'stage',type:'deploy',name:'部署',config:{deployment_plan_id:'shared',deployment_override:{...override,kubernetes:{replicas:3}}}},plan,disabled:false,buildNodes:[]})
+ const h=componentHarness('../src/components/KubernetesPlanStageFields.vue',{props,codes:['workflow.update','kubernetes.workload.update'],modules:{'@/utils/kubernetesPlanOverride':utils}});t.after(h.stop)
+ h.state.restore();assert.deepEqual(h.events.at(-1).args[0].deployment_override,override)
+})

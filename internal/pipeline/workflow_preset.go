@@ -304,8 +304,9 @@ func buildWorkflowPresetStages(preset workflowPresetDefinition, runtime Workflow
 				}
 				node.Config.DeploymentSource = "inline"
 				node.Config.InlineDeploymentPlan = &model.WorkflowDeploymentPlan{Name: node.Name, Kind: kind, TimeoutSeconds: 600, DeploymentTarget: &model.DeploymentTarget{Platform: platform}}
-				if kind != model.DeploymentPlanKubernetes {
-					node.Config.InlineDeploymentPlan.ExecutionConfig = &model.DeploymentExecutionConfig{DeploymentInputVersion: 1}
+				node.Config.InlineDeploymentPlan.ExecutionConfig = &model.DeploymentExecutionConfig{DeploymentInputVersion: 1}
+				if kind == model.DeploymentPlanKubernetes {
+					node.Config.InlineDeploymentPlan.ExecutionConfig.Kubernetes = model.DefaultKubernetesDeploymentSettings()
 				}
 				if kind == model.DeploymentPlanScript {
 					node.Config.InlineDeploymentPlan.Script = "set -eu\n# 在这里填写部署命令\n"

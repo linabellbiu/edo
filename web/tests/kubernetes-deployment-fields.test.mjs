@@ -29,17 +29,14 @@ test('已停用或不可读的原集群保留禁用名称，无权限不查询�
  h.props.node.config.inline_deployment_plan.kind='script';await settle()
  assert.deepEqual(h.lookups,['groups','hosts'])
 })
-test('上游镜像按UUID绑定，以阶段和任务位置区分近似名称，排除文件构建、未推送和停用方案',async t=>{
+test('显式仓库镜像决定容器补空值，不从前序构建推断部署仓库',async t=>{
  const h=harness();t.after(h.stop);await settle()
- const image=(id,name,patch={})=>({id,name,type:'build',config:{inline_build:{kind:'dockerfile',image_registry_id:'registry',...patch}}})
- h.props.buildNodes=[image('one','构建镜像'),image('two','镜像构建'),image('no-registry','未推送',{image_registry_id:''}),image('inactive','停用',{is_active:false}),image('files','文件构建',{kind:'script'})]
- h.props.buildTaskLabels={one:'构建镜像 · 阶段 1 构建 / 任务 1',two:'镜像构建 · 阶段 1 构建 / 任务 2'}
- assert.deepEqual(h.state.imageBuildOptions.value.map(row=>row.value),['one','two'])
- assert.match(h.state.imageBuildOptions.value[0].label,/阶段 1 构建 \/ 任务 1/)
- assert.match(h.state.imageBuildOptions.value[1].label,/阶段 1 构建 \/ 任务 2/)
- h.props.node.config.inline_deployment_plan.execution_config={artifact_node_id:'no-registry'}
- assert.deepEqual(h.state.imageBuildOptions.value.at(-1),{value:'no-registry',label:'原上游镜像不可用，请重新选择',disabled:true})
- assert.deepEqual(h.events,[])
+ h.props.applicationName='order-api'
+ h.props.node.config.inline_deployment_plan.execution_config={deployment_registry_id:'selected',deployment_input_version:1,deployment_inputs:[{kind:'registry',registry_id:'selected',image:'services/payment-api',tag:'v2'}]}
+ await settle()
+ const plan=h.events.at(-1).args[0].inline_deployment_plan
+ assert.equal(plan.deployment_target.container_name,'payment-api');assert.equal(plan.execution_config.deployment_registry_id,'selected')
+ assert.equal(plan.execution_config.artifact_node_id,undefined)
 })
 test('命名空间与Deployment默认应用名，容器名来自选定镜像；不覆盖手动输入',async t=>{
  const h=harness();t.after(h.stop);await settle()
@@ -61,13 +58,12 @@ test('标准模板使用约定资源，默认端口全部关闭；无RBAC不能�
  assert.equal(h.state.resourceDisabled.value,true);assert.equal(h.state.networkDisabled.value,true)
  h.state.port(0,{enabled:true});assert.deepEqual(h.events,[])
 })
-test('通用方案的构建方案关联回显准确上游，清除同时清掉方案绑定',async t=>{
+test('显式镜像修改不覆盖用户手填的容器名称',async t=>{
  const h=harness();t.after(h.stop);await settle()
- h.props.buildNodes=[{id:'task',name:'上游镜像',type:'build',config:{build_plan_id:'plan'}}]
- h.props.buildPlans=[{id:'plan',kind:'dockerfile',is_active:true,image_registry_id:'registry'}]
- h.props.node.config.inline_deployment_plan.execution_config={artifact_build_plan_id:'plan'}
- assert.equal(h.state.selectedImageBuildID.value,'task')
- h.state.selectImageBuild(undefined)
- const execution=h.events.at(-1).args[0].inline_deployment_plan.execution_config
- assert.equal(execution.artifact_node_id,undefined);assert.equal(execution.artifact_build_plan_id,undefined)
+ h.props.applicationName='orders'
+ h.props.node.config.inline_deployment_plan.deployment_target.container_name='manual-api'
+ h.props.node.config.inline_deployment_plan.execution_config={deployment_registry_id:'selected',deployment_input_version:1,deployment_inputs:[{kind:'registry',registry_id:'selected',image:'api',tag:'v1'}]}
+ await settle()
+ assert.equal(h.props.node.config.inline_deployment_plan.deployment_target.container_name,'manual-api')
+ assert.ok(h.events.every(event=>event.args[0].inline_deployment_plan.deployment_target.container_name==='manual-api'))
 })

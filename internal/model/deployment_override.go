@@ -15,10 +15,13 @@ import (
 // WorkflowDeploymentOverride 只保存当前部署任务的差异，不反向修改通用部署方案。
 // 目标一旦提交即完整替换；Kubernetes 使用 RFC 7396 对象补丁保留显式关闭和清空值。
 type WorkflowDeploymentOverride struct {
-	DeploymentTarget *DeploymentTarget `json:"deployment_target,omitempty"`
-	Kubernetes       json.RawMessage   `json:"kubernetes,omitempty"`
-	TimeoutSeconds   *int              `json:"timeout_seconds,omitempty"`
-	ArtifactNodeID   *string           `json:"artifact_node_id,omitempty"`
+	DeploymentRegistryID   *string            `json:"deployment_registry_id,omitempty"`
+	DeploymentInputVersion *int               `json:"deployment_input_version,omitempty"`
+	DeploymentInputs       *[]DeploymentInput `json:"deployment_inputs,omitempty"`
+	DeploymentTarget       *DeploymentTarget  `json:"deployment_target,omitempty"`
+	Kubernetes             json.RawMessage    `json:"kubernetes,omitempty"`
+	TimeoutSeconds         *int               `json:"timeout_seconds,omitempty"`
+	ArtifactNodeID         *string            `json:"artifact_node_id,omitempty"`
 }
 
 var ErrDeploymentOverride = errors.New("部署阶段覆盖配置无效，请检查部署方案、目标和覆盖参数")
@@ -35,7 +38,7 @@ func HasWorkflowDeploymentOverride(input *WorkflowDeploymentOverride) bool {
 	if input == nil {
 		return false
 	}
-	if input.DeploymentTarget != nil || input.TimeoutSeconds != nil || input.ArtifactNodeID != nil {
+	if input.DeploymentTarget != nil || input.TimeoutSeconds != nil || input.ArtifactNodeID != nil || input.DeploymentRegistryID != nil || input.DeploymentInputVersion != nil || input.DeploymentInputs != nil {
 		return true
 	}
 	if len(input.Kubernetes) == 0 {
@@ -53,6 +56,15 @@ func ValidateWorkflowDeploymentOverride(input *WorkflowDeploymentOverride) error
 		return invalidDeploymentOverride(nil)
 	}
 	if input.ArtifactNodeID != nil && (len(*input.ArtifactNodeID) > 64 || strings.TrimSpace(*input.ArtifactNodeID) != *input.ArtifactNodeID) {
+		return invalidDeploymentOverride(nil)
+	}
+	if input.DeploymentRegistryID != nil && (len(*input.DeploymentRegistryID) > 36 || strings.TrimSpace(*input.DeploymentRegistryID) != *input.DeploymentRegistryID) {
+		return invalidDeploymentOverride(nil)
+	}
+	if input.DeploymentInputVersion != nil && *input.DeploymentInputVersion != 0 && *input.DeploymentInputVersion != 1 {
+		return invalidDeploymentOverride(nil)
+	}
+	if input.DeploymentInputs != nil && len(*input.DeploymentInputs) > 1 {
 		return invalidDeploymentOverride(nil)
 	}
 	if t := input.DeploymentTarget; t != nil {

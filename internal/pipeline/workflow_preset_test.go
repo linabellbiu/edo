@@ -115,6 +115,9 @@ func TestCreateWorkflowTemplateFromPresetCreatesEditableDraft(t *testing.T) {
 	if first.Valid || !hasWorkflowIssue(first.Issues, "missing_image_registry") || !hasWorkflowIssue(first.Issues, "invalid_inline_deployment") {
 		t.Fatalf("未完成资源绑定的模板草稿应返回待配置项: valid=%t issues=%+v", first.Valid, first.Issues)
 	}
+	if config := deployTask.Config.InlineDeploymentPlan.ExecutionConfig; config == nil || config.DeploymentInputVersion != 1 || config.Kubernetes == nil || config.DeploymentRegistryID != "" || len(config.DeploymentInputs) != 0 || config.ArtifactNodeID != "" {
+		t.Fatal("新 Kubernetes 模板应等待用户配置仓库镜像，不自动绑定构建", config)
+	}
 
 	second, err := service.CreateWorkflowTemplateFromPreset(ctx, "admin", "go-kubernetes", "1.26")
 	if err != nil {

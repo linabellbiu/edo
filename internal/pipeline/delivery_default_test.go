@@ -119,7 +119,8 @@ func TestDeliveryWorkflowFourKindsCreateIndependentDrafts(t *testing.T) {
 				if result.Workflow.IsActive || result.Workflow.WorkflowTemplateID != "" || result.Workflow.ApplicationID != app.ID {
 					t.Fatalf("应该创建独立草稿: %+v", result.Workflow)
 				}
-				if kind != model.DeploymentPlanScript && !model.RequiresDeploymentRegistry(kind) && !result.Valid {
+				needsRegistry := kind == model.DeploymentPlanKubernetes || model.RequiresDeploymentRegistry(kind)
+				if kind != model.DeploymentPlanScript && !needsRegistry && !result.Valid {
 					t.Fatalf("创建的流程无效: %+v", result.Issues)
 				}
 				if kind == model.DeploymentPlanScript && result.Valid {
@@ -137,15 +138,21 @@ func TestDeliveryWorkflowFourKindsCreateIndependentDrafts(t *testing.T) {
 					t.Fatalf("应用应拥有独立方案和目标: %+v", plan)
 				}
 				firstPlanID, firstTargetID = plan.ID, plan.DeploymentTargetID
-				if kind == model.DeploymentPlanKubernetes && (plan.ExecutionConfig == nil || plan.ExecutionConfig.Kubernetes == nil || plan.ExecutionConfig.Kubernetes.CPURequest != "200m") {
+				if kind == model.DeploymentPlanKubernetes && (plan.ExecutionConfig == nil || plan.ExecutionConfig.Kubernetes == nil || plan.ExecutionConfig.Kubernetes.CPURequest != "200m" || plan.ExecutionConfig.DeploymentInputVersion != 1) {
 					t.Fatal("从通用默认创建的应用方案丢失了 Kubernetes 执行配置")
 				}
 				if kind != model.DeploymentPlanScript {
-					if model.RequiresDeploymentRegistry(kind) {
+					if needsRegistry {
 						if result.Valid || !hasWorkflowIssue(result.Issues, "missing_deployment_registry") {
 							t.Fatal("未保存部署仓库的生成草稿不应有效")
 						}
-						plan.ExecutionConfig = savedRegistryExecutionForTest(t, service, build.ID)
+						selected := savedRegistryExecutionForTest(t, service, build.ID)
+						if kind == model.DeploymentPlanKubernetes {
+							plan.ExecutionConfig.DeploymentRegistryID = selected.DeploymentRegistryID
+							plan.ExecutionConfig.DeploymentInputs = []model.DeploymentInput{{Kind: "registry", RegistryID: selected.DeploymentRegistryID, Image: "api", Tag: "v1"}}
+						} else {
+							plan.ExecutionConfig = selected
+						}
 						if err := db.Save(plan).Error; err != nil {
 							t.Fatal(err)
 						}

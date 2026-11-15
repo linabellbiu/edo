@@ -29,6 +29,7 @@ export function effectiveKubernetesPlan(base:WorkflowDeploymentPlan,override?:Wo
  plan.deployment_target=clone(override?.deployment_target||base.deployment_target||{platform:'kubernetes',environment_id:''})
  plan.timeout_seconds=override?.timeout_seconds??base.timeout_seconds
  plan.execution_config=clone(base.execution_config||{})
+ for(const key of ['deployment_registry_id','deployment_input_version','deployment_inputs'] as const)if(override?.[key]!==undefined)(plan.execution_config as Record<string,unknown>)[key]=clone(override[key])
  if(override?.kubernetes)plan.execution_config.kubernetes=mergeDeploymentPatch(plan.execution_config.kubernetes,override.kubernetes) as NonNullable<typeof plan.execution_config.kubernetes>
  if(override?.artifact_node_id!==undefined){plan.execution_config.artifact_node_id=override.artifact_node_id||undefined;delete plan.execution_config.artifact_build_plan_id}
  return plan
@@ -40,6 +41,7 @@ function stageTarget(target:WorkflowDeploymentPlan['deployment_target']):Workflo
 export function stageKubernetesOverride(base:WorkflowDeploymentPlan,current:WorkflowDeploymentPlan):WorkflowDeploymentOverride|undefined {
  const result:WorkflowDeploymentOverride={}
  if(current.deployment_target)result.deployment_target=stageTarget(current.deployment_target)
+ for(const key of ['deployment_registry_id','deployment_input_version','deployment_inputs'] as const)if(JSON.stringify(current.execution_config?.[key])!==JSON.stringify(base.execution_config?.[key]))(result as Record<string,unknown>)[key]=clone(current.execution_config?.[key]??(key==='deployment_inputs'?[]:key==='deployment_input_version'?1:''))
  const diff=deploymentDifference(base.execution_config?.kubernetes,current.execution_config?.kubernetes)
  if(Object.keys(diff).length)result.kubernetes=diff
  if(current.timeout_seconds!==base.timeout_seconds)result.timeout_seconds=current.timeout_seconds

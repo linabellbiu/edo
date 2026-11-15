@@ -99,8 +99,8 @@ test('无上游构建也能选择仓库及镜像 Tag，撤权后不能修改',as
  await h.state.setDeploymentRegistry('registry')
  h.state.update(0,{image:'app',tag:'v1'})
  assert.deepEqual(h.props.config.deployment_inputs,[{kind:'registry',registry_id:'registry',image:'app',tag:'v1'}])
- h.auth.user.permissions=[];await settle();const count=h.events.length
- await h.state.setDeploymentRegistry('forbidden');assert.equal(h.events.length,count)
+ h.auth.user.permissions=['workflow.update'];await settle();const count=h.events.length
+ await h.state.setDeploymentRegistry('forbidden');await h.state.chooseImage(0,'forbidden');h.state.update(0,{tag:'forbidden'});assert.equal(h.events.length,count)
 })
 
 test('部署仓库必须由用户选择，保存往返不随上游变化；只读配置不补写',async t=>{
@@ -132,4 +132,34 @@ test('仓库不可用或没有仓库权限时不预填；显式已存选择不�
  assert.equal(h.state.deploymentRegistry.value,'saved');assert.deepEqual(h.events,[])
  h.auth.user.permissions=['workflow.update'];h.props.config={};await settle()
  assert.equal(h.props.config.deployment_registry_id,undefined);assert.deepEqual(h.events,[])
+})
+
+test('Kubernetes 直接保存仓库镜像和 Tag，不读取配置文件或依赖上游构建',async t=>{
+ const h=await harness(path=>({data:path==='/image-registries'?{image_registries:[{id:'registry',name:'部署仓库',is_active:true,project_id:'project'},{id:'other',name:'另一仓库',is_active:true,project_id:'project'}]}:path.includes('/deployment-options')?{options:['api']}:{variables:[]}}));t.after(h.stop)
+ h.props.deploymentPlan={kind:'kubernetes'};h.props.buildNodes=[];await settle()
+ const reads=h.requests.length
+ await h.state.setDeploymentRegistry('registry')
+ assert.equal(h.state.kubernetesImage.value,true)
+ h.props.config.artifact_node_id='legacy-build'
+ assert.equal(h.props.config.deployment_registry_id,'registry')
+ assert.deepEqual(h.props.config.deployment_inputs,[{kind:'registry',registry_id:'registry',image:'',tag:'${EDO_IMAGE_TAG}'}])
+ await h.state.chooseImage(0,'api')
+ assert.equal(h.props.config.deployment_inputs[0].tag,'${EDO_IMAGE_TAG}')
+ h.state.update(0,{tag:'release-2'})
+ assert.equal(h.props.config.deployment_inputs[0].tag,'release-2')
+ assert.equal(h.props.config.artifact_node_id,undefined)
+ assert.ok(h.requests.slice(reads).every(row=>!row.path.includes('build-plans')&&!row.path.includes('delivery-variables')))
+ h.props.config.deployment_inputs[0].image='api';await h.state.setDeploymentRegistry('other')
+ assert.equal(h.props.config.deployment_inputs[0].image,'')
+ h.auth.user.permissions=['workflow.update'];await settle();const count=h.events.length
+ await h.state.setDeploymentRegistry('forbidden');await h.state.chooseImage(0,'forbidden');h.state.update(0,{tag:'forbidden'});assert.equal(h.events.length,count)
+})
+
+test('Kubernetes 已保存仓库缺少镜像行时，用户输入会生成准确来源；未知仓库不提交',async t=>{
+ const h=await harness(path=>({data:path==='/image-registries'?{image_registries:[{id:'registry',name:'部署仓库',is_active:true,project_id:'project'}]}:{variables:[]}}));t.after(h.stop)
+ h.props.deploymentPlan={kind:'kubernetes'};h.props.config={deployment_registry_id:'registry'};await settle()
+ assert.deepEqual(h.events,[])
+ await h.state.chooseImage(-1,'api')
+ assert.deepEqual(h.props.config.deployment_inputs,[{kind:'registry',registry_id:'registry',image:'api',tag:'${EDO_IMAGE_TAG}'}])
+ const count=h.events.length;await h.state.setDeploymentRegistry('unknown');assert.equal(h.events.length,count)
 })

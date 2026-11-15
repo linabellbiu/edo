@@ -616,3 +616,11 @@ test('通用K8s方案保留关联，切换自定义及不同方案分别恢复�
  h.state.unlockDeploymentPlanSelection();h.state.changeLibraryDeploymentPlan('one');assert.equal(h.state.selectedNode.value.config.deployment_override.kubernetes.replicas,2)
  assert.equal(h.state.deploymentPlans.value[0].execution_config.kubernetes.replicas,1)
 })
+
+test('Kubernetes仓库部署无前序构建也可选择通用方案和配置集群',t=>{
+ const h=harness(t,{active:true,permissions:['workflow.read','workflow.update','deployment_plan.read']})
+ h.state.deploymentPlans.value=[{id:'registry-plan',name:'仓库镜像方案',kind:'kubernetes',is_active:true,timeout_seconds:600,execution_config:{deployment_registry_id:'registry',deployment_input_version:1,deployment_inputs:[{kind:'registry',registry_id:'registry',image:'api',tag:'v1'}]}}]
+ h.state.stages.value=[{id:'deploy-stage',name:'部署',tasks:[{id:'deploy',name:'部署',type:'deploy',config:{}}]}]
+ assert.ok(h.state.deploymentPlanOptions('deploy').some(option=>option.value==='registry-plan'&&!option.disabled))
+ assert.ok(h.state.inlineDeploymentKinds('deploy').includes('kubernetes'))
+})

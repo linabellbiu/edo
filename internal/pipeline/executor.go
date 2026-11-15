@@ -92,7 +92,7 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 			return nil
 		}
 		return s.failDeploymentExecution(ctx, taskFailureState(payload.PipelineRunID, jobID, payload.WorkflowNodeID, model.PipelineRunRunning),
-			"流水线执行配置不完整，请检查任务、构建方案和部署方案", err)
+			deploymentLoadFailureMessage(err), err)
 	}
 	ctx = withPipelineNodeLog(ctx, prepared.node.ID, prepared.node.Name)
 	ctx = withExecutionDiagnosticRedactions(ctx, func() []string { return composeExecutionLogRedactions(prepared) })
@@ -237,6 +237,24 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 			deploymentFailureLogMessage(record, "发布执行失败，请检查目标环境和发布记录"), err)
 	}
 	return s.completeExecution(ctx, prepared, record)
+}
+
+// 只按业务错误身份给出安全提示，基础设施诊断继续由日志记录。
+func deploymentLoadFailureMessage(err error) string {
+	switch {
+	case errors.Is(err, ErrKubernetesRegistryTag):
+		return ErrKubernetesRegistryTag.Error()
+	case errors.Is(err, cicd.ErrExecutionAuthorization):
+		return "部署执行授权已失效，请检查当前项目的流水线、镜像仓库及变量使用权限"
+	case errors.Is(err, ErrDeploymentRegistryRequired):
+		return ErrDeploymentRegistryRequired.Error()
+	case errors.Is(err, ErrDeploymentRegistryUnavailable):
+		return ErrDeploymentRegistryUnavailable.Error()
+	case errors.Is(err, ErrDeploymentInputs):
+		return ErrDeploymentInputs.Error()
+	default:
+		return ErrPipelineExecutionConfig.Error()
+	}
 }
 
 func (s *Service) resolveDeploymentImage(ctx context.Context, prepared *executionContext) (string, string, error) {
@@ -435,7 +453,13 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 	if err := s.db.WithContext(ctx).First(&result.component, "pipeline_run_id = ?", run.ID).Error; err != nil {
 		return nil, err
 	}
-	if snapshot.ExplicitDeploymentRegistries && model.RequiresDeploymentRegistry(result.deploymentPlan.Kind) {
+	if result.deploymentPlan.Kind == model.DeploymentPlanKubernetes && model.UsesRegistryDeploymentImage(result.node.Config) {
+		if err := s.loadKubernetesRegistryImage(ctx, result); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+	if snapshot.ExplicitDeploymentRegistries && model.RequiresDeploymentRegistryForConfig(result.deploymentPlan.Kind, result.node.Config) {
 		if err := s.freezeSavedDeploymentRegistry(ctx, s.db, &result.node, result.deploymentPlan.Kind, snapshot.AuthorityID); err != nil {
 			return nil, err
 		}

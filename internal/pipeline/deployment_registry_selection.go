@@ -10,13 +10,13 @@ import (
 )
 
 var (
-	ErrDeploymentRegistryRequired    = errors.New("Docker 和 docker compose 部署必须选择并保存镜像仓库")
+	ErrDeploymentRegistryRequired    = errors.New("当前部署需要选择并保存镜像仓库")
 	ErrDeploymentRegistryUnavailable = errors.New("已保存的部署镜像仓库不可用，请重新选择并保存")
 )
 
 // 新运行只接受方案中已保存的选择，不从上游构建或制品补全仓库。
 func (s *Service) freezeSavedDeploymentRegistry(ctx context.Context, db *gorm.DB, node *model.WorkflowNode, kind model.DeploymentPlanKind, actorID string) error {
-	if !model.RequiresDeploymentRegistry(kind) {
+	if !model.RequiresDeploymentRegistryForConfig(kind, node.Config) {
 		return nil
 	}
 	id := model.SavedDeploymentRegistryID(node.Config)
