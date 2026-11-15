@@ -5,7 +5,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, t
 import { message, Modal } from 'ant-design-vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import {
-  Bell, CheckCircle2, ChevronLeft, CircleDot, GitBranch, GripVertical, Layers3,
+  Bell, CheckCircle2, ChevronLeft, CircleDot, GitBranch, GripVertical, Layers3, LibraryBig,
   Maximize2, Minimize2, Package, Pencil, Plus, Rocket, Save, Scan, Search,
   ShieldCheck, TerminalSquare, Trash2, X,
 } from 'lucide-vue-next'
@@ -1738,7 +1738,7 @@ onBeforeRouteLeave(async () => {
           <header>
             <div><small>{{ selectedNode.type === 'trigger' ? '代码源' : '流水线任务' }}</small><strong>{{ selectedNode.type === 'trigger' ? '编辑代码源' : '编辑任务' }}</strong></div>
             <div class="panel-header-actions">
-              <a-button v-if="selectedTask" type="text" @click="openTaskLibrary(selectedStage?.id)">任务库</a-button>
+              <a-button v-if="selectedTask" class="task-library-entry" @click="openTaskLibrary(selectedStage?.id)"><LibraryBig :size="15" aria-hidden="true" />任务库</a-button>
               <a-button v-if="canUpdate && selectedNode.type !== 'trigger'" type="text" danger @click="removeTask(selectedNode.id)"><Trash2 :size="15" /></a-button>
               <a-button type="text" aria-label="关闭任务配置" @click="closePanel"><X :size="17" /></a-button>
             </div>
@@ -2093,6 +2093,7 @@ onBeforeRouteLeave(async () => {
 .pipeline-side-panel > header small, .pipeline-side-panel > header strong { display: block; }
 .pipeline-side-panel > header small { margin-bottom: 2px; color: var(--edo-muted); font-size: 10px; }
 .panel-header-actions { display: flex; align-items: center; }
+.task-library-entry { margin-right: 6px; }
 .pipeline-side-panel > :deep(.ant-input-affix-wrapper) { width: calc(100% - 32px); margin: 0 16px; }
 .task-category-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 16px 2px; }
 .task-category-tabs button { padding: 4px 10px; border: 1px solid transparent; border-radius: 5px; color: var(--edo-muted); background: var(--edo-surface-soft); cursor: pointer; }
