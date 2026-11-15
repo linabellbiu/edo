@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import client from '@/api/client'
+import KubernetesDeploymentTemplateFields from '@/components/KubernetesDeploymentTemplateFields.vue'
 import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vue'
 import { deploymentExecution } from '@/utils/deploymentExecution'
 import { apiErrorMessage } from '@/api/resources'
@@ -30,7 +31,7 @@ watch(() => [props.plan.id, target.value?.environment_id, auth.user?.id, auth.us
   controller?.abort(); controller = new AbortController()
   const { signal } = controller, project = auth.user?.project_id
   environmentName.value = ''; environmentHosts.value=[]; environmentError.value = ''; loading.value = false
-  if (!project || !canReadEnvironment.value || localStorage.getItem('edo.project') !== project) return
+  if (props.plan.kind==='kubernetes' || !project || !canReadEnvironment.value || localStorage.getItem('edo.project') !== project) return
   loading.value = true
   try {
     const [groups,hosts] = await Promise.all([client.get<{environments:Array<{id:string;name:string}>}>('/environments',{signal}),client.get<{hosts:Array<{id:string;name:string}>}>('/hosts',{signal})])
@@ -52,7 +53,7 @@ onBeforeUnmount(() => controller?.abort())
     <a-alert v-if="environmentError" type="warning" show-icon :message="environmentError" />
     <div ref="registryHost"/>
     <div class="reference-grid">
-      <a-form-item label="执行主机组"><a-input :value="environmentLabel" disabled /></a-form-item>
+      <a-form-item v-if="plan.kind!=='kubernetes'" label="执行主机组"><a-input :value="environmentLabel" disabled /></a-form-item>
       <a-form-item v-if="plan.kind!=='kubernetes'&&selectedHostNames" label="执行主机"><a-input :value="selectedHostNames" disabled /></a-form-item>
       <a-form-item v-if="plan.kind === 'script' && target?.working_directory" label="工作目录"><a-input :value="target.working_directory" disabled /></a-form-item>
     </div>
@@ -66,6 +67,7 @@ onBeforeUnmount(() => controller?.abort())
       <a-form-item label="命名空间"><a-input :value="target?.namespace" disabled /></a-form-item>
       <a-form-item label="Deployment"><a-input :value="target?.workload_name" disabled /></a-form-item>
       <a-form-item label="容器"><a-input :value="target?.container_name" disabled /></a-form-item>
+      <KubernetesDeploymentTemplateFields :model-value="execution.kubernetes" disabled/>
     </template>
     <template v-else-if="plan.kind === 'docker'">
       <a-form-item label="容器名称"><a-input :value="target?.workload_name || plan.service_name" placeholder="自动生成" disabled /></a-form-item>

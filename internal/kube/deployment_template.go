@@ -164,8 +164,16 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 		}
 	}
 	container := corev1.Container{Name: t.ContainerName, Image: record.Image, Ports: ports, Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cfg.CPURequest), corev1.ResourceMemory: resource.MustParse(cfg.MemoryRequest)}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cfg.CPULimit), corev1.ResourceMemory: resource.MustParse(cfg.MemoryLimit)}}}
+	container.Command = append([]string(nil), cfg.Command...)
+	container.Args = append([]string(nil), cfg.Args...)
+	container.WorkingDir = cfg.WorkingDir
+	container.ImagePullPolicy = corev1.PullPolicy(cfg.ImagePullPolicy)
+	container.ReadinessProbe = kubernetesTemplateProbe(cfg.ReadinessProbe)
+	container.LivenessProbe = kubernetesTemplateProbe(cfg.LivenessProbe)
+	container.StartupProbe = kubernetesTemplateProbe(cfg.StartupProbe)
 	off := false
 	workload := &appsv1.Deployment{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}, ObjectMeta: metadata, Spec: appsv1.DeploymentSpec{Replicas: &cfg.Replicas, Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{"edo.io/deployment-id": record.ID}}, Spec: corev1.PodSpec{AutomountServiceAccountToken: &off, Containers: []corev1.Container{container}}}}}
+	workload.Spec.Template.Spec.TerminationGracePeriodSeconds = cfg.TerminationGracePeriodSeconds
 	var secret map[string]any
 	if len(registryJSON) > 0 {
 		name := t.WorkloadName
@@ -206,6 +214,28 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 		workload.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: name}}
 	}
 	desired := templateObject(workload)
+	// 可选配置恢复默认时，MergePatch 必须显式清除上一次模板写入的值。
+	desired["spec"].(map[string]any)["strategy"] = nil
+	if cfg.TerminationGracePeriodSeconds == nil {
+		desired["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["terminationGracePeriodSeconds"] = nil
+	}
+	if cfg.Strategy != "" || cfg.MaxSurge != "" || cfg.MaxUnavailable != "" {
+		strategy := map[string]any{"type": cfg.Strategy}
+		if cfg.Strategy == "Recreate" {
+			strategy["rollingUpdate"] = nil
+		} else {
+			strategy["type"] = "RollingUpdate"
+			rolling := map[string]any{"maxSurge": nil, "maxUnavailable": nil}
+			if cfg.MaxSurge != "" {
+				rolling["maxSurge"] = kubernetesTemplateRolloutValue(cfg.MaxSurge)
+			}
+			if cfg.MaxUnavailable != "" {
+				rolling["maxUnavailable"] = kubernetesTemplateRolloutValue(cfg.MaxUnavailable)
+			}
+			strategy["rollingUpdate"] = rolling
+		}
+		desired["spec"].(map[string]any)["strategy"] = strategy
+	}
 	bindTemplateIdentity(desired, state.deployment)
 	var service map[string]any
 	if len(servicePorts) > 0 {
@@ -228,6 +258,17 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 			}
 		}
 		service = templateObject(svc)
+		// 重新开启服务时清除停用选择器，避免 MergePatch 残留条件导致没有后端。
+		if state.service != nil {
+			selector := service["spec"].(map[string]any)["selector"].(map[string]any)
+			if existing, ok := state.service["spec"].(map[string]any)["selector"].(map[string]any); ok {
+				for key := range existing {
+					if _, present := selector[key]; !present {
+						selector[key] = nil
+					}
+				}
+			}
+		}
 		bindTemplateIdentity(service, state.service)
 	} else if state.service != nil {
 		// 关闭全部端口时断开已有 Service 的选择器，保留资源及其身份供后续重新开启。
@@ -317,4 +358,24 @@ func RegistryPullConfig(server, username, password string) []byte {
 	}
 	value, _ := json.Marshal(map[string]any{"auths": map[string]any{server: map[string]string{"username": username, "password": password, "auth": base64.StdEncoding.EncodeToString([]byte(username + ":" + password))}}})
 	return value
+}
+
+func kubernetesTemplateProbe(value *model.KubernetesDeploymentProbe) *corev1.Probe {
+	if value == nil {
+		return nil
+	}
+	probe := &corev1.Probe{InitialDelaySeconds: value.InitialDelaySeconds, PeriodSeconds: value.PeriodSeconds, TimeoutSeconds: value.TimeoutSeconds, FailureThreshold: value.FailureThreshold}
+	if value.Kind == "tcp" {
+		probe.TCPSocket = &corev1.TCPSocketAction{Port: intstr.FromInt32(value.Port)}
+	} else {
+		probe.HTTPGet = &corev1.HTTPGetAction{Port: intstr.FromInt32(value.Port), Path: value.Path, Scheme: corev1.URIScheme(value.Scheme)}
+	}
+	return probe
+}
+func kubernetesTemplateRolloutValue(value string) any {
+	parsed := intstr.Parse(value)
+	if parsed.Type == intstr.Int {
+		return int64(parsed.IntVal)
+	}
+	return parsed.StrVal
 }

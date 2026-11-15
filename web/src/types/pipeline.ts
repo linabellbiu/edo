@@ -28,11 +28,22 @@ export interface DeploymentInput {
  tag?:string
 }
 
+export interface KubernetesDeploymentProbe {kind:'http'|'tcp';port:number;path?:string;scheme?:''|'HTTP'|'HTTPS';initial_delay_seconds?:number;period_seconds?:number;timeout_seconds?:number;failure_threshold?:number}
+
 export interface KubernetesDeploymentSettings {
+ command?:string[];args?:string[];working_dir?:string;image_pull_policy?:''|'Always'|'IfNotPresent'|'Never';termination_grace_period_seconds?:number;strategy?:''|'RollingUpdate'|'Recreate';max_surge?:string;max_unavailable?:string;readiness_probe?:KubernetesDeploymentProbe;liveness_probe?:KubernetesDeploymentProbe;startup_probe?:KubernetesDeploymentProbe
  template:'web';replicas:number;cpu_request:string;memory_request:string;cpu_limit:string;memory_limit:string;node_port:boolean;ports:Array<{name:'http'|'tcp';enabled:boolean;port:number;target_port:number;node_port?:number}>
 }
 
+export interface WorkflowDeploymentOverride {
+ deployment_target?:NonNullable<WorkflowDeploymentPlan['deployment_target']>
+ kubernetes?:Record<string,unknown>
+ timeout_seconds?:number
+ artifact_node_id?:string
+}
+
 export interface WorkflowNodeConfig {
+ deployment_override?:WorkflowDeploymentOverride
  kubernetes?:KubernetesDeploymentSettings
  // 仅保留历史任务关联，新运行不读取。
  image_build_node_id?: string

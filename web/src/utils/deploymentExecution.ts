@@ -2,7 +2,7 @@ import type { DeploymentExecutionConfig, WorkflowNodeConfig, WorkflowNode } from
 
 export const deploymentExecutionKeys = ['deployment_registry_id', 'deployment_input_version', 'deployment_inputs', 'deployment_script', 'deployment_tag_reference',
   'configuration_files', 'deployment_parameters', 'environment_variables', 'variable_names', 'artifact_node_id', 'artifact_build_plan_id',
-  'artifact_node_ids', 'compose_images', 'compose'] as const
+  'artifact_node_ids', 'compose_images', 'compose', 'kubernetes'] as const
 
 export function deploymentExecution(config: WorkflowNodeConfig, builds: WorkflowNode[] = []): DeploymentExecutionConfig {
   const result: DeploymentExecutionConfig = JSON.parse(JSON.stringify(Object.fromEntries(deploymentExecutionKeys.filter(key => config[key] !== undefined).map(key => [key, config[key]]))))

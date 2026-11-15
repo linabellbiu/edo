@@ -137,6 +137,9 @@ func TestDeliveryWorkflowFourKindsCreateIndependentDrafts(t *testing.T) {
 					t.Fatalf("应用应拥有独立方案和目标: %+v", plan)
 				}
 				firstPlanID, firstTargetID = plan.ID, plan.DeploymentTargetID
+				if kind == model.DeploymentPlanKubernetes && (plan.ExecutionConfig == nil || plan.ExecutionConfig.Kubernetes == nil || plan.ExecutionConfig.Kubernetes.CPURequest != "200m") {
+					t.Fatal("从通用默认创建的应用方案丢失了 Kubernetes 执行配置")
+				}
 				if kind != model.DeploymentPlanScript {
 					if model.RequiresDeploymentRegistry(kind) {
 						if result.Valid || !hasWorkflowIssue(result.Issues, "missing_deployment_registry") {

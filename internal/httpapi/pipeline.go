@@ -790,6 +790,8 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusBadGateway, "image_registry_connection_failed", pipeline.ErrRegistryConnectionFailed.Error())
 	case errors.Is(err, pipeline.ErrKubernetesTemplatePermission):
 		writeError(c, http.StatusForbidden, "kubernetes_template_permission_denied", pipeline.ErrKubernetesTemplatePermission.Error())
+	case errors.Is(err, model.ErrDeploymentOverride):
+		writeError(c, http.StatusBadRequest, "invalid_deployment_override", model.ErrDeploymentOverride.Error())
 	case errors.Is(err, model.ErrKubernetesDeploymentSettings):
 		writeError(c, http.StatusBadRequest, "invalid_kubernetes_template", model.ErrKubernetesDeploymentSettings.Error())
 	case errors.Is(err, kube.ErrDeploymentTemplateConflict):

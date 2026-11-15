@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import Sortable from 'sortablejs'
-import {defaultKubernetesDeployment,kubernetesResourceName} from '@/utils/kubernetesDeployment'
+import {defaultKubernetesDeployment,kubernetesResourceName,kubernetesDeploymentRuntimeError} from '@/utils/kubernetesDeployment'
 import { v4 as uuidv4 } from 'uuid'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type ComponentPublicInstance } from 'vue'
 import { message, Modal } from 'ant-design-vue'
@@ -18,6 +18,8 @@ import { dockerTargetError, dockerBuildPlatformError } from '@/utils/buildTarget
 import BuildPlanAdvancedFields from '@/components/BuildPlanAdvancedFields.vue'
 import PipelineBuildFields from '@/components/PipelineBuildFields.vue'
 import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
+import {effectiveKubernetesPlan} from '@/utils/kubernetesPlanOverride'
+import KubernetesPlanStageFields from '@/components/KubernetesPlanStageFields.vue'
 import PipelineDeployFields from '@/components/PipelineDeployFields.vue'
 import DeploymentPlanView from '@/views/DeploymentPlanView.vue'
 import DeploymentPlanReferencePreview from '@/components/DeploymentPlanReferencePreview.vue'
@@ -38,6 +40,7 @@ import type {
   WorkflowCatalogEntry,
   WorkflowTemplateResponse,
   WorkflowDeploymentPlan,
+ WorkflowDeploymentOverride,
 } from '@/types/pipeline'
 
 type TaskNodeType = 'build' | 'shell' | 'approval' | 'manual' | 'deploy'
@@ -137,6 +140,7 @@ const deploymentPlans = ref<DeploymentPlan[]>([])
 const inlineDeploymentOpen=ref(false),inlineDeploymentNodeID=ref('')
 const inlineDeploymentDrafts=new Map<string,WorkflowDeploymentPlan>()
 const libraryDeploymentDrafts=new Map<string,string>()
+const libraryDeploymentOverrides=new Map<string,WorkflowDeploymentOverride|undefined>()
 const changingDeploymentPlanNodeID=ref('')
 const notificationChannels = ref<NotificationChannel[]>([])
 const builtinVariables = ref<BuiltinVariableDefinition[]>([])
@@ -275,7 +279,7 @@ const buildPlanOptions = computed(() => activeBuildPlans.value.map(item => ({
   detail: `制品类型：${item.kind === 'dockerfile' ? 'OCI 镜像' : '文件制品'}`,
 })))
 const activeDeploymentPlans = computed(() => deploymentPlans.value.filter(item =>
-  item.is_active && (!applicationID.value || Boolean(item.deployment_target_id || item.deployment_target?.id)) && item.deployment_target?.is_active !== false))
+  item.is_active && (item.kind==='kubernetes'||!applicationID.value || Boolean(item.deployment_target_id || item.deployment_target?.id)) && item.deployment_target?.is_active !== false))
 const activeNotificationChannels = computed(() => notificationChannels.value.filter(item => item.is_active))
 const notificationTemplateVariables = computed(() => builtinVariables.value
   .filter(item => item.kind === 'template' && item.scopes.includes('notification_template'))
@@ -423,7 +427,7 @@ function cloneWorkflowValue<T>(value: T): T {
 
 function loadGraph(value: Workflow, loadedIssues: WorkflowIssue[], scope = captureScope()) {
   if (!currentScope(scope)) return
-  inlineDeploymentDrafts.clear();libraryDeploymentDrafts.clear();changingDeploymentPlanNodeID.value=''
+  inlineDeploymentDrafts.clear();libraryDeploymentDrafts.clear();libraryDeploymentOverrides.clear();changingDeploymentPlanNodeID.value=''
   inlineBuildDrafts.clear();libraryBuildDrafts.clear();buildSourceDrafts.clear();changingBuildPlanNodeID.value='';Object.keys(buildFieldErrors).forEach(key=>delete buildFieldErrors[key])
   loadedContext.value = scope.identity
   workflow.value = value
@@ -658,6 +662,13 @@ function firstEnvironmentVariableError() {
     const plan = task.config.inline_build || buildPlans.value.find(plan => plan.id === task.config.build_plan_id)
     const targetError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerTargetError(task.config.target_stage ?? plan.target_stage) : ''
     const platformError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerBuildPlatformError(task.config.build_platform || plan.platform) : ''
+    if(task.type==='deploy'){
+ const base=deploymentPlans.value.find(plan=>plan.id===task.config.deployment_plan_id)
+ const deployment=task.config.inline_deployment_plan||(base?.kind==='kubernetes'?effectiveKubernetesPlan(base,task.config.deployment_override):undefined)
+ const cfg=deployment?.execution_config?.kubernetes
+ const runtimeError=cfg?kubernetesDeploymentRuntimeError(cfg):''
+ if(runtimeError)return {task,error:runtimeError,tab:'common' as const}
+ }
     const error = targetError || platformError || environmentVariableErrors[task.id] || buildFieldErrors[task.id]
     if (error) return { task, error, tab: targetError || platformError || !buildFieldErrors[task.id] ? 'advanced' as const : 'common' as const }
   }
@@ -1215,6 +1226,7 @@ function compatibleDeploymentPlans(taskID: string) {
   return activeDeploymentPlans.value.filter(item => item.kind !== 'kubernetes' || deploymentPlanAcceptsBuild(item, buildPlan))
 }
 
+
 function formatEnvironmentVariables(value?: Record<string, string>) {
   return Object.entries(value || {}).map(([key, item]) => `${key}=${item}`).join('\n')
 }
@@ -1296,9 +1308,10 @@ function changeDeploymentSource(value:'inline'|'plan'){
   if(!node||node.type!=='deploy'||!canEdit.value)return
   if(deploymentSource(node)===value)return
   if(node.config.inline_deployment_plan)inlineDeploymentDrafts.set(node.id,JSON.parse(JSON.stringify(node.config.inline_deployment_plan)))
-  if(node.config.deployment_plan_id)libraryDeploymentDrafts.set(node.id,node.config.deployment_plan_id)
+  if(value==='inline'&&!inlineDeploymentDrafts.has(node.id)&&selectedLibraryDeploymentPlan.value){const base=selectedLibraryDeploymentPlan.value;inlineDeploymentDrafts.set(node.id,JSON.parse(JSON.stringify(base.kind==='kubernetes'?effectiveKubernetesPlan(base,node.config.deployment_override):base)))}
+  if(node.config.deployment_plan_id){libraryDeploymentDrafts.set(node.id,node.config.deployment_plan_id);libraryDeploymentOverrides.set(node.id+'/'+node.config.deployment_plan_id,node.config.deployment_override?JSON.parse(JSON.stringify(node.config.deployment_override)):undefined)}
   changingDeploymentPlanNodeID.value=''
-  updateSelectedNode({}, {deployment_source:value,deployment_plan_id:value==='plan'?libraryDeploymentDrafts.get(node.id):undefined,inline_deployment_plan:value==='inline'?inlineDeploymentDrafts.get(node.id):undefined})
+  updateSelectedNode({}, {deployment_source:value,deployment_plan_id:value==='plan'?libraryDeploymentDrafts.get(node.id):undefined,deployment_override:value==='plan'?libraryDeploymentOverrides.get(node.id+'/'+libraryDeploymentDrafts.get(node.id)):undefined,inline_deployment_plan:value==='inline'?inlineDeploymentDrafts.get(node.id):undefined})
 }
 function changeLibraryDeploymentPlan(value:string){
   const node=selectedNode.value
@@ -1307,8 +1320,9 @@ function changeLibraryDeploymentPlan(value:string){
   if(node.config.deployment_plan_id&&changingDeploymentPlanNodeID.value!==node.id)return
   const plan=activeDeploymentPlans.value.find(plan=>plan.id===value)
   if(!plan||!compatibleDeploymentPlans(node.id).some(item=>item.id===value))return
+  if(node.config.deployment_plan_id)libraryDeploymentOverrides.set(node.id+'/'+node.config.deployment_plan_id,node.config.deployment_override?JSON.parse(JSON.stringify(node.config.deployment_override)):undefined)
   libraryDeploymentDrafts.set(node.id,value);changingDeploymentPlanNodeID.value=''
-  updateSelectedNode({}, {deployment_source:'plan',inline_deployment_plan:undefined,deployment_plan_id:value})
+  updateSelectedNode({}, {deployment_source:'plan',inline_deployment_plan:undefined,deployment_plan_id:value,deployment_override:libraryDeploymentOverrides.get(node.id+'/'+value)})
 }
 function unlockDeploymentPlanSelection(){if(canEdit.value&&canReadDeploymentPlan.value&&selectedNode.value?.type==='deploy')changingDeploymentPlanNodeID.value=selectedNode.value.id}
 function modifyLinkedDeploymentPlan(){
@@ -1326,10 +1340,10 @@ const inlineDeploymentValue = computed(()=>{
 })
 function applyInlineDeployment(value:WorkflowDeploymentPlan){
   if(!canEdit.value||selectedNode.value?.id!==inlineDeploymentNodeID.value)return
-  updateSelectedNode({}, {...clearTaskDeploymentExecution(),deployment_source:'inline',deployment_plan_id:undefined,inline_deployment_plan:value})
+  updateSelectedNode({}, {...clearTaskDeploymentExecution(),deployment_source:'inline',deployment_plan_id:undefined,deployment_override:undefined,inline_deployment_plan:value})
 }
 watch(()=>[selectedNodeID.value,scopeIdentity(),canEdit.value],()=>{inlineDeploymentOpen.value=false;inlineDeploymentNodeID.value='';changingDeploymentPlanNodeID.value=''})
-watch(scopeIdentity,()=>{inlineDeploymentDrafts.clear();libraryDeploymentDrafts.clear()})
+watch(scopeIdentity,()=>{inlineDeploymentDrafts.clear();libraryDeploymentDrafts.clear();libraryDeploymentOverrides.clear()})
 
 function resourceViewHref(path: string, queryKey: string, id: string) {
   return router.resolve({ path, query: { [queryKey]: id } }).href
@@ -1828,14 +1842,18 @@ onBeforeRouteLeave(async () => {
 
             <template v-else-if="selectedNode.type === 'deploy'">
               <h3 class="task-section-heading"><Layers3 :size="15" aria-hidden="true" />任务信息</h3>
+              <a-form-item label="配置来源"><a-radio-group :value="deploymentSource(selectedNode)" :disabled="!canEdit" :options="[{value:'inline',label:'自定义方案'},{value:'plan',label:'选择部署方案'}]" @update:value="changeDeploymentSource($event)"/></a-form-item>
+              <a-form-item v-if="deploymentSource(selectedNode)==='plan'"><template #label><span class="linked-deployment-label">部署方案<a-button v-if="selectedNode.config.deployment_plan_id" type="link" size="small" :disabled="!canEdit||!canReadDeploymentPlan" @click="unlockDeploymentPlanSelection">更换方案</a-button><a-button v-if="canCreateDeploymentPlan" type="link" size="small" :disabled="!canEdit" @click="createDeploymentPlan">新建方案</a-button><a v-if="canModifyDeploymentPlan" :href="'/deployment-plans?plan='+encodeURIComponent(selectedLibraryDeploymentPlan?.id||'')+'&amp;edit=1'" aria-label="修改通用部署方案" @click.prevent="modifyLinkedDeploymentPlan">修改方案</a></span></template><a-select :value="selectedNode.config.deployment_plan_id||undefined" :options="deploymentPlanOptions(selectedNode.id)" show-search option-filter-prop="label" :disabled="!canEdit||!canReadDeploymentPlan||Boolean(selectedNode.config.deployment_plan_id&&changingDeploymentPlanNodeID!==selectedNode.id)" placeholder="选择通用部署方案" @update:value="changeLibraryDeploymentPlan(String($event))"/></a-form-item>
+
               <PipelineDeployFields v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
               <template v-else-if="selectedNode.config.inline_deployment_plan">
                 <a-form-item><template #label><span class="linked-deployment-label">原部署配置<a-button type="link" size="small" :disabled="!canUpdate" @click="editInlineDeployment">修改</a-button></span></template><span>{{selectedNode.config.inline_deployment_plan.name}}</span></a-form-item>
                 <DeploymentPlanReferencePreview :plan="{...selectedNode.config.inline_deployment_plan,id:'inline'}" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
-              <template v-else>
-                <a-form-item><template #label><span class="linked-deployment-label">原部署配置<a v-if="canModifyDeploymentPlan" :href="'/deployment-plans?plan='+encodeURIComponent(selectedLibraryDeploymentPlan?.id||'')+'&amp;edit=1'" aria-label="修改原部署配置" @click.prevent="modifyLinkedDeploymentPlan">修改</a></span></template><a-input :value="selectedLibraryDeploymentPlan?.name||'原部署方案不可用'" disabled/></a-form-item>
-                <DeploymentPlanReferencePreview v-if="selectedLibraryDeploymentPlan" :plan="selectedLibraryDeploymentPlan" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
+              <template v-else-if="selectedNode.config.deployment_plan_id">
+                <p v-if="!selectedLibraryDeploymentPlan" class="field-error" role="alert">原部署方案不可用</p>
+                <KubernetesPlanStageFields v-if="selectedLibraryDeploymentPlan?.kind==='kubernetes'" :node="selectedNode" :plan="selectedLibraryDeploymentPlan" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
+                <DeploymentPlanReferencePreview v-else-if="selectedLibraryDeploymentPlan" :plan="selectedLibraryDeploymentPlan" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
             </template>
           </a-form>

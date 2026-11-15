@@ -61,3 +61,13 @@ test('标准模板使用约定资源，默认端口全部关闭；无RBAC不能�
  assert.equal(h.state.resourceDisabled.value,true);assert.equal(h.state.networkDisabled.value,true)
  h.state.port(0,{enabled:true});assert.deepEqual(h.events,[])
 })
+test('通用方案的构建方案关联回显准确上游，清除同时清掉方案绑定',async t=>{
+ const h=harness();t.after(h.stop);await settle()
+ h.props.buildNodes=[{id:'task',name:'上游镜像',type:'build',config:{build_plan_id:'plan'}}]
+ h.props.buildPlans=[{id:'plan',kind:'dockerfile',is_active:true,image_registry_id:'registry'}]
+ h.props.node.config.inline_deployment_plan.execution_config={artifact_build_plan_id:'plan'}
+ assert.equal(h.state.selectedImageBuildID.value,'task')
+ h.state.selectImageBuild(undefined)
+ const execution=h.events.at(-1).args[0].inline_deployment_plan.execution_config
+ assert.equal(execution.artifact_node_id,undefined);assert.equal(execution.artifact_build_plan_id,undefined)
+})

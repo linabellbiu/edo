@@ -44,6 +44,9 @@ func (s *Service) rollbackPlanTarget(ctx context.Context, source *model.Deployme
 		}
 		for _, stage := range workflow.Stages {
 			for _, node := range stage.Tasks {
+				if node.ID == source.WorkflowNodeID && node.Type == model.WorkflowNodeDeploy && node.Config.DeploymentPlanID != "" && node.Config.DeploymentOverride != nil {
+					return s.resolveRollbackLibraryPlan(ctx, source, run, node)
+				}
 				if (node.ID == source.WorkflowNodeID || model.DeploymentHostNodeID(node.ID, source.HostID) == source.WorkflowNodeID) && node.Type == model.WorkflowNodeDeploy && node.Config.DeploymentPlanID == "" && node.Config.InlineDeploymentPlan != nil {
 					definition := *node.Config.InlineDeploymentPlan
 					if node.ID != source.WorkflowNodeID {

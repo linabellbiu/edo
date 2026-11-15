@@ -134,6 +134,9 @@ func TestKubernetesDeploymentTemplateCreatesFirstWorkloadAndOwnedRerun(t *testin
 	if *deployment.Spec.Replicas != 1 || c.Resources.Requests.Cpu().String() != "200m" || c.Resources.Requests.Memory().String() != "300Mi" || c.Resources.Limits.Cpu().String() != "1" || c.Resources.Limits.Memory().String() != "1Gi" || len(c.Ports) != 0 || deployment.Spec.Template.Spec.HostNetwork {
 		t.Fatal("首次部署没有使用真实默认资源和关闭端口", deployment.Spec)
 	}
+	if len(c.Command) != 0 || len(c.Args) != 0 || c.WorkingDir != "" || c.ImagePullPolicy != "" || c.ReadinessProbe != nil || c.LivenessProbe != nil || c.StartupProbe != nil || deployment.Spec.Template.Spec.TerminationGracePeriodSeconds != nil || deployment.Spec.Strategy.Type != "" {
+		t.Fatal("未配置的运行字段覆盖了 Kubernetes 默认值")
+	}
 	if f.objects["/api/v1/namespaces/demo/services/api"] != nil {
 		t.Fatal("默认关闭的端口创建了 Service")
 	}
@@ -240,5 +243,84 @@ func TestKubernetesDeploymentTemplateRegistryAndDisablePorts(t *testing.T) {
 		if node, ok := p.(map[string]any)["nodePort"]; ok && node != float64(0) {
 			t.Fatal("关闭后仍使用节点端口", service)
 		}
+	}
+	cfg.Ports[0].Enabled = true
+	r.ID = "release-reopened"
+	if _, _, err := s.DeployTemplate(context.Background(), r, cfg, nil, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	selector = f.objects["/api/v1/namespaces/demo/services/api"]["spec"].(map[string]any)["selector"].(map[string]any)
+	if _, disabled := selector["edo.io/disabled"]; disabled || selector["edo.io/target-id"] != r.TargetID {
+		t.Fatal("重新开启端口后仍保留停用选择器", selector)
+	}
+
+}
+
+func TestKubernetesDeploymentTemplateAdvancedRuntimeReachesAPI(t *testing.T) {
+	s, id, f := newTemplateAPIFixture(t)
+	r := templateTestRecord(id)
+	cfg := model.DefaultKubernetesDeploymentSettings()
+	grace := int64(45)
+	cfg.Command = []string{"/app/server"}
+	cfg.Args = []string{"--mode=web", "literal $(date)"}
+	cfg.WorkingDir = "/app"
+	cfg.ImagePullPolicy = "Always"
+	cfg.TerminationGracePeriodSeconds = &grace
+	cfg.ReadinessProbe = &model.KubernetesDeploymentProbe{Kind: "http", Port: 8080, Path: "/ready", Scheme: "HTTP", InitialDelaySeconds: 2, PeriodSeconds: 5, TimeoutSeconds: 2, FailureThreshold: 3}
+	cfg.LivenessProbe = &model.KubernetesDeploymentProbe{Kind: "tcp", Port: 8888, PeriodSeconds: 10}
+	cfg.StartupProbe = &model.KubernetesDeploymentProbe{Kind: "http", Port: 8080, Path: "/started", FailureThreshold: 30}
+	cfg.Strategy = "RollingUpdate"
+	cfg.MaxSurge = "1"
+	cfg.MaxUnavailable = "0"
+	if _, _, err := s.DeployTemplate(context.Background(), r, cfg, nil, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := jsonRoundTrip(f.objects["/apis/apps/v1/namespaces/demo/deployments/api"], &deployment); err != nil {
+		t.Fatal(err)
+	}
+	c := deployment.Spec.Template.Spec.Containers[0]
+	if len(c.Command) != 1 || c.Command[0] != "/app/server" || len(c.Args) != 2 || c.Args[1] != "literal $(date)" || c.WorkingDir != "/app" || c.ImagePullPolicy != "Always" {
+		t.Fatal("启动参数被解析或遗漏", c)
+	}
+	if c.ReadinessProbe == nil || c.ReadinessProbe.HTTPGet.Path != "/ready" || c.ReadinessProbe.HTTPGet.Port.IntVal != 8080 || c.ReadinessProbe.PeriodSeconds != 5 || c.LivenessProbe == nil || c.LivenessProbe.TCPSocket.Port.IntVal != 8888 || c.StartupProbe == nil || c.StartupProbe.FailureThreshold != 30 {
+		t.Fatal("探针未按配置写入", c)
+	}
+	if deployment.Spec.Template.Spec.TerminationGracePeriodSeconds == nil || *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds != 45 || deployment.Spec.Strategy.Type != "RollingUpdate" || deployment.Spec.Strategy.RollingUpdate == nil || deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntVal != 1 || deployment.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal != 0 {
+		t.Fatal("滚动发布及宽限配置未写入", deployment.Spec)
+	}
+	cfg.Strategy = "Recreate"
+	cfg.MaxSurge = ""
+	cfg.MaxUnavailable = ""
+	cfg.ReadinessProbe = nil
+	cfg.LivenessProbe = nil
+	cfg.StartupProbe = nil
+	r.ID = "release-recreate"
+	if _, _, err := s.DeployTemplate(context.Background(), r, cfg, nil, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	deployment = appsv1.Deployment{}
+	if err := jsonRoundTrip(f.objects["/apis/apps/v1/namespaces/demo/deployments/api"], &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if deployment.Spec.Strategy.Type != "Recreate" || deployment.Spec.Strategy.RollingUpdate != nil {
+		t.Fatal("切换重建保留了旧滚动字段", deployment.Spec.Strategy)
+	}
+	if deployment.Spec.Template.Spec.Containers[0].ReadinessProbe != nil {
+		t.Fatal("关闭探针后仍保留旧检测")
+	}
+	cfg.Strategy = ""
+	cfg.TerminationGracePeriodSeconds = nil
+	r.ID = "release-defaults"
+	if _, _, err := s.DeployTemplate(context.Background(), r, cfg, nil, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	current := f.objects["/apis/apps/v1/namespaces/demo/deployments/api"]["spec"].(map[string]any)
+	if strategy, set := current["strategy"]; set && strategy != nil && len(strategy.(map[string]any)) != 0 {
+		t.Fatal("取消覆盖后没有清除旧 Recreate 策略", strategy)
+	}
+	pod := current["template"].(map[string]any)["spec"].(map[string]any)
+	if _, set := pod["terminationGracePeriodSeconds"]; set {
+		t.Fatal("取消覆盖后没有清除旧终止宽限期", pod["terminationGracePeriodSeconds"])
 	}
 }

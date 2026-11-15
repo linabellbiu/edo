@@ -993,6 +993,16 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 				return err
 			}
 		}
+		nextConfig := plan.ExecutionConfig
+		if input.ExecutionConfig != nil {
+			nextConfig = input.ExecutionConfig
+		}
+		if input.Kind != model.DeploymentPlanKubernetes {
+			nextConfig = nil
+		}
+		if err := s.validateDeploymentOverrideNetworkPermission(ctx, tx, plan, &model.DeploymentPlan{ExecutionConfig: nextConfig}); err != nil {
+			return err
+		}
 		targetID := plan.DeploymentTargetID
 		if input.Reusable {
 			if targetID != "" {

@@ -124,6 +124,7 @@ type workflowBuildPlanSnapshot struct {
 }
 
 type workflowDeploymentPlanSnapshot struct {
+	SourcePlanID   string                              `json:"source_plan_id,omitempty"`
 	Kubernetes     *model.KubernetesDeploymentSettings `json:"kubernetes,omitempty"`
 	ID             string                              `json:"id"`
 	Kind           model.DeploymentPlanKind            `json:"kind"`
@@ -369,6 +370,9 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 		return nil, err
 	}
 	issues := s.validateWorkflow(ctx, application, input.SchemaVersion, input.Source, input.Stages)
+	if hasWorkflowIssue(issues, "deployment_override_permission_denied") {
+		return &WorkflowResult{Valid: false, Issues: issues}, ErrKubernetesTemplatePermission
+	}
 	if len(issues) > 0 && (input.Activate || hasWorkflowSaveBlockingIssue(issues)) {
 		return &WorkflowResult{Workflow: &model.ReleaseWorkflow{
 			ID: workflow.ID, ApplicationID: application.ID, SchemaVersion: input.SchemaVersion,
@@ -400,6 +404,9 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 		}
 		if input.Revision != existing.Revision {
 			return ErrWorkflowRevisionConflict
+		}
+		if err := s.validateWorkflowNetworkChanges(ctx, tx, existing.Stages, input.Stages); err != nil {
+			return err
 		}
 		if err := workflowNameAvailable(tx, application.ID, existing.ID, input.Name); err != nil {
 			return err
@@ -640,6 +647,18 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 	node.Config.PRSourcePattern = strings.TrimSpace(node.Config.PRSourcePattern)
 	node.Config.BuildPlanID = strings.TrimSpace(node.Config.BuildPlanID)
 	node.Config.DeploymentPlanID = strings.TrimSpace(node.Config.DeploymentPlanID)
+	if node.Config.DeploymentOverride != nil {
+		if node.Type != model.WorkflowNodeDeploy || node.Config.DeploymentPlanID == "" || node.Config.InlineDeploymentPlan != nil {
+			slog.Warn("部署阶段覆盖来源无效", "operation", "workflow_deployment_override_source", "node_id", node.ID, "err", model.ErrDeploymentOverride)
+			return model.ErrDeploymentOverride
+		}
+		if err := model.ValidateWorkflowDeploymentOverride(node.Config.DeploymentOverride); err != nil {
+			return err
+		}
+		if !model.HasWorkflowDeploymentOverride(node.Config.DeploymentOverride) {
+			node.Config.DeploymentOverride = nil
+		}
+	}
 	if source := node.Config.DeploymentSource; source != "" && (node.Type != model.WorkflowNodeDeploy || source != "inline" && source != "plan" || source == "plan" && node.Config.InlineDeploymentPlan != nil || source == "inline" && node.Config.DeploymentPlanID != "") {
 		slog.Warn("流水线部署来源无效", "operation", "workflow_deployment_source", "node_id", node.ID, "err", ErrInvalidWorkflow)
 		return ErrInvalidWorkflow
@@ -855,6 +874,34 @@ func (s *Service) validateWorkflow(
 		activeDeploymentPlans[plan.ID] = *plan
 		activeTargets[target.ID] = *target
 	}
+	for i := range tasks {
+		node := &tasks[i]
+		if node.Type != model.WorkflowNodeDeploy || node.Config.InlineDeploymentPlan != nil || !model.HasWorkflowDeploymentOverride(node.Config.DeploymentOverride) {
+			continue
+		}
+		base, ok := activeDeploymentPlans[node.Config.DeploymentPlanID]
+		if !ok {
+			continue
+		}
+		var originalTarget *model.DeploymentTarget
+		if target, ok := activeTargets[base.DeploymentTargetID]; ok {
+			copy := target
+			originalTarget = &copy
+		}
+		plan, target, err := s.resolveWorkflowLibraryPlan(ctx, application, "", *node, base, originalTarget, s.db)
+		if err != nil {
+			code := "invalid_deployment_override"
+			if errors.Is(err, ErrKubernetesTemplatePermission) {
+				code = "deployment_override_permission_denied"
+			}
+			issues = append(issues, WorkflowIssue{Code: code, Message: err.Error(), NodeID: node.ID})
+			continue
+		}
+		activeDeploymentPlans[plan.ID] = *plan
+		if target != nil {
+			activeTargets[target.ID] = *target
+		}
+	}
 	for i := range stages {
 		for j := range stages[i].Tasks {
 			node := &stages[i].Tasks[j]
@@ -863,7 +910,7 @@ func (s *Service) validateWorkflow(
 			}
 			if plan, ok := activeDeploymentPlans[workflowDeploymentPlanKey(*node)]; ok {
 				model.ApplyDeploymentExecution(&node.Config, plan.ExecutionConfig)
-				if node.Config.InlineDeploymentPlan != nil {
+				if node.Config.InlineDeploymentPlan != nil || model.HasWorkflowDeploymentOverride(node.Config.DeploymentOverride) {
 					node.Config.DeploymentPlanID = plan.ID
 				}
 				if model.RequiresDeploymentRegistry(plan.Kind) && model.SavedDeploymentRegistryID(node.Config) == "" {
@@ -1233,6 +1280,7 @@ func hasWorkflowSaveBlockingIssue(issues []WorkflowIssue) bool {
 	for _, code := range []string{
 		"deployment_plan_environment_mismatch",
 		"deployment_plan_target_mismatch",
+		"deployment_override_permission_denied",
 	} {
 		if hasWorkflowIssue(issues, code) {
 			return true
@@ -1517,6 +1565,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				var plan model.DeploymentPlan
 				var target model.DeploymentTarget
 				managedWorkingDirectory := false
+				sourcePlanID := ""
 				if current.Config.InlineDeploymentPlan != nil {
 					inlinePlan, inlineTarget, resolveErr := s.resolveInlineDeploymentPlan(variableContext, application, workflow.ID, *current, database)
 					if resolveErr != nil {
@@ -1530,12 +1579,25 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 						return nil, ErrInvalidWorkflow
 					}
-					if plan.DeploymentTargetID == "" || database.WithContext(ctx).
-						First(&target, "uuid = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil ||
-						target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID ||
-						!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
+					var originalTarget *model.DeploymentTarget
+					if plan.DeploymentTargetID != "" {
+						if database.WithContext(ctx).First(&target, "uuid = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil || target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID || !deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
+							return nil, ErrInvalidWorkflow
+						}
+						originalTarget = &target
+					}
+					effective, resolvedTarget, resolveErr := s.resolveWorkflowLibraryPlan(variableContext, application, workflow.ID, *current, plan, originalTarget, database)
+					if resolveErr != nil || resolvedTarget == nil {
+						if resolveErr != nil {
+							return nil, resolveErr
+						}
 						return nil, ErrInvalidWorkflow
 					}
+					if effective.ID != plan.ID {
+						sourcePlanID = plan.ID
+					}
+					plan, target = *effective, *resolvedTarget
+					current.Config.DeploymentPlanID = plan.ID
 				}
 				if current.Config.InlineDeploymentPlan == nil && current.Config.ExecutionHostID != "" {
 					resolvedTarget, err := s.deployments.WithTransaction(database).ResolveHostTarget(variableContext, target, current.Config.ExecutionHostID)
@@ -1620,7 +1682,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					target.WorkloadName = workloadName
 				}
 				deploymentPlans[current.ID] = workflowDeploymentPlanSnapshot{
-					ID: plan.ID, Kind: plan.Kind, Script: plan.Script, Kubernetes: current.Config.Kubernetes,
+					ID: plan.ID, Kind: plan.Kind, Script: plan.Script, Kubernetes: current.Config.Kubernetes, SourcePlanID: sourcePlanID,
 					ComposeYAML: plan.ComposeYAML, ServiceName: plan.ServiceName,
 					DockerConfig:   dockerConfig,
 					TimeoutSeconds: plan.TimeoutSeconds,

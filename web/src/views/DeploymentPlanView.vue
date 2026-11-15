@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import KubernetesDeploymentTemplateFields from '@/components/KubernetesDeploymentTemplateFields.vue'
-import {defaultKubernetesDeployment,kubernetesResourceName,kubernetesContainerDefault} from '@/utils/kubernetesDeployment'
+import {defaultKubernetesDeployment,kubernetesResourceName,kubernetesContainerDefault,kubernetesDeploymentRuntimeError} from '@/utils/kubernetesDeployment'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { FileUp, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
@@ -832,6 +832,7 @@ function validateDockerConfig() {
 function validate() {
   reconcileExecutionTarget()
   if (!form.name.trim()) return '请输入方案名称'
+  if(form.kind==='kubernetes'&&form.execution_config?.kubernetes){const error=kubernetesDeploymentRuntimeError(form.execution_config.kubernetes);if(error)return error}
   if(['docker','compose','compose_stack'].includes(form.kind)&&!savedDeploymentRegistry(form.execution_config))return '请选择并保存镜像仓库'
   if (form.kind === 'compose_stack') {
     const parsed = readKubeYaml(form.compose_yaml)

@@ -333,7 +333,7 @@ func (s *Service) CreateDeliveryWorkflow(ctx context.Context, applicationID, act
 			Name: input.Target.Name, Kind: input.Kind, Description: "应用独立部署配置，创建时使用所选默认方案的规则",
 			DeploymentTarget: &input.Target, Script: definition.Deployment.Script,
 			ComposeYAML: definition.Deployment.ComposeYAML, ServiceName: definition.Deployment.ServiceName,
-			DockerConfig: definition.Deployment.DockerConfig, TimeoutSeconds: definition.Deployment.TimeoutSeconds,
+			DockerConfig: definition.Deployment.DockerConfig, TimeoutSeconds: definition.Deployment.TimeoutSeconds, ExecutionConfig: cloneDeploymentExecutionConfig(definition.Deployment.ExecutionConfig),
 		})
 		if err != nil {
 			return err

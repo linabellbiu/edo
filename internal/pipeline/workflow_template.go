@@ -127,6 +127,9 @@ func (s *Service) CreateWorkflowTemplate(ctx context.Context, actorID string, in
 		return nil, err
 	}
 	issues := s.validateWorkflowTemplate(ctx, input.SchemaVersion, input.Source, input.Stages)
+	if hasWorkflowIssue(issues, "deployment_override_permission_denied") {
+		return &WorkflowTemplateResult{Valid: false, Issues: issues}, ErrKubernetesTemplatePermission
+	}
 	if len(issues) > 0 && (input.Activate || hasWorkflowSaveBlockingIssue(issues)) {
 		return &WorkflowTemplateResult{WorkflowTemplate: &model.ReleaseWorkflowTemplate{
 			SchemaVersion: input.SchemaVersion, Name: input.Name, Description: input.Description,
@@ -164,6 +167,9 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		return nil, ErrWorkflowTemplateRevisionConflict
 	}
 	issues := s.validateWorkflowTemplate(ctx, input.SchemaVersion, input.Source, input.Stages)
+	if hasWorkflowIssue(issues, "deployment_override_permission_denied") {
+		return &WorkflowTemplateResult{Valid: false, Issues: issues}, ErrKubernetesTemplatePermission
+	}
 	if len(issues) > 0 && (input.Activate || hasWorkflowSaveBlockingIssue(issues)) {
 		return &WorkflowTemplateResult{WorkflowTemplate: &model.ReleaseWorkflowTemplate{
 			ID: id, SchemaVersion: input.SchemaVersion, Name: input.Name,
@@ -190,6 +196,9 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		}
 		if existing.Revision != input.Revision {
 			return ErrWorkflowTemplateRevisionConflict
+		}
+		if err := s.validateWorkflowNetworkChanges(ctx, tx, existing.Stages, input.Stages); err != nil {
+			return err
 		}
 		result := tx.Model(&model.ReleaseWorkflowTemplate{}).
 			Where("uuid = ? AND revision = ?", id, input.Revision).

@@ -46,7 +46,7 @@ func workflowNameAvailable(tx *gorm.DB, applicationID, workflowID, name string) 
 
 func (s *Service) workflowMutationError(ctx context.Context, operation, applicationID, workflowID string, err error) error {
 	if errors.Is(err, ErrWorkflowExists) || errors.Is(err, ErrWorkflowRevisionConflict) ||
-		errors.Is(err, ErrWorkflowNotFound) || errors.Is(err, ErrApplicationNotFound) {
+		errors.Is(err, ErrWorkflowNotFound) || errors.Is(err, ErrApplicationNotFound) || errors.Is(err, ErrKubernetesTemplatePermission) || errors.Is(err, model.ErrDeploymentOverride) || errors.Is(err, model.ErrKubernetesDeploymentSettings) {
 		if s.logger != nil {
 			s.logger.WarnContext(ctx, "应用流水线修改被拒绝", "operation", operation, "application_id", applicationID, "workflow_id", workflowID, "err", err)
 		}

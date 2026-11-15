@@ -29,6 +29,7 @@ type DeploymentConfigBinding struct {
 }
 
 type WorkflowNodeConfig struct {
+	DeploymentOverride     *WorkflowDeploymentOverride   `json:"deployment_override,omitempty"`
 	Kubernetes             *KubernetesDeploymentSettings `json:"kubernetes,omitempty"`
 	DeploymentRegistryID   string                        `json:"deployment_registry_id,omitempty"`
 	ExecutionHostID        string                        `json:"execution_host_id,omitempty"` // 仅由运行快照生成，不接受用户指定。

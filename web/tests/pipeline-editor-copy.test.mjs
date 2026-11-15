@@ -116,7 +116,7 @@ test('部署只配置镜像与 Tag，不渲染构建任务或服务镜像关联�
  for(const inline of [false,true]){
   const plan={id:'plan',name:'部署',kind:'compose_stack',compose_yaml:'services:\n  app:\n    image: example/app:${EDO_IMAGE_TAG}\n',timeout_seconds:600}
   const config=inline?{inline_deployment_plan:plan}:{deployment_plan_id:'plan'}
-  const html=await render(common,{propertyTab:'common',selectedNode:{id:'deploy',type:'deploy',name:'部署',config},selectedLibraryDeploymentPlan:inline?undefined:plan,canUpdate:true,canEdit:true,canModifyDeploymentPlan:false,editorApplication:{name:'app'},applicationID:'app',sources:[],buildPlans:[],priorBuildTasks:()=>[],priorBuildTaskLabels:()=>({}),updateSelectedNode(){}},{PipelineImageBuildFields:removedSelector,PipelineDeployFields:passthrough,DeploymentPlanReferencePreview:passthrough})
+  const html=await render(common,{propertyTab:'common',selectedNode:{id:'deploy',type:'deploy',name:'部署',config},selectedLibraryDeploymentPlan:inline?undefined:plan,canUpdate:true,canEdit:true,canModifyDeploymentPlan:false,editorApplication:{name:'app'},applicationID:'app',sources:[],buildPlans:[],priorBuildTasks:()=>[],priorBuildTaskLabels:()=>({}),deploymentSource:node=>node.config.inline_deployment_plan?'inline':'plan',deploymentPlanOptions:()=>[],canReadDeploymentPlan:true,canCreateDeploymentPlan:false,changingDeploymentPlanNodeID:'',updateSelectedNode(){}},{PipelineImageBuildFields:removedSelector,PipelineDeployFields:passthrough,DeploymentPlanReferencePreview:passthrough})
   assert.doesNotMatch(html,/镜像构建任务|服务镜像关联/)
   assert.match(html,/任务信息/)
  }

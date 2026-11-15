@@ -21,6 +21,7 @@ function harness(t, { active = false, publicMode = false, routeGuards = false, c
   let timerID = 0, now = 0
   const modules = {
  '@/utils/kubernetesDeployment': loadFrontend('../src/utils/kubernetesDeployment.ts'),
+ '@/utils/kubernetesPlanOverride': loadFrontend('../src/utils/kubernetesPlanOverride.ts'),
     '@/utils/buildTarget': loadFrontend('../src/utils/buildTarget.ts'),
     uuid: { v4: uuidv4 },
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
@@ -599,4 +600,19 @@ test('上游镜像标签按实际阶段与任务位置区分近似名称，不�
  state.stages.value=[{id:'build-stage',name:'构建',tasks:[one,two]},{id:'deploy-stage',name:'部署',tasks:[deploy]},{id:'later',name:'后续',tasks:[{...one,id:'later-image'}]}]
  assert.deepEqual(state.priorBuildTaskLabels('deploy'),{'image-one':'构建镜像 · 阶段 1 构建 / 任务 1','image-two':'镜像构建 · 阶段 1 构建 / 任务 2'})
  assert.deepEqual(state.priorBuildTasks('deploy').map(node=>[node.id,node.name]),[['image-one','构建镜像'],['image-two','镜像构建']])
+})
+
+test('通用K8s方案保留关联，切换自定义及不同方案分别恢复本阶段覆盖草稿',t=>{
+ const h=harness(t,{active:true,permissions:['workflow.read','workflow.update','build_plan.read','deployment_plan.read']})
+ const settings={template:'web',replicas:1,cpu_request:'200m',cpu_limit:'1',memory_request:'300Mi',memory_limit:'1Gi',node_port:false,ports:[]}
+ h.state.deploymentPlans.value=[{id:'one',name:'通用一',kind:'kubernetes',is_active:true,execution_config:{kubernetes:settings},timeout_seconds:600},{id:'two',name:'通用二',kind:'kubernetes',is_active:true,execution_config:{kubernetes:settings},timeout_seconds:600}]
+ h.state.stages.value=[{id:'build',name:'构建',tasks:[{id:'image',name:'镜像',type:'build',config:{inline_build:{kind:'dockerfile',image_registry_id:'registry'}}}]},{id:'deploy-stage',name:'部署',tasks:[{id:'deploy',name:'部署',type:'deploy',config:{deployment_plan_id:'one',deployment_override:{kubernetes:{replicas:2},deployment_target:{platform:'kubernetes',environment_id:'',runtime_id:'cluster',namespace:'app',workload_name:'api',container_name:'api'}}}}]}]
+ h.state.selectNode('deploy');assert.equal(h.state.selectedLibraryDeploymentPlan.value.id,'one')
+ h.state.changeDeploymentSource('inline')
+ assert.equal(h.state.selectedNode.value.config.deployment_plan_id,undefined);assert.equal(h.state.selectedNode.value.config.deployment_override,undefined)
+ assert.equal(h.state.selectedNode.value.config.inline_deployment_plan.execution_config.kubernetes.replicas,2)
+ h.state.changeDeploymentSource('plan');assert.equal(h.state.selectedNode.value.config.deployment_plan_id,'one');assert.equal(h.state.selectedNode.value.config.deployment_override.kubernetes.replicas,2)
+ h.state.unlockDeploymentPlanSelection();h.state.changeLibraryDeploymentPlan('two');assert.equal(h.state.selectedNode.value.config.deployment_override,undefined)
+ h.state.unlockDeploymentPlanSelection();h.state.changeLibraryDeploymentPlan('one');assert.equal(h.state.selectedNode.value.config.deployment_override.kubernetes.replicas,2)
+ assert.equal(h.state.deploymentPlans.value[0].execution_config.kubernetes.replicas,1)
 })
