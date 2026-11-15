@@ -10,6 +10,7 @@ import (
 )
 
 var errDeploymentEnvironmentCheckFailed = errors.New("校验部署环境失败，请稍后重试")
+var errDeploymentClusterCheckFailed = errors.New("校验 Kubernetes 集群失败，请稍后重试")
 
 // deploymentEnvironmentAvailable 只核当前环境是否可用于新配置或新运行快照。
 // 已启动任务继续使用其不可变快照，不通过这里重新解析执行位置。
@@ -19,6 +20,18 @@ func (s *Service) deploymentEnvironmentAvailable(
 	target model.DeploymentTarget,
 	operation string,
 ) (bool, error) {
+	if target.Platform == model.DeploymentKubernetes && target.EnvironmentID == "" {
+		var cluster model.KubernetesCluster
+		err := database.WithContext(ctx).First(&cluster, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?", target.RuntimeID, target.ProjectID, target.DepartmentID, true).Error
+		if err == nil {
+			return true, nil
+		}
+		s.logger.WarnContext(ctx, "校验独立集群部署目标失败", "operation", operation, "cluster_id", target.RuntimeID, "project_id", target.ProjectID, "department_id", target.DepartmentID, "err", err)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, errDeploymentClusterCheckFailed
+	}
 	if target.EnvironmentID == "" && target.Platform != model.DeploymentKubernetes && target.HostID != "" {
 		var host model.Host
 		err := database.WithContext(ctx).First(&host, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?", target.HostID, target.ProjectID, target.DepartmentID, true).Error

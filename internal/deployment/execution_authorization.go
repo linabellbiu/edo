@@ -32,37 +32,46 @@ func (s *Service) requireExecutionScope(ctx context.Context, record *model.Deplo
 
 // requireExecutionPermission 使用任务冻结的归属和当前数据库授权，不依赖策略重载。
 func (s *Service) requireExecutionPermission(ctx context.Context, record *model.DeploymentRecord) error {
+	_, err := s.executionAuthority(ctx, record)
+	return err
+}
+
+// executionAuthority 返回已通过当前权限核验的授权人，供后续集群调用沿用同一身份。
+func (s *Service) executionAuthority(ctx context.Context, record *model.DeploymentRecord) (string, error) {
 	if err := s.requireExecutionScope(ctx, record); err != nil {
-		return err
+		return "", err
 	}
 	scope, _ := database.DepartmentScopeFromContext(ctx)
 	if strings.TrimSpace(record.RequestedBy) == "" || (record.Operation != model.DeploymentRelease && record.Operation != model.DeploymentRollback) {
-		return s.executionAuthorizationDenied(ctx, record, "deployment_execution_identity", record.RequestedBy, "", ErrExecutionAuthorization)
+		return "", s.executionAuthorizationDenied(ctx, record, "deployment_execution_identity", record.RequestedBy, "", ErrExecutionAuthorization)
 	}
 	actorID, permission := record.RequestedBy, access.PermissionDeploymentExecute
 	if record.Operation == model.DeploymentRelease && record.PipelineRunID != "" {
 		if record.ApplicationID == "" || record.WorkflowNodeID == "" {
-			return s.executionAuthorizationDenied(ctx, record, "deployment_pipeline_identity", actorID, "pipeline_run.execute", ErrExecutionAuthorization)
+			return "", s.executionAuthorizationDenied(ctx, record, "deployment_pipeline_identity", actorID, "pipeline_run.execute", ErrExecutionAuthorization)
 		}
 		var run model.PipelineRun
 		if err := s.db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND department_id = ? AND application_id = ?", record.PipelineRunID, record.ProjectID, record.DepartmentID, record.ApplicationID).First(&run).Error; err != nil {
-			return s.executionAuthorizationDenied(ctx, record, "deployment_pipeline_run", actorID, "pipeline_run.execute", err)
+			return "", s.executionAuthorizationDenied(ctx, record, "deployment_pipeline_run", actorID, "pipeline_run.execute", err)
 		}
 		var snapshot struct {
 			AuthorityID string `json:"authority_id"`
 		}
 		if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
-			return s.executionAuthorizationDenied(ctx, record, "deployment_pipeline_snapshot", actorID, "pipeline_run.execute", err)
+			return "", s.executionAuthorizationDenied(ctx, record, "deployment_pipeline_snapshot", actorID, "pipeline_run.execute", err)
 		}
 		if strings.TrimSpace(snapshot.AuthorityID) == "" || run.CreatedBy != record.RequestedBy || (scope.UserID != "" && scope.UserID != record.RequestedBy && scope.UserID != snapshot.AuthorityID) {
-			return s.executionAuthorizationDenied(ctx, record, "deployment_pipeline_authority", actorID, "pipeline_run.execute", ErrExecutionAuthorization)
+			return "", s.executionAuthorizationDenied(ctx, record, "deployment_pipeline_authority", actorID, "pipeline_run.execute", ErrExecutionAuthorization)
 		}
 		// 自动流水线的请求人可能是 system，只沿快照中已冻结的实际授权人执行。
 		actorID, permission = snapshot.AuthorityID, "pipeline_run.execute"
 	} else if scope.UserID != "" && scope.UserID != record.RequestedBy {
-		return s.executionAuthorizationDenied(ctx, record, "deployment_execution_requester", actorID, permission, ErrExecutionAuthorization)
+		return "", s.executionAuthorizationDenied(ctx, record, "deployment_execution_requester", actorID, permission, ErrExecutionAuthorization)
 	}
-	return s.requireCurrentActorPermission(ctx, record, actorID, permission)
+	if err := s.requireCurrentActorPermission(ctx, record, actorID, permission); err != nil {
+		return "", err
+	}
+	return actorID, nil
 }
 
 // requireCurrentActorPermission 复用冻结归属，以数据库中的当前身份和授权判定副作用执行权限。

@@ -77,6 +77,7 @@ func TestDeliveryWorkflowFourKindsCreateIndependentDrafts(t *testing.T) {
 				buildInput.ArtifactPath = "app.tar"
 			}
 			if kind == model.DeploymentPlanKubernetes {
+				authorizeRegistryTestActors(t, service, "admin")
 				registry := model.ImageRegistry{ID: "delivery-registry", Name: "发布镜像仓库", Provider: model.RegistryGeneric, Endpoint: "registry.example.com", Namespace: "apps", IsActive: true}
 				if err := db.WithContext(ctx).Create(&registry).Error; err != nil {
 					t.Fatal(err)

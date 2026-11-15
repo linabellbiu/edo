@@ -334,3 +334,33 @@ func TestKubernetesDeploymentTargetDoesNotRequireSSHHostMembership(t *testing.T)
 		t.Fatalf("独立集群绕过了项目权限: %v", err)
 	}
 }
+
+func TestKubernetesDeploymentTargetDirectClusterWithoutEnvironment(t *testing.T) {
+	f := newKubernetesRollbackFixture(t, model.DeploymentSucceeded)
+	ctx := database.WithDepartmentScope(deploymentExecutionTestContext("project-a"), database.DepartmentScope{UserID: "operator", DepartmentID: f.source.DepartmentID, ProjectID: f.source.ProjectID})
+	input := TargetInput{Name: "直接选择集群", Platform: model.DeploymentKubernetes, RuntimeID: f.source.RuntimeID, Namespace: "acceptance", WorkloadName: "api", ContainerName: "api"}
+	target, err := f.service.CreateTarget(ctx, "operator", input)
+	if err != nil || target.EnvironmentID != "" || target.HostID != "" || target.RuntimeID != f.source.RuntimeID {
+		t.Fatalf("集群部署仍依赖主机组: target=%+v err=%v", target, err)
+	}
+	for _, scope := range []database.DepartmentScope{{UserID: "operator", DepartmentID: f.source.DepartmentID, ProjectID: "other-project"}, {UserID: "operator", DepartmentID: "other-department", ProjectID: f.source.ProjectID}} {
+		foreign := database.WithDepartmentScope(ctx, scope)
+		if _, err := f.service.CreateTarget(foreign, "operator", input); !errors.Is(err, ErrInvalidTarget) {
+			t.Fatalf("直接选集群绕过项目或部门边界: %v", err)
+		}
+	}
+	adminCtx := database.WithDepartmentScope(ctx, database.DepartmentScope{UserID: "admin", ProjectID: f.source.ProjectID, DepartmentID: "other-department", AllDepartments: true})
+	input.Name = "管理员直接选择集群"
+	if _, err := f.service.CreateTarget(adminCtx, "admin", input); err != nil {
+		t.Fatalf("管理员跨部门选择当前项目集群被阻断: %v", err)
+	}
+	if err := f.db.Model(&model.KubernetesCluster{}).Where("uuid = ?", f.source.RuntimeID).Update("is_active", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.CreateTarget(ctx, "operator", input); !errors.Is(err, ErrInvalidTarget) {
+		t.Fatalf("停用集群仍可选用: %v", err)
+	}
+	if f.writes != 0 {
+		t.Fatal("目标校验不应修改集群资源")
+	}
+}

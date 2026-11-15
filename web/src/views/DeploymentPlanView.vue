@@ -341,7 +341,7 @@ function hostSupportsKind(host: InfrastructureHost, kind: PlanKind) {
 }
 
 function environmentSupportsKind(kind: PlanKind) {
-  if (kind === 'kubernetes') return Boolean(form.environment_id && (clusterByID.value.size || (form.kind === kind && form.runtime_id)))
+  if (kind === 'kubernetes') return Boolean(clusterByID.value.size || (form.kind === kind && form.runtime_id))
   return hosts.value.some(host => host.is_active && hostSupportsKind(host, kind))
 }
 
@@ -709,11 +709,6 @@ function changeEnvironment(environmentID: unknown) {
 
 function reconcileExecutionTarget() {
   if (form.reusable) return
-	if (form.kind==='kubernetes' && !form.environment_id) {
-		form.host_id = ''
-		form.runtime_id = ''
-		return
-	}
   if (form.kind === 'kubernetes') {
     changeKubernetesRuntime(form.runtime_id)
     return
@@ -846,7 +841,6 @@ function validate() {
     if (form.kind === 'compose' && (!form.service_name.trim() || !form.compose_yaml.trim())) return '请输入 Docker Compose 服务名称和 YAML'
     return form.kind === 'docker' ? validateDockerConfig() : ''
   }
-  if (form.kind==='kubernetes' && !form.environment_id) return t('environment.deployment.environmentRequired')
   if (!availableKindOptions.value.some(option => option.value === form.kind)) return '当前主机组不支持所选部署方式'
   if (executionTargetError.value) return executionTargetError.value
   if (form.kind === 'script' && !form.host_id) return '当前主机组没有唯一可用的脚本执行主机'
@@ -878,9 +872,7 @@ function savedTargetMatchesForm(plan: DeploymentPlan) {
 
 async function testConnection() {
   reconcileExecutionTarget()
-  const validationMessage = form.kind==='kubernetes' && !form.environment_id
-    ? t('environment.deployment.environmentRequired')
-    : executionTargetError.value
+  const validationMessage = executionTargetError.value
       ? executionTargetError.value
       : platform.value !== 'kubernetes' && !form.host_id
         ? '当前主机组没有唯一可用的执行主机'
@@ -1131,8 +1123,8 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           </div>
         </div>
 
-        <div v-if="!form.reusable" class="host-target-section">
-          <DeploymentHostSelection :groupID="form.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :all-hosts="availableHosts" :host-options="deploymentHostOptions" :group-only="form.kind==='kubernetes'" :ready="!loading" :disabled="saving||!canReadEnvironments||(form.kind!=='kubernetes'&&!canReadHosts)" @change="selectDeploymentTarget" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()">
+        <div v-if="!form.reusable&&form.kind!=='kubernetes'" class="host-target-section">
+          <DeploymentHostSelection :groupID="form.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :all-hosts="availableHosts" :host-options="deploymentHostOptions" :ready="!loading" :disabled="saving||!canReadEnvironments||!canReadHosts" @change="selectDeploymentTarget" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()">
             <template #extra><a-button v-if="auth.canAny(['deployment.create'])" aria-label="创建主机组" title="创建主机组" @click="router.push('/hosts?create_group=1')"><Plus :size="15" /></a-button></template>
           </DeploymentHostSelection>
           <div v-if="!canReadEnvironments" class="permission-note">需要发布记录查看权限才能选择执行主机组。</div>
@@ -1140,8 +1132,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
 
         <div class="form-section">
           <header><b>2</b><div><strong>执行方式与配置<DeploymentFieldHelp :text="targetT('deploymentTarget.configurationHint')" label="执行配置说明" /></strong></div></header>
-          <a-alert v-if="!form.reusable && form.kind==='kubernetes' && !form.environment_id" type="info" show-icon message="请先选择执行主机组" :description="targetT('deploymentTarget.chooseEnvironmentHint')" />
-          <a-alert v-else-if="!availableKindOptions.length" type="warning" show-icon message="当前主机组没有可用的执行方式" :description="targetT('deploymentTarget.emptyHint')" />
+          <a-alert v-if="!availableKindOptions.length" type="warning" show-icon message="当前主机组没有可用的执行方式" :description="targetT('deploymentTarget.emptyHint')" />
           <a-form-item v-else label="部署方式" required>
             <a-radio-group :value="form.kind" class="kind-picker">
               <div v-for="option in availableKindOptions" :key="option.value" class="kind-choice">
@@ -1153,7 +1144,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               </div>
             </a-radio-group>
           </a-form-item>
-          <template v-if="(form.reusable || form.environment_id) && availableKindOptions.length">
+          <template v-if="(form.reusable || form.kind==='kubernetes' || form.environment_id) && availableKindOptions.length">
             <div ref="registryHost"/>
             <a-alert
               v-if="!form.reusable && executionTargetError"

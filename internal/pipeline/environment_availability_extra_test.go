@@ -193,3 +193,41 @@ func assertEnvironmentFailureDiagnostic(t *testing.T, data []byte, operation str
 		return
 	}
 }
+
+func TestKubernetesTargetAvailabilityWithoutEnvironmentUsesExactClusterScope(t *testing.T) {
+	for _, scenario := range []string{"available", "missing", "database-failed"} {
+		t.Run(scenario, func(t *testing.T) {
+			service, _ := newPipelineMockService(t)
+			db, mock := testutil.NewSQLMock(t)
+			target := model.DeploymentTarget{Platform: model.DeploymentKubernetes, RuntimeID: "cluster-id", ProjectID: "project-id", DepartmentID: "department-id"}
+			var log bytes.Buffer
+			service.logger = slog.New(slog.NewJSONHandler(&log, nil))
+			canary := errors.New("ONLY_INTERNAL_CLUSTER_LOOKUP_CANARY")
+			query := mock.ExpectQuery(`SELECT .* FROM "kubernetes_clusters"`).WithArgs(target.RuntimeID, target.ProjectID, target.DepartmentID, true, 1)
+			rows := sqlmock.NewRows([]string{"uuid", "project_id", "department_id", "is_active"})
+			if scenario == "database-failed" {
+				query.WillReturnError(canary)
+			} else {
+				if scenario == "available" {
+					rows.AddRow(target.RuntimeID, target.ProjectID, target.DepartmentID, true)
+				}
+				query.WillReturnRows(rows)
+			}
+			available, err := service.deploymentEnvironmentAvailable(context.Background(), db, target, "direct_cluster_check")
+			if scenario == "available" {
+				if err != nil || !available {
+					t.Fatalf("独立集群被主机组阻断: available=%v err=%v", available, err)
+				}
+			} else if scenario == "missing" {
+				if err != nil || available {
+					t.Fatalf("缺失或跨范围集群未阻断: available=%v err=%v", available, err)
+				}
+			} else if available || err != errDeploymentClusterCheckFailed || bytes.Contains([]byte(err.Error()), []byte(canary.Error())) || !bytes.Contains(log.Bytes(), []byte(canary.Error())) {
+				t.Fatalf("集群查询失败没有安全提示及内部诊断: available=%v err=%v", available, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

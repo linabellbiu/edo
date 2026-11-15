@@ -1124,6 +1124,14 @@ function triggerVersionSummary(node: WorkflowNode) {
 }
 
 function priorBuildTasks(taskID:string){const result:WorkflowNode[]=[];for(const stage of stages.value){if(stage.tasks.some(node=>node.id===taskID))break;result.push(...stage.tasks.filter(node=>node.type==='build'))}return result}
+function priorBuildTaskLabels(taskID:string){
+ const labels:Record<string,string>={}
+ for(const [stageIndex,stage] of stages.value.entries()){
+  if(stage.tasks.some(node=>node.id===taskID))break
+  stage.tasks.forEach((node,index)=>{if(node.type==='build')labels[node.id]=`${node.name} · 阶段 ${stageIndex+1} ${stage.name} / 任务 ${index+1}`})
+ }
+ return labels
+}
 function taskSummary(node: WorkflowNode) {
   if (node.type === 'build') {
     const plan = node.config.inline_build || buildPlans.value.find(item => item.id === node.config.build_plan_id)
@@ -1818,7 +1826,7 @@ onBeforeRouteLeave(async () => {
 
             <template v-else-if="selectedNode.type === 'deploy'">
               <h3 class="task-section-heading"><Layers3 :size="15" aria-hidden="true" />任务信息</h3>
-              <PipelineDeployFields v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
+              <PipelineDeployFields v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
               <template v-else-if="selectedNode.config.inline_deployment_plan">
                 <a-form-item><template #label><span class="linked-deployment-label">原部署配置<a-button type="link" size="small" :disabled="!canUpdate" @click="editInlineDeployment">修改</a-button></span></template><span>{{selectedNode.config.inline_deployment_plan.name}}</span></a-form-item>
                 <DeploymentPlanReferencePreview :plan="{...selectedNode.config.inline_deployment_plan,id:'inline'}" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>

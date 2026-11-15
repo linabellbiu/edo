@@ -53,6 +53,10 @@ func TestInlineDeploymentPlansStayInWorkflowAndFreezeExecution(t *testing.T) {
 				t.Fatal(err)
 			}
 			targetInput := deploymentPlanTargetInput(t, s, model.DeploymentTarget{Name: "流水线自定义目标", Platform: platform, EnvironmentID: "inline-environment", HostID: "inline-host", RuntimeID: "inline-runtime", WorkingDirectory: "/srv/inline", Namespace: "default", WorkloadName: "inline-app", ContainerName: "app", RolloutTimeout: 120})
+			if kind == model.DeploymentPlanKubernetes {
+				targetInput.EnvironmentID = ""
+				targetInput.HostID = ""
+			}
 			definition := &model.WorkflowDeploymentPlan{Name: "当前流水线部署", Kind: kind, TimeoutSeconds: 120, Script: "printf original", ComposeYAML: "services:\n  app:\n    restart: unless-stopped\n", ServiceName: "app", DeploymentTarget: &model.DeploymentTarget{Platform: platform, EnvironmentID: targetInput.EnvironmentID, HostID: targetInput.HostID, RuntimeID: targetInput.RuntimeID, WorkingDirectory: targetInput.WorkingDirectory, Namespace: targetInput.Namespace, WorkloadName: targetInput.WorkloadName, ContainerName: targetInput.ContainerName}}
 			if model.RequiresDeploymentRegistry(kind) {
 				definition.ExecutionConfig = &model.DeploymentExecutionConfig{DeploymentRegistryID: deploymentRegistry.ID, ArtifactBuildPlanID: build.ID}

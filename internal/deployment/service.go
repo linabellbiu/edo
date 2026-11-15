@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"edo/internal/configfile"
+	"edo/internal/database"
 	"edo/internal/dockerengine"
 	"edo/internal/envtext"
 	"edo/internal/kube"
@@ -942,10 +943,14 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 	if record.Status != model.DeploymentQueued {
 		return ErrInvalidDeploymentState
 	}
-	if err := s.requireExecutionPermission(ctx, &record); err != nil {
+	actorID, err := s.executionAuthority(ctx, &record)
+	if err != nil {
 		return s.failExecutionAuthorization(ctx, &record, err)
 	}
-	ctx, err := deploymentRequesterContext(ctx, record)
+	scope, _ := database.DepartmentScopeFromContext(ctx)
+	scope.UserID = actorID
+	ctx = database.WithDepartmentScope(ctx, scope)
+	ctx, err = deploymentRequesterContext(ctx, record)
 	if err != nil {
 		return err
 	}
@@ -1581,7 +1586,7 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 		input.RolloutTimeout < 30 || input.RolloutTimeout > 3600 {
 		return TargetInput{}, ErrInvalidTarget
 	}
-	if input.EnvironmentID == "" && input.HostIDs == nil {
+	if input.Platform != model.DeploymentKubernetes && input.EnvironmentID == "" && input.HostIDs == nil {
 		return TargetInput{}, ErrInvalidTarget
 	}
 	selected := input.HostID
@@ -1642,7 +1647,7 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 }
 
 // resolveEnvironmentTarget 按明确保存的主机身份解析能力；分组仅组织候选项，不改变已选目标。
-// Kubernetes 继续使用独立集群及主机组归属校验。
+// Kubernetes 直接核验独立集群；已有环境归属继续保留其校验。
 func (s *Service) resolveEnvironmentTarget(
 	ctx context.Context,
 	environmentID string,
@@ -1651,7 +1656,7 @@ func (s *Service) resolveEnvironmentTarget(
 	selectedHostIDs ...string,
 ) (model.Host, model.HostCapability, error) {
 	var environment model.Environment
-	if environmentID != "" || platform == model.DeploymentKubernetes {
+	if environmentID != "" {
 		if err := s.db.WithContext(ctx).First(&environment, "uuid = ? AND is_active = ?", environmentID, true).Error; err != nil {
 			s.logger.WarnContext(ctx, "解析执行主机组失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
 			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
@@ -1663,8 +1668,14 @@ func (s *Service) resolveEnvironmentTarget(
 			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
 		}
 		cluster, err := s.kube.Find(ctx, runtimeID)
-		if err != nil || !cluster.IsActive || cluster.ProjectID != environment.ProjectID || cluster.DepartmentID != environment.DepartmentID {
-			s.logger.WarnContext(ctx, "独立集群不可用于当前环境", "operation", "deployment_cluster_resolve", "environment_id", environmentID, "cluster_id", runtimeID, "err", err)
+		scope, scoped := database.DepartmentScopeFromContext(ctx)
+		if err != nil || !cluster.IsActive ||
+			(environmentID != "" && (cluster.ProjectID != environment.ProjectID || cluster.DepartmentID != environment.DepartmentID)) ||
+			(scoped && ((scope.ProjectID != "" && cluster.ProjectID != scope.ProjectID) || (!scope.AllDepartments && cluster.DepartmentID != scope.DepartmentID))) {
+			if err == nil {
+				err = ErrInvalidTarget
+			}
+			s.logger.WarnContext(ctx, "所选集群不可用于当前部署", "operation", "deployment_cluster_resolve", "environment_id", environmentID, "cluster_id", runtimeID, "err", err)
 			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
 		}
 		return model.Host{}, model.HostCapability{Kind: model.HostCapabilityKubernetes, RuntimeID: cluster.ID, Status: model.HostCapabilityReady}, nil

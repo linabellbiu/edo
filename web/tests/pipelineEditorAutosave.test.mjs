@@ -591,3 +591,11 @@ test('新建 Docker Compose 任务不猜测文件名，留空由仓库根目录�
  const node=h.state.createTaskNode('deploy',h.state.taskDefinitions.find(item=>item.id==='compose-deploy'))
  assert.deepEqual(node.config.compose_source,{kind:'repository',path:''})
 })
+
+test('上游镜像标签按实际阶段与任务位置区分近似名称，不改写任务身份或名称',t=>{
+ const {state}=harness(t)
+ const one={id:'image-one',name:'构建镜像',type:'build',config:{}},two={id:'image-two',name:'镜像构建',type:'build',config:{}},deploy={id:'deploy',name:'Kubernetes 部署',type:'deploy',config:{}}
+ state.stages.value=[{id:'build-stage',name:'构建',tasks:[one,two]},{id:'deploy-stage',name:'部署',tasks:[deploy]},{id:'later',name:'后续',tasks:[{...one,id:'later-image'}]}]
+ assert.deepEqual(state.priorBuildTaskLabels('deploy'),{'image-one':'构建镜像 · 阶段 1 构建 / 任务 1','image-two':'镜像构建 · 阶段 1 构建 / 任务 2'})
+ assert.deepEqual(state.priorBuildTasks('deploy').map(node=>[node.id,node.name]),[['image-one','构建镜像'],['image-two','镜像构建']])
+})
