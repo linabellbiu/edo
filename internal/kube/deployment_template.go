@@ -170,10 +170,6 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 				containerPorts[key] = true
 			}
 			sp := corev1.ServicePort{Name: p.Name, Port: p.Port, TargetPort: intstr.FromInt32(p.TargetPort), Protocol: protocol}
-			if p.Name == "http" && protocol == corev1.ProtocolTCP {
-				http := "http"
-				sp.AppProtocol = &http
-			}
 			if serviceType == "NodePort" || serviceType == "LoadBalancer" {
 				sp.NodePort = p.NodePort
 			}

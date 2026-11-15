@@ -84,6 +84,21 @@ test('端口可按用户配置增删，清空后重建，网络撤权时事件�
  const denied=componentHarness('../src/components/KubernetesDeploymentTemplateFields.vue',{props:{modelValue:props.modelValue,disabled:false},codes:['kubernetes.workload.update']});t.after(denied.stop)
  denied.state.addPort();denied.state.removePort(0);denied.state.port(0,{port:443});assert.deepEqual(denied.events,[])
 })
+
+test('http示例名称可以直接改写并在阶段重开后保留，不更改协议或方案初始值',async t=>{
+ const {loadFrontend}=await import('./acceptanceHarness.mjs'),utils=loadFrontend('../src/utils/kubernetesDeployment.ts'),overrides=loadFrontend('../src/utils/kubernetesPlanOverride.ts')
+ const base={name:'通用方案',kind:'kubernetes',timeout_seconds:600,execution_config:{kubernetes:utils.defaultKubernetesDeployment()}}
+ const props=vue.reactive({modelValue:JSON.parse(JSON.stringify(base.execution_config.kubernetes)),disabled:false})
+ const h=componentHarness('../src/components/KubernetesDeploymentTemplateFields.vue',{props,codes:['kubernetes.workload.update','kubernetes.network.update']});t.after(h.stop)
+ h.state.port(0,{name:'web-api'});props.modelValue=h.events.at(-1).args[0];await settle()
+ const override=overrides.stageKubernetesOverride(base,{...base,execution_config:{kubernetes:props.modelValue}})
+ const reopened=overrides.effectiveKubernetesPlan(base,JSON.parse(JSON.stringify(override)))
+ assert.equal(reopened.execution_config.kubernetes.ports[0].name,'web-api')
+ assert.equal(reopened.execution_config.kubernetes.ports[0].protocol,undefined)
+ assert.equal(reopened.execution_config.kubernetes.ports[0].enabled,false)
+ assert.equal(base.execution_config.kubernetes.ports[0].name,'http')
+ assert.equal(utils.kubernetesDeploymentPortError(reopened.execution_config.kubernetes),'')
+})
 test('动态端口允许同号不同协议，拒绝重复名称、协议映射和节点端口',async()=>{
  const {loadFrontend}=await import('./acceptanceHarness.mjs'),utils=loadFrontend('../src/utils/kubernetesDeployment.ts')
  const cfg=utils.defaultKubernetesDeployment();cfg.ports=[{name:'dns',enabled:true,port:53,target_port:53,protocol:'UDP'},{name:'dns-tcp',enabled:true,port:53,target_port:53,protocol:'TCP'}]

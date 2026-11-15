@@ -326,8 +326,47 @@ func TestKubernetesDeploymentTemplateDynamicProtocolsMappingsAndPortRemoval(t *t
 		t.Fatal(err)
 	}
 	service = corev1.Service{}
-	if err := jsonRoundTrip(f.objects["/api/v1/namespaces/demo/services/api"], &service); err != nil || len(service.Spec.Ports) != 1 || service.Spec.Ports[0].Protocol != corev1.ProtocolTCP || service.Spec.Ports[0].AppProtocol == nil || *service.Spec.Ports[0].AppProtocol != "http" || service.Spec.Selector["edo.io/disabled"] != "" {
-		t.Fatal("重新添加 HTTP 端口未恢复准确协议与服务选择器", service.Spec, err)
+	if err := jsonRoundTrip(f.objects["/api/v1/namespaces/demo/services/api"], &service); err != nil || len(service.Spec.Ports) != 1 || service.Spec.Ports[0].Name != "http" || service.Spec.Ports[0].Protocol != corev1.ProtocolTCP || service.Spec.Ports[0].AppProtocol != nil || service.Spec.Selector["edo.io/disabled"] != "" {
+		t.Fatal("重新添加示例端口未保留用户名称、所选协议与服务选择器", service.Spec, err)
+	}
+}
+
+func TestKubernetesDeploymentTemplateExamplePortNameIsUserEditable(t *testing.T) {
+	s, id, f := newTemplateAPIFixture(t)
+	r := templateTestRecord(id)
+	cfg := model.DefaultKubernetesDeploymentSettings()
+	cfg.Ports[0].Enabled = true
+	var originalUID string
+	for _, name := range []string{"http", "web-api", "metrics"} {
+		cfg.Ports[0].Name = name
+		r.ID = "release-port-" + name
+		_, uid, err := s.DeployTemplate(context.Background(), r, cfg, nil, 2*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if originalUID == "" {
+			originalUID = uid
+		} else if uid != originalUID {
+			t.Fatal("修改端口名创建了另一工作负载")
+		}
+		var service corev1.Service
+		if err = jsonRoundTrip(f.objects["/api/v1/namespaces/demo/services/api"], &service); err != nil {
+			t.Fatal(err)
+		}
+		if service.Name != "api" || len(service.Spec.Ports) != 1 || service.Spec.Ports[0].Name != name || service.Spec.Ports[0].Protocol != corev1.ProtocolTCP || service.Spec.Ports[0].AppProtocol != nil {
+			t.Fatal("端口名称被固定或名称影响了协议", service.Spec.Ports)
+		}
+		var workload appsv1.Deployment
+		if err = jsonRoundTrip(f.objects["/apis/apps/v1/namespaces/demo/deployments/api"], &workload); err != nil {
+			t.Fatal(err)
+		}
+		ports := workload.Spec.Template.Spec.Containers[0].Ports
+		if len(ports) != 1 || ports[0].Name != name || ports[0].Protocol != corev1.ProtocolTCP {
+			t.Fatal("容器声明未使用用户输入的端口名称", ports)
+		}
+		if f.objects["/api/v1/namespaces/demo/services/http"] != nil {
+			t.Fatal("把示例端口名当作固定服务创建")
+		}
 	}
 }
 
