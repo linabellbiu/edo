@@ -18,7 +18,7 @@ import { dockerTargetError, dockerBuildPlatformError } from '@/utils/buildTarget
 import BuildPlanAdvancedFields from '@/components/BuildPlanAdvancedFields.vue'
 import PipelineBuildFields from '@/components/PipelineBuildFields.vue'
 import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
-import {effectiveKubernetesPlan} from '@/utils/kubernetesPlanOverride'
+import {effectiveKubernetesPlan,snapshotKubernetesPlan} from '@/utils/kubernetesPlanOverride'
 import KubernetesPlanStageFields from '@/components/KubernetesPlanStageFields.vue'
 import PipelineDeployFields from '@/components/PipelineDeployFields.vue'
 import DeploymentPlanView from '@/views/DeploymentPlanView.vue'
@@ -241,7 +241,8 @@ const selectedBuildPlanOptions=computed(()=>{
 const canCreateDeploymentPlan = computed(() => scopeCan('deployment_plan.create'))
 const canReadDeploymentPlan = computed(() => scopeCan('deployment_plan.read'))
 const selectedLibraryDeploymentPlan = computed(() => canReadDeploymentPlan.value && selectedNode.value?.type==='deploy' && deploymentSource(selectedNode.value)==='plan'
-  ? deploymentPlans.value.find(plan=>plan.id===selectedNode.value?.config.deployment_plan_id) : undefined)
+  ? stageSourcePlan(selectedNode.value) : undefined)
+function stageSourcePlan(node:WorkflowNode){const source=deploymentPlans.value.find(plan=>plan.id===node.config.deployment_plan_id);return source&&node.config.deployment_override?.plan_snapshot?{...source,...node.config.deployment_override.plan_snapshot}:source}
 const canModifyDeploymentPlan = computed(() => Boolean(selectedLibraryDeploymentPlan.value) && scopeCan('deployment_plan.update'))
 const canReadNotificationChannels = computed(() => scopeAllowed() && auth.canAny(['notification.read']))
 const canCreateNotificationChannels = computed(() => scopeCan('notification.create'))
@@ -664,7 +665,7 @@ function firstEnvironmentVariableError() {
     const platformError = task.type === 'build' && plan?.kind === 'dockerfile' ? dockerBuildPlatformError(task.config.build_platform || plan.platform) : ''
     if(task.type==='deploy'){
  const base=deploymentPlans.value.find(plan=>plan.id===task.config.deployment_plan_id)
- const deployment=task.config.inline_deployment_plan||(base?.kind==='kubernetes'?effectiveKubernetesPlan(base,task.config.deployment_override):undefined)
+ const deployment=task.config.inline_deployment_plan||(base&&(task.config.deployment_override?.plan_snapshot?.kind||base.kind)==='kubernetes'?effectiveKubernetesPlan(base,task.config.deployment_override):undefined)
  const cfg=deployment?.execution_config?.kubernetes
  const runtimeError=cfg?kubernetesDeploymentRuntimeError(cfg):''
  if(runtimeError)return {task,error:runtimeError,tab:'common' as const}
@@ -1171,7 +1172,7 @@ function taskSummary(node: WorkflowNode) {
   }
   if (node.type === 'deploy') {
     if(node.config.inline_deployment_plan)return deploymentKindNames[node.config.inline_deployment_plan.kind]
-    const plan = deploymentPlans.value.find(item => item.id === node.config.deployment_plan_id)
+    const plan = stageSourcePlan(node)
     return `部署方案：${plan?.name || '未选择'}`
   }
   return node.config.description || taskMeta[node.type as TaskNodeType]?.hint || ''
@@ -1180,12 +1181,13 @@ function taskSummary(node: WorkflowNode) {
 function deploymentPlanOptions(taskID: string) {
   const items=canReadDeploymentPlan.value?compatibleDeploymentPlans(taskID):[]
   const selectableIDs=new Set(items.map(item=>item.id))
-  const currentID=allNodes.value.find(node=>node.id===taskID)?.config.deployment_plan_id
+  const currentNode=allNodes.value.find(node=>node.id===taskID)
+  const currentID=currentNode?.config.deployment_plan_id
   const current=currentID&&canReadDeploymentPlan.value?deploymentPlans.value.find(plan=>plan.id===currentID):undefined
   if(current&&!items.some(item=>item.id===current.id))items.unshift(current)
   const options=items.map(item => ({
     value: item.id,
-    label: item.name,
+    label: item.id===currentID?currentNode?.config.deployment_override?.plan_snapshot?.name||item.name:item.name,
     detail: `部署方式：${deploymentKindNames[item.kind]}`,
     disabled: !selectableIDs.has(item.id),
   }))
@@ -1335,7 +1337,7 @@ function changeLibraryDeploymentPlan(value:string){
   if(!plan||!compatibleDeploymentPlans(node.id).some(item=>item.id===value))return
   if(node.config.deployment_plan_id)libraryDeploymentOverrides.set(node.id+'/'+node.config.deployment_plan_id,node.config.deployment_override?JSON.parse(JSON.stringify(node.config.deployment_override)):undefined)
   libraryDeploymentDrafts.set(node.id,value);changingDeploymentPlanNodeID.value=''
-  updateSelectedNode({}, {deployment_source:'plan',inline_deployment_plan:undefined,deployment_plan_id:value,deployment_override:libraryDeploymentOverrides.get(node.id+'/'+value)})
+  updateSelectedNode({}, {deployment_source:'plan',inline_deployment_plan:undefined,deployment_plan_id:value,deployment_override:libraryDeploymentOverrides.get(node.id+'/'+value)||(plan.kind==='kubernetes'?{plan_snapshot:snapshotKubernetesPlan(plan)}:undefined)})
 }
 function unlockDeploymentPlanSelection(){if(canEdit.value&&canReadDeploymentPlan.value&&selectedNode.value?.type==='deploy')changingDeploymentPlanNodeID.value=selectedNode.value.id}
 function modifyLinkedDeploymentPlan(){

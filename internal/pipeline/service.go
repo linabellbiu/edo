@@ -988,6 +988,10 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 			}
 			return findErr
 		}
+		if err := s.freezeDeploymentPlanConsumers(ctx, tx, plan); err != nil {
+			return err
+		}
+
 		if input.ExecutionConfig == nil && plan.ExecutionConfig != nil {
 			if err := normalizeDeploymentExecution(input.Kind, input.ComposeYAML, plan.ExecutionConfig); err != nil {
 				return err

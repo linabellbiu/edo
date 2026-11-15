@@ -96,8 +96,8 @@ func TestReusableKubernetesDeploymentOverridesStayLocalAndFreezePerTask(t *testi
 		t.Fatal(err)
 	}
 	nextSnapshot, _ := parseWorkflowSnapshot(next)
-	if nextSnapshot.DeploymentPlans["deploy"].Kubernetes.CPURequest != "250m" || nextSnapshot.DeploymentPlans["deploy"].Kubernetes.Replicas != 2 || nextSnapshot.DeploymentPlans["deploy"].ID != a.ID {
-		t.Fatal("方案新默认未继承或任务身份漂移")
+	if nextSnapshot.DeploymentPlans["deploy"].Kubernetes.CPURequest != "200m" || nextSnapshot.DeploymentPlans["deploy"].Kubernetes.Replicas != 2 || nextSnapshot.DeploymentPlans["deploy"].ID != a.ID {
+		t.Fatal("库方案修改影响已选用的阶段配置或任务身份漂移")
 	}
 	old, _ := parseWorkflowSnapshot(run)
 	if old.DeploymentPlans["deploy"].Kubernetes.CPURequest != "200m" {

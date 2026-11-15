@@ -12,16 +12,17 @@ import (
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
 )
 
-// WorkflowDeploymentOverride 只保存当前部署任务的差异，不反向修改通用部署方案。
+// WorkflowDeploymentOverride 保存选用时的初始快照及当前任务差异，不反向修改通用部署方案。
 // 目标一旦提交即完整替换；Kubernetes 使用 RFC 7396 对象补丁保留显式关闭和清空值。
 type WorkflowDeploymentOverride struct {
-	DeploymentRegistryID   *string            `json:"deployment_registry_id,omitempty"`
-	DeploymentInputVersion *int               `json:"deployment_input_version,omitempty"`
-	DeploymentInputs       *[]DeploymentInput `json:"deployment_inputs,omitempty"`
-	DeploymentTarget       *DeploymentTarget  `json:"deployment_target,omitempty"`
-	Kubernetes             json.RawMessage    `json:"kubernetes,omitempty"`
-	TimeoutSeconds         *int               `json:"timeout_seconds,omitempty"`
-	ArtifactNodeID         *string            `json:"artifact_node_id,omitempty"`
+	PlanSnapshot           *WorkflowDeploymentPlanSnapshot `json:"plan_snapshot,omitempty"`
+	DeploymentRegistryID   *string                         `json:"deployment_registry_id,omitempty"`
+	DeploymentInputVersion *int                            `json:"deployment_input_version,omitempty"`
+	DeploymentInputs       *[]DeploymentInput              `json:"deployment_inputs,omitempty"`
+	DeploymentTarget       *DeploymentTarget               `json:"deployment_target,omitempty"`
+	Kubernetes             json.RawMessage                 `json:"kubernetes,omitempty"`
+	TimeoutSeconds         *int                            `json:"timeout_seconds,omitempty"`
+	ArtifactNodeID         *string                         `json:"artifact_node_id,omitempty"`
 }
 
 var ErrDeploymentOverride = errors.New("部署阶段覆盖配置无效，请检查部署方案、目标和覆盖参数")
@@ -35,6 +36,11 @@ func invalidDeploymentOverride(cause error) error {
 }
 
 func HasWorkflowDeploymentOverride(input *WorkflowDeploymentOverride) bool {
+	return input != nil && (input.PlanSnapshot != nil || HasWorkflowDeploymentChanges(input))
+}
+
+// HasWorkflowDeploymentChanges 不把来源快照本身当作用户参数覆盖。
+func HasWorkflowDeploymentChanges(input *WorkflowDeploymentOverride) bool {
 	if input == nil {
 		return false
 	}
@@ -51,6 +57,11 @@ func HasWorkflowDeploymentOverride(input *WorkflowDeploymentOverride) bool {
 func ValidateWorkflowDeploymentOverride(input *WorkflowDeploymentOverride) error {
 	if input == nil {
 		return nil
+	}
+	if input.PlanSnapshot != nil {
+		if err := ValidateWorkflowDeploymentPlanSnapshot(input.PlanSnapshot); err != nil {
+			return err
+		}
 	}
 	if input.TimeoutSeconds != nil && (*input.TimeoutSeconds < 30 || *input.TimeoutSeconds > 3600) {
 		return invalidDeploymentOverride(nil)

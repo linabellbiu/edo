@@ -164,6 +164,9 @@ func (s *Service) GetWorkflow(ctx context.Context, applicationID string) (*Workf
 	if err != nil {
 		return nil, err
 	}
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflow.Stages); err != nil {
+		return nil, err
+	}
 	issues := s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages)
 	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
 }
@@ -212,6 +215,9 @@ func (s *Service) GetApplicationWorkflow(ctx context.Context, applicationID, wor
 	if err != nil {
 		return nil, err
 	}
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflow.Stages); err != nil {
+		return nil, err
+	}
 	issues := s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages)
 	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
 }
@@ -246,6 +252,10 @@ func (s *Service) CreateApplicationWorkflow(
 			return nil, err
 		}
 	}
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflow.Stages); err != nil {
+		return nil, err
+	}
+
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockWorkflowApplication(tx, application.ID); err != nil {
 			return err
@@ -269,6 +279,9 @@ func (s *Service) CreateApplicationWorkflow(
 			err = ErrWorkflowExists
 		}
 		return nil, s.workflowMutationError(ctx, "application_workflow_create", application.ID, workflow.ID, err)
+	}
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflow.Stages); err != nil {
+		return nil, err
 	}
 	issues := s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages)
 	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
@@ -320,6 +333,9 @@ func (s *Service) ValidateWorkflow(ctx context.Context, applicationID string, in
 	if err := sanitizeWorkflowInput(&input); err != nil {
 		return nil, err
 	}
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, input.Stages); err != nil {
+		return nil, err
+	}
 	issues := s.validateWorkflow(ctx, application, input.SchemaVersion, input.Source, input.Stages)
 	return &WorkflowResult{Workflow: &model.ReleaseWorkflow{
 		ApplicationID: application.ID, SchemaVersion: input.SchemaVersion,
@@ -337,6 +353,9 @@ func (s *Service) ValidateApplicationWorkflow(ctx context.Context, applicationID
 		return nil, err
 	}
 	if err := sanitizeWorkflowInput(&input); err != nil {
+		return nil, err
+	}
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, input.Stages); err != nil {
 		return nil, err
 	}
 	issues := s.validateWorkflow(ctx, application, input.SchemaVersion, input.Source, input.Stages)
@@ -368,6 +387,11 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 		return nil, err
 	}
 	if err := sanitizeWorkflowInput(&input); err != nil {
+		return nil, err
+	}
+	retainWorkflowPlanSnapshots(input.Stages, workflow.Stages)
+
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, input.Stages); err != nil {
 		return nil, err
 	}
 	issues := s.validateWorkflow(ctx, application, input.SchemaVersion, input.Source, input.Stages)
@@ -406,8 +430,13 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 		if input.Revision != existing.Revision {
 			return ErrWorkflowRevisionConflict
 		}
+		retainWorkflowPlanSnapshots(input.Stages, existing.Stages)
 		if err := s.validateWorkflowNetworkChanges(ctx, tx, existing.Stages, input.Stages); err != nil {
 			return err
+		}
+		stagesJSON, err = json.Marshal(input.Stages)
+		if err != nil {
+			return ErrInvalidWorkflow
 		}
 		if err := workflowNameAvailable(tx, application.ID, existing.ID, input.Name); err != nil {
 			return err
@@ -852,6 +881,11 @@ func (s *Service) validateWorkflow(
 					targetIDs = append(targetIDs, plans[i].DeploymentTargetID)
 				}
 			}
+			for _, node := range tasks {
+				if node.Config.DeploymentOverride != nil && node.Config.DeploymentOverride.PlanSnapshot != nil && node.Config.DeploymentOverride.PlanSnapshot.DeploymentTargetID != "" {
+					targetIDs = append(targetIDs, node.Config.DeploymentOverride.PlanSnapshot.DeploymentTargetID)
+				}
+			}
 			if len(targetIDs) > 0 {
 				var targets []model.DeploymentTarget
 				if err := s.db.WithContext(ctx).Where("uuid IN ? AND is_active = ?", targetIDs, true).Find(&targets).Error; err == nil {
@@ -862,6 +896,8 @@ func (s *Service) validateWorkflow(
 			}
 		}
 	}
+	freezeWorkflowPlanDefaults(stages, activeDeploymentPlans, activeTargets)
+	tasks = workflowTasks(stages)
 	for i := range tasks {
 		if tasks[i].Type != model.WorkflowNodeDeploy || tasks[i].Config.InlineDeploymentPlan == nil {
 			continue
@@ -885,6 +921,7 @@ func (s *Service) validateWorkflow(
 		if !ok {
 			continue
 		}
+		base = model.WorkflowDeploymentSnapshotBase(base, node.Config.DeploymentOverride)
 		var originalTarget *model.DeploymentTarget
 		if target, ok := activeTargets[base.DeploymentTargetID]; ok {
 			copy := target
@@ -1584,6 +1621,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 						return nil, ErrInvalidWorkflow
 					}
+					plan = model.WorkflowDeploymentSnapshotBase(plan, current.Config.DeploymentOverride)
 					var originalTarget *model.DeploymentTarget
 					if plan.DeploymentTargetID != "" {
 						if database.WithContext(ctx).First(&target, "uuid = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil || target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID || !deploymentPlanSupportsTarget(plan.Kind, target.Platform) {

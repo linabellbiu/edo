@@ -14,6 +14,10 @@ func (s *Service) ResolveWorkflowLibraryPlan(ctx context.Context, base model.Dep
 		s.logger.WarnContext(ctx, "解析部署阶段方案失败", "operation", "workflow_library_plan_resolve", "deployment_plan_id", base.ID, "node_id", nodeID, "err", cause)
 		return nil, nil, model.ErrDeploymentOverride
 	}
+	base = model.WorkflowDeploymentSnapshotBase(base, override)
+	if override != nil && override.PlanSnapshot != nil {
+		baseTarget = base.DeploymentTarget
+	}
 	if base.Kind != model.DeploymentPlanKubernetes || base.ID == "" {
 		return fail(ErrInvalidTarget)
 	}
@@ -119,11 +123,15 @@ func (s *Service) resolveRollbackLibraryPlan(ctx context.Context, source *model.
 		return nil, nil, err
 	}
 	var target *model.DeploymentTarget
+	base = model.WorkflowDeploymentSnapshotBase(base, node.Config.DeploymentOverride)
 	if base.DeploymentTargetID != "" {
 		target = &model.DeploymentTarget{}
 		if err := s.db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?", base.DeploymentTargetID, source.ProjectID, source.DepartmentID, true).First(target).Error; err != nil {
 			s.logger.WarnContext(ctx, "读取回退来源目标失败", "operation", "workflow_library_rollback_target", "deployment_id", source.ID, "err", err)
 			return nil, nil, err
+		}
+		if base.DeploymentTarget != nil {
+			target = base.DeploymentTarget
 		}
 	}
 	plan, resolved, err := s.ResolveWorkflowLibraryPlan(ctx, base, target, node.Config.DeploymentOverride, run.WorkflowID, source.WorkflowNodeID)

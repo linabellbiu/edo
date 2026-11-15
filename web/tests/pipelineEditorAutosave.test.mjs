@@ -612,7 +612,7 @@ test('通用K8s方案保留关联，切换自定义及不同方案分别恢复�
  assert.equal(h.state.selectedNode.value.config.deployment_plan_id,undefined);assert.equal(h.state.selectedNode.value.config.deployment_override,undefined)
  assert.equal(h.state.selectedNode.value.config.inline_deployment_plan.execution_config.kubernetes.replicas,2)
  h.state.changeDeploymentSource('plan');assert.equal(h.state.selectedNode.value.config.deployment_plan_id,'one');assert.equal(h.state.selectedNode.value.config.deployment_override.kubernetes.replicas,2)
- h.state.unlockDeploymentPlanSelection();h.state.changeLibraryDeploymentPlan('two');assert.equal(h.state.selectedNode.value.config.deployment_override,undefined)
+ h.state.unlockDeploymentPlanSelection();h.state.changeLibraryDeploymentPlan('two');assert.equal(h.state.selectedNode.value.config.deployment_override.plan_snapshot.name,'通用二')
  h.state.unlockDeploymentPlanSelection();h.state.changeLibraryDeploymentPlan('one');assert.equal(h.state.selectedNode.value.config.deployment_override.kubernetes.replicas,2)
  assert.equal(h.state.deploymentPlans.value[0].execution_config.kubernetes.replicas,1)
 })
@@ -623,6 +623,24 @@ test('Kubernetes仓库部署无前序构建也可选择通用方案和配置集�
  h.state.stages.value=[{id:'deploy-stage',name:'部署',tasks:[{id:'deploy',name:'部署',type:'deploy',config:{}}]}]
  assert.ok(h.state.deploymentPlanOptions('deploy').some(option=>option.value==='registry-plan'&&!option.disabled))
  assert.ok(h.state.inlineDeploymentKinds('deploy').includes('kubernetes'))
+})
+
+test('同一部署方案更新后旧任务保持原参数，新任务选用新参数',t=>{
+ const h=harness(t,{active:true,permissions:['workflow.read','workflow.update','deployment_plan.read']})
+ const plan={id:'shared-pin',name:'初始方案',kind:'kubernetes',is_active:true,timeout_seconds:600,execution_config:{kubernetes:{template:'web',replicas:1,cpu_request:'200m',cpu_limit:'1',memory_request:'300Mi',memory_limit:'1Gi',service_type:'ClusterIP',node_port:false,ports:[]}}}
+ h.state.deploymentPlans.value=[plan]
+ h.state.stages.value=[{id:'deploy-stage',name:'部署',tasks:[{id:'a',name:'第一部署',type:'deploy',config:{deployment_source:'plan'}},{id:'b',name:'第二部署',type:'deploy',config:{deployment_source:'plan'}}]}]
+ h.state.selectNode('a');h.state.changeLibraryDeploymentPlan('shared-pin')
+ const updated=h.state.deploymentPlans.value[0];updated.name='新版方案';updated.execution_config.kubernetes.cpu_request='400m';updated.timeout_seconds=1200
+ assert.equal(h.state.selectedLibraryDeploymentPlan.value.execution_config.kubernetes.cpu_request,'200m')
+ assert.equal(h.state.selectedLibraryDeploymentPlan.value.timeout_seconds,600)
+ h.state.selectNode('b');h.state.changeLibraryDeploymentPlan('shared-pin')
+ assert.equal(h.state.selectedLibraryDeploymentPlan.value.execution_config.kubernetes.cpu_request,'400m')
+ const [a,b]=h.state.stages.value[0].tasks
+ assert.equal(a.config.deployment_override.plan_snapshot.name,'初始方案')
+ assert.equal(b.config.deployment_override.plan_snapshot.name,'新版方案')
+ assert.equal(a.config.deployment_plan_id,b.config.deployment_plan_id)
+ assert.equal(h.requests.filter(row=>row.path?.includes('deployment-plans')&&row.method!=='get').length,0)
 })
 
 test('部署参数有重复键草稿时不保存或切走任务，修正后恢复操作',async t=>{

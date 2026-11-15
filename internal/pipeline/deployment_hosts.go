@@ -25,6 +25,7 @@ func (s *Service) expandDeploymentHosts(ctx context.Context, db *gorm.DB, workfl
 					if err := db.WithContext(ctx).First(&plan, "uuid = ? AND is_active = ?", node.Config.DeploymentPlanID, true).Error; err != nil {
 						return s.hostExpansionError(ctx, node.ID, err)
 					}
+					plan = model.WorkflowDeploymentSnapshotBase(plan, node.Config.DeploymentOverride)
 					if plan.Kind == model.DeploymentPlanKubernetes && (plan.DeploymentTargetID == "" || model.HasWorkflowDeploymentOverride(node.Config.DeploymentOverride)) {
 						tasks = append(tasks, node)
 						continue

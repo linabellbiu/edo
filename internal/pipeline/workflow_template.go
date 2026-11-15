@@ -107,12 +107,18 @@ func (s *Service) GetWorkflowTemplate(ctx context.Context, id string) (*Workflow
 		}
 		return nil, fmt.Errorf("读取流水线方案失败: %w", err)
 	}
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, template.Stages); err != nil {
+		return nil, err
+	}
 	issues := s.validateWorkflowTemplate(ctx, template.SchemaVersion, template.Source, template.Stages)
 	return &WorkflowTemplateResult{WorkflowTemplate: &template, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
 func (s *Service) ValidateWorkflowTemplate(ctx context.Context, input WorkflowTemplateInput) (*WorkflowTemplateResult, error) {
 	if err := sanitizeWorkflowTemplateInput(&input); err != nil {
+		return nil, err
+	}
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, input.Stages); err != nil {
 		return nil, err
 	}
 	issues := s.validateWorkflowTemplate(ctx, input.SchemaVersion, input.Source, input.Stages)
@@ -126,6 +132,9 @@ func (s *Service) CreateWorkflowTemplate(ctx context.Context, actorID string, in
 	if err := sanitizeWorkflowTemplateInput(&input); err != nil {
 		return nil, err
 	}
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, input.Stages); err != nil {
+		return nil, err
+	}
 	issues := s.validateWorkflowTemplate(ctx, input.SchemaVersion, input.Source, input.Stages)
 	if hasWorkflowIssue(issues, "deployment_override_permission_denied") {
 		return &WorkflowTemplateResult{Valid: false, Issues: issues}, ErrKubernetesTemplatePermission
@@ -136,6 +145,10 @@ func (s *Service) CreateWorkflowTemplate(ctx context.Context, actorID string, in
 			Source: input.Source, Stages: input.Stages,
 		}, Valid: false, Issues: issues}, ErrInvalidWorkflow
 	}
+	if err := s.validateWorkflowNetworkChanges(ctx, s.db, nil, input.Stages); err != nil {
+		return nil, err
+	}
+
 	now := time.Now().UTC()
 	template := &model.ReleaseWorkflowTemplate{
 		ID: uuid.NewString(), SchemaVersion: input.SchemaVersion, Name: input.Name, Description: input.Description,
@@ -165,6 +178,11 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 	}
 	if existingForValidation.Revision != input.Revision {
 		return nil, ErrWorkflowTemplateRevisionConflict
+	}
+	retainWorkflowPlanSnapshots(input.Stages, existingForValidation.Stages)
+
+	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, input.Stages); err != nil {
+		return nil, err
 	}
 	issues := s.validateWorkflowTemplate(ctx, input.SchemaVersion, input.Source, input.Stages)
 	if hasWorkflowIssue(issues, "deployment_override_permission_denied") {
@@ -197,9 +215,11 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		if existing.Revision != input.Revision {
 			return ErrWorkflowTemplateRevisionConflict
 		}
+		retainWorkflowPlanSnapshots(input.Stages, existing.Stages)
 		if err := s.validateWorkflowNetworkChanges(ctx, tx, existing.Stages, input.Stages); err != nil {
 			return err
 		}
+		stagesJSON, _ = json.Marshal(input.Stages)
 		result := tx.Model(&model.ReleaseWorkflowTemplate{}).
 			Where("uuid = ? AND revision = ?", id, input.Revision).
 			Updates(map[string]any{

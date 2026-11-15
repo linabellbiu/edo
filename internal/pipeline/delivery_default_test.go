@@ -148,13 +148,26 @@ func TestDeliveryWorkflowFourKindsCreateIndependentDrafts(t *testing.T) {
 						}
 						selected := savedRegistryExecutionForTest(t, service, build.ID)
 						if kind == model.DeploymentPlanKubernetes {
-							plan.ExecutionConfig.DeploymentRegistryID = selected.DeploymentRegistryID
-							plan.ExecutionConfig.DeploymentInputs = []model.DeploymentInput{{Kind: "registry", RegistryID: selected.DeploymentRegistryID, Image: "api", Tag: "v1"}}
+							// 选用方案后镜像绑定归当前部署阶段，修改库方案不再同步已有流水线。
+							for i := range result.Workflow.Stages {
+								for j := range result.Workflow.Stages[i].Tasks {
+									node := &result.Workflow.Stages[i].Tasks[j]
+									if node.Type != model.WorkflowNodeDeploy {
+										continue
+									}
+									if node.Config.DeploymentOverride == nil {
+										node.Config.DeploymentOverride = &model.WorkflowDeploymentOverride{}
+									}
+									node.Config.DeploymentOverride.DeploymentRegistryID = overrideTestPointer(selected.DeploymentRegistryID)
+									node.Config.DeploymentOverride.DeploymentInputVersion = overrideTestPointer(1)
+									node.Config.DeploymentOverride.DeploymentInputs = overrideTestPointer([]model.DeploymentInput{{Kind: "registry", RegistryID: selected.DeploymentRegistryID, Image: "api", Tag: "v1"}})
+								}
+							}
 						} else {
 							plan.ExecutionConfig = selected
-						}
-						if err := db.Save(plan).Error; err != nil {
-							t.Fatal(err)
+							if err := db.Save(plan).Error; err != nil {
+								t.Fatal(err)
+							}
 						}
 						authorizeRegistryTestActors(t, service, "admin")
 					}
@@ -174,7 +187,14 @@ func TestDeliveryWorkflowFourKindsCreateIndependentDrafts(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if snap.DeploymentPlans["deploy"].ID != plan.ID || snap.DeploymentTargets["deploy"].ID != plan.DeploymentTargetID {
+					expectedPlanID := plan.ID
+					if kind == model.DeploymentPlanKubernetes {
+						expectedPlanID, _ = model.InlineDeploymentIdentity(saved.Workflow.ID, "deploy")
+						if snap.DeploymentPlans["deploy"].SourcePlanID != plan.ID || snap.DeploymentPlans["deploy"].Kubernetes.CPURequest != "200m" {
+							t.Fatal("阶段独立配置没有保留准确来源与初始资源")
+						}
+					}
+					if snap.DeploymentPlans["deploy"].ID != expectedPlanID || snap.DeploymentTargets["deploy"].ID != plan.DeploymentTargetID {
 						t.Fatal("运行未冻结独立部署配置")
 					}
 				}

@@ -14,10 +14,18 @@ import (
 
 // resolveWorkflowLibraryPlan 在检查和冻结时共用有效配置解析，不保存库方案或生成目标记录。
 func (s *Service) resolveWorkflowLibraryPlan(ctx context.Context, application *model.Application, workflowID string, node model.WorkflowNode, base model.DeploymentPlan, baseTarget *model.DeploymentTarget, db *gorm.DB) (*model.DeploymentPlan, *model.DeploymentTarget, error) {
-	if !model.HasWorkflowDeploymentOverride(node.Config.DeploymentOverride) && base.DeploymentTargetID != "" {
+	base = model.WorkflowDeploymentSnapshotBase(base, node.Config.DeploymentOverride)
+	if node.Config.DeploymentOverride != nil && node.Config.DeploymentOverride.PlanSnapshot != nil {
+		if base.DeploymentTargetID != "" && (baseTarget == nil || baseTarget.ID != base.DeploymentTargetID) {
+			s.logger.WarnContext(ctx, "部署方案快照的原目标不可用", "operation", "workflow_plan_snapshot_target", "deployment_plan_id", base.ID, "node_id", node.ID, "err", model.ErrDeploymentOverride)
+			return nil, nil, model.ErrDeploymentOverride
+		}
+		baseTarget = base.DeploymentTarget
+	}
+	if !model.HasWorkflowDeploymentChanges(node.Config.DeploymentOverride) && base.DeploymentTargetID != "" {
 		return &base, baseTarget, nil
 	}
-	if application == nil && !model.HasWorkflowDeploymentOverride(node.Config.DeploymentOverride) {
+	if application == nil && !model.HasWorkflowDeploymentChanges(node.Config.DeploymentOverride) {
 		return &base, nil, nil
 	}
 	if base.Kind != model.DeploymentPlanKubernetes || s.deployments == nil {
@@ -129,6 +137,7 @@ func (s *Service) validateWorkflowNetworkChanges(ctx context.Context, db *gorm.D
 		if !ok {
 			return result, nil
 		}
+		plan = model.WorkflowDeploymentSnapshotBase(plan, node.Config.DeploymentOverride)
 		result = &plan
 		result.ExecutionConfig = cloneDeploymentExecutionConfig(plan.ExecutionConfig)
 		if override := node.Config.DeploymentOverride; override != nil && len(override.Kubernetes) > 0 {
@@ -172,6 +181,9 @@ func (s *Service) validateWorkflowNetworkChanges(ctx context.Context, db *gorm.D
 		after, err := effective(node)
 		if err != nil {
 			return err
+		}
+		if node.Config.DeploymentOverride != nil && node.Config.DeploymentOverride.PlanSnapshot != nil && after.ExecutionConfig != nil && after.ExecutionConfig.Kubernetes != nil {
+			workloadChanged = true
 		}
 		before := &model.DeploymentPlan{}
 		if kubernetesNetworkSettingsDiffer(*before, after) {

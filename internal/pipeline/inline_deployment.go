@@ -54,7 +54,8 @@ func normalizeInlineDeploymentPlan(input *model.WorkflowDeploymentPlan, sources 
 }
 
 func workflowDeploymentPlanKey(node model.WorkflowNode) string {
-	if node.Config.InlineDeploymentPlan != nil || model.HasWorkflowDeploymentOverride(node.Config.DeploymentOverride) {
+	snapshot := node.Config.DeploymentOverride
+	if node.Config.InlineDeploymentPlan != nil || model.HasWorkflowDeploymentChanges(snapshot) || snapshot != nil && snapshot.PlanSnapshot != nil && snapshot.PlanSnapshot.DeploymentTargetID == "" {
 		id, _ := model.InlineDeploymentIdentity("", node.ID)
 		return id
 	}

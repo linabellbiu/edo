@@ -39,6 +39,7 @@ export interface KubernetesDeploymentSettings {
 }
 
 export interface WorkflowDeploymentOverride {
+ plan_snapshot?:{name:string;kind:'kubernetes';timeout_seconds:number;execution_config?:DeploymentExecutionConfig;deployment_target_id?:string;deployment_target?:NonNullable<WorkflowDeploymentPlan['deployment_target']>}
  deployment_registry_id?:string
  deployment_input_version?:number
  deployment_inputs?:DeploymentInput[]

@@ -356,6 +356,9 @@ func (s *Service) CreateDeliveryWorkflow(ctx context.Context, applicationID, act
 			Revision: 1, IsActive: false, Source: definition.Source, Stages: stages,
 			CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 		}
+		if err := s.freezeWorkflowPlanDefaults(ctx, tx, workflow.Stages); err != nil {
+			return err
+		}
 		// 默认方案是创建模板；生成的是可独立编辑的草稿，不自动绑定后续版本或触发发布。
 		if err := tx.Create(&workflow).Error; err != nil {
 			return err

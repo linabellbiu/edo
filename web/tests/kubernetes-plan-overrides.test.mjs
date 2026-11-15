@@ -10,7 +10,7 @@ const utils=loadFrontend('../src/utils/kubernetesPlanOverride.ts')
 const defaults=loadFrontend('../src/utils/kubernetesDeployment.ts').defaultKubernetesDeployment
 const base=()=>({id:'shared',name:'通用 K8s',kind:'kubernetes',is_active:true,timeout_seconds:600,execution_config:{kubernetes:defaults()}})
 const target={platform:'kubernetes',environment_id:'',runtime_id:'cluster',namespace:'order-api',workload_name:'api',container_name:'api'}
-test('通用方案只保存默认规则，阶段只存差异，后续方案更新仍继承未覆盖字段',()=>{
+test('选择方案后固定初始配置，阶段独立修改，后续方案更新不改变未覆盖字段',()=>{
  const plan=base(),stage=utils.effectiveKubernetesPlan(plan)
  stage.deployment_target=target;stage.execution_config.kubernetes.cpu_request='400m';stage.execution_config.kubernetes.ports[0].enabled=true;stage.timeout_seconds=900;stage.execution_config.artifact_node_id='build-task'
  const override=utils.stageKubernetesOverride(plan,stage)
@@ -19,7 +19,39 @@ test('通用方案只保存默认规则，阶段只存差异，后续方案更�
  assert.equal(plan.execution_config.kubernetes.cpu_request,'200m');assert.equal(plan.deployment_target,undefined)
  plan.execution_config.kubernetes.memory_request='350Mi';plan.execution_config.kubernetes.cpu_request='250m'
  const again=utils.effectiveKubernetesPlan(plan,override)
- assert.equal(again.execution_config.kubernetes.cpu_request,'400m');assert.equal(again.execution_config.kubernetes.memory_request,'350Mi')
+ assert.equal(again.execution_config.kubernetes.cpu_request,'400m');assert.equal(again.execution_config.kubernetes.memory_request,'300Mi')
+ assert.equal(override.plan_snapshot.execution_config.kubernetes.memory_request,'300Mi')
+})
+
+test('部署阶段打开后库方案刷新不改变初始参数，修改和恢复均以保存快照为准',async t=>{
+ const plan=base()
+ plan.execution_config.deployment_registry_id='initial-registry'
+ const snapshot=utils.snapshotKubernetesPlan(plan)
+ const props=vue.reactive({node:{id:'deploy',name:'部署',type:'deploy',config:{deployment_plan_id:'shared',deployment_override:{plan_snapshot:snapshot,deployment_target:target}}},plan,disabled:false,buildNodes:[]})
+ const h=componentHarness('../src/components/KubernetesPlanStageFields.vue',{props,codes:['workflow.update','kubernetes.workload.update','kubernetes.network.update'],modules:{'@/utils/kubernetesPlanOverride':utils}});t.after(h.stop)
+ await vue.nextTick()
+ props.plan.name='更新后的库方案';props.plan.timeout_seconds=1800
+ props.plan.execution_config.kubernetes.memory_request='600Mi'
+ props.plan.execution_config.kubernetes.service_type='LoadBalancer'
+ props.plan.execution_config.deployment_registry_id='new-registry'
+ await vue.nextTick()
+ assert.equal(h.state.effective.value.name,'通用 K8s')
+ assert.equal(h.state.effective.value.execution_config.kubernetes.memory_request,'300Mi')
+ assert.equal(h.state.effective.value.execution_config.kubernetes.service_type,'ClusterIP')
+ assert.equal(h.state.effective.value.execution_config.deployment_registry_id,'initial-registry')
+ const edited=JSON.parse(JSON.stringify(h.state.effective.value));edited.execution_config.kubernetes.replicas=3
+ h.state.change({inline_deployment_plan:edited})
+ props.node.config.deployment_override=h.events.at(-1).args[0].deployment_override
+ await vue.nextTick()
+ assert.equal(props.node.config.deployment_override.kubernetes.replicas,3)
+ assert.equal(props.node.config.deployment_override.plan_snapshot.execution_config.kubernetes.memory_request,'300Mi')
+ h.state.restore();props.node.config.deployment_override=h.events.at(-1).args[0].deployment_override
+ await vue.nextTick()
+ assert.equal(h.state.effective.value.execution_config.kubernetes.replicas,1)
+ assert.equal(h.state.effective.value.execution_config.kubernetes.memory_request,'300Mi')
+ assert.equal(h.state.effective.value.timeout_seconds,600)
+ assert.equal(props.plan.execution_config.kubernetes.memory_request,'600Mi')
+ assert.deepEqual(h.requests,[])
 })
 test('显式false、空数组与删除探针保持含义，端口数组整体替换',()=>{
  const plan=base();plan.execution_config.kubernetes.node_port=true;plan.execution_config.kubernetes.command=['/server'];plan.execution_config.kubernetes.readiness_probe={kind:'http',port:8080,path:'/ready'}
@@ -33,7 +65,7 @@ test('阶段恢复默认只清除参数覆盖，保留准确目标与上游绑�
  const props=vue.reactive({node:{id:'stage',name:'发布',type:'deploy',config:{deployment_plan_id:'shared',deployment_override:{deployment_target:target,artifact_node_id:'image',kubernetes:{replicas:2},timeout_seconds:900}}},plan:base(),disabled:false,buildNodes:[]})
  const h=componentHarness('../src/components/KubernetesPlanStageFields.vue',{props,codes:['workflow.update','kubernetes.workload.update','kubernetes.network.update'],modules:{'@/utils/kubernetesPlanOverride':utils}});t.after(h.stop)
  assert.equal(h.state.effective.value.execution_config.kubernetes.replicas,2)
- h.state.restore();assert.deepEqual(h.events.at(-1).args[0],{deployment_override:{deployment_target:target,artifact_node_id:'image'}})
+ h.state.restore();assert.deepEqual(h.events.at(-1).args[0],{deployment_override:{deployment_target:target,artifact_node_id:'image',plan_snapshot:utils.snapshotKubernetesPlan(props.plan)}})
  props.disabled=true;h.state.restore();assert.equal(h.events.length,1)
 })
 test('固定方案目标覆盖仅提交可配置身份，不夹带数据库UUID和归属',()=>{
