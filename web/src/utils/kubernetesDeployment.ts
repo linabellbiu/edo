@@ -1,7 +1,8 @@
 import type {KubernetesDeploymentSettings,WorkflowNode} from '@/types/pipeline'
+import {kubernetesCommonOptionsError} from '@/utils/kubernetesCommonOptions'
 
 export function defaultKubernetesDeployment():KubernetesDeploymentSettings {
- return {template:'web',replicas:1,cpu_request:'200m',memory_request:'300Mi',cpu_limit:'1',memory_limit:'1Gi',node_port:false,ports:[{name:'http',enabled:false,port:8080,target_port:8080},{name:'tcp',enabled:false,port:8888,target_port:8888}]}
+ return {template:'web',replicas:1,cpu_request:'200m',memory_request:'300Mi',cpu_limit:'1',memory_limit:'1Gi',node_port:false,ports:[{name:'http',enabled:false,port:8080,target_port:8080}]}
 }
 export function kubernetesResourceName(value:string){return value.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,63).replace(/-+$/g,'')}
 export function kubernetesContainerDefault(applicationName:string,build?:WorkflowNode){
@@ -10,7 +11,25 @@ export function kubernetesContainerDefault(applicationName:string,build?:Workflo
  return kubernetesResourceName((image.split('/').at(-1)||'').split(/[:@]/)[0]||'')
 }
 
+export function kubernetesDeploymentPortError(config:KubernetesDeploymentSettings):string {
+ if(!Array.isArray(config.ports)||config.ports.length>32)return '最多添加 32 个端口'
+ const names=new Set<string>(),services=new Set<string>(),nodes=new Set<number>()
+ for(const [index,port]of config.ports.entries()){
+  const prefix=`端口 ${index+1}：`
+  if(!port.name||port.name.length>15||!/[a-z]/.test(port.name)||!/^([a-z0-9])([-a-z0-9]*[a-z0-9])?$/.test(port.name)||port.name.includes('--'))return prefix+'名称应为 1–15 位小写字母、数字或单连字符，且至少包含一个字母'
+  if(names.has(port.name))return prefix+'端口名称重复'
+  names.add(port.name)
+  if(!['TCP','UDP','SCTP'].includes(port.protocol||'TCP'))return prefix+'请选择有效协议'
+  if(!Number.isInteger(port.port)||port.port<1||port.port>65535||!Number.isInteger(port.target_port)||port.target_port<1||port.target_port>65535)return prefix+'服务端口和容器端口应为 1–65535'
+  if(port.node_port!==undefined&&port.node_port!==0&&(!Number.isInteger(port.node_port)||port.node_port<30000||port.node_port>32767))return prefix+'节点端口应为 30000–32767，或留空自动分配'
+  if(port.enabled){const key=`${port.port}/${port.protocol||'TCP'}`;if(services.has(key))return prefix+'服务端口与协议重复';services.add(key);if(port.node_port){if(nodes.has(port.node_port))return prefix+'节点端口重复';nodes.add(port.node_port)}}
+ }
+ return ''
+}
+
 export function kubernetesDeploymentRuntimeError(config:KubernetesDeploymentSettings):string {
+ const portsError=kubernetesDeploymentPortError(config);if(portsError)return portsError
+ const optionsError=kubernetesCommonOptionsError(config.options);if(optionsError)return optionsError
  const validArguments=(values?:string[])=>!values||(values.length<=64&&values.reduce((total,value)=>total+new TextEncoder().encode(value).length,0)<=32768&&values.every(value=>new TextEncoder().encode(value).length<=4096&&!/[\0\r\n]/.test(value)))
  if(!validArguments(config.command)||!validArguments(config.args))return '启动命令或参数无效，每行填写一个参数，最多 64 项'
  if(config.working_dir&&(new TextEncoder().encode(config.working_dir).length>4096||!config.working_dir.startsWith('/')||/[\0\r\n]/.test(config.working_dir)||config.working_dir!=='/'&&(/\/$/.test(config.working_dir)||config.working_dir.split('/').slice(1).some(value=>!value||value==='.'||value==='..'))))return '容器工作目录必须是规范的绝对路径'

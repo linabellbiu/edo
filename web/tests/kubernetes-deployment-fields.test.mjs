@@ -53,7 +53,7 @@ test('标准模板使用约定资源，默认端口全部关闭；无RBAC不能�
  const {loadFrontend}=await import('./acceptanceHarness.mjs')
  const defaults=loadFrontend('../src/utils/kubernetesDeployment.ts').defaultKubernetesDeployment()
  assert.deepEqual([defaults.replicas,defaults.cpu_request,defaults.memory_request,defaults.cpu_limit,defaults.memory_limit],[1,'200m','300Mi','1','1Gi'])
- assert.equal(defaults.node_port,false);assert.deepEqual(defaults.ports.map(p=>[p.enabled,p.port,p.target_port]),[[false,8080,8080],[false,8888,8888]])
+ assert.equal(defaults.node_port,false);assert.deepEqual(defaults.ports.map(p=>[p.enabled,p.port,p.target_port]),[[false,8080,8080]])
  const h=componentHarness('../src/components/KubernetesDeploymentTemplateFields.vue',{props:{modelValue:defaults,disabled:false}});t.after(h.stop)
  assert.equal(h.state.resourceDisabled.value,true);assert.equal(h.state.networkDisabled.value,true)
  h.state.port(0,{enabled:true});assert.deepEqual(h.events,[])
@@ -66,4 +66,31 @@ test('显式镜像修改不覆盖用户手填的容器名称',async t=>{
  await settle()
  assert.equal(h.props.node.config.inline_deployment_plan.deployment_target.container_name,'manual-api')
  assert.ok(h.events.every(event=>event.args[0].inline_deployment_plan.deployment_target.container_name==='manual-api'))
+})
+
+test('端口可按用户配置增删，清空后重建，网络撤权时事件均被阻止',async t=>{
+ const {loadFrontend}=await import('./acceptanceHarness.mjs')
+ const props=vue.reactive({modelValue:loadFrontend('../src/utils/kubernetesDeployment.ts').defaultKubernetesDeployment(),disabled:false})
+ const h=componentHarness('../src/components/KubernetesDeploymentTemplateFields.vue',{props,codes:['kubernetes.workload.update','kubernetes.network.update']});t.after(h.stop)
+ h.state.addPort();props.modelValue=h.events.at(-1).args[0]
+ assert.equal(props.modelValue.ports.length,2)
+ h.state.port(1,{name:'dns',protocol:'UDP',port:53,target_port:53});props.modelValue=h.events.at(-1).args[0]
+ assert.equal(props.modelValue.ports[1].protocol,'UDP')
+ h.state.removePort(0);props.modelValue=h.events.at(-1).args[0];assert.equal(props.modelValue.ports[0].name,'dns')
+ h.state.removePort(0);props.modelValue=h.events.at(-1).args[0];assert.deepEqual(props.modelValue.ports,[])
+ h.state.addPort();props.modelValue=h.events.at(-1).args[0];assert.equal(props.modelValue.ports.length,1)
+ props.disabled=true;const count=h.events.length
+ h.state.addPort();h.state.removePort(0);h.state.port(0,{port:443});assert.equal(h.events.length,count)
+ const denied=componentHarness('../src/components/KubernetesDeploymentTemplateFields.vue',{props:{modelValue:props.modelValue,disabled:false},codes:['kubernetes.workload.update']});t.after(denied.stop)
+ denied.state.addPort();denied.state.removePort(0);denied.state.port(0,{port:443});assert.deepEqual(denied.events,[])
+})
+test('动态端口允许同号不同协议，拒绝重复名称、协议映射和节点端口',async()=>{
+ const {loadFrontend}=await import('./acceptanceHarness.mjs'),utils=loadFrontend('../src/utils/kubernetesDeployment.ts')
+ const cfg=utils.defaultKubernetesDeployment();cfg.ports=[{name:'dns',enabled:true,port:53,target_port:53,protocol:'UDP'},{name:'dns-tcp',enabled:true,port:53,target_port:53,protocol:'TCP'}]
+ assert.equal(utils.kubernetesDeploymentPortError(cfg),'')
+ cfg.ports[1].protocol='UDP';assert.match(utils.kubernetesDeploymentPortError(cfg),/协议重复/)
+ cfg.ports[1].protocol='TCP';cfg.ports[1].name='dns';assert.match(utils.kubernetesDeploymentPortError(cfg),/名称重复/)
+ cfg.ports[1].name='dns--tcp';assert.match(utils.kubernetesDeploymentPortError(cfg),/名称应为/)
+ cfg.ports[1].name='dns-tcp';cfg.ports[0].node_port=30053;cfg.ports[1].node_port=30053;assert.match(utils.kubernetesDeploymentPortError(cfg),/节点端口重复/)
+ cfg.ports=[];assert.equal(utils.kubernetesDeploymentPortError(cfg),'')
 })

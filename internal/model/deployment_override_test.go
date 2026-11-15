@@ -20,7 +20,11 @@ func TestWorkflowDeploymentOverrideMergePatchPreservesExplicitValuesAndIsolation
 	if inherited, err := ApplyWorkflowKubernetesPatch(base, json.RawMessage(`{}`)); err != nil || !inherited.NodePort {
 		t.Fatal("空补丁没有继承方案", inherited, err)
 	}
-	for _, raw := range []string{`null`, `[]`, `true`, `{"unknown":null}`, `{"ports":[{"name":"http","enabled":true,"port":8080,"target_port":8080,"unknown":null}]}`, `{"replicas":0}`, `{"ports":[]}`, `{"node_port":"false"}`} {
+	cleared, err := ApplyWorkflowKubernetesPatch(base, json.RawMessage(`{"ports":[]}`))
+	if err != nil || len(cleared.Ports) != 0 || len(base.Ports) != 1 || !base.Ports[0].Enabled {
+		t.Fatal("删除本阶段全部端口未保留空数组或污染来源", cleared, err)
+	}
+	for _, raw := range []string{`null`, `[]`, `true`, `{"unknown":null}`, `{"ports":[{"name":"http","enabled":true,"port":8080,"target_port":8080,"unknown":null}]}`, `{"replicas":0}`, `{"node_port":"false"}`} {
 		if _, err := ApplyWorkflowKubernetesPatch(base, json.RawMessage(raw)); err == nil {
 			t.Fatal("不合法或未知参数未拒绝", raw)
 		}

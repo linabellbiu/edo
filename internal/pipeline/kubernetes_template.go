@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"errors"
-	"reflect"
 
 	"gorm.io/gorm"
 
@@ -21,8 +20,7 @@ func (s *Service) validateKubernetesTemplateConfiguration(ctx context.Context, d
 	if err := model.ValidateKubernetesDeploymentSettings(cfg); err != nil {
 		return err
 	}
-	defaults := model.DefaultKubernetesDeploymentSettings()
-	networkChanged := cfg.NodePort || !reflect.DeepEqual(cfg.Ports, defaults.Ports)
+	networkChanged := !model.KubernetesDeploymentNetworkDefault(cfg)
 	scope, ok := database.DepartmentScopeFromContext(ctx)
 	if !ok || scope.UserID == "" || scope.ProjectID == "" {
 		s.logger.WarnContext(ctx, "Kubernetes 模板修改缺少操作者范围", "operation", "kubernetes_template_config_authorization", "err", ErrKubernetesTemplatePermission)

@@ -9,6 +9,7 @@ import (
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
 	"io"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/serializer/protobuf"
 	"k8s.io/client-go/kubernetes/scheme"
 	"net/http"
@@ -142,7 +143,7 @@ func TestKubernetesDeploymentTemplateCreatesFirstWorkloadAndOwnedRerun(t *testin
 	}
 	cfg.NodePort = true
 	cfg.Ports[0].Enabled = true
-	cfg.Ports[1].Enabled = true
+	cfg.Ports = append(cfg.Ports, model.KubernetesDeploymentPort{Name: "tcp", Enabled: true, Port: 8888, TargetPort: 8888})
 	cfg.Ports[0].NodePort = 30080
 	cfg.Ports[1].NodePort = 30888
 	r.ID = "release-2"
@@ -187,8 +188,7 @@ func TestKubernetesDeploymentTemplateRejectsServiceConflictAndDeniedCreateBefore
 			}
 			if test == "重复端口" {
 				cfg.Ports[0].Enabled = true
-				cfg.Ports[1].Enabled = true
-				cfg.Ports[1].Port = cfg.Ports[0].Port
+				cfg.Ports = append(cfg.Ports, model.KubernetesDeploymentPort{Name: "api", Enabled: true, Port: cfg.Ports[0].Port, TargetPort: 8081})
 			}
 			_, _, err := s.DeployTemplate(context.Background(), r, cfg, nil, time.Second)
 			if err == nil || f.writes != 0 {
@@ -254,6 +254,81 @@ func TestKubernetesDeploymentTemplateRegistryAndDisablePorts(t *testing.T) {
 		t.Fatal("重新开启端口后仍保留停用选择器", selector)
 	}
 
+}
+
+func TestKubernetesDeploymentTemplateDynamicProtocolsMappingsAndPortRemoval(t *testing.T) {
+	s, id, f := newTemplateAPIFixture(t)
+	r := templateTestRecord(id)
+	cfg := model.DefaultKubernetesDeploymentSettings()
+	cfg.NodePort = true
+	cfg.Ports = []model.KubernetesDeploymentPort{
+		{Name: "dns-udp", Enabled: true, Port: 53, TargetPort: 5353, Protocol: "UDP", NodePort: 30053},
+		{Name: "dns-tcp", Enabled: true, Port: 53, TargetPort: 5353, NodePort: 30054},
+		{Name: "sctp-api", Enabled: true, Port: 5000, TargetPort: 5001, Protocol: "SCTP", NodePort: 30500},
+		{Name: "http", Enabled: true, Port: 8080, TargetPort: 8080, Protocol: "UDP", NodePort: 30808},
+		{Name: "metrics", Enabled: true, Port: 9153, TargetPort: 5353, Protocol: "TCP", NodePort: 30915},
+	}
+	if _, _, err := s.DeployTemplate(context.Background(), r, cfg, nil, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	var workload appsv1.Deployment
+	var service corev1.Service
+	if err := jsonRoundTrip(f.objects["/apis/apps/v1/namespaces/demo/deployments/api"], &workload); err != nil {
+		t.Fatal(err)
+	}
+	if err := jsonRoundTrip(f.objects["/api/v1/namespaces/demo/services/api"], &service); err != nil {
+		t.Fatal(err)
+	}
+	container := workload.Spec.Template.Spec.Containers[0]
+	if len(container.Ports) != 4 || len(service.Spec.Ports) != 5 {
+		t.Fatal("共享目标端口未去重或服务映射丢失", container.Ports, service.Spec.Ports)
+	}
+	for index, port := range service.Spec.Ports {
+		input := cfg.Ports[index]
+		if port.Name != input.Name || string(port.Protocol) != input.EffectiveProtocol() || port.Port != input.Port || port.TargetPort.IntVal != input.TargetPort || port.NodePort != input.NodePort || port.AppProtocol != nil {
+			t.Fatal("端口映射或协议未准确执行，或 UDP 被误标为 HTTP", port, input)
+		}
+	}
+	if container.Ports[0].Protocol != corev1.ProtocolUDP || container.Ports[1].Protocol != corev1.ProtocolTCP || container.Ports[2].Protocol != corev1.ProtocolSCTP {
+		t.Fatal("容器端口没有保留真实传输协议", container.Ports)
+	}
+	for index := range cfg.Ports {
+		cfg.Ports[index].NodePort = 0
+	}
+	cfg.Ports[0].Protocol, cfg.Ports[0].Port = "TCP", 54
+	r.ID = "release-protocol-changed"
+	if _, _, err := s.DeployTemplate(context.Background(), r, cfg, nil, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	service = corev1.Service{}
+	if err := jsonRoundTrip(f.objects["/api/v1/namespaces/demo/services/api"], &service); err != nil {
+		t.Fatal(err)
+	}
+	if service.Spec.Ports[0].NodePort != 0 || service.Spec.Ports[1].NodePort != 30054 {
+		t.Fatal("修改协议后错误继承旧节点端口，或未保留不变端口", service.Spec.Ports)
+	}
+	cfg.Ports, cfg.NodePort = []model.KubernetesDeploymentPort{}, false
+	r.ID = "release-ports-removed"
+	if _, _, err := s.DeployTemplate(context.Background(), r, cfg, nil, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	workload = appsv1.Deployment{}
+	if err := jsonRoundTrip(f.objects["/apis/apps/v1/namespaces/demo/deployments/api"], &workload); err != nil {
+		t.Fatal(err)
+	}
+	selector := f.objects["/api/v1/namespaces/demo/services/api"]["spec"].(map[string]any)["selector"].(map[string]any)
+	if len(workload.Spec.Template.Spec.Containers[0].Ports) != 0 || len(selector) != 1 || selector["edo.io/disabled"] != r.ID {
+		t.Fatal("删除全部端口后仍有容器声明或服务后端", workload.Spec, selector)
+	}
+	cfg.Ports = []model.KubernetesDeploymentPort{{Name: "http", Enabled: true, Port: 8080, TargetPort: 8080}}
+	r.ID = "release-http-added"
+	if _, _, err := s.DeployTemplate(context.Background(), r, cfg, nil, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	service = corev1.Service{}
+	if err := jsonRoundTrip(f.objects["/api/v1/namespaces/demo/services/api"], &service); err != nil || len(service.Spec.Ports) != 1 || service.Spec.Ports[0].Protocol != corev1.ProtocolTCP || service.Spec.Ports[0].AppProtocol == nil || *service.Spec.Ports[0].AppProtocol != "http" || service.Spec.Selector["edo.io/disabled"] != "" {
+		t.Fatal("重新添加 HTTP 端口未恢复准确协议与服务选择器", service.Spec, err)
+	}
 }
 
 func TestKubernetesDeploymentTemplateAdvancedRuntimeReachesAPI(t *testing.T) {

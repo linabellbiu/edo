@@ -49,7 +49,7 @@ func templateObject(value any) map[string]any {
 }
 func templateFailure(ctx context.Context, clusterID, namespace, name string, err error) error {
 	slog.WarnContext(ctx, "Kubernetes 模板部署失败", "operation", "kubernetes_template", "cluster_id", clusterID, "namespace", namespace, "workload_name", name, "err", err)
-	for _, stable := range []error{ErrDeploymentTemplateConflict, ErrRBACForbidden, ErrRBACSyncPending, ErrResourceForbidden, ErrDeploymentRolloutTimeout, ErrDeploymentProgressDeadline, ErrDeploymentTargetChanged, ErrDeploymentStatusUnavailable, model.ErrKubernetesDeploymentSettings} {
+	for _, stable := range []error{ErrDeploymentTemplateConflict, ErrDeploymentTemplateReference, ErrRBACForbidden, ErrRBACSyncPending, ErrResourceForbidden, ErrDeploymentRolloutTimeout, ErrDeploymentProgressDeadline, ErrDeploymentTargetChanged, ErrDeploymentStatusUnavailable, model.ErrKubernetesDeploymentSettings} {
 		if errors.Is(err, stable) {
 			return stable
 		}
@@ -129,6 +129,9 @@ func (s *Service) deploymentTemplateState(ctx context.Context, t model.Deploymen
 			return nil, err
 		}
 	}
+	if err = s.checkDeploymentTemplateOptions(ctx, t, cfg.Options); err != nil {
+		return nil, err
+	}
 	return state, nil
 }
 
@@ -149,11 +152,21 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 	metadata := metav1.ObjectMeta{Name: t.WorkloadName, Namespace: t.Namespace, Labels: labels, Annotations: owner}
 	ports := []corev1.ContainerPort{}
 	servicePorts := []corev1.ServicePort{}
+	type containerPortKey struct {
+		port     int32
+		protocol corev1.Protocol
+	}
+	containerPorts := map[containerPortKey]bool{}
 	for _, p := range cfg.Ports {
 		if p.Enabled {
-			ports = append(ports, corev1.ContainerPort{Name: p.Name, ContainerPort: p.TargetPort, Protocol: corev1.ProtocolTCP})
-			sp := corev1.ServicePort{Name: p.Name, Port: p.Port, TargetPort: intstr.FromInt32(p.TargetPort), Protocol: corev1.ProtocolTCP}
-			if p.Name == "http" {
+			protocol := corev1.Protocol(p.EffectiveProtocol())
+			key := containerPortKey{port: p.TargetPort, protocol: protocol}
+			if !containerPorts[key] {
+				ports = append(ports, corev1.ContainerPort{Name: p.Name, ContainerPort: p.TargetPort, Protocol: protocol})
+				containerPorts[key] = true
+			}
+			sp := corev1.ServicePort{Name: p.Name, Port: p.Port, TargetPort: intstr.FromInt32(p.TargetPort), Protocol: protocol}
+			if p.Name == "http" && protocol == corev1.ProtocolTCP {
 				http := "http"
 				sp.AppProtocol = &http
 			}
@@ -213,7 +226,9 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 		}
 		workload.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: name}}
 	}
+	applyDeploymentTemplateOptions(workload, cfg.Options)
 	desired := templateObject(workload)
+	clearDeploymentTemplateOptions(desired, state.deployment, cfg.Options)
 	// 可选配置恢复默认时，MergePatch 必须显式清除上一次模板写入的值。
 	desired["spec"].(map[string]any)["strategy"] = nil
 	if cfg.TerminationGracePeriodSeconds == nil {
@@ -250,7 +265,11 @@ func (s *Service) DeployTemplate(ctx context.Context, record model.DeploymentRec
 			for i := range svc.Spec.Ports {
 				if svc.Spec.Ports[i].NodePort == 0 {
 					for _, p := range live.Spec.Ports {
-						if p.Name == svc.Spec.Ports[i].Name {
+						protocol := p.Protocol
+						if protocol == "" {
+							protocol = corev1.ProtocolTCP
+						}
+						if p.Name == svc.Spec.Ports[i].Name && protocol == svc.Spec.Ports[i].Protocol {
 							svc.Spec.Ports[i].NodePort = p.NodePort
 						}
 					}

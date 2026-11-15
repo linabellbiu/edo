@@ -624,3 +624,16 @@ test('Kubernetes仓库部署无前序构建也可选择通用方案和配置集�
  assert.ok(h.state.deploymentPlanOptions('deploy').some(option=>option.value==='registry-plan'&&!option.disabled))
  assert.ok(h.state.inlineDeploymentKinds('deploy').includes('kubernetes'))
 })
+
+test('部署参数有重复键草稿时不保存或切走任务，修正后恢复操作',async t=>{
+ const h=harness(t)
+ h.state.stages.value=[{id:'deploy-stage',name:'部署',tasks:[{id:'deploy',name:'部署',type:'deploy',config:{}},{id:'other',name:'其他任务',type:'shell',config:{script:'echo ok'}}]}]
+ h.state.selectNode('deploy');h.state.deploymentFieldError('标签键不能重复')
+ const writes=h.requests.filter(row=>!row.method).length
+ assert.equal(await h.state.save(false,true),false)
+ assert.equal(h.requests.filter(row=>!row.method).length,writes)
+ h.state.closePanel();assert.equal(h.state.panelMode.value,'properties')
+ h.state.selectNode('other');assert.equal(h.state.selectedNodeID.value,'deploy')
+ h.state.clearBoardSelection();assert.equal(h.state.selectedNodeID.value,'deploy')
+ h.state.deploymentFieldError('');h.state.selectNode('other');assert.equal(h.state.selectedNodeID.value,'other')
+})

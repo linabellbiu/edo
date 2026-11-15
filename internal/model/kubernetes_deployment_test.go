@@ -1,6 +1,9 @@
 package model
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestKubernetesTemplateValidationAndImmutableCopy(t *testing.T) {
 	cfg := DefaultKubernetesDeploymentSettings()
@@ -13,14 +16,69 @@ func TestKubernetesTemplateValidationAndImmutableCopy(t *testing.T) {
 	}
 	for _, mutate := range []func(*KubernetesDeploymentSettings){func(c *KubernetesDeploymentSettings) { c.CPURequest = "2" }, func(c *KubernetesDeploymentSettings) { c.MemoryRequest = "2Gi" }, func(c *KubernetesDeploymentSettings) { c.Replicas = 0 }, func(c *KubernetesDeploymentSettings) {
 		c.Ports[0].Enabled = true
-		c.Ports[1].Enabled = true
-		c.Ports[1].Port = c.Ports[0].Port
+		c.Ports = append(c.Ports, KubernetesDeploymentPort{Name: "api", Enabled: true, Port: c.Ports[0].Port, TargetPort: 8081})
 	}, func(c *KubernetesDeploymentSettings) { c.NodePort = true; c.Ports[0].NodePort = 80 }} {
 		bad := DefaultKubernetesDeploymentSettings()
 		mutate(bad)
 		if err := ValidateKubernetesDeploymentSettings(bad); err == nil {
 			t.Fatal("非法模板被接受", bad)
 		}
+	}
+}
+
+func TestKubernetesTemplateDynamicPortsValidateNamesProtocolsAndLimits(t *testing.T) {
+	defaults := DefaultKubernetesDeploymentSettings()
+	if len(defaults.Ports) != 1 || defaults.Ports[0].Name != "http" || defaults.Ports[0].Enabled || defaults.Ports[0].Port != 8080 || defaults.Ports[0].Protocol != "" {
+		t.Fatal("默认模板应只保留关闭的 HTTP 示例", defaults.Ports)
+	}
+	for _, count := range []int{0, 1, 32} {
+		cfg := DefaultKubernetesDeploymentSettings()
+		cfg.Ports = nil
+		for index := range count {
+			cfg.Ports = append(cfg.Ports, KubernetesDeploymentPort{Name: fmt.Sprintf("api-%d", index), Enabled: true, Port: int32(8000 + index), TargetPort: int32(9000 + index)})
+		}
+		if err := ValidateKubernetesDeploymentSettings(cfg); err != nil {
+			t.Fatal("合法动态端口数量被拒绝", count, err)
+		}
+	}
+	legacy := DefaultKubernetesDeploymentSettings()
+	legacy.Ports = append(legacy.Ports, KubernetesDeploymentPort{Name: "tcp", Port: 8888, TargetPort: 8888})
+	if err := ValidateKubernetesDeploymentSettings(legacy); err != nil || legacy.Ports[1].Protocol != "" {
+		t.Fatal("旧双端口配置失效或被改写", err, legacy.Ports)
+	}
+	valid := DefaultKubernetesDeploymentSettings()
+	valid.Ports = []KubernetesDeploymentPort{{Name: "dns-udp", Enabled: true, Port: 53, TargetPort: 5353, Protocol: "UDP"}, {Name: "dns-tcp", Enabled: true, Port: 53, TargetPort: 5353, Protocol: "TCP"}, {Name: "sctp-api", Enabled: true, Port: 5000, TargetPort: 5001, Protocol: "SCTP"}}
+	if err := ValidateKubernetesDeploymentSettings(valid); err != nil {
+		t.Fatal("同服务端口的不同协议被拒绝", err)
+	}
+	for name, mutate := range map[string]func(*KubernetesDeploymentSettings){
+		"端口数量超限": func(c *KubernetesDeploymentSettings) { c.Ports = make([]KubernetesDeploymentPort, 33) },
+		"空名称":    func(c *KubernetesDeploymentSettings) { c.Ports[0].Name = "" },
+		"名称大写":   func(c *KubernetesDeploymentSettings) { c.Ports[0].Name = "HTTP" },
+		"纯数字名称":  func(c *KubernetesDeploymentSettings) { c.Ports[0].Name = "8080" },
+		"名称过长":   func(c *KubernetesDeploymentSettings) { c.Ports[0].Name = "a-very-long-name-16" },
+		"禁用行名称重复": func(c *KubernetesDeploymentSettings) {
+			c.Ports = append(c.Ports, KubernetesDeploymentPort{Name: "http", Port: 8081, TargetPort: 8081})
+		},
+		"非法协议": func(c *KubernetesDeploymentSettings) { c.Ports[0].Protocol = "ICMP" },
+		"重复默认TCP": func(c *KubernetesDeploymentSettings) {
+			c.Ports[0].Enabled = true
+			c.Ports = append(c.Ports, KubernetesDeploymentPort{Name: "api", Enabled: true, Port: 8080, TargetPort: 8081, Protocol: "TCP"})
+		},
+		"跨协议节点端口重复": func(c *KubernetesDeploymentSettings) {
+			c.Ports[0].NodePort = 30080
+			c.Ports = append(c.Ports, KubernetesDeploymentPort{Name: "dns", Enabled: true, Port: 53, TargetPort: 53, Protocol: "UDP", NodePort: 30080})
+		},
+		"非法服务端口": func(c *KubernetesDeploymentSettings) { c.Ports[0].Port = 65536 },
+		"非法容器端口": func(c *KubernetesDeploymentSettings) { c.Ports[0].TargetPort = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := DefaultKubernetesDeploymentSettings()
+			mutate(cfg)
+			if ValidateKubernetesDeploymentSettings(cfg) == nil {
+				t.Fatal("非法动态端口被接受", cfg.Ports)
+			}
+		})
 	}
 }
 

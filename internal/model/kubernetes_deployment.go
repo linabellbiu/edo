@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 type KubernetesDeploymentPort struct {
@@ -16,6 +17,15 @@ type KubernetesDeploymentPort struct {
 	Port       int32  `json:"port"`
 	TargetPort int32  `json:"target_port"`
 	NodePort   int32  `json:"node_port,omitempty"`
+	Protocol   string `json:"protocol,omitempty"`
+}
+
+// EffectiveProtocol 按 Kubernetes 默认解释旧配置，不修改已保存配置或运行快照。
+func (p KubernetesDeploymentPort) EffectiveProtocol() string {
+	if p.Protocol == "" {
+		return "TCP"
+	}
+	return p.Protocol
 }
 
 // KubernetesDeploymentProbe 只声明容器自身的 HTTP/TCP 检测，不执行任意命令。
@@ -31,29 +41,30 @@ type KubernetesDeploymentProbe struct {
 }
 
 type KubernetesDeploymentSettings struct {
-	Command                       []string                   `json:"command,omitempty"`
-	Args                          []string                   `json:"args,omitempty"`
-	WorkingDir                    string                     `json:"working_dir,omitempty"`
-	ImagePullPolicy               string                     `json:"image_pull_policy,omitempty"`
-	ReadinessProbe                *KubernetesDeploymentProbe `json:"readiness_probe,omitempty"`
-	LivenessProbe                 *KubernetesDeploymentProbe `json:"liveness_probe,omitempty"`
-	StartupProbe                  *KubernetesDeploymentProbe `json:"startup_probe,omitempty"`
-	TerminationGracePeriodSeconds *int64                     `json:"termination_grace_period_seconds,omitempty"`
-	Strategy                      string                     `json:"strategy,omitempty"`
-	MaxSurge                      string                     `json:"max_surge,omitempty"`
-	MaxUnavailable                string                     `json:"max_unavailable,omitempty"`
-	Template                      string                     `json:"template"`
-	Replicas                      int32                      `json:"replicas"`
-	CPURequest                    string                     `json:"cpu_request"`
-	MemoryRequest                 string                     `json:"memory_request"`
-	CPULimit                      string                     `json:"cpu_limit"`
-	MemoryLimit                   string                     `json:"memory_limit"`
-	NodePort                      bool                       `json:"node_port"`
-	Ports                         []KubernetesDeploymentPort `json:"ports"`
+	Options                       *KubernetesDeploymentOptions `json:"options,omitempty"`
+	Command                       []string                     `json:"command,omitempty"`
+	Args                          []string                     `json:"args,omitempty"`
+	WorkingDir                    string                       `json:"working_dir,omitempty"`
+	ImagePullPolicy               string                       `json:"image_pull_policy,omitempty"`
+	ReadinessProbe                *KubernetesDeploymentProbe   `json:"readiness_probe,omitempty"`
+	LivenessProbe                 *KubernetesDeploymentProbe   `json:"liveness_probe,omitempty"`
+	StartupProbe                  *KubernetesDeploymentProbe   `json:"startup_probe,omitempty"`
+	TerminationGracePeriodSeconds *int64                       `json:"termination_grace_period_seconds,omitempty"`
+	Strategy                      string                       `json:"strategy,omitempty"`
+	MaxSurge                      string                       `json:"max_surge,omitempty"`
+	MaxUnavailable                string                       `json:"max_unavailable,omitempty"`
+	Template                      string                       `json:"template"`
+	Replicas                      int32                        `json:"replicas"`
+	CPURequest                    string                       `json:"cpu_request"`
+	MemoryRequest                 string                       `json:"memory_request"`
+	CPULimit                      string                       `json:"cpu_limit"`
+	MemoryLimit                   string                       `json:"memory_limit"`
+	NodePort                      bool                         `json:"node_port"`
+	Ports                         []KubernetesDeploymentPort   `json:"ports"`
 }
 
 func DefaultKubernetesDeploymentSettings() *KubernetesDeploymentSettings {
-	return &KubernetesDeploymentSettings{Template: "web", Replicas: 1, CPURequest: "200m", MemoryRequest: "300Mi", CPULimit: "1", MemoryLimit: "1Gi", Ports: []KubernetesDeploymentPort{{Name: "http", Port: 8080, TargetPort: 8080}, {Name: "tcp", Port: 8888, TargetPort: 8888}}}
+	return &KubernetesDeploymentSettings{Template: "web", Replicas: 1, CPURequest: "200m", MemoryRequest: "300Mi", CPULimit: "1", MemoryLimit: "1Gi", Ports: []KubernetesDeploymentPort{{Name: "http", Port: 8080, TargetPort: 8080}}}
 }
 
 var ErrKubernetesDeploymentSettings = errors.New("Kubernetes 模板配置无效，请检查副本、资源、端口、启动参数和健康检查")
@@ -62,25 +73,32 @@ func ValidateKubernetesDeploymentSettings(c *KubernetesDeploymentSettings) error
 	if c == nil {
 		return nil
 	}
-	valid := c.Template == "web" && c.Replicas >= 1 && c.Replicas <= 100 && len(c.Ports) == 2
+	valid := c.Template == "web" && c.Replicas >= 1 && c.Replicas <= 100 && len(c.Ports) <= 32
 	for _, pair := range [][2]string{{c.CPURequest, c.CPULimit}, {c.MemoryRequest, c.MemoryLimit}} {
 		a, errA := resource.ParseQuantity(pair[0])
 		b, errB := resource.ParseQuantity(pair[1])
 		valid = valid && len(pair[0]) <= 32 && len(pair[1]) <= 32 && errA == nil && errB == nil && a.Sign() > 0 && b.Sign() > 0 && a.Cmp(b) <= 0
 	}
-	names, ports, nodes := map[string]bool{}, map[int32]bool{}, map[int32]bool{}
+	type servicePort struct {
+		port     int32
+		protocol string
+	}
+	names, ports, nodes := map[string]bool{}, map[servicePort]bool{}, map[int32]bool{}
 	for _, p := range c.Ports {
-		valid = valid && (p.Name == "http" || p.Name == "tcp") && !names[p.Name] && p.Port >= 1 && p.Port <= 65535 && p.TargetPort >= 1 && p.TargetPort <= 65535 && (p.NodePort == 0 || p.NodePort >= 30000 && p.NodePort <= 32767)
+		protocol := p.EffectiveProtocol()
+		valid = valid && len(validation.IsValidPortName(p.Name)) == 0 && !names[p.Name] && len(validation.IsValidPortNum(int(p.Port))) == 0 && len(validation.IsValidPortNum(int(p.TargetPort))) == 0 && (protocol == "TCP" || protocol == "UDP" || protocol == "SCTP") && (p.NodePort == 0 || p.NodePort >= 30000 && p.NodePort <= 32767)
 		names[p.Name] = true
+		if p.NodePort != 0 {
+			valid = valid && !nodes[p.NodePort]
+			nodes[p.NodePort] = true
+		}
 		if p.Enabled {
-			valid = valid && !ports[p.Port] && (p.NodePort == 0 || !nodes[p.NodePort])
-			ports[p.Port] = true
-			if p.NodePort != 0 {
-				nodes[p.NodePort] = true
-			}
+			key := servicePort{port: p.Port, protocol: protocol}
+			valid = valid && !ports[key]
+			ports[key] = true
 		}
 	}
-	if valid && validKubernetesRuntimeSettings(c) {
+	if valid && validKubernetesRuntimeSettings(c) && ValidateKubernetesDeploymentOptions(c.Options) == nil {
 		return nil
 	}
 	slog.Warn("Kubernetes 部署模板参数无效", "operation", "kubernetes_template_normalize", "err", ErrKubernetesDeploymentSettings)

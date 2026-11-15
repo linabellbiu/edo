@@ -5,7 +5,7 @@ import PipelineDeployFields from '@/components/PipelineDeployFields.vue'
 import {effectiveKubernetesPlan,stageKubernetesOverride} from '@/utils/kubernetesPlanOverride'
 import type {WorkflowDeploymentPlan,WorkflowDeploymentOverride,WorkflowNode,WorkflowNodeConfig,PipelineBuildPlan} from '@/types/pipeline'
 const props=defineProps<{node:WorkflowNode;plan:WorkflowDeploymentPlan&{id:string;is_active?:boolean};disabled:boolean;applicationID?:string;applicationName?:string;branch?:string;buildNodes:WorkflowNode[];buildPlans?:PipelineBuildPlan[];buildTaskLabels?:Record<string,string>}>()
-const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>]}>()
+const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>];invalid:[error:string]}>()
 const auth=useAuthStore()
 const canRestore=computed(()=>canEdit.value&&auth.canAny(['kubernetes.workload.update'])&&(!('node_port' in (props.node.config.deployment_override?.kubernetes||{}))&&!('ports' in (props.node.config.deployment_override?.kubernetes||{}))||auth.canAny(['kubernetes.network.update'])))
 const effective=computed(()=>effectiveKubernetesPlan(props.plan,props.node.config.deployment_override))
@@ -27,7 +27,7 @@ function restore(){
  <section class="kubernetes-plan-stage-fields">
   <header><span>本阶段配置 <a-tag v-if="overrideCount">已覆盖 {{overrideCount}} 项</a-tag><span v-else class="stage-default">资源参数使用方案默认值</span></span><a-button v-if="overrideCount" type="link" size="small" :disabled="!canRestore" @click="restore">恢复参数默认</a-button></header>
   <a-alert v-if="plan.is_active===false" type="warning" show-icon message="原部署方案已停用，已保留关联。"/>
-  <PipelineDeployFields :node="editableNode" :disabled="!canEdit" :applicationID="applicationID" :applicationName="applicationName" :branch="branch" :build-nodes="buildNodes" :build-plans="buildPlans" :build-task-labels="buildTaskLabels" @change="change"/>
+  <PipelineDeployFields @invalid="emit('invalid',$event)" :node="editableNode" :disabled="!canEdit" :applicationID="applicationID" :applicationName="applicationName" :branch="branch" :build-nodes="buildNodes" :build-plans="buildPlans" :build-task-labels="buildTaskLabels" @change="change"/>
  </section>
 </template>
 <style scoped>

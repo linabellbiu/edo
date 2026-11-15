@@ -210,6 +210,7 @@ const defaultKind = ref<PlanKind>('docker')
 const canDefaults = computed(() => auth.canAny(['workflow.read']) && auth.canAny(['deployment_plan.read']))
 function openDefaults(plan?: DeploymentPlan) { if (plan?.kind === 'compose_stack') { message.info('Docker Compose 请在应用中配置发布流程'); return } defaultPlanID.value = plan?.id || ''; defaultKind.value = plan?.kind || 'docker'; defaultsOpen.value = true }
 const formOpen = ref(false)
+const kubernetesEditorError=ref('')
 const editingID = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -455,6 +456,7 @@ function updatedTime(plan: DeploymentPlan) {
 }
 
 function reset() {
+  kubernetesEditorError.value=''
   legacySelectionID.value=''
   formRevision++
   formRequest?.abort()
@@ -832,6 +834,7 @@ function validateDockerConfig() {
 function validate() {
   reconcileExecutionTarget()
   if (!form.name.trim()) return '请输入方案名称'
+  if(form.kind==='kubernetes'&&kubernetesEditorError.value)return kubernetesEditorError.value
   if(form.kind==='kubernetes'&&form.execution_config?.kubernetes){const error=kubernetesDeploymentRuntimeError(form.execution_config.kubernetes);if(error)return error}
   if(['docker','compose','compose_stack'].includes(form.kind)&&!savedDeploymentRegistry(form.execution_config))return '请选择并保存镜像仓库'
   if (form.kind === 'compose_stack') {
@@ -1286,7 +1289,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
             </a-form-item>
 
           </template>
-          <KubernetesDeploymentTemplateFields v-if="form.kind==='kubernetes'" :model-value="form.execution_config?.kubernetes" :disabled="!canUseForm()" @update:model-value="updateExecution({...form.execution_config,kubernetes:$event})"/>
+          <KubernetesDeploymentTemplateFields @invalid="kubernetesEditorError=$event" v-if="form.kind==='kubernetes'" :model-value="form.execution_config?.kubernetes" :disabled="!canUseForm()" @update:model-value="updateExecution({...form.execution_config,kubernetes:$event})"/>
           <DeploymentExecutionFields kubernetes-registry-only :model-value="form.execution_config || {}" :plan="executionPlan" :disabled="!canUseForm()" :edit-permission="executionPermission" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :hide-script="form.kind==='script'" :registry-target="registryHost" @update:timeout-seconds="form.timeout_seconds=$event" @update:model-value="updateExecution" />
           </template>
         </div>

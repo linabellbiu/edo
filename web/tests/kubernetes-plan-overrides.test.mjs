@@ -84,3 +84,16 @@ test('阶段独立覆盖仓库镜像和 Tag，重开和恢复资源默认保留�
  const h=componentHarness('../src/components/KubernetesPlanStageFields.vue',{props,codes:['workflow.update','kubernetes.workload.update'],modules:{'@/utils/kubernetesPlanOverride':utils}});t.after(h.stop)
  h.state.restore();assert.deepEqual(h.events.at(-1).args[0].deployment_override,override)
 })
+
+test('环境挂载与调度方案默认按阶段差异覆盖，清空数组和删除标签保留语义',()=>{
+ const plan=base();plan.execution_config.kubernetes.options={labels:{team:'default'},environment:[{name:'APP_ENV',kind:'value',value:'base'}],volumes:[{name:'data',kind:'pvc',source_name:'app-data',mount_path:'/data'}],node_selector:{'kubernetes.io/os':'linux'}}
+ const stage=utils.effectiveKubernetesPlan(plan,{kubernetes:{options:{labels:{team:null},environment:[],volumes:[],min_ready_seconds:0}}})
+ assert.equal(stage.execution_config.kubernetes.options.labels.team,undefined)
+ assert.deepEqual(stage.execution_config.kubernetes.options.environment,[])
+ assert.deepEqual(stage.execution_config.kubernetes.options.volumes,[])
+ assert.deepEqual(stage.execution_config.kubernetes.options.node_selector,{'kubernetes.io/os':'linux'})
+ const diff=utils.stageKubernetesOverride(plan,stage)
+ assert.equal(diff.kubernetes.options.labels.team,null)
+ assert.equal(diff.kubernetes.options.min_ready_seconds,0)
+ assert.equal(plan.execution_config.kubernetes.options.environment[0].value,'base')
+})

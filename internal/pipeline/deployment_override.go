@@ -83,7 +83,7 @@ func kubernetesNetworkSettingsDiffer(base model.DeploymentPlan, effective *model
 	if effective.ExecutionConfig != nil && effective.ExecutionConfig.Kubernetes != nil {
 		after = effective.ExecutionConfig.Kubernetes
 	}
-	return before.NodePort != after.NodePort || !reflect.DeepEqual(before.Ports, after.Ports)
+	return !model.KubernetesDeploymentNetworkEqual(before, after)
 }
 
 // validateWorkflowNetworkChanges 在保存事务中比较旧有效值和新有效值，删除覆盖同样复核权限。

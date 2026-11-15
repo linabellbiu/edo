@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import {computed} from 'vue'
+import {Plus,Trash2} from 'lucide-vue-next'
+import KubernetesCommonOptionsFields from '@/components/KubernetesCommonOptionsFields.vue'
 import {useAuthStore} from '@/stores/auth'
 import type {KubernetesDeploymentSettings} from '@/types/pipeline'
-import {kubernetesDeploymentRuntimeError} from '@/utils/kubernetesDeployment'
+import {kubernetesDeploymentRuntimeError,kubernetesDeploymentPortError} from '@/utils/kubernetesDeployment'
 const props=defineProps<{modelValue?:KubernetesDeploymentSettings;disabled?:boolean}>()
-const emit=defineEmits<{'update:modelValue':[value:KubernetesDeploymentSettings|undefined]}>()
+const emit=defineEmits<{'update:modelValue':[value:KubernetesDeploymentSettings|undefined];invalid:[error:string]}>()
 const auth=useAuthStore()
 const resourceDisabled=computed(()=>props.disabled||!auth.canAny(['kubernetes.workload.update']))
 const networkDisabled=computed(()=>props.disabled||!auth.canAny(['kubernetes.network.update']))
 function update(patch:Partial<KubernetesDeploymentSettings>){if(props.modelValue&&!resourceDisabled.value&&(!('node_port' in patch||'ports' in patch)||!networkDisabled.value))emit('update:modelValue',{...props.modelValue,...patch})}
+const portsError=computed(()=>props.modelValue?kubernetesDeploymentPortError(props.modelValue):'')
 const runtimeError=computed(()=>props.modelValue?kubernetesDeploymentRuntimeError(props.modelValue):'')
 type ProbeKey='readiness_probe'|'liveness_probe'|'startup_probe'
 type Probe=NonNullable<KubernetesDeploymentSettings['readiness_probe']>
@@ -20,6 +23,8 @@ function probeKind(key:ProbeKey,kind:Probe['kind']){probe(key,kind==='tcp'?{kind
 function lines(value:unknown):string[]|undefined {const text=String(value||'');return text?text.split(/\r?\n/):undefined}
 function strategy(value:string){update({strategy:value as KubernetesDeploymentSettings['strategy'],...(value==='Recreate'?{max_surge:undefined,max_unavailable:undefined}:{})})}
 
+function addPort(){if(!networkDisabled.value&&props.modelValue&&props.modelValue.ports.length<32)update({ports:[...props.modelValue.ports,{name:'',protocol:'TCP',enabled:true,port:8080,target_port:8080}]})}
+function removePort(index:number){if(!networkDisabled.value&&props.modelValue)update({ports:props.modelValue.ports.filter((_,i)=>i!==index)})}
 function port(index:number,patch:Partial<KubernetesDeploymentSettings['ports'][number]>){if(!networkDisabled.value&&props.modelValue)update({ports:props.modelValue.ports.map((item,i)=>i===index?{...item,...patch}:item)})}
 </script>
 <template>
@@ -31,11 +36,14 @@ function port(index:number,patch:Partial<KubernetesDeploymentSettings['ports'][n
    </section>
    <section class="kube-config-section"><header>服务与网络 <span v-if="networkDisabled&&!disabled" class="permission-note">修改需要服务与网络修改权限</span></header>
     <div class="kube-nodeport"><label>NodePort</label><a-switch aria-label="NodePort" :checked="modelValue.node_port" :disabled="networkDisabled" @update:checked="update({node_port:$event})"/></div>
-    <div v-for="(item,index) in modelValue.ports" :key="item.name" class="kube-port-row">
-     <div class="kube-port-heading"><label :for="`kube-port-${item.name}`">{{item.name==='http'?'HTTP':'TCP'}}</label><a-switch :id="`kube-port-${item.name}`" :aria-label="`启用 ${item.name==='http'?'HTTP':'TCP'} 端口`" :checked="item.enabled" :disabled="networkDisabled" @update:checked="port(index,{enabled:$event})"/></div>
-     <div v-if="item.enabled" class="kube-port-inputs"><a-form-item label="服务端口"><a-input-number :aria-label="`${item.name} 服务端口`" :value="item.port" :min="1" :max="65535" :precision="0" :disabled="networkDisabled" @update:value="port(index,{port:Number($event)})"/></a-form-item><a-form-item label="容器端口"><a-input-number :aria-label="`${item.name} 容器端口`" :value="item.target_port" :min="1" :max="65535" :precision="0" :disabled="networkDisabled" @update:value="port(index,{target_port:Number($event)})"/></a-form-item><a-form-item v-if="modelValue.node_port" label="节点端口"><a-input-number :aria-label="`${item.name} 节点端口`" :value="item.node_port||undefined" :min="30000" :max="32767" :precision="0" placeholder="自动分配" :disabled="networkDisabled" @update:value="port(index,{node_port:Number($event)||undefined})"/></a-form-item></div>
-     <span v-else class="kube-port-default">{{item.port}}:{{item.target_port}} / {{item.name.toUpperCase()}} · 未开启</span>
-    </div>
+    <section v-for="(item,index) in modelValue.ports" :key="index" class="kube-port-row" :aria-label="`端口 ${index+1}`">
+     <header class="kube-port-heading"><label :for="`kube-port-enabled-${index}`">{{item.name||`端口 ${index+1}`}}</label><a-switch :id="`kube-port-enabled-${index}`" :aria-label="`启用端口 ${index+1}`" :checked="item.enabled" :disabled="networkDisabled" @update:checked="port(index,{enabled:$event})"/><a-button type="text" danger size="small" :aria-label="`删除端口 ${index+1}`" :disabled="networkDisabled" @click="removePort(index)"><Trash2 :size="15"/></a-button></header>
+     <div class="kube-port-fields"><a-form-item label="名称"><a-input :aria-label="`端口 ${index+1} 名称`" :value="item.name" :maxlength="15" :disabled="networkDisabled" placeholder="例如 http" @update:value="port(index,{name:String($event)})"/></a-form-item><a-form-item label="协议"><a-select :aria-label="`端口 ${index+1} 协议`" :value="item.protocol||'TCP'" :disabled="networkDisabled" :options="[{value:'TCP'},{value:'UDP'},{value:'SCTP'}]" @update:value="port(index,{protocol:$event})"/></a-form-item></div>
+     <div class="kube-port-inputs"><a-form-item label="服务端口"><a-input-number :aria-label="`端口 ${index+1} 服务端口`" :value="item.port" :min="1" :max="65535" :precision="0" :disabled="networkDisabled" @update:value="port(index,{port:Number($event)})"/></a-form-item><a-form-item label="容器端口"><a-input-number :aria-label="`端口 ${index+1} 容器端口`" :value="item.target_port" :min="1" :max="65535" :precision="0" :disabled="networkDisabled" @update:value="port(index,{target_port:Number($event)})"/></a-form-item><a-form-item v-if="modelValue.node_port" label="节点端口"><a-input-number :aria-label="`端口 ${index+1} 节点端口`" :value="item.node_port||undefined" :min="30000" :max="32767" :precision="0" placeholder="自动分配" :disabled="networkDisabled" @update:value="port(index,{node_port:Number($event)||undefined})"/></a-form-item></div>
+    </section>
+    <span v-if="!modelValue.ports.length" class="kube-port-empty">未配置端口</span>
+    <a-button class="kube-port-add" :disabled="networkDisabled||modelValue.ports.length>=32" @click="addPort"><Plus :size="15"/>添加端口</a-button>
+    <p v-if="portsError" class="kube-runtime-error" role="alert">{{portsError}}</p>
    </section>
    <a-collapse class="kube-template-advanced"><a-collapse-panel key="runtime" header="启动与发布">
     <div class="kube-resource-grid"><a-form-item label="镜像拉取策略"><a-select aria-label="镜像拉取策略" :value="modelValue.image_pull_policy||''" :disabled="resourceDisabled" :options="[{value:'',label:'Kubernetes 默认'},{value:'IfNotPresent',label:'本地没有时拉取'},{value:'Always',label:'每次检查镜像'},{value:'Never',label:'仅使用本地镜像'}]" @update:value="update({image_pull_policy:$event||undefined})"/></a-form-item><a-form-item label="终止宽限期（秒）"><a-input-number aria-label="终止宽限期（秒）" :value="modelValue.termination_grace_period_seconds" :min="0" :max="3600" :precision="0" placeholder="Kubernetes 默认" :disabled="resourceDisabled" @update:value="update({termination_grace_period_seconds:$event===null?undefined:Number($event)})"/></a-form-item></div>
@@ -51,10 +59,11 @@ function port(index:number,patch:Partial<KubernetesDeploymentSettings['ports'][n
      </template>
     </section>
    </a-collapse-panel></a-collapse>
-   <p v-if="runtimeError" class="kube-runtime-error" role="alert">{{runtimeError}}</p>
+   <KubernetesCommonOptionsFields :model-value="modelValue.options" :disabled="resourceDisabled" @update:model-value="update({options:$event})" @validation-change="emit('invalid',$event)"/>
+   <p v-if="runtimeError&&!portsError" class="kube-runtime-error" role="alert">{{runtimeError}}</p>
   </template>
  </section>
 </template>
 <style scoped>
-.kube-template-fields{display:grid;gap:16px;min-width:0}.kube-config-section{display:grid;gap:12px;border-top:1px solid var(--edo-border);padding-top:14px}.kube-config-section>header{display:flex;gap:8px;align-items:center;justify-content:space-between;font-weight:500}.kube-resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.kube-resource-grid :deep(.ant-input){max-width:180px}.kube-config-section :deep(.ant-form-item){margin-bottom:0}.permission-note,.kube-port-default{font-size:12px;color:var(--edo-muted);font-weight:400}.kube-nodeport,.kube-port-heading{display:flex;align-items:center;gap:12px}.kube-port-row{display:grid;gap:10px;border-top:1px solid var(--edo-border);padding-top:12px}.kube-port-inputs{display:flex;gap:12px;flex-wrap:wrap}.kube-port-inputs :deep(.ant-input-number){width:116px}.kube-port-heading label{min-width:62px}.kube-template-advanced :deep(.ant-collapse-content-box){display:grid;gap:12px}.kube-probe-section{display:grid;gap:12px;border-bottom:1px solid var(--edo-border);padding-bottom:12px}.kube-probe-section:last-child{border-bottom:0;padding-bottom:0}.kube-probe-section>header{display:flex;justify-content:space-between;align-items:center}.kube-runtime-error{margin:0;color:var(--edo-danger,#cf1322);font-size:13px}.kube-template-advanced :deep(.ant-input-number){max-width:180px}@media(max-width:420px){.kube-resource-grid{gap:10px}.kube-config-section>header{align-items:flex-start;flex-direction:column}}
+.kube-template-fields{display:grid;gap:16px;min-width:0}.kube-config-section{display:grid;gap:12px;border-top:1px solid var(--edo-border);padding-top:14px}.kube-config-section>header{display:flex;gap:8px;align-items:center;justify-content:space-between;font-weight:500}.kube-resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.kube-resource-grid :deep(.ant-input){max-width:180px}.kube-config-section :deep(.ant-form-item){margin-bottom:0}.permission-note,.kube-port-default{font-size:12px;color:var(--edo-muted);font-weight:400}.kube-nodeport,.kube-port-heading{display:flex;align-items:center;gap:12px}.kube-port-row{display:grid;gap:10px;border-top:1px solid var(--edo-border);padding-top:12px}.kube-port-inputs{display:flex;gap:12px;flex-wrap:wrap}.kube-port-inputs :deep(.ant-input-number){width:116px}.kube-port-heading label{flex:1;font-weight:500;overflow-wrap:anywhere}.kube-port-fields{display:grid;grid-template-columns:160px 100px;gap:12px}.kube-port-fields :deep(.ant-select){width:100%}.kube-port-heading>.ant-btn{margin-left:auto}.kube-port-add{justify-self:start}.kube-port-empty{color:var(--edo-muted);font-size:13px}@media(max-width:420px){.kube-port-fields{grid-template-columns:minmax(0,1fr) 100px}}.kube-template-advanced :deep(.ant-collapse-content-box){display:grid;gap:12px}.kube-probe-section{display:grid;gap:12px;border-bottom:1px solid var(--edo-border);padding-bottom:12px}.kube-probe-section:last-child{border-bottom:0;padding-bottom:0}.kube-probe-section>header{display:flex;justify-content:space-between;align-items:center}.kube-runtime-error{margin:0;color:var(--edo-danger,#cf1322);font-size:13px}.kube-template-advanced :deep(.ant-input-number){max-width:180px}@media(max-width:420px){.kube-resource-grid{gap:10px}.kube-config-section>header{align-items:flex-start;flex-direction:column}}
 </style>
