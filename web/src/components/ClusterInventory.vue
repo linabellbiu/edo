@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { ArrowUpRight, Link2, Plus, RefreshCw, Search, Server } from 'lucide-vue-next'
-import { useRoute, useRouter } from 'vue-router'
+import { Link2, Plus, RefreshCw, Search, Server } from 'lucide-vue-next'
+import { useRoute } from 'vue-router'
 import client from '@/api/client'
-import type { ClusterHost, InfrastructureCluster, InfrastructureHost } from '@/api/infrastructure'
+import type { InfrastructureCluster, InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import ClusterHostDrawer from '@/components/ClusterHostDrawer.vue'
 import KubernetesClusterDrawer from '@/components/KubernetesClusterDrawer.vue'
@@ -20,10 +20,9 @@ import { hostsForCluster } from '@/utils/infrastructureRelations'
 import { formatDateTime } from '@/utils/time'
 
 const props = defineProps<{ clusters: InfrastructureCluster[]; hosts: InfrastructureHost[]; loading: boolean; error?: string; hostError?: string }>()
-const emit = defineEmits<{ refresh: []; provision: []; host: [host: InfrastructureHost] }>()
+const emit = defineEmits<{ refresh: []; provision: [] }>()
 const auth = useAuthStore()
 const route = useRoute()
-const router = useRouter()
 const query = ref('')
 const association = ref('all')
 const associationOpen = ref(false)
@@ -41,7 +40,6 @@ const connection = reactive<Record<string, { ok: boolean; version?: string; erro
 const canReadHosts = computed(() => auth.canAny(['cluster.read', 'deployment.read']))
 const canEditAssociations = computed(() => auth.canAny(['cluster.update']) && canReadHosts.value && !props.hostError && !props.error)
 const canFilterAssociations = computed(() => canReadHosts.value && !props.hostError && props.clusters.every(cluster => Array.isArray(cluster.hosts)))
-const canManageResources = computed(() => auth.canAny(['kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read']))
 const canCreateK3s = computed(() => auth.canAny(['cluster.create']) && auth.canAny(['cluster.execute']) && auth.canAny(['cluster.update']) && canReadHosts.value)
 const filtered = computed(() => props.clusters.filter(cluster => {
   const linked = hostsForCluster(cluster, props.hosts)
@@ -75,10 +73,6 @@ function openCreate() {
 function clusterCreated() {
   emit('refresh')
 }
-function openCluster(cluster: InfrastructureCluster) {
-  if (!canManageResources.value || !cluster.is_active) return
-  void router.push({ path: '/kubernetes', query: { cluster: cluster.id, view: 'overview' } })
-}
 function associate(cluster: InfrastructureCluster) {
   if (!canEditAssociations.value || !associationKnown(cluster)) return
   associationCluster.value = cluster
@@ -95,14 +89,6 @@ function clusterSaved(cluster: InfrastructureCluster) {
   if (cluster.id !== editingCluster.value?.id) return
   delete connection[cluster.id]
   emit('refresh')
-}
-function openHost(host: ClusterHost) {
-  if (!canOpenHost(host)) return
-  const full = props.hosts.find(item => item.id === host.id)
-  if (full) emit('host', full)
-}
-function canOpenHost(host: ClusterHost) {
-  return canReadHosts.value && !props.hostError && props.hosts.some(item => item.id === host.id)
 }
 function associationKnown(cluster: InfrastructureCluster) {
   return canReadHosts.value && !props.hostError && Array.isArray(cluster.hosts)
@@ -181,41 +167,36 @@ onBeforeUnmount(() => { mounted = false })
               <div class="cluster-identity-copy">
                 <div class="cluster-name-line">
                   <a-tooltip :title="record.name" :trigger="['hover','focus','click']">
-                    <button v-if="canManageResources && record.is_active" type="button" class="cluster-name" :aria-label="`${record.name} · 集群总览`" @click="openCluster(record)">{{ record.name }}</button>
-                    <strong v-else class="cluster-name readonly-name" tabindex="0">{{ record.name }}</strong>
+                    <strong class="cluster-name" tabindex="0">{{ record.name }}</strong>
                   </a-tooltip>
                   <ClusterConnectionBadge compact :cluster="record" :connection="statuses[record.id]" />
                 </div>
-                <div class="cluster-meta"><span class="metadata-chip">kubeconfig</span><span v-if="connection[record.id]?.version" class="metadata-chip">{{ connection[record.id]?.version }}</span></div>
+                <div class="cluster-meta"><span>kubeconfig</span><span v-if="connection[record.id]?.version">{{ connection[record.id]?.version }}</span></div>
               </div>
             </div>
           </template>
           <template v-else-if="column.key === 'api_server'">
-            <a-popover :trigger="['hover','focus','click']">
-              <template #content><code class="full-address">{{ record.api_server }}</code></template>
-              <button type="button" class="api-address metadata-chip" :aria-label="`API 地址：${record.api_server}`">{{ record.api_server }}</button>
-            </a-popover>
+            <a-tooltip :title="record.api_server" :trigger="['hover','focus','click']">
+              <code class="api-address" tabindex="0" :aria-label="`API 地址：${record.api_server}`">{{ record.api_server }}</code>
+            </a-tooltip>
           </template>
           <template v-else-if="column.key === 'hosts'">
-            <span v-if="!associationKnown(record)" class="metadata-chip muted">{{ unknownAssociationLabel() }}</span>
+            <span v-if="!associationKnown(record)" class="muted">{{ unknownAssociationLabel() }}</span>
             <div v-else-if="hostsForCluster(record, hosts).length" class="linked-host-summary">
-              <div class="linked-hosts">
-                <button type="button" class="host-link metadata-chip" :disabled="!canOpenHost(hostsForCluster(record, hosts)[0]!)" :title="hostsForCluster(record, hosts)[0]!.name" @click="openHost(hostsForCluster(record, hosts)[0]!)"><Server :size="13" aria-hidden="true" /><span class="host-name-text">{{ hostsForCluster(record, hosts)[0]!.name }}</span><small v-if="!hostsForCluster(record, hosts)[0]!.is_active">停用</small><KubeHostRoleBadge :cluster="record.id" :host="hostsForCluster(record, hosts)[0]!.id" /></button>
-                <a-popover v-if="hostsForCluster(record, hosts).length > 1" :trigger="['hover','focus','click']">
-                  <template #content>
-                    <div class="cluster-host-popover">
-                      <button v-for="host in hostsForCluster(record, hosts)" :key="host.id" type="button" :disabled="!canOpenHost(host)" @click="openHost(host)"><span><strong>{{ host.name }}<small v-if="!host.is_active">（已停用）</small></strong><code>{{ host.address || '—' }}</code></span><KubeHostRoleBadge :cluster="record.id" :host="host.id" /><ArrowUpRight v-if="canOpenHost(host)" :size="14" /></button>
-                    </div>
-                  </template>
-                  <button type="button" class="host-overflow metadata-chip" :aria-label="`查看全部 ${hostsForCluster(record, hosts).length} 台关联主机`">+{{ hostsForCluster(record, hosts).length - 1 }}</button>
-                </a-popover>
-              </div>
+              <a-popover :trigger="['hover','focus','click']">
+                <template #content>
+                  <div class="cluster-host-popover" role="list" tabindex="0" aria-label="关联主机完整信息">
+                    <div v-for="host in hostsForCluster(record, hosts)" :key="host.id" class="cluster-host-info" role="listitem"><span><strong>{{ host.name }}<small v-if="!host.is_active">（已停用）</small></strong><code>{{ host.address || '—' }}</code></span><KubeHostRoleBadge :cluster="record.id" :host="host.id" /></div>
+                  </div>
+                </template>
+                <button type="button" class="host-summary-trigger" :aria-label="`查看 ${hostsForCluster(record, hosts).length} 台关联主机的信息`"><Server :size="13" aria-hidden="true" /><span class="host-name-text">{{ hostsForCluster(record, hosts)[0]!.name }}</span><small v-if="!hostsForCluster(record, hosts)[0]!.is_active">停用</small><KubeHostRoleBadge :cluster="record.id" :host="hostsForCluster(record, hosts)[0]!.id" /><span v-if="hostsForCluster(record, hosts).length > 1" class="host-count">+{{ hostsForCluster(record, hosts).length - 1 }}</span></button>
+              </a-popover>
               <a-tooltip :title="hostsForCluster(record, hosts)[0]!.address" :trigger="['hover','focus','click']"><code class="linked-host-address" tabindex="0">{{ hostsForCluster(record, hosts)[0]!.address || '—' }}</code></a-tooltip>
             </div>
-            <span v-else class="metadata-chip muted">未关联主机</span>
+            <span v-else class="muted">未关联主机</span>
           </template>
           <template v-else-if="column.key === 'namespace'">
-            <a-tooltip :title="record.default_namespace" :trigger="['hover','focus','click']"><span class="namespace-chip metadata-chip" tabindex="0">{{ record.default_namespace }}</span></a-tooltip>
+            <a-tooltip :title="record.default_namespace" :trigger="['hover','focus','click']"><span class="namespace-label" tabindex="0">{{ record.default_namespace }}</span></a-tooltip>
           </template>
           <template v-else-if="column.key === 'updated_at'"><time class="cluster-updated" :datetime="record.updated_at">{{ record.updated_at ? formatDateTime(record.updated_at, 'zh-CN') : '—' }}</time></template>
           <template v-else-if="column.key === 'actions'">
@@ -241,8 +222,7 @@ onBeforeUnmount(() => { mounted = false })
 </template>
 
 <style scoped>
-.cluster-inventory{min-width:0;--cluster-link:#3859cc}
-:global([data-theme="dark"] .cluster-inventory){--cluster-link:#a5b7ff}
+.cluster-inventory{min-width:0}
 .cluster-toolbar{display:flex;align-items:center;gap:18px;padding:10px 14px;border-bottom:1px solid var(--edo-border)}
 .cluster-count{flex:none;min-width:78px}.cluster-count strong,.cluster-count small{display:block}.cluster-count small{margin-top:2px;color:var(--edo-muted);font-size:12px}
 .cluster-filters{display:flex;min-width:0;flex:1;gap:10px}.cluster-filters>.ant-input-affix-wrapper{max-width:320px}.cluster-filters>.ant-select{min-width:140px}
@@ -252,20 +232,17 @@ onBeforeUnmount(() => { mounted = false })
 .cluster-table :deep(.ant-table-tbody>tr:not(.ant-table-expanded-row)>td){height:64px;padding:8px 12px;border-right:1px solid var(--edo-border);line-height:20px}
 .cluster-table :deep(.ant-table-tbody>tr:last-child>td){border-bottom:1px solid var(--edo-border)}
 .cluster-identity{display:flex;min-width:0;align-items:center;gap:8px}.cluster-identity-copy{min-width:0;flex:1}.cluster-name-line{display:flex;min-width:0;align-items:center}
-.cluster-name{display:block;min-width:0;max-width:calc(100% - 24px);overflow:hidden;padding:0;border:0;background:transparent;color:var(--edo-text);font:inherit;font-weight:600;text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
-.cluster-name:hover{color:var(--cluster-link)}.readonly-name{cursor:default}.readonly-name:hover{color:var(--edo-text)}
-.cluster-icon{display:grid;place-items:center;width:28px;height:28px;flex:none;border-radius:5px;color:#326ce5;background:color-mix(in srgb,#326ce5 8%,var(--edo-surface))}.cluster-icon :deep(svg){width:20px;height:20px}
-.cluster-meta{display:flex;min-width:0;gap:4px;margin-top:2px;overflow:hidden}.metadata-chip{display:inline-flex;min-width:0;max-width:100%;align-items:center;gap:4px;padding:1px 6px;border:1px solid var(--edo-border);border-radius:4px;background:var(--edo-surface-soft);color:var(--edo-text);font-size:12px;font-weight:400;line-height:18px;vertical-align:middle}
-.cluster-meta .metadata-chip{padding:0 5px;line-height:16px;color:var(--edo-muted);white-space:nowrap}
-.api-address{display:block;width:100%;overflow:hidden;font-family:var(--font-mono,monospace);text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:help}
-.full-address{display:block;max-width:min(560px,80vw);color:var(--edo-text);font-size:13px;overflow-wrap:anywhere}
-.namespace-chip{display:inline-block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help}
-.linked-hosts{display:flex;min-width:0;align-items:center;gap:4px}.host-link{max-width:100%;color:var(--cluster-link);cursor:pointer}.host-link>svg{flex-shrink:0}.host-name-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-link small{flex-shrink:0;color:var(--edo-muted);font-size:12px}.host-link:disabled{color:var(--edo-text);cursor:default}
-.linked-hosts:has(.host-overflow)>.host-link{max-width:calc(100% - 32px)}.host-overflow{flex-shrink:0;cursor:pointer}.host-link :deep(.host-node-roles){flex-shrink:0;flex-wrap:nowrap;margin:0}.host-link :deep(.ant-tag){margin:0;font-size:11px;line-height:16px}
-.linked-host-address{display:block;max-width:100%;overflow:hidden;margin-top:2px;color:var(--edo-muted);font-size:12px;line-height:18px;text-overflow:ellipsis;white-space:nowrap}
-.cluster-host-popover{display:grid;gap:0;max-width:min(480px,80vw);max-height:280px;overflow:auto}.cluster-host-popover>button{display:flex;align-items:center;gap:10px;min-width:0;padding:8px 0;border:0;border-bottom:1px solid var(--edo-border);background:transparent;color:var(--edo-text);text-align:left;cursor:pointer}.cluster-host-popover>button:last-child{border-bottom:0}.cluster-host-popover>button:disabled{cursor:default}.cluster-host-popover>button>span{min-width:0;flex:1}.cluster-host-popover strong,.cluster-host-popover code{display:block;overflow-wrap:anywhere}.cluster-host-popover code,.cluster-host-popover small{color:var(--edo-muted);font-size:12px}
+.cluster-name{display:block;min-width:0;max-width:calc(100% - 24px);overflow:hidden;color:var(--edo-text);font:inherit;font-weight:600;text-overflow:ellipsis;white-space:nowrap;cursor:text}
+.cluster-icon{display:grid;place-items:center;width:28px;height:28px;flex:none;color:#326ce5}.cluster-icon :deep(svg){width:20px;height:20px}
+.cluster-meta{display:flex;min-width:0;gap:8px;margin-top:2px;overflow:hidden;color:var(--edo-muted);font-size:12px;line-height:18px;white-space:nowrap}
+.api-address{display:block;max-width:100%;overflow:hidden;color:var(--edo-text);font-family:var(--font-mono,monospace);font-size:12px;line-height:20px;text-overflow:ellipsis;white-space:nowrap;cursor:text}
+.namespace-label{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:text}
+.host-summary-trigger{display:flex;min-width:0;max-width:100%;align-items:center;gap:5px;padding:0;border:0;background:transparent;color:var(--edo-text);font:inherit;text-align:left;cursor:help}.host-summary-trigger>svg{flex-shrink:0;color:var(--edo-muted)}
+.host-name-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-summary-trigger small,.host-count{flex-shrink:0;color:var(--edo-muted);font-size:12px}.host-summary-trigger :deep(.host-node-roles){flex-shrink:0;flex-wrap:nowrap;margin:0}.host-summary-trigger :deep(.ant-tag){margin:0;font-size:11px;line-height:16px}
+.linked-host-address{display:block;max-width:100%;overflow:hidden;margin-top:2px;color:var(--edo-muted);font-size:12px;line-height:18px;text-overflow:ellipsis;white-space:nowrap;cursor:text}
+.cluster-host-popover{display:grid;gap:0;max-width:min(480px,80vw);max-height:280px;overflow:auto}.cluster-host-info{display:flex;align-items:center;gap:10px;min-width:0;padding:8px 0;border-bottom:1px solid var(--edo-border);color:var(--edo-text)}.cluster-host-info:last-child{border-bottom:0}.cluster-host-info>span{min-width:0;flex:1}.cluster-host-info strong,.cluster-host-info code{display:block;overflow-wrap:anywhere}.cluster-host-info code,.cluster-host-info small{color:var(--edo-muted);font-size:12px}
 .cluster-updated{color:var(--edo-muted);font-size:12px;white-space:nowrap}.muted{color:var(--edo-muted)}
-.cluster-name:focus-visible,.metadata-chip:focus-visible,.linked-host-address:focus-visible,.cluster-host-popover>button:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px;border-radius:4px}
+.cluster-name:focus-visible,.api-address:focus-visible,.namespace-label:focus-visible,.linked-host-address:focus-visible,.host-summary-trigger:focus-visible,.cluster-host-popover:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px;border-radius:3px}
 @media(max-width:1200px){.cluster-toolbar{flex-wrap:wrap;gap:10px}.cluster-filters{order:3;flex-basis:100%}.cluster-filters>.ant-input-affix-wrapper{max-width:none}.cluster-toolbar-actions{margin-left:auto}}
 @media(max-width:560px){.cluster-toolbar{padding:10px}.cluster-filters{flex-direction:column}.cluster-toolbar-actions{flex-wrap:wrap}.cluster-toolbar-actions .ant-btn{padding-inline:9px}}
 </style>

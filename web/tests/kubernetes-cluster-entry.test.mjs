@@ -53,10 +53,10 @@ const renderer = vue.createRenderer({
 })
 const text = n => n.text + n.children.map(text).join('')
 const descendants = n => [n, ...n.children.flatMap(descendants)]
-function mount(t, component, props = {}) {
+function mount(t, component, props = {}, { expandPopovers = false } = {}) {
   const root = node('root'), app = renderer.createApp(component, props)
   for (const name of ['a-button', 'a-input', 'a-select', 'a-empty', 'a-space', 'a-checkbox', 'a-radio-group', 'a-radio-button', 'a-alert', 'a-tag', 'a-menu-item', 'a-tooltip', 'a-popover']) {
-    app.component(name, { inheritAttrs: false, setup: (_p, { attrs, slots }) => () => vue.h(name === 'a-button' ? 'button' : 'div', attrs, slots.default?.()) })
+    app.component(name, { inheritAttrs: false, setup: (_p, { attrs, slots }) => () => vue.h(name === 'a-button' ? 'button' : 'div', attrs, expandPopovers && name === 'a-popover' ? [slots.default?.(), slots.content?.()] : slots.default?.()) })
   }
   app.component('a-table', { props: ['dataSource', 'columns'], setup: (p, { slots }) => () => vue.h('div', p.dataSource.length ? p.dataSource.flatMap(record=>p.columns.map(column=>slots.bodyCell?.({column,record}))) : slots.emptyText?.()) })
   for (const name of ['RefreshCw', 'Plus']) app.component(name, () => vue.h('svg'))
@@ -105,30 +105,23 @@ test('真实集群列表有数据或为空时都有唯一接入入口，保留�
   }
 })
 
-test('集群名称只在启用且有资源权限时进入准确总览，其余情况不跳转详情', t => {
+test('集群名称始终原地只读，启用与权限变化均不导航且完整名称可聚焦查看', t => {
+  assert.doesNotMatch(inventorySource,/useRouter|function openCluster|canManageResources/)
+  const fullName='目标集群-用于验证长名称始终原地查看完整信息'
   for(const [readResources,active] of [[true,true],[false,true],[true,false],[false,false]]){
     const navigations=[],permissions=new Set(['cluster.read',...(readResources?['kubernetes.node.read']:[])])
-    const cluster={id:'cluster-target',name:'目标集群',is_active:active,hosts:[]}
+    const cluster={id:'cluster-target',name:fullName,is_active:active,hosts:[]}
     const h=mount(t,inventory(permissions,navigations),{clusters:[cluster],hosts:[],loading:false})
-    const name=h.buttons().find(button=>text(button)==='目标集群')
-    if(readResources&&active){
-      assert.ok(name)
-      assert.equal(name.props['aria-label'],'目标集群 · 集群总览')
-      name.props.onClick()
-    }else{
-      assert.equal(name,undefined)
-      const readonly=h.nodes().find(n=>n.tag==='strong'&&text(n)==='目标集群')
-      assert.ok(readonly)
-      assert.match(readonly.props.class,/readonly-name/)
-      assert.equal(String(readonly.props.tabindex),'0')
-      assert.equal(readonly.props.onClick,undefined)
-      assert.equal(readonly.parent.props.title,'目标集群')
-      assert.deepEqual(readonly.parent.props.trigger,['hover','focus','click'])
-    }
-    assert.deepEqual(navigations,readResources&&active
-      ?[{kind:'push',route:{path:'/kubernetes',query:{cluster:'cluster-target',view:'overview'}}}]
-      :[])
-    assert.equal(h.buttons().some(button=>text(button)==='详情'), false)
+    assert.equal(h.buttons().some(button=>text(button)===fullName),false)
+    const name=h.nodes().find(n=>n.tag==='strong'&&text(n)===fullName)
+    assert.ok(name)
+    assert.match(name.props.class,/\bcluster-name\b/)
+    assert.equal(String(name.props.tabindex),'0')
+    assert.equal(name.props.onClick,undefined)
+    assert.equal(name.parent.props.title,fullName)
+    assert.deepEqual(name.parent.props.trigger,['hover','focus','click'])
+    assert.deepEqual(navigations,[])
+    assert.equal(h.buttons().some(button=>text(button)==='详情'),false)
   }
 })
 
@@ -162,6 +155,36 @@ test('集群列表直接呈现连接信息及主机关联，不再保留详情�
   assert.match(h.text(), /https:\/\/cluster\.example:6443/)
   assert.match(h.text(), /未关联主机/)
   assert.equal(h.buttons().some(button=>text(button)==='详情'), false)
+})
+
+test('关联主机在原地弹层呈现完整名称和地址，不打开主机或导航', t => {
+  assert.doesNotMatch(inventorySource,/function openHost|function canOpenHost|emit\(['"]host['"]|@click="openHost\(/)
+  const navigations=[]
+  const hosts=[
+    {id:'host-a',name:'第一台很长的关联主机完整名称',address:'192.0.2.10',is_active:true,capabilities:[]},
+    {id:'host-b',name:'第二台很长的关联主机完整名称',address:'192.0.2.11',is_active:false,capabilities:[]},
+  ]
+  const cluster={id:'multi-host',name:'多主机集群',api_server:'https://cluster.example:6443',default_namespace:'default',is_active:true,hosts}
+  const Inventory=inventory(new Set([...canCreate,'kubernetes.node.read']),navigations)
+  assert.equal(Inventory.emits.includes('host'),false)
+  const h=mount(t,Inventory,{clusters:[cluster],hosts,loading:false},{expandPopovers:true})
+  const summary=h.buttons().find(button=>button.props.class==='host-summary-trigger')
+  assert.ok(summary)
+  assert.equal(summary.props['aria-label'],'查看 2 台关联主机的信息')
+  assert.equal(summary.props.onClick,undefined)
+  assert.deepEqual(summary.parent.props.trigger,['hover','focus','click'])
+  const popup=h.nodes().find(n=>n.props.class==='cluster-host-popover')
+  assert.ok(popup)
+  assert.equal(popup.props.role,'list')
+  assert.equal(String(popup.props.tabindex),'0')
+  assert.equal(descendants(popup).filter(n=>n.props.role==='listitem').length,hosts.length)
+  for(const host of hosts){
+    assert.ok(text(popup).includes(host.name))
+    assert.ok(text(popup).includes(host.address))
+  }
+  assert.equal(descendants(popup).some(n=>n.tag==='button'),false)
+  assert.ok(descendants(popup).every(n=>n.props.onClick===undefined))
+  assert.deepEqual(navigations,[])
 })
 
 test('接入表单独立于编辑抽屉，接入成功刷新列表且不导航到详情', async t => {

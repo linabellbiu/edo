@@ -801,7 +801,7 @@ onBeforeUnmount(() => {
       <router-link v-if="canReadClusters" to="/hosts?view=clusters" :class="{ active: activeWorkspace === 'clusters' }"><RuntimeBrandIcon kind="kubernetes" />集群<span>{{ clusters.length }}</span></router-link>
     </nav>
 
-    <ClusterInventory v-if="activeWorkspace === 'clusters'" :clusters="clusters" :hosts="hosts" :loading="loading" :error="clusterLoadError" :host-error="hostLoadError" @refresh="refresh" @provision="clusterProvisionOpen = true" @host="openDetails" />
+    <ClusterInventory v-if="activeWorkspace === 'clusters'" :clusters="clusters" :hosts="hosts" :loading="loading" :error="clusterLoadError" :host-error="hostLoadError" @refresh="refresh" @provision="clusterProvisionOpen = true" />
 
     <div v-else class="host-workspace vben-card">
       <aside v-if="canReadGroups" class="host-group-tree" aria-label="主机组">

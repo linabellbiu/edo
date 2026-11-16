@@ -83,9 +83,11 @@ test('关联失败保留选择和抽屉，未知关联及无权限时不能写�
 test('集群只读用户无法借旧主机数据跳转，未知关联不被筛为独立集群', async () => {
   const hidden = { ...cluster, hosts: null }
   const fixture = setup('../src/components/ClusterInventory.vue', { clusters: [hidden], hosts: [host], loading: false }, {}, ['kubernetes.workload.read'])
-  assert.equal(fixture.state.canOpenHost(host), false)
-  fixture.state.openHost(host)
+  assert.equal(fixture.state.canOpenHost, undefined)
+  assert.equal(fixture.state.openHost, undefined)
+  assert.doesNotMatch(readFileSync(new URL('../src/components/ClusterInventory.vue', import.meta.url), 'utf8'), /host:\s*\[host:|emit\(['"]host['"]/)
   assert.equal(fixture.events.length, 0)
+  assert.deepEqual(fixture.routes, [])
   assert.equal(fixture.state.associationKnown(hidden), false)
   assert.equal(fixture.state.unknownAssociationLabel(), '无主机查看权限')
   fixture.state.association.value = 'standalone'
