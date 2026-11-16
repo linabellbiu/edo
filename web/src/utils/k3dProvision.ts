@@ -1,3 +1,23 @@
+import type { K3dConfig, K3dNodeResources } from '@/api/k3s'
+
+export function defaultK3dConfig(): Required<K3dConfig> {
+  return {
+    agents: 1, api_port: 16443, bind_address: '',
+    server_resources: { cpu_millis: 2000, memory_mib: 2048 },
+    worker_resources: { cpu_millis: 1000, memory_mib: 1024 },
+  }
+}
+
+export function k3dResourceError(value?: K3dNodeResources): string {
+  if (!value || !Number.isSafeInteger(value.cpu_millis) || value.cpu_millis < 10 || value.cpu_millis > 9223372036854) return 'CPU 至少为 0.01 核，最多保留 3 位小数，且不能超出容器资源范围'
+  if (!Number.isSafeInteger(value.memory_mib) || value.memory_mib < 6 || value.memory_mib > 8796093022207) return '内存至少为 6 MiB，须为整数，且不能超出容器资源范围'
+  return ''
+}
+
+export function sameK3dResources(left?: K3dNodeResources, right?: K3dNodeResources): boolean {
+  return !!left && !!right && !k3dResourceError(left) && left.cpu_millis === right.cpu_millis && left.memory_mib === right.memory_mib
+}
+
 export function validK3dBindAddress(value: unknown): boolean {
   // k3d 5.9.0 的 --api-port 解析器不支持 IPv6；此限制不影响原生 K3s。
   if (typeof value !== 'string' || !value || value.length > 15) return false

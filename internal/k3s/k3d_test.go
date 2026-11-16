@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -135,6 +136,69 @@ func TestK3dNormalizationDefaultsAndRejectsUnsafeTargets(t *testing.T) {
 	for _, flag := range []string{"--no-rollback", "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false", "edo.dev/installation=" + plan.ID + "@all"} {
 		if !strings.Contains(plan.Commands[0], flag) {
 			t.Fatalf("计划遗漏官方 CLI 安全参数: %s", flag)
+		}
+	}
+	if *plan.K3d.ServerResources != (K3dNodeResources{CPUMillis: 2000, MemoryMiB: 2048}) || *plan.K3d.WorkerResources != (K3dNodeResources{CPUMillis: 1000, MemoryMiB: 1024}) || len(plan.Warnings) != 0 {
+		t.Fatalf("默认资源未冻结或仍包含已删除的说明: %+v", plan)
+	}
+}
+
+func TestK3dCustomResourcesPersistIntoPlanAndExecution(t *testing.T) {
+	f, _, _, input := k3dFixture(t)
+	agents := 2
+	input.K3d = &K3dOptions{Agents: &agents, ServerResources: &K3dNodeResources{CPUMillis: 1751, MemoryMiB: 3072}, WorkerResources: &K3dNodeResources{CPUMillis: 625, MemoryMiB: 768}}
+	plan, err := f.service.Preview(f.ctx, f.actor.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record model.K3sInstallation
+	if err := f.db.First(&record, "uuid = ?", plan.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := f.service.decode(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *snapshot.Input.K3d.ServerResources != *input.K3d.ServerResources || *snapshot.Input.K3d.WorkerResources != *input.K3d.WorkerResources || *plan.K3d.ServerResources != *input.K3d.ServerResources || *plan.K3d.WorkerResources != *input.K3d.WorkerResources {
+		t.Fatal("自定义资源未进入计划和持久化任务快照")
+	}
+	// 排队后执行只使用已确认的快照，不读取调用者后来修改的输入。
+	input.K3d.ServerResources.CPUMillis = 9000
+	script, err := k3dInstallScript(snapshot.Input, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"--servers-memory 3g --agents-memory 768m", "update --cpus 1.751 --memory 3g --memory-swap 3g", "update --cpus 0.625 --memory 768m --memory-swap 768m", "1751000000 3221225472 3221225472", "625000000 805306368 805306368", `"$edo_cpu" -ge 4`, `"$edo_available" -ge 5242880`} {
+		if !strings.Contains(script, expected) {
+			t.Errorf("创建、预检或资源复核遗漏实际资源值: %s", expected)
+		}
+	}
+	if !strings.Contains(script, plan.Commands[0]+"\n") {
+		t.Error("实际创建命令偏离已确认计划")
+	}
+}
+
+func TestK3dRejectsInvalidResourcesBeforeRemoteOperations(t *testing.T) {
+	for _, resources := range []K3dNodeResources{{0, 1024}, {-1, 1024}, {9, 1024}, {math.MaxInt64, 1024}, {1000, 0}, {1000, 5}, {1000, -1}, {1000, math.MaxInt64}} {
+		for _, role := range []string{"server", "worker"} {
+			t.Run(fmt.Sprintf("%s/%d/%d", role, resources.CPUMillis, resources.MemoryMiB), func(t *testing.T) {
+				f, transport, _, input := k3dFixture(t)
+				input.K3d = &K3dOptions{}
+				if role == "server" {
+					input.K3d.ServerResources = &resources
+				} else {
+					input.K3d.WorkerResources = &resources
+				}
+				if _, err := f.service.Preview(f.ctx, f.actor.ID, input); !errors.Is(err, ErrInvalidInput) {
+					t.Fatalf("无效节点资源进入预览: %v", err)
+				}
+				if len(transport.writes) != 0 {
+					t.Fatal("无效资源触发远程操作")
+				}
+				if script, err := k3dInstallScript(input, "1ec72535-b388-4165-82d8-10cafb3f8793"); err == nil || script != "" {
+					t.Fatal("无效快照仍生成远程安装脚本")
+				}
+			})
 		}
 	}
 }

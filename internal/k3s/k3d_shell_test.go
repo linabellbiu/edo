@@ -16,7 +16,7 @@ import (
 )
 
 func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T) {
-	for _, scenario := range []string{"success", "minimum-engine", "bad-checksum", "old-engine", "unknown-engine", "wrong-bind", "occupied-port", "low-cpu", "low-memory", "low-disk", "update-failure", "volume-conflict", "volume-list-failure", "foreign-volume-owner"} {
+	for _, scenario := range []string{"success", "custom-resources", "custom-cpu-shortfall", "custom-memory-shortfall", "minimum-engine", "bad-checksum", "old-engine", "unknown-engine", "wrong-bind", "occupied-port", "low-cpu", "low-memory", "low-disk", "update-failure", "volume-conflict", "volume-list-failure", "foreign-volume-owner"} {
 		t.Run(scenario, func(t *testing.T) {
 			// 使用短路径，兼容 macOS Unix Socket 的路径长度限制。
 			directory, err := os.MkdirTemp("/tmp", "edo-k3d-shell-")
@@ -38,6 +38,13 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 			}
 			t.Cleanup(func() { _ = listener.Close() })
 			id := uuid.NewString()
+			agents := 1
+			input := Input{Action: "create", Mode: "k3d", Endpoint: "https://192.0.2.10:16443", K3d: &K3dOptions{Agents: &agents, APIPort: 16443, BindAddress: "192.0.2.10"}}
+			if strings.HasPrefix(scenario, "custom-") {
+				input.K3d.ServerResources = &K3dNodeResources{CPUMillis: 1500, MemoryMiB: 3072}
+				input.K3d.WorkerResources = &K3dNodeResources{CPUMillis: 375, MemoryMiB: 768}
+			}
+			server, worker := k3dResources(input.K3d)
 			calls := filepath.Join(directory, "calls")
 			defaultConfig := filepath.Join(directory, "original-kubeconfig")
 			if err := os.WriteFile(defaultConfig, []byte("unchanged"), 0600); err != nil {
@@ -66,6 +73,10 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 				engine = "linux dev"
 			}
 			docker := "[ -z \"${DOCKER_CONTEXT:-}${DOCKER_TLS_VERIFY:-}${KUBECONFIG:-}\" ] || exit 90\n[ \"$1\" = " + shellQuote("--host=unix://"+socket) + " ] || exit 89\nshift\nprintf 'docker %s\\n' \"$*\" >> " + shellQuote(calls) + "\ncase \"$1\" in\nversion) printf '%s\\n' " + shellQuote(engine) + ";;\ninfo) printf '%s\\n' " + shellQuote(data) + ";;\ninspect)\ncase \"$3\" in *Config.Labels*) printf '%s\\n' " + shellQuote(id) + ";; *) case \"$4\" in *server-0) printf '2000000000 2147483648 2147483648\\n';; *) printf '1000000000 1073741824 1073741824\\n';; esac;; esac\n;;\nupdate) "
+			if strings.HasPrefix(scenario, "custom-") {
+				docker = strings.ReplaceAll(docker, "2000000000 2147483648 2147483648", "1500000000 3221225472 3221225472")
+				docker = strings.ReplaceAll(docker, "1000000000 1073741824 1073741824", "375000000 805306368 805306368")
+			}
 			if scenario == "update-failure" {
 				docker += "exit 88\n"
 			} else {
@@ -92,6 +103,12 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 			writePreflightCommand(t, commands, "uname", "case \"${1:-}\" in -s) printf Linux;; *) printf x86_64;; esac\n")
 			writePreflightCommand(t, commands, "hostname", "printf k3d-host\n")
 			cpu := "8"
+			if strings.HasPrefix(scenario, "custom-") {
+				cpu = "2"
+			}
+			if scenario == "custom-cpu-shortfall" {
+				cpu = "1"
+			}
 			if scenario == "low-cpu" {
 				cpu = "2"
 			}
@@ -114,6 +131,12 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 			writePreflightCommand(t, commands, "curl", "out=''\nwhile [ \"$#\" -gt 0 ]; do case \"$1\" in -o) out=$2; shift 2;; *) shift;; esac; done\nif [ -n \"$out\" ]; then cp "+shellQuote(asset)+" \"$out\"; fi\n")
 			writePreflightCommand(t, commands, "sh", "printf 'addresses\\t192.0.2.10\\nmachine_id\\t0123456789abcdef0123456789abcdef\\nsystem_uuid\\t\\nboot_id\\t\\n'\n")
 			memory := "99999999"
+			if strings.HasPrefix(scenario, "custom-") {
+				memory = "4456448"
+			}
+			if scenario == "custom-memory-shortfall" {
+				memory = "4456447"
+			}
 			if scenario == "low-memory" {
 				memory = "3145728"
 			}
@@ -121,8 +144,6 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 			if err := os.WriteFile(meminfo, []byte("MemAvailable: "+memory+" kB\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			agents := 1
-			input := Input{Action: "create", Mode: "k3d", Endpoint: "https://192.0.2.10:16443", K3d: &K3dOptions{Agents: &agents, APIPort: 16443, BindAddress: "192.0.2.10"}}
 			prepare, err := k3dPrepareToolScript(input, id)
 			if err != nil {
 				t.Fatal(err)
@@ -152,7 +173,7 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 			if err == nil {
 				err = run(k3dReadConfigScript(id))
 			}
-			wantSuccess := scenario == "success" || scenario == "minimum-engine"
+			wantSuccess := scenario == "success" || scenario == "custom-resources" || scenario == "minimum-engine"
 			if (err == nil) != wantSuccess {
 				t.Fatalf("shell结果错误: %v", err)
 			}
@@ -161,7 +182,7 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 				t.Fatal("前置检查失败仍创建容器")
 			}
 			if wantSuccess {
-				for _, expected := range []string{"cli cluster create " + k3dResourceName(id), "--runtime-label edo.dev/installation=" + id + "@all", "docker update --cpus 2 --memory 2g --memory-swap 2g k3d-" + k3dResourceName(id) + "-server-0", "docker update --cpus 1 --memory 1g --memory-swap 1g k3d-" + k3dResourceName(id) + "-agent-0", "cli kubeconfig get " + k3dResourceName(id)} {
+				for _, expected := range []string{"cli cluster create " + k3dResourceName(id), "--runtime-label edo.dev/installation=" + id + "@all", "--servers-memory " + k3dMemoryArgument(server.MemoryMiB) + " --agents-memory " + k3dMemoryArgument(worker.MemoryMiB), "docker update --cpus " + k3dCPUArgument(server.CPUMillis) + " --memory " + k3dMemoryArgument(server.MemoryMiB) + " --memory-swap " + k3dMemoryArgument(server.MemoryMiB) + " k3d-" + k3dResourceName(id) + "-server-0", "docker update --cpus " + k3dCPUArgument(worker.CPUMillis) + " --memory " + k3dMemoryArgument(worker.MemoryMiB) + " --memory-swap " + k3dMemoryArgument(worker.MemoryMiB) + " k3d-" + k3dResourceName(id) + "-agent-0", "cli kubeconfig get " + k3dResourceName(id)} {
 					if !strings.Contains(string(encoded), expected) {
 						t.Fatalf("未执行固定本地CLI/节点限制: %s", expected)
 					}

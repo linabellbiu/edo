@@ -5,8 +5,10 @@ import (
 	"encoding/base32"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -31,6 +33,48 @@ func k3dAgents(options *K3dOptions) int {
 		return 1
 	}
 	return *options.Agents
+}
+
+func k3dResources(options *K3dOptions) (server, worker K3dNodeResources) {
+	// 旧任务未记录资源字段时，继续使用其创建时的既有默认值。
+	server = K3dNodeResources{CPUMillis: 2000, MemoryMiB: 2048}
+	worker = K3dNodeResources{CPUMillis: 1000, MemoryMiB: 1024}
+	if options != nil {
+		if options.ServerResources != nil {
+			server = *options.ServerResources
+		}
+		if options.WorkerResources != nil {
+			worker = *options.WorkerResources
+		}
+	}
+	return
+}
+
+func validateK3dResources(options *K3dOptions) error {
+	server, worker := k3dResources(options)
+	for _, node := range []struct {
+		role string
+		K3dNodeResources
+	}{{"Server", server}, {"Worker", worker}} {
+		if node.CPUMillis < 10 || node.CPUMillis > math.MaxInt64/1_000_000 {
+			return &ValidationError{Message: "k3d " + node.role + " CPU 至少为 0.01 核，且不能超出容器资源范围"}
+		}
+		if node.MemoryMiB < 6 || node.MemoryMiB > math.MaxInt64/(1024*1024) {
+			return &ValidationError{Message: "k3d " + node.role + " 内存至少为 6 MiB，且不能超出容器资源范围"}
+		}
+	}
+	return nil
+}
+
+func k3dCPUArgument(millis int64) string {
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%d.%03d", millis/1000, millis%1000), "0"), ".")
+}
+
+func k3dMemoryArgument(mib int64) string {
+	if mib%1024 == 0 {
+		return strconv.FormatInt(mib/1024, 10) + "g"
+	}
+	return strconv.FormatInt(mib, 10) + "m"
 }
 
 func (s *Service) normalizeK3d(ctx context.Context, input Input) (Input, []Host, map[string]string, *model.KubernetesCluster, []string, error) {
@@ -60,6 +104,12 @@ func (s *Service) normalizeK3d(ctx context.Context, input Input) (Input, []Host,
 	}
 	agents := k3dAgents(input.K3d)
 	options.Agents = &agents
+	if err := validateK3dResources(&options); err != nil {
+		slog.WarnContext(ctx, "k3d 节点资源配置无效", "operation", "k3d_validate_resources", "host_id", host.ID, "err", err)
+		return input, nil, nil, nil, nil, err
+	}
+	server, worker := k3dResources(&options)
+	options.ServerResources, options.WorkerResources = &server, &worker
 	address, err := netip.ParseAddr(strings.TrimSpace(options.BindAddress))
 	address = address.Unmap()
 	if err != nil || !address.Is4() || !address.IsGlobalUnicast() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.Zone() != "" || agents < 0 || agents > 8 || options.APIPort < 1024 || options.APIPort > 65535 {
@@ -109,20 +159,6 @@ func k3dImageVolumeName(id string) string {
 		return ""
 	}
 	return "k3d-" + name + "-images"
-}
-
-func k3dWarnings(id string) []string {
-	name := k3dResourceName(id)
-	if name == "" {
-		return nil
-	}
-	return []string{
-		"将在所选主机的本地 Docker 中通过官方 k3d 创建独立容器集群，不安装宿主机 K3s 服务，不修改默认 kubeconfig。",
-		"官方 k3d 将创建本次独立镜像卷 " + k3dImageVolumeName(id) + "；创建前拒绝复用同名卷，创建后核对卷的集群归属。",
-		"Server 限制为 2 GiB，Worker 各 1 GiB；创建后立即设置 Server 2 核、Worker 1 核及交换限制，启动瞬间尚未限制 CPU。",
-		"失败时保留已创建的容器、网络和卷供检查，不自动删除或重建；本次资源名：" + name,
-		"容器节点不是物理主机，集群会独立接入，不自动建立物理节点关联。",
-	}
 }
 
 func (s *Service) runK3dPreflight(ctx context.Context, input Input, hosts []Host) (*PreflightReport, error) {

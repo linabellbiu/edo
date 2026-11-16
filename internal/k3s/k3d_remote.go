@@ -19,8 +19,8 @@ var k3dPreflightDefinitions = []preflightCheckDefinition{
 	{"runc", "容器运行时版本", "本机 Docker 的 runc 版本满足官方最低要求", "k3d 需要 runc 1.0.0-rc93 或以上", "本机 Docker 未返回可核对的 runc 版本，需另行核验；未将其视为已通过"},
 	{"bind_address", "API 绑定地址", "绑定 IP 属于当前主机", "API 绑定地址必须是所选主机实际网卡上的 IP", ""},
 	{"ports", "API 端口", "API 端口未被占用", "API 端口已被占用或无法读取监听端口", ""},
-	{"cpu", "累计 CPU", "CPU 核数满足全部容器节点限制", "CPU 不足，需要 Server 2 核、每个 Worker 1 核", ""},
-	{"memory", "累计内存", "可用内存满足全部节点及宿主预留", "可用内存不足，需要 Server 2 GiB、每个 Worker 1 GiB，另为宿主预留 512 MiB", ""},
+	{"cpu", "累计 CPU", "CPU 核数满足全部容器节点限制", "CPU 不足，请减少节点数量或降低 Server、Worker 的 CPU 配置", ""},
+	{"memory", "累计内存", "可用内存满足全部节点及宿主预留", "可用内存不足，请减少节点数量或降低节点内存，另需为宿主预留 512 MiB", ""},
 	{"disk", "Docker 数据盘", "Docker 数据盘空间充足", "Docker 数据目录不可读或可用空间不足，需至少 10 GiB 加每个 Worker 2 GiB", ""},
 	{"download", "k3d 工具", "官方固定版本工具可用或下载源可达", "固定版本工具校验失败或无法访问官方 HTTPS 下载源", ""},
 	{"component_images", "K3s 组件镜像", "", "", "此检测不拉取镜像，尚未验证 Docker 实际镜像源、K3s 标签、平台及系统组件镜像可用性"},
@@ -57,10 +57,13 @@ func k3dPreflightScript(input Input) string {
 
 func k3dPreflightScriptWithLock(input Input, owned bool) string {
 	options := input.K3d
-	if options == nil {
+	if options == nil || validateK3dResources(options) != nil {
 		return "exit 44\n"
 	}
 	agents := k3dAgents(options)
+	server, worker := k3dResources(options)
+	requiredCPUs := (server.CPUMillis + worker.CPUMillis*int64(agents) + 999) / 1000
+	requiredMemoryKiB := (server.MemoryMiB + worker.MemoryMiB*int64(agents) + 512) * 1024
 	script := "set -u\n" + k3dLocalEnvironment + k3dToolSelection + `edo_failed=0
 edo_check() { printf 'EDO_K3S_CHECK\t%s\t%s\n' "$1" "$2"; if [ "$2" = failed ]; then edo_failed=1; fi; }
 if [ "$(id -u)" = 0 ]; then edo_check privilege passed; else edo_check privilege failed; fi
@@ -76,8 +79,8 @@ if [ "$edo_engine_status" = 0 ] && [ -S /var/run/docker.sock ] && printf '%s\n' 
 	script += k3dRuncPreflightScript
 	script += "edo_addresses=$(timeout 3 ip -o address show 2>/dev/null)\nedo_address_status=$?\nif [ \"$edo_address_status\" = 0 ] && printf '%s\\n' \"$edo_addresses\" | awk -v want=" + shellQuote(options.BindAddress) + " '{split($4,a,\"/\");if(a[1]==want)found=1} END{exit !found}'; then edo_check bind_address passed; else edo_check bind_address failed; fi\n"
 	script += "edo_listeners=$(timeout 3 ss -H -ltn 2>/dev/null)\nedo_listener_status=$?\nif [ \"$edo_listener_status\" = 0 ] && ! printf '%s\\n' \"$edo_listeners\" | awk '$4 ~ /:" + strconv.Itoa(options.APIPort) + "$/ {found=1} END{exit !found}'; then edo_check ports passed; else edo_check ports failed; fi\n"
-	script += "edo_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null)\nedo_cpu_status=$?\nif [ \"$edo_cpu_status\" = 0 ] && [ \"$edo_cpu\" -ge " + strconv.Itoa(2+agents) + " ] 2>/dev/null; then edo_check cpu passed; else edo_check cpu failed; fi\n"
-	script += "edo_available=$(awk '$1==\"MemAvailable:\"{print $2;found=1;exit} END{if(!found)print 0}' /proc/meminfo 2>/dev/null || printf 0)\nif [ \"$edo_available\" -ge " + strconv.Itoa((2+agents)*1024*1024+512*1024) + " ] 2>/dev/null; then edo_check memory passed; else edo_check memory failed; fi\n"
+	script += "edo_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null)\nedo_cpu_status=$?\nif [ \"$edo_cpu_status\" = 0 ] && [ \"$edo_cpu\" -ge " + strconv.FormatInt(requiredCPUs, 10) + " ] 2>/dev/null; then edo_check cpu passed; else edo_check cpu failed; fi\n"
+	script += "edo_available=$(awk '$1==\"MemAvailable:\"{print $2;found=1;exit} END{if(!found)print 0}' /proc/meminfo 2>/dev/null || printf 0)\nif [ \"$edo_available\" -ge " + strconv.FormatInt(requiredMemoryKiB, 10) + " ] 2>/dev/null; then edo_check memory passed; else edo_check memory failed; fi\n"
 	script += "edo_root=$(timeout 5 env -i PATH=\"$edo_path\" HOME=/var/lib/edo/k3d \"$edo_docker_binary\" --host=unix:///var/run/docker.sock info --format '{{.DockerRootDir}}' 2>/dev/null)\nedo_root_status=$?\nedo_free=0\nedo_disk_status=1\nif [ \"$edo_root_status\" = 0 ] && [ -d \"$edo_root\" ]; then\n  edo_disk_output=$(timeout 3 df -Pk \"$edo_root\" 2>/dev/null)\n  edo_disk_status=$?\n  if [ \"$edo_disk_status\" = 0 ]; then edo_free=$(printf '%s\\n' \"$edo_disk_output\" | awk 'NR==2{print $4}'); fi\nfi\nif [ \"$edo_root_status\" = 0 ] && [ \"$edo_disk_status\" = 0 ] && [ -d \"$edo_root\" ] && [ \"${edo_free:-0}\" -ge " + strconv.Itoa((10+agents*2)*1024*1024) + " ] 2>/dev/null; then edo_check disk passed; else edo_check disk failed; fi\n"
 	script += `if [ -e "$edo_k3d" ] || [ -L "$edo_k3d" ]; then
   if edo_tool_valid; then edo_check download passed; else edo_check download failed; fi
@@ -99,14 +102,16 @@ printf 'EDO_K3S_IDENTITY_BEGIN\n'
 func k3dCreateCommand(input Input, installationID string) string {
 	options := input.K3d
 	name := k3dResourceName(installationID)
-	if options == nil || name == "" {
+	if options == nil || name == "" || validateK3dResources(options) != nil {
 		return ""
 	}
+	server, worker := k3dResources(options)
 	endpoint, _ := url.Parse(input.Endpoint)
 	return "edo_cli cluster create " + shellQuote(name) + " --servers 1 --agents " + strconv.Itoa(k3dAgents(options)) +
 		" --api-port " + shellQuote(net.JoinHostPort(options.BindAddress, strconv.Itoa(options.APIPort))) +
 		" --image " + shellQuote("rancher/k3s:"+strings.ReplaceAll(k3dK3sVersion, "+", "-")) +
-		" --servers-memory 2g --agents-memory 1g --no-lb --no-rollback --wait=false --timeout 5m --kubeconfig-update-default=false --kubeconfig-switch-context=false" +
+		" --servers-memory " + k3dMemoryArgument(server.MemoryMiB) + " --agents-memory " + k3dMemoryArgument(worker.MemoryMiB) +
+		" --no-lb --no-rollback --wait=false --timeout 5m --kubeconfig-update-default=false --kubeconfig-switch-context=false" +
 		" --runtime-label " + shellQuote("edo.dev/installation="+installationID+"@all") +
 		" --k3s-node-label " + shellQuote("edo.dev/installation="+installationID+"@all") +
 		" --k3s-arg " + shellQuote("--tls-san="+endpoint.Hostname()+"@server:0")
@@ -146,6 +151,10 @@ func k3dInstallScript(input Input, installationID string) (string, error) {
 	if resourceName == "" || input.Mode != "k3d" || input.K3d == nil {
 		return "", ErrInvalidInput
 	}
+	if err := validateK3dResources(input.K3d); err != nil {
+		return "", err
+	}
+	server, worker := k3dResources(input.K3d)
 	script := `set -eu
 printf 'EDO_K3S_STAGE\tk3d_create\n'
 [ "$(id -u)" = 0 ]
@@ -164,14 +173,16 @@ edo_tool_valid
 	script += "printf 'EDO_K3S_STAGE\\tk3d_resources\\n'\n"
 	script += "[ \"$(edo_docker volume inspect --format '{{.Name}} {{index .Labels \"k3d.cluster\"}}' \"$edo_image_volume\")\" = " + shellQuote(imageVolume+" "+resourceName) + " ] || exit 47\n"
 	for index := -1; index < k3dAgents(input.K3d); index++ {
-		role, ordinal, cpus, memory, bytes := "agent", index, "1", "1g", 1073741824
+		role, ordinal, resources := "agent", index, worker
 		if index == -1 {
-			role, ordinal, cpus, memory, bytes = "server", 0, "2", "2g", 2147483648
+			role, ordinal, resources = "server", 0, server
 		}
+		cpus, memory := k3dCPUArgument(resources.CPUMillis), k3dMemoryArgument(resources.MemoryMiB)
+		bytes := resources.MemoryMiB * 1024 * 1024
 		name := "k3d-" + resourceName + "-" + role + "-" + strconv.Itoa(ordinal)
 		script += "[ \"$(edo_docker inspect --format '{{index .Config.Labels \"edo.dev/installation\"}}' " + shellQuote(name) + ")\" = " + shellQuote(installationID) + " ]\n"
 		script += "edo_docker update --cpus " + cpus + " --memory " + memory + " --memory-swap " + memory + " " + shellQuote(name) + " >/dev/null\n"
-		script += "[ \"$(edo_docker inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.MemorySwap}}' " + shellQuote(name) + ")\" = " + shellQuote(fmt.Sprintf("%s000000000 %d %d", cpus, bytes, bytes)) + " ]\n"
+		script += "[ \"$(edo_docker inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.MemorySwap}}' " + shellQuote(name) + ")\" = " + shellQuote(fmt.Sprintf("%d %d %d", resources.CPUMillis*1_000_000, bytes, bytes)) + " ]\n"
 	}
 	return script, nil
 }

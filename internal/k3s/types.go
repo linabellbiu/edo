@@ -101,9 +101,16 @@ type Sources struct {
 }
 
 type K3dOptions struct {
-	Agents      *int   `json:"agents,omitempty"`
-	APIPort     int    `json:"api_port"`
-	BindAddress string `json:"bind_address"`
+	Agents          *int              `json:"agents,omitempty"`
+	APIPort         int               `json:"api_port"`
+	BindAddress     string            `json:"bind_address"`
+	ServerResources *K3dNodeResources `json:"server_resources,omitempty"`
+	WorkerResources *K3dNodeResources `json:"worker_resources,omitempty"`
+}
+
+type K3dNodeResources struct {
+	CPUMillis int64 `json:"cpu_millis"`
+	MemoryMiB int64 `json:"memory_mib"`
 }
 
 type Host struct {

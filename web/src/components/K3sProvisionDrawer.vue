@@ -17,7 +17,7 @@ import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import { hasCustomK3sDatastore } from '@/utils/k3sDatastore'
 import { useAuthStore } from '@/stores/auth'
 import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sInstallationLabel, k3sInstallationLogView, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, k3sPlanHostRoleLabels, k3sServerAgentEnabled, validateK3sOverrides } from '@/utils/k3sProvision'
-import { defaultK3dBindAddress, validK3dBindAddress } from '@/utils/k3dProvision'
+import { defaultK3dConfig, defaultK3dBindAddress, k3dResourceError, sameK3dResources, validK3dBindAddress } from '@/utils/k3dProvision'
 
 const props = withDefaults(defineProps<{open:boolean;action?:'create'|'join';cluster?:string;endpoint?:string;hosts?:InfrastructureHost[]}>(), {
   action:'create',cluster:'',endpoint:'',
@@ -41,7 +41,7 @@ const hostConfigOpen=ref(false),privilegeEditingHost=ref<InfrastructureHost>()
 const checking=ref(false),checkedInput=ref(''),checkedContext=ref('')
 const preflightView=ref<{focus:()=>void}>(),errorRegion=ref<HTMLElement>()
 const emptyForm = () => ({
-  mode:'native' as K3sInstallMode,k3d:{agents:1,api_port:16443,bind_address:''} as K3dConfig,
+  mode:'native' as K3sInstallMode,k3d:defaultK3dConfig(),
   datastore:'sqlite' as 'sqlite'|'etcd',
   download_source:'official_cn' as K3sDownloadSource,system_image_source:'community_cn' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
   name:'',server_host_id:'',worker_host_ids:[] as string[],profile:'default' as 'default'|'custom',endpoint:'',
@@ -81,6 +81,17 @@ const serverHostSelection = computed({
 })
 const displayMode = computed(() => installation.value?modeOf(installation.value):plan.value?modeOf(plan.value):isK3d.value?'k3d':'native')
 const k3dConfig = computed(() => installation.value?installation.value.k3d:plan.value?.k3d)
+const k3dResourceRoles = [
+  {key:'server_resources',label:'Server'},
+  {key:'worker_resources',label:'Worker（每个）'},
+] as const
+const k3dResourceErrors = computed(() => ({
+  server_resources:k3dResourceError(form.k3d.server_resources),
+  worker_resources:k3dResourceError(form.k3d.worker_resources),
+}))
+function setK3dCPU(role:typeof k3dResourceRoles[number]['key'],value:number|string|null) {
+  form.k3d[role].cpu_millis=typeof value==='number'?Math.round(value*1000):NaN
+}
 const systemImageRegistry = computed(() => form.system_image_source==='community_cn'?'registry.cn-hangzhou.aliyuncs.com':form.system_image_source==='custom'?form.custom_system_image_registry.trim():'')
 const useSystemImageRegistry = computed({
   get:()=>form.system_image_source!=='official',
@@ -149,7 +160,7 @@ const progressTone = computed(() => installation.value?.status==='succeeded'?'su
 const overridesPlaceholder = computed(() => `${props.action==='create'?'server:\n  disable:\n    - traefik\nagent:':joinMaster.value?'server:':'agent:'}\n  node-label:\n    - environment=production\ninstaller:\n  version: ${defaultVersion.value||'v1.37.1+k3s1'}`)
 
 function input(): K3sPlanInput {
-  if(isK3d.value)return {action:'create',mode:'k3d',name:form.name.trim(),server_host_id:form.server_host_id,profile:'default',endpoint:k3dEndpoint.value,k3d:{...form.k3d,bind_address:form.k3d.bind_address.trim()}}
+  if(isK3d.value)return {action:'create',mode:'k3d',name:form.name.trim(),server_host_id:form.server_host_id,profile:'default',endpoint:k3dEndpoint.value,k3d:{...form.k3d,bind_address:form.k3d.bind_address.trim(),server_resources:{...form.k3d.server_resources},worker_resources:{...form.k3d.worker_resources}}}
   const custom=form.profile==='custom'
   const installer=custom?Object.fromEntries(Object.entries(form.installer).filter(([key,value])=>!['version','channel'].includes(key)||String(value??'').trim())):{}
   return {
@@ -164,8 +175,8 @@ function nativeSourcesMatch(value:K3sPlan,payload:K3sPlanInput) {
   const sources=value.sources
   return !!sources&&sources.download_source===payload.download_source&&Boolean(sources.installer_url&&sources.artifact_url)&&(payload.action!=='create'||sources.system_image_registry===(payload.system_image_registry??''))
 }
-function validK3dConfig(value?:K3dConfig) {return !!value&&Number.isInteger(value.agents)&&value.agents>=0&&value.agents<=8&&Number.isInteger(value.api_port)&&value.api_port>=1024&&value.api_port<=65535&&validK3dBindAddress(value.bind_address)}
-function k3dPlanMatches(value:K3sPlan) {const config=value.k3d;return validK3dConfig(config)&&value.hosts?.length===1&&value.hosts[0]?.role==='host'&&value.hosts[0]?.id===form.server_host_id&&config?.agents===form.k3d.agents&&config?.api_port===form.k3d.api_port&&config?.bind_address===form.k3d.bind_address.trim()&&value.endpoint===k3dEndpoint.value}
+function validK3dConfig(value?:K3dConfig) {return !!value&&Number.isInteger(value.agents)&&value.agents>=0&&value.agents<=8&&Number.isInteger(value.api_port)&&value.api_port>=1024&&value.api_port<=65535&&validK3dBindAddress(value.bind_address)&&!k3dResourceError(value.server_resources)&&!k3dResourceError(value.worker_resources)}
+function k3dPlanMatches(value:K3sPlan) {const config=value.k3d;return validK3dConfig(config)&&value.hosts?.length===1&&value.hosts[0]?.role==='host'&&value.hosts[0]?.id===form.server_host_id&&config?.agents===form.k3d.agents&&config?.api_port===form.k3d.api_port&&config?.bind_address===form.k3d.bind_address.trim()&&sameK3dResources(config?.server_resources,form.k3d.server_resources)&&sameK3dResources(config?.worker_resources,form.k3d.worker_resources)&&value.endpoint===k3dEndpoint.value}
 function readPreflight(value:unknown):K3sPreflightReport|undefined {
   if(!value||typeof value!=='object')return
   const report=value as K3sPreflightReport
@@ -393,6 +404,19 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
             <a-form-item v-if="action==='create'&&!isK3d" :label="t('k8s.workerHosts')"><a-select v-model:value="workerHostSelection" :aria-label="t('k8s.workerHosts')" mode="multiple" show-search option-filter-prop="label" :options="agentOptions" :placeholder="t('k8s.workerHostsPlaceholder')" /></a-form-item><a-form-item v-else-if="action==='join'" :label="joinMaster?'控制平面主机（Master）':'工作节点主机（Worker）'" required><a-select v-model:value="joinHostSelection" :mode="joinMaster?undefined:'multiple'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="joinMaster?'选择加入控制平面的新主机':'选择加入工作节点的新主机'" /><div class="field-help">{{ joinMaster?'Master 每个计划仅加入 1 台，须等待当前节点就绪后逐台添加。':'Worker 每次最多选择 20 台新主机。' }}</div></a-form-item><a-form-item v-if="joinMaster" label="目标集群 Server Token" required class="wide"><a-input-password v-model:value="form.server_token" aria-label="目标集群 Server Token" :visibility-toggle="false" :maxlength="4096" autocomplete="off" placeholder="输入目标集群的 Server Token" /><div class="field-help">仅用于本次控制平面加入。切换角色或关闭窗口后清除，不用于工作节点加入。</div></a-form-item>
             <template v-if="isK3d"><a-form-item :label="t('k8s.k3dAgents')" required><a-input-number v-model:value="form.k3d.agents" :aria-label="t('k8s.k3dAgents')" :min="0" :max="8" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dApiPort')" required><a-input-number v-model:value="form.k3d.api_port" :aria-label="t('k8s.k3dApiPort')" :min="1024" :max="65535" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dBindAddress')" required class="wide"><a-input v-model:value="form.k3d.bind_address" :aria-label="t('k8s.k3dBindAddress')" :placeholder="t('k8s.k3dBindPlaceholder')" /><div class="field-help">{{ t('k8s.k3dBindHint') }}</div></a-form-item><a-form-item :label="t('k8s.k3dEndpoint')" class="wide"><a-input :value="k3dEndpoint" readonly :aria-label="t('k8s.k3dEndpoint')" /></a-form-item></template>
           </div>
+          <section v-if="isK3d" class="k3d-resources" aria-label="节点资源配置">
+            <h4 class="k3d-resource-heading">节点资源</h4>
+            <div v-for="role in k3dResourceRoles" :key="role.key" class="k3d-resource-row">
+              <h5>{{ role.label }}</h5>
+              <a-form-item label="CPU" required :validate-status="k3dResourceErrors[role.key]?'error':undefined">
+                <div class="resource-input"><a-input-number :value="Number.isFinite(form.k3d[role.key].cpu_millis)?form.k3d[role.key].cpu_millis/1000:null" :aria-label="`${role.label} CPU`" :min="0.01" :step="0.1" :precision="3" :disabled="busy||!canExecute" @update:value="setK3dCPU(role.key,$event)" /><span>核</span></div>
+              </a-form-item>
+              <a-form-item label="内存" required :validate-status="k3dResourceErrors[role.key]?'error':undefined">
+                <div class="resource-input"><a-input-number v-model:value="form.k3d[role.key].memory_mib" :aria-label="`${role.label} 内存`" :min="6" :step="128" :precision="0" :disabled="busy||!canExecute" /><span>MiB</span></div>
+              </a-form-item>
+              <p v-if="k3dResourceErrors[role.key]" class="k3d-resource-error" role="alert">{{ k3dResourceErrors[role.key] }}</p>
+            </div>
+          </section>
           <a-alert v-if="joinMaster" type="info" show-icon message="目标集群需已启用内嵌 etcd" description="生成计划会核对 Server Token、目标控制平面、etcd 成员与关键配置。SQLite、外置数据存储或无法确认的目标会被阻断；不会自动转换数据库。关键配置自动继承，冲突覆盖会被拒绝。" /><a-alert v-if="!loading&&!loadError&&!hostChoices.length" type="info" show-icon message="暂无可安装的远程主机" description="请先在主机页面配置启用的 SSH 主机和登录凭据。" />
           <a-alert v-if="isK3d" type="info" show-icon :message="t('k8s.k3dSingleHostWarning')" />
           <template v-else>
@@ -450,6 +474,13 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
                 <div><dt>{{ t('k8s.k3dBindAddress') }}</dt><dd><code>{{ k3dConfig?.bind_address || '—' }}</code></dd></div>
                 <div><dt>{{ t('k8s.k3dApiPort') }}</dt><dd>{{ k3dConfig?.api_port ?? '—' }}</dd></div>
               </template>
+            </dl>
+          </section>
+
+          <section v-if="displayMode==='k3d'" class="review-section" aria-label="节点资源配置">
+            <h4 class="review-section-heading"><Server :size="15" aria-hidden="true" />节点资源</h4>
+            <dl class="review-facts review-section-content">
+              <div v-for="role in k3dResourceRoles" :key="role.key"><dt>{{ role.label }}</dt><dd>{{ k3dConfig?.[role.key] ? `${k3dConfig[role.key]!.cpu_millis/1000} 核 / ${k3dConfig[role.key]!.memory_mib} MiB` : '—' }}</dd></div>
             </dl>
           </section>
 
@@ -515,4 +546,5 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
 
 .plan-review .review-section{min-width:0}.plan-review .review-section-heading{display:flex;align-items:center;gap:8px;margin:0;padding:9px 14px;border-block:1px solid var(--edo-border);background:color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface));color:var(--edo-text);font-size:14px;font-weight:600}.review-section-heading>svg{flex-shrink:0;color:var(--edo-primary)}.review-section-content{padding:12px 14px;min-width:0}.review-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px;margin:0;min-width:0}.review-facts>div{display:flex;align-items:baseline;gap:10px;min-width:0;font-size:13px;line-height:1.7}.review-facts dt{flex:0 0 88px;color:var(--edo-muted);font-size:12px}.review-facts dd{flex:1;min-width:0;margin:0;overflow-wrap:anywhere}.review-facts code{font-size:12px}.review-facts .ant-tag{margin:0}.plan-review .plan-hosts{list-style:none;margin:0;padding:0;border:0;border-radius:0;max-height:240px;overflow:auto}.plan-hosts>li{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--edo-border);font-size:13px}.plan-hosts>li:last-child{border-bottom:0}.review-host-identity{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 14px;min-width:0}.review-host-identity strong{min-width:0;overflow-wrap:anywhere;font-weight:500}.review-host-identity code{min-width:0;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.plan-hosts>li .ant-tag{margin:0;white-space:normal;text-align:center}.review-disclosure{min-width:0}.review-disclosure summary{width:fit-content;max-width:100%;cursor:pointer;font-size:12px;line-height:1.8;color:var(--edo-text);overflow-wrap:anywhere}.download-addresses{margin-top:12px;padding-top:10px;border-top:1px solid var(--edo-border)}.review-disclosure[open]>summary{margin-bottom:10px}.download-facts{grid-template-columns:minmax(0,1fr)}.download-facts dt{flex-basis:112px}.configuration-stack{display:grid;gap:12px}.review-configurations :deep(.yaml-editor-heading){font-size:13px;overflow-wrap:anywhere}.review-configurations :deep(.yaml-editor-heading .ant-tag){margin:0}.review-configurations :deep(.yaml-code-editor .cm-scroller){min-height:112px;max-height:320px}.plan-review .review-commands pre{padding:12px;max-height:240px;min-width:0;font:12px/1.7 SFMono-Regular,Consolas,monospace}.review-disclosure summary:focus-visible,.plan-hosts:focus-visible,.review-commands pre:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}@media(max-width:650px){.review-facts{grid-template-columns:minmax(0,1fr);gap:10px}.review-facts dt{flex-basis:88px}.download-facts>div{display:grid;grid-template-columns:minmax(0,1fr);gap:2px}.download-facts dt{flex-basis:auto}.review-host-identity{display:grid;gap:2px}.review-section-content{padding:12px}.plan-hosts>li{padding:10px 12px;gap:8px}}
 .system-image-controls{display:grid;gap:8px;min-width:0}.system-image-controls :deep(.ant-checkbox-wrapper){align-items:flex-start;overflow-wrap:anywhere}.review-host-roles{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px 6px;max-width:280px;min-width:0}@media(max-width:650px){.plan-hosts>li{grid-template-columns:minmax(0,1fr)}.review-host-roles{justify-content:flex-start;max-width:100%}}
+.k3d-resources{margin-bottom:20px;border-top:1px solid var(--edo-border)}.k3d-resource-heading{margin:0;padding:10px 12px;background:var(--edo-bg);font-size:13px;font-weight:600}.k3d-resource-row{display:grid;grid-template-columns:120px minmax(0,180px) minmax(0,200px);align-items:center;gap:8px 20px;padding:12px;border-bottom:1px solid var(--edo-border)}.k3d-resource-row h5{margin:0;font-size:13px;font-weight:500}.k3d-resource-row :deep(.ant-form-item){margin:0}.resource-input{display:flex;align-items:center;gap:8px}.resource-input :deep(.ant-input-number){width:130px;max-width:100%}.resource-input>span{color:var(--edo-muted);font-size:12px;white-space:nowrap}.k3d-resource-error{grid-column:2/-1;margin:0;color:var(--ant-color-error,#ff4d4f);font-size:12px}@media(max-width:650px){.k3d-resource-row{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.k3d-resource-row h5{grid-column:1/-1}.resource-input :deep(.ant-input-number){width:100%;min-width:0}.k3d-resource-error{grid-column:1/-1}}
 </style>

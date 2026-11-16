@@ -21,13 +21,19 @@ func TestK3dHTTPPreviewMetadataSingleConsumptionAndOwnerBoundary(t *testing.T) {
 	router, cleanup := newK3sHTTPTestRouter(t, transport)
 	defer cleanup()
 	admin := loginForDepartmentTest(t, router, "admin")
-	response := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/plans", k3dHTTPInput("k3d HTTP"), admin)
+	input := k3dHTTPInput("k3d HTTP")
+	input["k3d"].(map[string]any)["server_resources"] = map[string]any{"cpu_millis": 1750, "memory_mib": 3072}
+	input["k3d"].(map[string]any)["worker_resources"] = map[string]any{"cpu_millis": 625, "memory_mib": 768}
+	response := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/plans", input, admin)
 	var plan k3s.Plan
 	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &plan) != nil || plan.Mode != "k3d" || plan.K3d == nil || plan.K3d.Agents == nil || *plan.K3d.Agents != 0 || plan.K3d.APIPort != 16443 || plan.K3d.BindAddress != "192.0.2.241" || plan.Version != "v1.37.1+k3s1" || len(plan.Hosts) != 1 || plan.Hosts[0].Role != "host" {
 		t.Fatalf("k3d 预览元数据错误: %d %s", response.Code, response.Body.String())
 	}
 	if response.Header().Get("Cache-Control") != "no-store" || plan.Preflight == nil || !plan.Preflight.Passed || len(plan.Commands) != 1 || !strings.Contains(plan.Commands[0], "--agents 0") || strings.Contains(response.Body.String(), "test-only-ssh-password") {
 		t.Fatal("k3d 计划未保持只读、安全或显式零 Worker")
+	}
+	if plan.K3d.ServerResources == nil || *plan.K3d.ServerResources != (k3s.K3dNodeResources{CPUMillis: 1750, MemoryMiB: 3072}) || plan.K3d.WorkerResources == nil || *plan.K3d.WorkerResources != (k3s.K3dNodeResources{CPUMillis: 625, MemoryMiB: 768}) || len(plan.Warnings) != 0 {
+		t.Fatal("HTTP 计划资源配置未冻结或仍返回已删除说明")
 	}
 	role := createRoleForHTTPTest(t, router, admin, "k3d-other-owner", []string{access.PermissionClusterRead, access.PermissionClusterCreate, access.PermissionClusterUpdate, access.PermissionClusterExecute})
 	createUserForHTTPTest(t, router, admin, "k3d-other-owner", "", []string{role})
@@ -48,6 +54,9 @@ func TestK3dHTTPPreviewMetadataSingleConsumptionAndOwnerBoundary(t *testing.T) {
 	var installation k3s.Installation
 	if queued.Code != http.StatusAccepted || json.Unmarshal(queued.Body.Bytes(), &installation) != nil || installation.Mode != "k3d" || installation.K3d == nil || installation.Status != "pending" {
 		t.Fatalf("k3d 未异步排队: %d %s", queued.Code, queued.Body.String())
+	}
+	if installation.K3d.ServerResources == nil || *installation.K3d.ServerResources != *plan.K3d.ServerResources || installation.K3d.WorkerResources == nil || *installation.K3d.WorkerResources != *plan.K3d.WorkerResources {
+		t.Fatal("已排队任务没有沿用已确认的资源配置")
 	}
 	repeated := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/k3s/installations", map[string]any{"plan_id": plan.ID}, admin)
 	if repeated.Code != http.StatusConflict || !strings.Contains(repeated.Body.String(), "k3s_plan_consumed") {
@@ -84,7 +93,7 @@ func TestK3dHTTPRequiresEveryInstallationPermissionBeforeSSH(t *testing.T) {
 }
 
 func TestK3dHTTPRejectsInvalidOrCrossProjectHostsBeforeSSH(t *testing.T) {
-	for _, scenario := range []string{"native-options", "extra-host", "join", "wildcard", "cross-project", "preflight-failed"} {
+	for _, scenario := range []string{"native-options", "extra-host", "join", "wildcard", "invalid-server-resources", "invalid-worker-resources", "fractional-cpu-millis", "cross-project", "preflight-failed"} {
 		t.Run(scenario, func(t *testing.T) {
 			transport := &k3sHTTPTestTransport{}
 			router, cleanup, db := newK3sHTTPTestRouterAndDB(t, transport)
@@ -101,6 +110,12 @@ func TestK3dHTTPRejectsInvalidOrCrossProjectHostsBeforeSSH(t *testing.T) {
 				input["action"] = "join"
 			case "wildcard":
 				input["k3d"] = map[string]any{"bind_address": "0.0.0.0"}
+			case "invalid-server-resources":
+				input["k3d"].(map[string]any)["server_resources"] = map[string]any{"cpu_millis": 0, "memory_mib": 1024}
+			case "invalid-worker-resources":
+				input["k3d"].(map[string]any)["worker_resources"] = map[string]any{"cpu_millis": 1000, "memory_mib": 5}
+			case "fractional-cpu-millis":
+				input["k3d"].(map[string]any)["server_resources"] = map[string]any{"cpu_millis": 10.5, "memory_mib": 1024}
 			case "cross-project":
 				other := model.Project{ID: "k3d-other-project", DepartmentID: database.DefaultDepartmentID, Name: "k3d other", IsActive: true}
 				if err := db.Create(&other).Error; err != nil {

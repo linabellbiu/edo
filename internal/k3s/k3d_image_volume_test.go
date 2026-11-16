@@ -14,9 +14,6 @@ func TestK3dDefaultImageVolumeMatchesOfficialToolsContract(t *testing.T) {
 	if strings.Contains(create, "--no-image-volume") {
 		t.Error("固定官方版本的工具节点依赖镜像卷，不能禁用")
 	}
-	if !strings.Contains(strings.Join(k3dWarnings(id), "\n"), volume) {
-		t.Error("安装预览未说明本次官方镜像卷准确名称")
-	}
 	install, err := k3dInstallScript(input, id)
 	if err != nil {
 		t.Fatal(err)

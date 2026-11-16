@@ -124,6 +124,9 @@ func (h k3sHandler) preview(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 256*1024)
 	var input k3s.Input
 	if err := c.ShouldBindJSON(&input); err != nil {
+		if h.logger != nil {
+			h.logger.Warn("K3s 安装计划参数解析失败", "operation", "k3s_plan_bind", "request_id", requestIDFrom(c), "err", err)
+		}
 		writeError(c, http.StatusBadRequest, "invalid_k3s_plan", "请检查安装配置")
 		return
 	}

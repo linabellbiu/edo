@@ -548,7 +548,6 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 		plan.Version = k3dK3sVersion
 		plan.ServerConfig, plan.AgentConfig = "", ""
 		plan.Commands = []string{k3dCreateCommand(input, id)}
-		plan.Warnings = k3dWarnings(id)
 	}
 	if disabled, _ := input.ServerOptions["disable-agent"].(bool); disabled {
 		plan.Warnings = append(plan.Warnings, "禁用 Server Agent 后不会注册该控制平面节点，该主机暂不自动关联。")

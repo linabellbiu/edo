@@ -60,9 +60,6 @@ func TestK3dInvalidIdentityNeverProducesResourceCommands(t *testing.T) {
 			if got := k3dResourceName(id); got != "" {
 				t.Errorf("非法安装标识生成了资源名: %q", got)
 			}
-			if len(k3dWarnings(id)) != 0 {
-				t.Error("非法安装标识生成了可执行资源警告")
-			}
 			if k3dCreateCommand(input, id) != "" {
 				t.Error("非法安装标识进入了创建命令")
 			}
@@ -107,7 +104,7 @@ func TestK3dCommandsShareCompactNameAndFullInstallationLabel(t *testing.T) {
 			t.Errorf("运行资源或 Kubernetes 标签没有保留完整 UUID: %s", flag)
 		}
 	}
-	if !strings.Contains(strings.Join(k3dWarnings(id), "\n"), name) || strings.Contains(install+read, "edo-"+id) {
+	if strings.Contains(create+install+read, "edo-"+id) {
 		t.Fatal("确认计划、实际资源名或读取目标仍混用旧超长名称")
 	}
 }

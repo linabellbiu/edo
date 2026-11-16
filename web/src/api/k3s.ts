@@ -13,7 +13,14 @@ export interface K3sInstallSources {
   mirror?: string
   system_image_registry?: string
 }
-export interface K3dConfig { agents: number; api_port: number; bind_address: string }
+export interface K3dNodeResources { cpu_millis: number; memory_mib: number }
+export interface K3dConfig {
+  agents: number
+  api_port: number
+  bind_address: string
+  server_resources?: K3dNodeResources
+  worker_resources?: K3dNodeResources
+}
 export interface K3sOption {
   name: string
   label: string
