@@ -30,6 +30,25 @@ test('名称、Pod 数量、架构和继承标签不参与角色推断', () => {
   assert.deepEqual(roles.kubernetesNodeRoles({ kind: 'Pod', metadata: { labels: { 'node-role.kubernetes.io/master': '' } } }), [])
 })
 
+test('已注册的 K3s 控制节点同时显示工作角色，普通或缺少证据的控制节点不补角色', () => {
+  for (const version of ['v1.37.1+k3s1', '1.37.1+k3s2', 'v1.38.0-rc1+k3s1', 'v1.38.0-rc.1+k3s1']) {
+    const object = node({ 'node-role.kubernetes.io/control-plane': 'true' })
+    object.status = { nodeInfo: { kubeletVersion: version } }
+    assert.deepEqual(roles.kubernetesNodeRoles(object), ['control-plane', 'worker'])
+    object.spec = { unschedulable: true, taints: [{ key: 'node-role.kubernetes.io/control-plane', effect: 'NoSchedule' }] }
+    assert.deepEqual(roles.kubernetesNodeRoles(object), ['control-plane', 'worker'], '角色与当前调度限制分别展示')
+    const cells = presentation.resourceCells(object, t)
+    assert.equal(cells.role.text, '控制平面 (Master)')
+    assert.equal(cells.role.secondary, '工作节点 (Worker)')
+    assert.ok(presentation.resourceSearchText(object, t).includes('worker'))
+  }
+  for (const version of [undefined, '', 'v1.37.1', 'v1.37.1+rke2r1', 'k3s', 'v1.37.1+k3s1-extra', 'v1.02.3+k3s1', 'v1.38.0-rc..1+k3s1', 'v1.38.0-rc.01+k3s1', 'v1.37.1+k3s0', 'v1.37.1+k3s01', ' v1.37.1+k3s1', 'v1.37.1+k3s1\n', 123]) {
+    const object = node({ 'node-role.kubernetes.io/control-plane': 'true' }, 'k3s-worker')
+    object.status = { nodeInfo: { kubeletVersion: version }, allocatable: { pods: '110' } }
+    assert.deepEqual(roles.kubernetesNodeRoles(object), ['control-plane'])
+  }
+})
+
 test('列表角色列使用真实角色文案，并纳入现有搜索', () => {
   const type = api.kubeTypes.find(item => item.resource === 'nodes')
   const columns = presentation.resourceColumns(type, t)
@@ -57,6 +76,9 @@ test('节点详情随当前节点响应更新角色，不把上一节点角色�
   const scope = vue.effectScope()
   const state = scope.run(() => component.setup(props, { expose() {} }))
   assert.deepEqual(state.roles.value, ['control-plane'])
+  props.node = { ...node({ 'node-role.kubernetes.io/control-plane': '' }), status: { nodeInfo: { kubeletVersion: 'v1.37.1+k3s1' } } }
+  await vue.nextTick()
+  assert.deepEqual(state.roles.value, ['control-plane', 'worker'])
   props.node = node({ 'node-role.kubernetes.io/worker': '' })
   await vue.nextTick()
   assert.deepEqual(state.roles.value, ['worker'])

@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
@@ -64,8 +65,8 @@ type NodeTopology struct {
 	CollectedAt  time.Time      `json:"collected_at"`
 }
 
-// NodeRoles follows the actual node-role labels. A control-plane node is not
-// assumed to be a worker merely because it also runs Pods.
+// NodeRoles 根据角色标签和已注册的 K3s kubelet 识别节点角色。
+// K3s 的无 Agent Server 不注册 Node；调度开关、污点和 Pod 数量不改变节点角色。
 func NodeRoles(node *corev1.Node) []string {
 	roles := []string{}
 	if node == nil {
@@ -77,10 +78,30 @@ func NodeRoles(node *corev1.Node) []string {
 	if control || master {
 		roles = append(roles, "control-plane")
 	}
-	if worker || len(roles) == 0 {
+	if worker || len(roles) == 0 || (control || master) && registeredK3sKubelet(node.Status.NodeInfo.KubeletVersion) {
 		roles = append(roles, "worker")
 	}
 	return roles
+}
+
+func registeredK3sKubelet(value string) bool {
+	if value != strings.TrimSpace(value) {
+		return false
+	}
+	version, err := utilversion.ParseSemantic(value)
+	if err != nil {
+		return false
+	}
+	revision, ok := strings.CutPrefix(version.BuildMetadata(), "k3s")
+	if !ok || revision == "" || revision[0] < '1' || revision[0] > '9' {
+		return false
+	}
+	for _, digit := range revision {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // NodeTopology reads cluster-wide nodes and their current resources. Pod counts

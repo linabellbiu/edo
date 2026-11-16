@@ -41,6 +41,86 @@ func TestNodeRolesUseControlLabelsAndExplicitDualRole(t *testing.T) {
 	}
 }
 
+func TestNodeRolesRecognizeRegisteredK3sServerAgentWithoutInferringFromNamesOrCapacity(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		version string
+		roles   string
+	}{
+		{"stable", "v1.37.1+k3s1", "control-plane,worker"},
+		{"without-v", "1.37.1+k3s2", "control-plane,worker"},
+		{"prerelease", "v1.38.0-rc1+k3s1", "control-plane,worker"},
+		{"dotted-prerelease", "v1.38.0-rc.1+k3s1", "control-plane,worker"},
+		{"ordinary-kubernetes", "v1.37.1", "control-plane"},
+		{"other-distribution", "v1.37.1+rke2r1", "control-plane"},
+		{"missing-kubelet-version", "", "control-plane"},
+		{"malformed-core", "v1.37+k3s1", "control-plane"},
+		{"zero-prefixed-core", "v1.037.1+k3s1", "control-plane"},
+		{"malformed-prerelease", "v1.38.0-rc..1+k3s1", "control-plane"},
+		{"zero-prefixed-prerelease", "v1.38.0-rc.01+k3s1", "control-plane"},
+		{"invalid-revision", "v1.37.1+k3s-one", "control-plane"},
+		{"zero-revision", "v1.37.1+k3s0", "control-plane"},
+		{"zero-prefixed-revision", "v1.37.1+k3s01", "control-plane"},
+		{"custom-build-suffix", "v1.37.1+k3s1.custom", "control-plane"},
+		{"extra-whitespace", " v1.37.1+k3s1 ", "control-plane"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			for _, controlLabel := range []string{"node-role.kubernetes.io/control-plane", "node-role.kubernetes.io/master"} {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{Name: "k3s-server-worker", Labels: map[string]string{controlLabel: "", "version": "v1.37.1+k3s1"}},
+					Spec:       corev1.NodeSpec{Unschedulable: true, Taints: []corev1.Taint{{Key: "node-role.kubernetes.io/control-plane", Effect: corev1.TaintEffectNoSchedule}}},
+					Status: corev1.NodeStatus{
+						NodeInfo:    corev1.NodeSystemInfo{KubeletVersion: scenario.version},
+						Allocatable: corev1.ResourceList{corev1.ResourcePods: resource.MustParse("110")},
+					},
+				}
+				if got := strings.Join(NodeRoles(node), ","); got != scenario.roles {
+					t.Fatalf("label=%s roles=%s want=%s", controlLabel, got, scenario.roles)
+				}
+			}
+		})
+	}
+}
+
+func TestTopologyK3sServerRolesFollowCurrentKubeletWithoutInstallationHistory(t *testing.T) {
+	const boot = "1234567890abcdef1234567890abcdef"
+	var kubelet atomic.Value
+	kubelet.Store("v1.37.1+k3s1")
+	server := resourceTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/nodes" {
+			fmt.Fprintf(w, `{"apiVersion":"v1","kind":"NodeList","items":[{"metadata":{"name":"control","uid":"control-uid","labels":{"node-role.kubernetes.io/control-plane":""}},"status":{"nodeInfo":{"bootID":"12345678-90ab-cdef-1234-567890abcdef","kubeletVersion":%q}}}]}`, kubelet.Load().(string))
+			return
+		}
+		http.NotFound(w, r)
+	})
+	service := newKubeTestService(t, time.Second)
+	id := createKubeTestCluster(t, service, server)
+	host := model.Host{ID: "direct-k3s-host", Name: "直接接入的主机", Mode: model.HostModeSSH, Address: "192.0.2.241", SSHPort: 22, IsActive: true}
+	if err := service.db.Create(&host).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.Create(&model.HostCapability{HostID: host.ID, Kind: model.HostCapabilityKubernetes, RuntimeID: id, Status: model.HostCapabilityReady}).Error; err != nil {
+		t.Fatal(err)
+	}
+	service.hostIdentityProbe = func(context.Context, model.Host) (hostidentity.Identity, error) {
+		return hostidentity.Identity{BootID: boot}, nil
+	}
+	for _, scenario := range []struct{ version, roles string }{
+		{"v1.37.1+k3s1", "control-plane,worker"},
+		{"v1.37.1", "control-plane"},
+		{"", "control-plane"},
+	} {
+		kubelet.Store(scenario.version)
+		result, err := service.NodeTopology(context.Background(), id, map[string]bool{"kubernetes.node.read": true}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Nodes) != 1 || strings.Join(result.Nodes[0].Roles, ",") != scenario.roles || len(result.Hosts) != 1 || result.Hosts[0].State != "matched" || strings.Join(result.Hosts[0].Roles, ",") != scenario.roles {
+			t.Fatalf("version=%q roles must follow current Node info: %+v", scenario.version, result)
+		}
+	}
+}
+
 func TestTopologyReadsCompletePagesAndKeepsUnknownResourcesDistinct(t *testing.T) {
 	var nodePages, podPages atomic.Int32
 	now := time.Now().UTC()
