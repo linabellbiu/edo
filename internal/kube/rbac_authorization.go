@@ -48,56 +48,61 @@ func (s *Service) subjectPlan(ctx context.Context, cluster *model.KubernetesClus
 				return ErrRBACForbidden
 			}
 			if fresh.User.IsSuperuser {
-				// 使用现有集群连接，不写入额外角色绑定；身份变化后立即作废此授权。
-				plan.freshDigest = fresh.Digest
-				plan.authorization = &clusterAuthorization{Administrator: true, CacheKey: cluster.ProjectID + "/" + userID, Version: rbacHash([]any{"administrator", clusterQueryVersion(cluster), fresh.Digest})}
-				return nil
+				plan, err = subjectPlanFromSnapshot(cluster, model.KubernetesRBACPolicy{}, nil, fresh)
+				return err
 			}
 		}
 		policy, grants, err := reader.readRBACPolicy(ctx, cluster)
 		if err != nil {
 			return err
 		}
-		plan.policy = policy
-		if !policy.Enabled {
-			if policy.DesiredEnabled || policy.Status != "disabled" {
-				return ErrRBACSyncPending
-			}
-			plan.authorization = &clusterAuthorization{Enforced: false}
-			if fresh != nil {
-				codes := []string{}
-				for code, permitted := range fresh.Permissions {
-					if permitted {
-						codes = append(codes, code)
-					}
-				}
-				sort.Strings(codes)
-				plan.authorization.CacheKey = cluster.ProjectID + "/" + userID
-				plan.authorization.Version = rbacHash([]any{"application", clusterQueryVersion(cluster), policy.Revision, fresh.Digest})
-				plan.authorization.Permissions = map[string][]string{"": codes}
-			}
-			return nil
-		}
-		if !policy.DesiredEnabled || policy.Status != "synced" && policy.Status != "pending" && policy.Status != "error" {
-			return ErrRBACSyncPending
-		}
-		if fresh == nil {
-			fresh, err = access.FreshProjectPermissions(tx, ctx, userID, cluster.ProjectID)
-			if err != nil {
-				return ErrRBACForbidden
-			}
-		}
-		compiled, err := compileRBACSubject(cluster, policy, grants, fresh)
-		if err != nil {
-			return err
-		}
-		*plan = *compiled
-		return nil
+		plan, err = subjectPlanFromSnapshot(cluster, policy, grants, fresh)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return plan, nil
+}
+
+// 单集群读取与批量连接检查共用授权决策，批量路径只改变查询方式。
+func subjectPlanFromSnapshot(cluster *model.KubernetesCluster, policy model.KubernetesRBACPolicy, grants []model.KubernetesRoleGrant, fresh *access.FreshProjectAuthorization) (*rbacSubjectPlan, error) {
+	userID := ""
+	if fresh != nil {
+		userID = fresh.User.ID
+	}
+	plan := &rbacSubjectPlan{policy: policy, userID: userID, namespaced: map[string][]rbacv1.PolicyRule{}, clusterRules: []rbacv1.PolicyRule{}}
+	if fresh != nil && fresh.User.IsSuperuser {
+		plan.freshDigest = fresh.Digest
+		plan.authorization = &clusterAuthorization{Administrator: true, CacheKey: cluster.ProjectID + "/" + userID, Version: rbacHash([]any{"administrator", clusterQueryVersion(cluster), fresh.Digest})}
+		return plan, nil
+	}
+	if !policy.Enabled {
+		if policy.DesiredEnabled || policy.Status != "disabled" {
+			return nil, ErrRBACSyncPending
+		}
+		plan.authorization = &clusterAuthorization{Enforced: false}
+		if fresh != nil {
+			codes := []string{}
+			for code, permitted := range fresh.Permissions {
+				if permitted {
+					codes = append(codes, code)
+				}
+			}
+			sort.Strings(codes)
+			plan.authorization.CacheKey = cluster.ProjectID + "/" + userID
+			plan.authorization.Version = rbacHash([]any{"application", clusterQueryVersion(cluster), policy.Revision, fresh.Digest})
+			plan.authorization.Permissions = map[string][]string{"": codes}
+		}
+		return plan, nil
+	}
+	if !policy.DesiredEnabled || policy.Status != "synced" && policy.Status != "pending" && policy.Status != "error" {
+		return nil, ErrRBACSyncPending
+	}
+	if fresh == nil {
+		return nil, ErrRBACForbidden
+	}
+	return compileRBACSubject(cluster, policy, grants, fresh)
 }
 
 func compileRBACSubject(cluster *model.KubernetesCluster, policy model.KubernetesRBACPolicy, grants []model.KubernetesRoleGrant, fresh *access.FreshProjectAuthorization) (*rbacSubjectPlan, error) {

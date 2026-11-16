@@ -341,6 +341,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	kubernetesReads := []string{access.PermissionClusterRead, "kubernetes.node.read", "kubernetes.workload.read", "kubernetes.config.read", "kubernetes.storage.read", "kubernetes.network.read"}
 	clusterListPermissions := append(append([]string(nil), kubernetesReads...), kubernetesRBACRead, kubernetesRBACManage)
 	protected.GET("/kubernetes/clusters", requireAnyPermission(deps.Access, deps.Logger, clusterListPermissions...), clusterAPI.listKubernetesClusters)
+	protected.GET("/kubernetes/clusters/connection-statuses", requireAnyPermission(deps.Access, deps.Logger, clusterListPermissions...), clusterAPI.kubernetesConnectionStatuses)
 	protected.POST("/kubernetes/clusters/test", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.test_input", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterExecute), clusterAPI.testKubernetesCluster)
 	protected.POST("/kubernetes/clusters", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.create", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterCreate), clusterAPI.createKubernetesCluster)
 	protected.PUT("/kubernetes/clusters/:id", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.update", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterUpdate), clusterAPI.updateKubernetesCluster)

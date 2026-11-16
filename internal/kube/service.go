@@ -82,6 +82,7 @@ type Service struct {
 	nodeMonitor           *nodeMonitor
 	topologyHosts         *topologyHostIdentityCache
 	queries               *resourceQueryCache
+	connections           *connectionStatusCache
 	hostIdentityProbe     hostIdentityReader
 	authorizationResolver func(context.Context, *model.KubernetesCluster, bool) (*clusterAuthorization, error)
 	queryTransaction      bool
@@ -102,7 +103,7 @@ func (s *Service) WithTransaction(tx *gorm.DB) *Service {
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, cfg config.Runtime) *Service {
-	return &Service{db: db, secrets: secrets, config: cfg, queries: newResourceQueryCache(), topologyHosts: newTopologyHostIdentityCache()}
+	return &Service{db: db, secrets: secrets, config: cfg, queries: newResourceQueryCache(), connections: newConnectionStatusCache(), topologyHosts: newTopologyHostIdentityCache()}
 }
 
 func (s *Service) List(ctx context.Context) ([]model.KubernetesCluster, error) {
@@ -331,6 +332,7 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 }
 
 func (s *Service) Ping(ctx context.Context, id string) (string, error) {
+	defer s.invalidateConnectionStatuses(id)
 	clientset, err := s.Clientset(ctx, id)
 	if err != nil {
 		return "", err

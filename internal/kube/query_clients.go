@@ -157,6 +157,7 @@ func (q *clusterQueries) stop() {
 }
 
 func (s *Service) invalidateClusterQueries(id string) {
+	s.invalidateConnectionStatuses(id)
 	if s.queries == nil {
 		return
 	}
