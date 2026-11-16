@@ -13,7 +13,7 @@ import (
 )
 
 func k3dHTTPInput(name string) map[string]any {
-	return map[string]any{"action": "create", "mode": "k3d", "profile": "default", "name": name, "server_host_id": "httpapi-deployment-host", "k3d": map[string]any{"agents": 0, "api_port": 16443, "bind_address": "192.0.2.241"}}
+	return map[string]any{"action": "create", "mode": "k3d", "profile": "default", "name": name, "server_host_id": "httpapi-deployment-host", "k3d": map[string]any{"image_source": "dockerhub", "image": "docker.io/rancher/k3s:v1.37.1-k3s1", "agents": 0, "api_port": 16443, "bind_address": "192.0.2.241"}}
 }
 
 func TestK3dHTTPPreviewMetadataSingleConsumptionAndOwnerBoundary(t *testing.T) {
@@ -88,7 +88,22 @@ func TestK3dHTTPRequiresEveryInstallationPermissionBeforeSSH(t *testing.T) {
 			if response.Code != http.StatusForbidden || transport.reads.Load() != 0 || transport.runs.Load() != 0 {
 				t.Fatalf("缺失 %s 仍执行 SSH: %d %s", missing, response.Code, response.Body.String())
 			}
+			versions := performJSONRequest(t, router, http.MethodGet, "/api/v1/kubernetes/k3s/k3d/images?source=invalid", nil, actor)
+			if versions.Code != http.StatusForbidden {
+				t.Fatalf("镜像版本目录绕过动作权限: %d %s", versions.Code, versions.Body.String())
+			}
 		})
+	}
+}
+
+func TestK3dHTTPImageCatalogRejectsArbitrarySourcesWithoutSSH(t *testing.T) {
+	transport := &k3sHTTPTestTransport{}
+	router, cleanup := newK3sHTTPTestRouter(t, transport)
+	defer cleanup()
+	admin := loginForDepartmentTest(t, router, "admin")
+	result := performJSONRequest(t, router, http.MethodGet, "/api/v1/kubernetes/k3s/k3d/images?source=https%3A%2F%2Fprivate.invalid", nil, admin)
+	if result.Code != http.StatusBadRequest || !strings.Contains(result.Body.String(), "请选择国内源或 Docker Hub") || strings.Contains(result.Body.String(), "private.invalid") || transport.reads.Load() != 0 || transport.runs.Load() != 0 {
+		t.Fatalf("版本读取接受任意来源或产生主机副作用: %d %s", result.Code, result.Body.String())
 	}
 }
 

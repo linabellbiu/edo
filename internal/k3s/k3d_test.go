@@ -28,7 +28,7 @@ import (
 )
 
 func (k *fakeClusters) Test(context.Context, kube.Input) (*kube.ConnectionTest, error) {
-	return &kube.ConnectionTest{Version: k3dK3sVersion}, nil
+	return &kube.ConnectionTest{Version: legacyK3dK3sVersion}, nil
 }
 
 type k3dTestTransport struct {
@@ -90,7 +90,7 @@ func k3dFixture(t *testing.T) (fixture, *k3dTestTransport, *fakeClusters, Input)
 	f.service.k3dWaitInterval = 5 * time.Millisecond
 	clusters := fakeClusterClient(t, f)
 	f.service.kubernetes = clusters
-	return f, transport, clusters, Input{Action: "create", Mode: "k3d", Profile: "default", Name: "容器测试集群", ServerHostID: f.host.ID}
+	return f, transport, clusters, Input{Action: "create", Mode: "k3d", Profile: "default", Name: "容器测试集群", ServerHostID: f.host.ID, K3d: &K3dOptions{ImageSource: "dockerhub", Image: "docker.io/rancher/k3s:v1.37.1-k3s1"}}
 }
 
 func TestK3dNormalizationDefaultsAndRejectsUnsafeTargets(t *testing.T) {
@@ -146,7 +146,7 @@ func TestK3dNormalizationDefaultsAndRejectsUnsafeTargets(t *testing.T) {
 func TestK3dCustomResourcesPersistIntoPlanAndExecution(t *testing.T) {
 	f, _, _, input := k3dFixture(t)
 	agents := 2
-	input.K3d = &K3dOptions{Agents: &agents, ServerResources: &K3dNodeResources{CPUMillis: 1751, MemoryMiB: 3072}, WorkerResources: &K3dNodeResources{CPUMillis: 625, MemoryMiB: 768}}
+	input.K3d = &K3dOptions{ImageSource: "dockerhub", Image: "docker.io/rancher/k3s:v1.37.1-k3s1", Agents: &agents, ServerResources: &K3dNodeResources{CPUMillis: 1751, MemoryMiB: 3072}, WorkerResources: &K3dNodeResources{CPUMillis: 625, MemoryMiB: 768}}
 	plan, err := f.service.Preview(f.ctx, f.actor.ID, input)
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +270,7 @@ func (k *k3dDelayedAPI) Test(context.Context, kube.Input) (*kube.ConnectionTest,
 	if k.tests <= k.failures {
 		return nil, kube.ErrClusterUnreachable
 	}
-	return &kube.ConnectionTest{Version: k3dK3sVersion}, nil
+	return &kube.ConnectionTest{Version: legacyK3dK3sVersion}, nil
 }
 
 func (k *k3dDelayedAPI) Ping(ctx context.Context, id string) (string, error) {

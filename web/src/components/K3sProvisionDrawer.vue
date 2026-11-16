@@ -7,9 +7,10 @@ import { listHosts, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import {
   getK3sCatalog, getK3sInstallation, getLastFailedK3sInstallation, checkK3sPreflight, previewK3sPlan, startK3sInstallation,
-  type K3sCatalog, type K3sInstallation, type K3sPlan, type K3sPlanHost, type K3sPlanInput, type K3sPreflightReport, type K3sPreflightCheck, type K3sJoinRole, type K3sInstallMode, type K3dConfig, type K3sDownloadSource,
+  type K3sCatalog, type K3sInstallation, type K3sPlan, type K3sPlanHost, type K3sPlanInput, type K3sPreflightReport, type K3sPreflightCheck, type K3sJoinRole, type K3sInstallMode, type K3dConfig, type K3dImageSource, type K3sDownloadSource,
 } from '@/api/k3s'
 import K3sOptionFields from '@/components/K3sOptionFields.vue'
+import K3dImageFields from '@/components/K3dImageFields.vue'
 import K3sPreflightReportView from '@/components/K3sPreflightReport.vue'
 import K3sInstallationProgress from '@/components/K3sInstallationProgress.vue'
 import HostDrawer from '@/components/HostDrawer.vue'
@@ -17,7 +18,7 @@ import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import { hasCustomK3sDatastore } from '@/utils/k3sDatastore'
 import { useAuthStore } from '@/stores/auth'
 import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sInstallationLabel, k3sInstallationLogView, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, k3sPlanHostRoleLabels, k3sServerAgentEnabled, validateK3sOverrides } from '@/utils/k3sProvision'
-import { defaultK3dConfig, defaultK3dBindAddress, k3dResourceError, sameK3dResources, validK3dBindAddress } from '@/utils/k3dProvision'
+import { defaultK3dConfig, defaultK3dBindAddress, k3dResourceError, sameK3dResources, validK3dBindAddress, validK3dImageSelection, k3dImageSourceLabel } from '@/utils/k3dProvision'
 
 const props = withDefaults(defineProps<{open:boolean;action?:'create'|'join';cluster?:string;endpoint?:string;hosts?:InfrastructureHost[]}>(), {
   action:'create',cluster:'',endpoint:'',
@@ -39,9 +40,11 @@ const plan = ref<K3sPlan>(),installation = ref<K3sInstallation>(),optionTab = re
 const preflight = ref<K3sPreflightReport>()
 const hostConfigOpen=ref(false),privilegeEditingHost=ref<InfrastructureHost>()
 const checking=ref(false),checkedInput=ref(''),checkedContext=ref('')
+const k3dImageReady=ref(false)
 const preflightView=ref<{focus:()=>void}>(),errorRegion=ref<HTMLElement>()
 const emptyForm = () => ({
   mode:'native' as K3sInstallMode,k3d:defaultK3dConfig(),
+  k3d_image_drafts:{} as Partial<Record<K3dImageSource,string>>,
   datastore:'sqlite' as 'sqlite'|'etcd',
   download_source:'official_cn' as K3sDownloadSource,system_image_source:'community_cn' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
   name:'',server_host_id:'',worker_host_ids:[] as string[],profile:'default' as 'default'|'custom',endpoint:'',
@@ -127,7 +130,7 @@ const hasHostConfig = computed(() => plan.value?.hosts?.some(host=>Boolean(host.
 const endpointPlaceholder = computed(() => k3sAutomaticEndpoint(hosts.value.find(host=>host.id===form.server_host_id),form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:'')||'https://192.168.1.10:6443')
 const canManageClusterResources = computed(() => auth.canAny(['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read']))
 const canExecute = computed(() => auth.canAny([props.action==='create'?'cluster.create':'kubernetes.node.create'])&&auth.canAny(['cluster.execute'])&&auth.canAny(['cluster.update'])&&auth.canAny(['cluster.read','deployment.read']))
-const canCheck = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!hostConfigOpen.value&&!loading.value&&!busy.value&&sourceInputValid.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id&&(!isK3d.value||validK3dConfig(form.k3d))):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
+const canCheck = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!hostConfigOpen.value&&!loading.value&&!busy.value&&sourceInputValid.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id&&(!isK3d.value||k3dImageReady.value&&validK3dConfig(form.k3d))):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
 const canPreview = computed(() => canCheck.value&&(!isK3d.value||reportPassed(preflight.value)&&checkedInput.value===signature.value&&checkedContext.value===context.value))
 const running = computed(() => k3sInstallationRunning(installation.value))
 const planExpired = computed(() => Boolean(plan.value)&&(!Number.isFinite(Date.parse(plan.value!.expires_at))||Date.parse(plan.value!.expires_at)<=now.value))
@@ -175,8 +178,8 @@ function nativeSourcesMatch(value:K3sPlan,payload:K3sPlanInput) {
   const sources=value.sources
   return !!sources&&sources.download_source===payload.download_source&&Boolean(sources.installer_url&&sources.artifact_url)&&(payload.action!=='create'||sources.system_image_registry===(payload.system_image_registry??''))
 }
-function validK3dConfig(value?:K3dConfig) {return !!value&&Number.isInteger(value.agents)&&value.agents>=0&&value.agents<=8&&Number.isInteger(value.api_port)&&value.api_port>=1024&&value.api_port<=65535&&validK3dBindAddress(value.bind_address)&&!k3dResourceError(value.server_resources)&&!k3dResourceError(value.worker_resources)}
-function k3dPlanMatches(value:K3sPlan) {const config=value.k3d;return validK3dConfig(config)&&value.hosts?.length===1&&value.hosts[0]?.role==='host'&&value.hosts[0]?.id===form.server_host_id&&config?.agents===form.k3d.agents&&config?.api_port===form.k3d.api_port&&config?.bind_address===form.k3d.bind_address.trim()&&sameK3dResources(config?.server_resources,form.k3d.server_resources)&&sameK3dResources(config?.worker_resources,form.k3d.worker_resources)&&value.endpoint===k3dEndpoint.value}
+function validK3dConfig(value?:K3dConfig) {return !!value&&Number.isInteger(value.agents)&&value.agents>=0&&value.agents<=8&&Number.isInteger(value.api_port)&&value.api_port>=1024&&value.api_port<=65535&&validK3dBindAddress(value.bind_address)&&validK3dImageSelection(value)&&!k3dResourceError(value.server_resources)&&!k3dResourceError(value.worker_resources)}
+function k3dPlanMatches(value:K3sPlan) {const config=value.k3d;return validK3dConfig(config)&&value.hosts?.length===1&&value.hosts[0]?.role==='host'&&value.hosts[0]?.id===form.server_host_id&&config?.agents===form.k3d.agents&&config?.api_port===form.k3d.api_port&&config?.bind_address===form.k3d.bind_address.trim()&&config?.image_source===form.k3d.image_source&&config?.image===form.k3d.image&&sameK3dResources(config?.server_resources,form.k3d.server_resources)&&sameK3dResources(config?.worker_resources,form.k3d.worker_resources)&&value.endpoint===k3dEndpoint.value}
 function readPreflight(value:unknown):K3sPreflightReport|undefined {
   if(!value||typeof value!=='object')return
   const report=value as K3sPreflightReport
@@ -404,6 +407,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
             <a-form-item v-if="action==='create'&&!isK3d" :label="t('k8s.workerHosts')"><a-select v-model:value="workerHostSelection" :aria-label="t('k8s.workerHosts')" mode="multiple" show-search option-filter-prop="label" :options="agentOptions" :placeholder="t('k8s.workerHostsPlaceholder')" /></a-form-item><a-form-item v-else-if="action==='join'" :label="joinMaster?'控制平面主机（Master）':'工作节点主机（Worker）'" required><a-select v-model:value="joinHostSelection" :mode="joinMaster?undefined:'multiple'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="joinMaster?'选择加入控制平面的新主机':'选择加入工作节点的新主机'" /><div class="field-help">{{ joinMaster?'Master 每个计划仅加入 1 台，须等待当前节点就绪后逐台添加。':'Worker 每次最多选择 20 台新主机。' }}</div></a-form-item><a-form-item v-if="joinMaster" label="目标集群 Server Token" required class="wide"><a-input-password v-model:value="form.server_token" aria-label="目标集群 Server Token" :visibility-toggle="false" :maxlength="4096" autocomplete="off" placeholder="输入目标集群的 Server Token" /><div class="field-help">仅用于本次控制平面加入。切换角色或关闭窗口后清除，不用于工作节点加入。</div></a-form-item>
             <template v-if="isK3d"><a-form-item :label="t('k8s.k3dAgents')" required><a-input-number v-model:value="form.k3d.agents" :aria-label="t('k8s.k3dAgents')" :min="0" :max="8" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dApiPort')" required><a-input-number v-model:value="form.k3d.api_port" :aria-label="t('k8s.k3dApiPort')" :min="1024" :max="65535" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dBindAddress')" required class="wide"><a-input v-model:value="form.k3d.bind_address" :aria-label="t('k8s.k3dBindAddress')" :placeholder="t('k8s.k3dBindPlaceholder')" /><div class="field-help">{{ t('k8s.k3dBindHint') }}</div></a-form-item><a-form-item :label="t('k8s.k3dEndpoint')" class="wide"><a-input :value="k3dEndpoint" readonly :aria-label="t('k8s.k3dEndpoint')" /></a-form-item></template>
           </div>
+          <K3dImageFields v-if="isK3d" v-model:value="form.k3d" v-model:drafts="form.k3d_image_drafts" :architecture="hosts.find(host=>host.id===form.server_host_id)?.architecture||''" :disabled="!canExecute" :scope="context" @valid="k3dImageReady=$event" />
           <section v-if="isK3d" class="k3d-resources" aria-label="节点资源配置">
             <h4 class="k3d-resource-heading">节点资源</h4>
             <div v-for="role in k3dResourceRoles" :key="role.key" class="k3d-resource-row">
@@ -482,6 +486,11 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
             <dl class="review-facts review-section-content">
               <div v-for="role in k3dResourceRoles" :key="role.key"><dt>{{ role.label }}</dt><dd>{{ k3dConfig?.[role.key] ? `${k3dConfig[role.key]!.cpu_millis/1000} 核 / ${k3dConfig[role.key]!.memory_mib} MiB` : '—' }}</dd></div>
             </dl>
+          </section>
+
+          <section v-if="displayMode==='k3d'" class="review-section" aria-label="K3s 镜像">
+            <h4 class="review-section-heading"><Download :size="15" aria-hidden="true" />K3s 镜像</h4>
+            <dl class="review-facts review-section-content"><div><dt>镜像来源</dt><dd>{{ k3dImageSourceLabel(k3dConfig?.image_source) }}</dd></div><div class="wide"><dt>镜像地址</dt><dd><code>{{ k3dConfig?.image||'—' }}</code></dd></div></dl>
           </section>
 
           <section class="review-section" aria-label="目标主机">

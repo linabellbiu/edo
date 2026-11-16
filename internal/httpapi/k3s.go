@@ -26,12 +26,32 @@ func registerK3sRoutes(protected *gin.RouterGroup, deps Dependencies) {
 	canInstall := requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterCreate, "kubernetes.node.create")
 	canViewTask := requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterCreate, "kubernetes.node.create", access.PermissionK3sUninstall)
 	protected.GET("/kubernetes/k3s/options", canInstall, h.options)
+	protected.GET("/kubernetes/k3s/k3d/images", canInstall, h.k3dImages)
 	protected.POST("/kubernetes/k3s/preflight", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.preflight", "host"), h.check)
 	protected.POST("/kubernetes/k3s/plans", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.plan", "k3s_installation"), h.preview)
 	protected.POST("/kubernetes/k3s/installations", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.install", "k3s_installation"), h.execute)
 	protected.GET("/kubernetes/k3s/installations", canViewTask, h.list)
 	protected.GET("/kubernetes/k3s/installations/:id", canViewTask, h.detail)
 	registerK3sUninstallRoutes(protected, deps)
+}
+
+func (h k3sHandler) k3dImages(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !h.authorize(c, "create") || !h.available(c) {
+		return
+	}
+	controller := http.NewResponseController(c.Writer)
+	if err := controller.SetWriteDeadline(time.Now().Add(55 * time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		h.writeError(c, "k3d_images_deadline", err)
+		return
+	}
+	actor, _ := currentUser(c)
+	result, err := h.service.K3dImages(c.Request.Context(), actor.ID, c.Query("source"))
+	if err != nil {
+		h.writeError(c, "k3d_images", err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (h k3sHandler) check(c *gin.Context) {
@@ -289,6 +309,8 @@ func (h k3sHandler) writeError(c *gin.Context, operation string, err error) {
 		status, code, message = http.StatusGatewayTimeout, "k3s_not_ready", k3s.ErrReadiness.Error()
 	case errors.Is(err, k3s.ErrRemote):
 		status, code, message = http.StatusBadGateway, "k3s_remote_failed", k3s.ErrRemote.Error()
+	case errors.Is(err, k3s.ErrK3dImageCatalog):
+		status, code, message = http.StatusBadGateway, "k3d_images_unavailable", k3s.ErrK3dImageCatalog.Error()
 	}
 	if status >= 500 && h.logger != nil {
 		h.logger.Error("K3s 安装请求失败", "operation", operation, "request_id", requestIDFrom(c), "err", err)

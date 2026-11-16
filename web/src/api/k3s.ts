@@ -14,12 +14,21 @@ export interface K3sInstallSources {
   system_image_registry?: string
 }
 export interface K3dNodeResources { cpu_millis: number; memory_mib: number }
+export type K3dImageSource = 'domestic' | 'dockerhub' | 'custom'
+export interface K3dImageVersion { version: string; tag: string; image: string; platforms: string[] }
+export interface K3dImageCatalog { source: Exclude<K3dImageSource,'custom'>; repository: string; checked_at: string; versions: K3dImageVersion[] }
 export interface K3dConfig {
+	image_source?: K3dImageSource
+	image?: string
   agents: number
   api_port: number
   bind_address: string
   server_resources?: K3dNodeResources
   worker_resources?: K3dNodeResources
+}
+
+export async function getK3dImages(source: Exclude<K3dImageSource,'custom'>, signal?: AbortSignal) {
+  return (await client.get<K3dImageCatalog>('/kubernetes/k3s/k3d/images',{params:{source},signal,timeout:50_000})).data
 }
 export interface K3sOption {
   name: string

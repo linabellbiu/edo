@@ -20,7 +20,8 @@ const reportFor=body=>({...preflightReport(),hosts:(body.action==='join'?(body.j
 const preflightFailure=report=>({message:'前置检查未通过',response:{status:409,data:{code:'k3s_preflight_failed',message:'前置检查未通过',preflight:report}}})
 const nativeSources=(download_source='official_cn',system_image_registry='registry.cn-hangzhou.aliyuncs.com')=>({download_source,installer_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh':'https://get.k3s.io',artifact_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s':'https://github.com/k3s-io/k3s/releases/download',...(download_source==='official_cn'?{mirror:'cn'}:{}),system_image_registry})
 const plan=()=>({id:'plan-1',action:'create',sources:nativeSources(),expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[],preflight:preflightReport()})
-const k3dPlan=(config={agents:1,api_port:16443,bind_address:'192.0.2.1'})=>({...plan(),sources:undefined,mode:'k3d',k3d:{...k3dHelpers.defaultK3dConfig(),...config},endpoint:`https://${config.bind_address}:${config.api_port}`,hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'host'}],preflight:{...preflightReport(),hosts:[{...preflightReport().hosts[0],role:'host'}]}})
+const k3dFixtureImage='swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/rancher/k3s:v1.37.1-k3s1'
+const k3dPlan=(config={agents:1,api_port:16443,bind_address:'192.0.2.1'})=>({...plan(),sources:undefined,mode:'k3d',k3d:{...k3dHelpers.defaultK3dConfig(),image:k3dFixtureImage,...config},endpoint:`https://${config.bind_address}:${config.api_port}`,hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'host'}],preflight:{...preflightReport(),hosts:[{...preflightReport().hosts[0],role:'host'}]}})
 const permissions=['cluster.create','cluster.execute','cluster.update','cluster.read','kubernetes.node.create']
 
 function harness({action='create',codes=permissions,api={},assumeDetected=true}={}){
@@ -47,6 +48,8 @@ function harness({action='create',codes=permissions,api={},assumeDetected=true}=
     codes,props,modules:{vue:{...vue,onMounted:fn=>mounts.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/k3s':methods,'@/utils/k3sProvision':helpers,'@/utils/k3sDatastore':datastoreHelpers,'@/utils/k3dProvision':k3dHelpers,'@/api/infrastructure':{listHosts:async()=>{requests.push({method:'hosts',project:storage.project});return props.hosts}},'@/utils/time':{formatDateTime:String},'@/stores/auth':{useAuthStore:()=>auth}},
     globals:{window:{addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:(name,fn)=>{if(listeners.get(name)===fn)listeners.delete(name)}},localStorage:{getItem:()=>storage.project},setTimeout:(fn,delay)=>{fn.delay=delay;timers.push(fn);return timers.length},clearTimeout(){},setInterval(){return 1},clearInterval(){}},
   })
+  // 父抽屉逻辑测试模拟镜像子表单已读取到一个国内版本，子表单另有真实加载交互覆盖。
+  vue.watch(()=>ctx.state.form.mode,mode=>{if(mode==='k3d'){if(!ctx.state.form.k3d.image)ctx.state.form.k3d.image=k3dFixtureImage;ctx.state.k3dImageReady.value=true}},{flush:'sync'})
   mounts.forEach(fn=>fn())
   // k3d 计划/执行用例使用已检测夹具；原生流程不注入检测结果。
   const preview=ctx.state.preview
@@ -281,7 +284,7 @@ test('创建提供原生与k3d模式，k3d只发送单宿主和容器配置，�
     assert.equal(ctx.state.form.k3d.bind_address,'192.0.2.1');assert.equal(ctx.state.form.k3d.agents,1);assert.equal(ctx.state.form.k3d.api_port,16443)
     ctx.state.form.k3d.agents=3;await ctx.state.preview()
     const payload=ctx.requests.find(item=>item.method==='preview').body
-    assert.deepEqual(payload,{action:'create',mode:'k3d',name:'Container draft',server_host_id:'1',profile:'default',endpoint:'https://192.0.2.1:16443',k3d:{...k3dHelpers.defaultK3dConfig(),agents:3,api_port:16443,bind_address:'192.0.2.1'}})
+    assert.deepEqual(payload,{action:'create',mode:'k3d',name:'Container draft',server_host_id:'1',profile:'default',endpoint:'https://192.0.2.1:16443',k3d:{...k3dHelpers.defaultK3dConfig(),image:k3dFixtureImage,agents:3,api_port:16443,bind_address:'192.0.2.1'}})
     assert.equal(ctx.state.showServerOptions.value,false);assert.equal(ctx.state.showAgentOptions.value,false);assert.deepEqual(ctx.state.selectedHosts.value.map(host=>host.id),['1'])
     ctx.state.form.mode='native';await settle();assert.equal(ctx.state.plan.value,undefined);assert.equal(ctx.state.form.name,'Native draft');assert.deepEqual(ctx.state.form.worker_host_ids,['2'])
     assert.deepEqual(ctx.state.form.server_options,{disable:['traefik']});assert.equal(ctx.state.form.endpoint,'https://native.example:6443');assert.equal(ctx.state.input().mode,'native');assert.equal('k3d' in ctx.state.input(),false)

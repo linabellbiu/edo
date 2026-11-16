@@ -125,7 +125,7 @@ func (s *Service) recheckRuntime(ctx context.Context, record model.K3sInstallati
 	if snapshot.PreflightVersion != preflightVersion {
 		return ErrPreflightRequired
 	}
-	if snapshot.Input.Mode == "k3d" && (snapshot.K3dVersion != k3dVersion || snapshot.K3dK3sVersion != k3dK3sVersion) {
+	if snapshot.Input.Mode == "k3d" && (snapshot.K3dVersion != k3dVersion || snapshot.K3dK3sVersion != k3dImageVersion(snapshot.Input.K3d)) {
 		return ErrPreflightRequired
 	}
 	if snapshot.Input.Action != "join" {

@@ -71,6 +71,7 @@ type clusterService interface {
 }
 
 type Service struct {
+	k3dImages       k3dImageCatalogCache
 	db              *gorm.DB
 	secrets         *secret.Manager
 	kubernetes      clusterService
@@ -545,7 +546,7 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 		plan.Commands = append(plan.Commands, command)
 	}
 	if input.Mode == "k3d" {
-		plan.Version = k3dK3sVersion
+		plan.Version = k3dImageVersion(input.K3d)
 		plan.ServerConfig, plan.AgentConfig = "", ""
 		plan.Commands = []string{k3dCreateCommand(input, id)}
 	}

@@ -12,7 +12,7 @@ import {createPreflightPreview} from './k3s-preflight-data.mjs'
 
 // 仅该夹具页面使用内存适配器，未知请求失败关闭，不透传开发或生产 API。
 const parameters=new URLSearchParams(location.search),calls=reactive([])
-const preview=createPreflightPreview(parameters.get('scenario')??'passed',{calls})
+const preview=createPreflightPreview(parameters.get('scenario')??'passed',{calls,allowK3dPlan:parameters.get('k3dPlan')==='true'})
 client.defaults.adapter=preview.adapter
 const pinia=createPinia(),auth=useAuthStore(pinia)
 auth.user={id:'k3s-preflight-fixture-user',username:'preview',nickname:'前端夹具',project_id:localStorage.getItem('edo.project')??'',department_id:'fixture-department',is_superuser:false,permissions:preview.permissions};auth.loaded=true

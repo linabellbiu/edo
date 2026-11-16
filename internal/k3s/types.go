@@ -101,11 +101,27 @@ type Sources struct {
 }
 
 type K3dOptions struct {
+	ImageSource     string            `json:"image_source,omitempty"`
+	Image           string            `json:"image,omitempty"`
 	Agents          *int              `json:"agents,omitempty"`
 	APIPort         int               `json:"api_port"`
 	BindAddress     string            `json:"bind_address"`
 	ServerResources *K3dNodeResources `json:"server_resources,omitempty"`
 	WorkerResources *K3dNodeResources `json:"worker_resources,omitempty"`
+}
+
+type K3dImageVersion struct {
+	Version   string   `json:"version"`
+	Tag       string   `json:"tag"`
+	Image     string   `json:"image"`
+	Platforms []string `json:"platforms"`
+}
+
+type K3dImageCatalog struct {
+	Source     string            `json:"source"`
+	Repository string            `json:"repository"`
+	CheckedAt  time.Time         `json:"checked_at"`
+	Versions   []K3dImageVersion `json:"versions"`
 }
 
 type K3dNodeResources struct {

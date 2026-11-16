@@ -6,7 +6,7 @@ import {preflightPreviewScenarios} from './k3s-preflight-data.mjs'
 const props=defineProps({preview:{type:Object,required:true}})
 const open=ref(false),parameters=new URLSearchParams(location.search),dark=parameters.get('theme')==='dark'
 document.documentElement.dataset.theme=dark?'dark':'light'
-const labels={passed:'通过',warning:'警告',failed:'不满足',delay:'延迟与取消',denied:'无权限',sudo:'Ubuntu 未启用安装提权',centos:'CentOS 未安装 sudo'}
+const labels={passed:'通过',warning:'警告',failed:'不满足',delay:'延迟与取消',denied:'无权限',sudo:'Ubuntu 未启用安装提权',centos:'CentOS 未安装 sudo','image-error':'镜像版本读取失败','image-empty':'镜像源无可用版本'}
 const checks=computed(()=>props.preview.calls.filter(call=>call.method==='post'&&call.path==='/kubernetes/k3s/preflight').length)
 const cancelled=computed(()=>props.preview.calls.filter(call=>call.outcome==='cancelled').length)
 const plans=computed(()=>props.preview.calls.filter(call=>call.method!=='get'&&call.path==='/kubernetes/k3s/plans').length)
@@ -15,7 +15,7 @@ function scenarioChanged(event){const url=new URL(location.href);url.searchParam
 </script>
 <template>
   <a-config-provider :theme="{algorithm:dark?theme.darkAlgorithm:theme.defaultAlgorithm,token:{colorPrimary:'#5269ff',borderRadius:6,fontSize:14}}">
-    <main class="preflight-preview"><header><h1>EDO 安装前检测</h1><p>前端夹具 · 非真实主机检测 · 不连接 NAS、Docker 或集群</p></header><section class="fixture-actions"><label>验收场景<select :value="preview.scenario" @change="scenarioChanged"><option v-for="scenario in preflightPreviewScenarios" :key="scenario" :value="scenario">{{ labels[scenario] }}</option></select></label><a-button type="primary" @click="open=true">打开安装抽屉</a-button></section><dl aria-label="夹具请求计数"><div><dt>检测请求</dt><dd>{{ checks }}</dd></div><div><dt>取消检测</dt><dd>{{ cancelled }}</dd></div><div><dt>计划写请求</dt><dd>{{ plans }}</dd></div><div><dt>安装写请求</dt><dd>{{ installs }}</dd></div></dl><p>只允许内存检测响应；计划、安装与未知接口均拒绝，不会透传真实 API。</p><K3sProvisionDrawer v-model:open="open" /></main>
+    <main class="preflight-preview"><header><h1>EDO 安装前检测</h1><p>前端夹具 · 非真实主机检测 · 不连接 NAS、Docker 或集群</p></header><section class="fixture-actions"><label>验收场景<select :value="preview.scenario" @change="scenarioChanged"><option v-for="scenario in preflightPreviewScenarios" :key="scenario" :value="scenario">{{ labels[scenario] }}</option></select></label><a-button type="primary" @click="open=true">打开安装抽屉</a-button></section><dl aria-label="夹具请求计数"><div><dt>检测请求</dt><dd>{{ checks }}</dd></div><div><dt>取消检测</dt><dd>{{ cancelled }}</dd></div><div><dt>计划写请求</dt><dd>{{ plans }}</dd></div><div><dt>安装写请求</dt><dd>{{ installs }}</dd></div></dl><p>{{ preview.allowK3dPlan?'仅模拟检测、镜像目录及 k3d 确认计划；安装与未知接口继续拒绝。':'只允许内存检测响应；计划、安装与未知接口均拒绝，不会透传真实 API。' }}</p><K3sProvisionDrawer v-model:open="open" /></main>
   </a-config-provider>
 </template>
 <style>

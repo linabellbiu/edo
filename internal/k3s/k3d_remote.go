@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/url"
 	"strconv"
-	"strings"
 
 	"edo/internal/hostidentity"
 )
@@ -109,7 +108,7 @@ func k3dCreateCommand(input Input, installationID string) string {
 	endpoint, _ := url.Parse(input.Endpoint)
 	return "edo_cli cluster create " + shellQuote(name) + " --servers 1 --agents " + strconv.Itoa(k3dAgents(options)) +
 		" --api-port " + shellQuote(net.JoinHostPort(options.BindAddress, strconv.Itoa(options.APIPort))) +
-		" --image " + shellQuote("rancher/k3s:"+strings.ReplaceAll(k3dK3sVersion, "+", "-")) +
+		" --image " + shellQuote(k3dImage(options)) +
 		" --servers-memory " + k3dMemoryArgument(server.MemoryMiB) + " --agents-memory " + k3dMemoryArgument(worker.MemoryMiB) +
 		" --no-lb --no-rollback --wait=false --timeout 5m --kubeconfig-update-default=false --kubeconfig-switch-context=false" +
 		" --runtime-label " + shellQuote("edo.dev/installation="+installationID+"@all") +

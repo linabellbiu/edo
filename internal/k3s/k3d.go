@@ -26,7 +26,9 @@ import (
 )
 
 const k3dVersion = "v5.9.0"
-const k3dK3sVersion = "v1.37.1+k3s1"
+
+// 仅用于缺少镜像字段的历史快照，新计划必须显式选择镜像。
+const legacyK3dK3sVersion = "v1.37.1+k3s1"
 
 func k3dAgents(options *K3dOptions) int {
 	if options == nil || options.Agents == nil {
@@ -110,6 +112,10 @@ func (s *Service) normalizeK3d(ctx context.Context, input Input) (Input, []Host,
 	}
 	server, worker := k3dResources(&options)
 	options.ServerResources, options.WorkerResources = &server, &worker
+	if err := normalizeK3dImage(&options); err != nil {
+		slog.WarnContext(ctx, "k3d 镜像配置无效", "operation", "k3d_validate_image", "host_id", host.ID, "err", err)
+		return input, nil, nil, nil, nil, err
+	}
 	address, err := netip.ParseAddr(strings.TrimSpace(options.BindAddress))
 	address = address.Unmap()
 	if err != nil || !address.Is4() || !address.IsGlobalUnicast() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.Zone() != "" || agents < 0 || agents > 8 || options.APIPort < 1024 || options.APIPort > 65535 {
