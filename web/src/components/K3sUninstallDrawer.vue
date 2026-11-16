@@ -5,6 +5,7 @@ import type { InfrastructureHost } from '@/api/infrastructure'
 import { getK3sInstallation, listK3sInstallations, listK3sUninstallTargets, previewK3sUninstallPlan, startK3sUninstallation, type K3sInstallation, type K3sPlan, type K3sUninstallTarget } from '@/api/k3s'
 import { apiErrorMessage } from '@/api/resources'
 import K3sInstallationProgress from '@/components/K3sInstallationProgress.vue'
+import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
 import { useAuthStore } from '@/stores/auth'
 import { k3sElapsed, k3sHostRoleLabel, k3sInstallationLabel, k3sInstallationRunning } from '@/utils/k3sProvision'
 import { k3sUninstallResultUncertain, sameK3sUninstallTarget, validK3sUninstallPlan, validK3sUninstallTarget, validK3sUninstallation } from '@/utils/k3sUninstall'
@@ -29,6 +30,7 @@ const busy=computed(()=>previewing.value||submitting.value)
 const running=computed(()=>k3sInstallationRunning(installation.value))
 const uncertain=computed(()=>k3sUninstallResultUncertain(installation.value))
 const hostLocked=computed(()=>uncertain.value||recent.value.some(item=>k3sUninstallResultUncertain(item)))
+const uncertainInstallation=computed(()=>recent.value.find(k3sUninstallResultUncertain))
 const expired=computed(()=>Boolean(plan.value)&&(!Number.isFinite(Date.parse(plan.value!.expires_at))||Date.parse(plan.value!.expires_at)<=now.value))
 const remaining=computed(()=>plan.value&&!expired.value?Math.max(0,Math.ceil((Date.parse(plan.value.expires_at)-now.value)/1000)):0)
 const canPreview=computed(()=>canOperate.value&&!hostLocked.value&&!recentLoading.value&&!recentError.value&&!loading.value&&!loadError.value&&!busy.value&&!installation.value&&Boolean(selectedTarget.value))
@@ -161,7 +163,7 @@ onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('
       <header v-if="host" class="uninstall-host"><strong>{{ host.name }}</strong><code>{{ host.address }}:{{ host.ssh_port }}</code></header>
       <a-alert v-if="!canOperate" type="warning" show-icon message="需要集群查看与 K3s 卸载权限，并使用已启用的远程 SSH 主机。" />
       <div v-if="error" ref="errorRegion" tabindex="-1"><a-alert type="error" show-icon :message="error" /></div>
-      <a-alert v-if="hostLocked&&!uncertain" type="warning" show-icon message="卸载结果未确认" :description="uncertainMessage"><template v-if="installation" #action><a-button size="small" @click="viewUncertainInstallation">查看日志</a-button></template></a-alert>
+      <a-alert v-if="hostLocked&&!uncertain" type="warning" show-icon message="卸载结果未确认" :description="uncertainMessage"><template v-if="installation" #action><a-button size="small" @click="viewUncertainInstallation">查看日志</a-button><SessionPopoutLink v-if="uncertainInstallation" kind="installation-log" :installationID="uncertainInstallation.id" :title="`${host?.name || 'K3s'} · 卸载日志`" :disabled="!canOperate" /></template></a-alert>
       <template v-if="!installation&&!hostLocked">
         <a-alert v-if="!plan" type="warning" show-icon :message="uninstallWarning" :description="uninstallImpact" />
         <a class="uninstall-docs" href="https://docs.k3s.io/zh/installation/uninstall" target="_blank" rel="noopener noreferrer">官方卸载说明</a>

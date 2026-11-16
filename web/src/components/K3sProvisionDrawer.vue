@@ -13,6 +13,7 @@ import K3sOptionFields from '@/components/K3sOptionFields.vue'
 import K3dImageFields from '@/components/K3dImageFields.vue'
 import K3sPreflightReportView from '@/components/K3sPreflightReport.vue'
 import K3sInstallationProgress from '@/components/K3sInstallationProgress.vue'
+import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
 import HostDrawer from '@/components/HostDrawer.vue'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import { hasCustomK3sDatastore } from '@/utils/k3sDatastore'
@@ -415,7 +416,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
       <a-alert v-if="checking" type="info" show-icon message="正在进行安装前检测" description="只读检测所选主机，不会安装或自动修复。" role="status" />
       <K3sPreflightReportView v-if="isK3d&&visiblePreflight&&!installation" ref="preflightView" :report="visiblePreflight" :mode="displayMode" :standalone="!plan" :can-configure-host="canExecute&&auth.canAny(['cluster.update'])" @configure-host="configurePrivilegeHost" />
       <details v-if="!installation&&(previousFailure||failureError)" class="previous-failure">
-        <summary>上一次安装失败日志</summary>
+        <summary>上一次安装失败日志 <SessionPopoutLink v-if="previousFailure" kind="installation-log" :installationID="previousFailure.id" :title="`${previousFailure.name || 'K3s'} · 安装失败日志`" @click.stop /></summary>
         <a-alert v-if="failureError" type="warning" :message="failureError"><template #action><a-button size="small" :loading="failureLoading" @click="loadPreviousFailure">重新读取</a-button></template></a-alert>
         <template v-else><p v-if="previousFailureLogs.truncated" class="field-help">仅显示末尾 64 KiB 日志。</p><pre tabindex="0" aria-label="上一次安装失败日志">{{ previousFailureLogs.text||'暂无可显示的失败日志。' }}</pre></template>
       </details>

@@ -16,7 +16,7 @@ function compile(source,modules={}){
   new Function('require','module','exports',code)(name=>name==='vue'?vue:modules[name]??{},module,module.exports)
   return module.exports.default
 }
-const Progress=compile(read('../src/components/K3sInstallationProgress.vue'),{'@/utils/k3sProvision':helpers,'@/utils/time':time,'lucide-vue-next':{Server:()=>vue.h('svg')}})
+const Progress=compile(read('../src/components/K3sInstallationProgress.vue'),{'@/utils/k3sProvision':helpers,'@/utils/time':time,'lucide-vue-next':{Server:()=>vue.h('svg')},'@/components/SessionPopoutLink.vue':{__esModule:true,default:()=>vue.h('a',{'aria-label':'在新标签页打开日志'})}})
 const node=(tag,text='')=>({tag,text,props:{},children:[],parent:null})
 const renderer=vue.createRenderer({
   createElement:tag=>node(tag),createText:text=>node('#text',text),createComment:()=>node('#comment'),setText:(n,text)=>{n.text=text},setElementText:(n,text)=>{n.text=text;n.children=[]},patchProp:(n,key,_old,value)=>{n.props[key]=value},parentNode:n=>n.parent,nextSibling:n=>n.parent?.children[n.parent.children.indexOf(n)+1]??null,

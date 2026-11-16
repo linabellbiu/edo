@@ -12,6 +12,7 @@ import { formatDateTime } from '@/utils/time'
 import KubeResourceDiagnostics from './KubeResourceDiagnostics.vue'
 import KubeWorkloadEvents from './KubeWorkloadEvents.vue'
 import KubeSelect from './KubeSelect.vue'
+import SessionPopoutLink from './SessionPopoutLink.vue'
 
 const props = defineProps<{
   cluster: string
@@ -66,6 +67,12 @@ function containerTarget(name: string): WorkloadContainerTarget {
 function chooseContainer(name: string) {
   if (!props.disabled && readable.value && containers.value.some(item => item.name === name)) emit('container', containerTarget(name))
 }
+function streamPath(terminal = false) {
+  const parts = [props.cluster, props.pod.metadata.namespace, props.pod.metadata.name, props.container].map(value => encodeURIComponent(value || ''))
+  if (!props.pod.metadata.uid || !props.container) return ''
+  const prefix = terminal ? `/api/v1/terminals/kubernetes/${parts[0]}` : `/api/v1/kubernetes/clusters/${parts[0]}`
+  return `${prefix}/namespaces/${parts[1]}/pods/${parts[2]}/containers/${parts[3]}/${terminal ? 'ws' : 'logs/ws'}?pod_uid=${encodeURIComponent(props.pod.metadata.uid)}`
+}
 function openLogs(name: string, terminal = false) {
   // 操作仍由父层用当前 Pod UID 和容器状态再次核验。
   const item = containers.value.find(container => container.name === name)
@@ -113,7 +120,7 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
     <div class="runtime-actions" aria-label="所选 Pod 容器操作">
       <label v-if="containers.length > 1 || missingContainer" class="runtime-container-choice">容器<KubeSelect :value="container" :options="containerOptions" :disabled="disabled || !readable || !containers.length" aria-label="日志与终端目标容器" @update:value="chooseContainer(String($event))" /></label>
       <div v-else class="runtime-container-name"><span>容器</span><strong>{{ containers[0]?.name || '暂无容器' }}</strong><a-tag v-if="containers[0] && containers[0].containerKind !== 'app'">{{ containers[0].containerKind === 'init' ? 'Init 容器' : '临时容器' }}</a-tag></div>
-      <div class="container-action-bar"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" />追踪日志</a-button><a-button v-if="can('terminal.open')" :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" />终端</a-button></div>
+      <div class="container-action-bar"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" />追踪日志</a-button><SessionPopoutLink kind="container-log" :path="streamPath()" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedContainer(container)" /><a-button v-if="can('terminal.open')" :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" />终端</a-button><SessionPopoutLink v-if="can('terminal.open')" kind="terminal" :path="streamPath(true)" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedTerminal(container)" /></div>
     </div>
     <a-alert v-if="eventsError" type="warning" show-icon message="Pod 事件读取失败"><template #action><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">重试</a-button></template></a-alert>
     <p v-if="container && !missingContainer && can('terminal.open') && !allowedTerminal(container)" class="runtime-action-hint">{{ containers.find(item=>item.name===container)?.containerKind==='init' ? 'Init 容器只支持查看日志，不支持终端。' : '所选容器未运行或当前不可操作，终端暂不可用。' }}</p>

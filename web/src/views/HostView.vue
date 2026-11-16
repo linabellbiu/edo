@@ -37,6 +37,7 @@ import {
   type InfrastructureCluster,
 } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
+import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
 import HostDrawer from '@/components/HostDrawer.vue'
 import HostResourceSummary from '@/components/HostResourceSummary.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
@@ -896,7 +897,7 @@ onBeforeUnmount(() => {
               <div v-if="record.capabilities.length" class="capability-icons">
                 <template v-for="capability in record.capabilities" :key="capability.kind">
                   <button v-if="capability.kind === 'docker'" type="button" class="capability-shortcut" :class="capability.status" :disabled="!canReadResources || !record.is_active || !capability.runtime_id || Boolean(hostLoadError)" :aria-label="`查看 ${record.name} 的 Docker 容器`" :title="`Docker：${capabilityDescription(record, capability.kind)}`" @click="openRuntime(record, 'docker')"><RuntimeBrandIcon kind="docker" /></button>
-                  <button v-else-if="capability.kind === (record.mode === 'local' ? 'local_exec' : 'ssh')" type="button" class="capability-shortcut host-terminal-shortcut" :class="capability.status" :disabled="!auth.canAny(['host.terminal.open']) || !hostSupportsTerminal(record) || Boolean(hostLoadError)" :aria-label="`打开 ${record.name} 的主机终端`" :title="auth.canAny(['host.terminal.open']) ? `主机终端：${record.name}` : '没有打开主机终端的权限'" @click="openHostTerminal(record)"><RuntimeBrandIcon :kind="capability.kind" /></button>
+                  <template v-else-if="capability.kind === (record.mode === 'local' ? 'local_exec' : 'ssh')"><button type="button" class="capability-shortcut host-terminal-shortcut" :class="capability.status" :disabled="!auth.canAny(['host.terminal.open']) || !hostSupportsTerminal(record) || Boolean(hostLoadError)" :aria-label="`打开 ${record.name} 的主机终端`" :title="auth.canAny(['host.terminal.open']) ? `主机终端：${record.name}` : '没有打开主机终端的权限'" @click="openHostTerminal(record)"><RuntimeBrandIcon :kind="capability.kind" /></button><SessionPopoutLink kind="terminal" :path="`/api/v1/terminals/hosts/${encodeURIComponent(record.id)}/ws`" :title="`主机终端：${record.name}`" :disabled="!auth.canAny(['host.terminal.open']) || !hostSupportsTerminal(record) || Boolean(hostLoadError)" /></template>
                   <span v-else :class="capability.status" :title="`${capabilityName(capability.kind)}：${capabilityDescription(record, capability.kind)}`"><RuntimeBrandIcon :kind="capability.kind" /></span>
                 </template>
               </div>

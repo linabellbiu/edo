@@ -1,11 +1,38 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { K3sPreflightReport, K3sInstallMode } from '@/api/k3s'
+import { useAuthStore } from '@/stores/auth'
+import { terminalActorContext } from '@/stores/hostTerminals'
+import { createPreflightLogSource } from '@/utils/preflightLogChannel'
+import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
 
 const props = defineProps<{report:K3sPreflightReport;mode?:K3sInstallMode;standalone?:boolean;canConfigureHost?:boolean}>()
 const emit = defineEmits<{'configure-host':[id:string]}>()
 const root=ref<HTMLElement>()
 defineExpose({focus:()=>root.value?.focus()})
+const auth=useAuthStore()
+const selectedProject=()=>typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??''
+const project=ref(selectedProject()),channels=ref<Record<string,string>>({})
+const identity=computed(()=>terminalActorContext(auth.user,project.value))
+const allowed=computed(()=>auth.authorizationState==='ready'&&auth.canAny(['cluster.create','kubernetes.node.create']))
+let mounted=false,reportIdentity='',reportProject=''
+const sources:Array<ReturnType<typeof createPreflightLogSource>>=[]
+function closeChannels(){for(const source of sources)source.close();sources.length=0;channels.value={}}
+function syncChannels(){
+  closeChannels()
+  if(!mounted||!allowed.value||identity.value!==reportIdentity||project.value!==reportProject||typeof BroadcastChannel==='undefined')return
+  const context=identity.value,scope=project.value
+  for(const host of props.report.hosts){
+    if(!host.logs)continue
+    const source=createPreflightLogSource(host.logs,context,()=>allowed.value&&identity.value===context&&selectedProject()===scope)
+    sources.push(source);channels.value[host.host_id]=source.channel
+  }
+}
+function syncProject(){project.value=selectedProject()}
+watch([identity,allowed],syncChannels,{flush:'sync'})
+watch(()=>props.report,()=>{reportIdentity=identity.value;reportProject=project.value;syncChannels()},{flush:'sync'})
+onMounted(()=>{mounted=true;reportIdentity=identity.value;reportProject=project.value;syncChannels();window.addEventListener('storage',syncProject);window.addEventListener('edo:projects-changed',syncProject)})
+onBeforeUnmount(()=>{mounted=false;closeChannels();window.removeEventListener('storage',syncProject);window.removeEventListener('edo:projects-changed',syncProject)})
 const groups = computed(() => [
   ...(props.report.checks.length?[{id:'cluster',name:'集群检查',checks:props.report.checks}]:[]),
   ...props.report.hosts.map(host=>({id:host.host_id,name:host.host_name,checks:host.checks})),
@@ -37,7 +64,7 @@ const safetyMessage=computed(()=>{
       <ul class="preflight-checks"><li v-for="check in group.checks" :key="check.id"><a-tag color="red">不满足</a-tag><div><strong>{{ check.name }}</strong><p>{{ check.message }}</p></div></li></ul>
     </section>
     <details v-for="host in report.hosts.filter(host=>host.logs)" :key="`logs-${host.host_id}`" class="preflight-terminal">
-      <summary>{{ report.hosts.length>1?`${host.host_name} · `:'' }}执行日志</summary>
+      <summary>{{ report.hosts.length>1?`${host.host_name} · `:'' }}执行日志 <SessionPopoutLink v-if="channels[host.host_id]" kind="preflight-log" :channel="channels[host.host_id]" :title="`${host.host_name} · 检测执行日志`" /></summary>
       <pre tabindex="0" role="log" :aria-label="`${host.host_name} 检测执行日志`">{{ host.logs }}</pre>
     </details>
     <a class="preflight-docs" href="https://docs.k3s.io/zh/installation/configuration" target="_blank" rel="noopener noreferrer">官方安装说明</a>

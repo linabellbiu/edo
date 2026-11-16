@@ -307,7 +307,7 @@ test('工作负载查看 Pod 与历史诊断快捷入口归到概览，普通 Po
 test('工作负载日志桥接使用当前 Pod 精确容器，UID、命名空间或容器失效时拒绝打开',async()=>{
  const h=await viewHarness();await h.state.openDetails(h.workload);await settleView()
  h.state.selectedContainer.value['pod-a']='app';h.state.openWorkloadStream(h.podA,'metrics')
- assert.equal(h.state.stream.value.open,true);assert.equal(h.state.stream.value.title,'pod-a / metrics');assert.match(h.state.stream.value.path,/\/pods\/pod-a\/containers\/metrics\/logs\/ws\?project_id=fixture-project$/)
+ assert.equal(h.state.stream.value.open,true);assert.equal(h.state.stream.value.title,'pod-a / metrics');assert.match(h.state.stream.value.path,/\/pods\/pod-a\/containers\/metrics\/logs\/ws\?project_id=fixture-project&pod_uid=pod-a$/)
  for(const target of [{...h.podA,metadata:{...h.podA.metadata,uid:'replacement'}},{...h.podA,metadata:{...h.podA.metadata,namespace:'other'}}]){
   h.state.stream.value.open=false;h.state.openWorkloadStream(target,'app');assert.equal(h.state.stream.value.open,false)
  }

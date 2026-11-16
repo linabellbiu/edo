@@ -10,14 +10,17 @@ import {loadFrontend} from './acceptanceHarness.mjs'
 const read=path=>readFileSync(new URL(path,import.meta.url),'utf8')
 function compile(source,modules={}){
   const code=ts.transpileModule(compileScript(parse(source).descriptor,{id:'k3s-preflight-ui',inlineTemplate:true}).content,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,module={exports:{}}
-  new Function('require','module','exports',code)(name=>name==='vue'?vue:modules[name]??{},module,module.exports)
+  new Function('require','module','exports','localStorage',code)(name=>name==='vue'?vue:modules[name]??{},module,module.exports,{getItem:()=>''})
   return module.exports.default
 }
-const Report=compile(read('../src/components/K3sPreflightReport.vue'),{'vue-i18n':{useI18n:()=>({t:key=>key==='k8s.installationHost'?'安装主机':key})},'@/utils/time':loadFrontend('../src/utils/time.ts')})
+const Report=compile(read('../src/components/K3sPreflightReport.vue'),{'vue-i18n':{useI18n:()=>({t:key=>key==='k8s.installationHost'?'安装主机':key})},'@/utils/time':loadFrontend('../src/utils/time.ts'),'@/stores/auth':{useAuthStore:()=>({user:null,authorizationState:'checking',canAny:()=>false})},'@/stores/hostTerminals':{terminalActorContext:()=>''}})
+const sessionAPI=loadFrontend('../src/utils/sessionPopout.ts',{}, {localStorage:{getItem:()=>''}})
+const Popout=vue.defineComponent({props:['kind','installationID','title'],setup:props=>()=>vue.h('a',{href:sessionAPI.sessionPopoutURL(props),target:'_blank',rel:'noopener noreferrer','aria-label':'在新标签页打开日志'},vue.h('svg'))})
 async function render(component,props){
   const app=vue.createSSRApp(component,props)
   for(const name of ['a-alert','a-tag','a-button'])app.component(name,{inheritAttrs:false,setup:(_p,{attrs,slots})=>()=>vue.h(name==='a-button'?'button':'div',attrs,[String(attrs.message??''),String(attrs.description??''),slots.default?.(),slots.action?.()])})
   app.component('ChevronLeft',()=>vue.h('svg'))
+  app.component('SessionPopoutLink',Popout)
   return (await renderToString(app)).replace(/<!--[\s\S]*?-->/g,'')
 }
 const check=(id,status='passed')=>({id,name:`检查-${id}`,status,message:status==='failed'?'需要处理后重新检测':'检测结果已确认'})
@@ -118,7 +121,9 @@ test('上一失败只渲染日志纯文本，不展示状态元数据或管理�
   const state=vue.reactive({previousFailure:{id:'old-task',status:'failed',cluster:{id:'deleted'}},failureError:'',failureLoading:false,previousFailureLogs:{text:'<script>日志</script>',truncated:false},installation:undefined,loadPreviousFailure(){}})
   let html=await render(PreviousFailure,{state})
   assert.match(html,/上一次安装失败日志/);assert.match(html,/&lt;script&gt;日志&lt;\/script&gt;/)
-  assert.doesNotMatch(html,/old-task|deleted|管理|查看进度|<script>/)
+  assert.doesNotMatch(html.replace(/<[^>]*>/g,''),/old-task|deleted|管理|查看进度/)
+  assert.doesNotMatch(html,/<script>|deleted|查看进度/)
+  assert.match(html,/href="\/sessions\/view\?[^\"]*kind=installation-log[^\"]*installationID=old-task/)
   state.failureError='日志读取失败';html=await render(PreviousFailure,{state});assert.match(html,/日志读取失败/);assert.match(html,/重新读取/)
   state.installation={id:'current',status:'running'};html=await render(PreviousFailure,{state});assert.doesNotMatch(html,/上一次安装失败日志|日志读取失败/)
 })

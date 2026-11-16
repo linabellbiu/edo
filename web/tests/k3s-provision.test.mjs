@@ -391,7 +391,7 @@ test('k3d接受host角色预检但不绕过失败项，确认使用plan ID且安
     ctx.state.plan.value.preflight.hosts[0].checks[0].status='passed';await ctx.state.execute()
     assert.equal(ctx.requests.find(item=>item.method==='start').id,'plan-1');assert.equal(ctx.state.installation.value.status,'pending');assert.equal(ctx.state.displayMode.value,'k3d')
     assert.ok(!ctx.events.some(event=>event.name==='created'))
-    const report=componentHarness('../src/components/K3sPreflightReport.vue',{props:{report:k3dPlan().preflight},modules:{'@/utils/time':{formatDateTime:String}}})
+    const report=componentHarness('../src/components/K3sPreflightReport.vue',{props:{report:k3dPlan().preflight},modules:{'@/utils/time':{formatDateTime:String},'@/stores/hostTerminals':{terminalActorContext:()=>''}},globals:{localStorage:{getItem:()=>''}}})
     try{assert.equal(report.state.groups.value[0].name,k3dPlan().preflight.hosts[0].host_name);assert.equal(report.state.failedGroups.value.length,0)}finally{report.stop()}
   }finally{ctx.stop()}
 })
@@ -882,7 +882,7 @@ test('报告只按准确主机保留不满足项，不展示通过和警告明�
   const report=preflightReport(false)
   report.checks=[{id:'target',name:'目标集群',status:'passed',message:'集群版本已核对'}]
   report.hosts.push({host_id:'2',host_name:'Host 2',role:'agent',hostname:'worker-a',passed:true,checks:[preflightCheck('warning')]})
-  const ctx=componentHarness('../src/components/K3sPreflightReport.vue',{props:{report},modules:{'@/utils/time':{formatDateTime:String}}})
+  const ctx=componentHarness('../src/components/K3sPreflightReport.vue',{props:{report},modules:{'@/utils/time':{formatDateTime:String},'@/stores/hostTerminals':{terminalActorContext:()=>''}},globals:{localStorage:{getItem:()=>''}}})
   try{
     assert.equal(ctx.state.failed.value,1);assert.equal(ctx.state.failedGroups.value.length,1)
     assert.equal(ctx.state.failedGroups.value[0].name,report.hosts[0].host_name)

@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RefreshCw, Search } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
+import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
+import { useAuthStore } from '@/stores/auth'
 
 interface SystemLog {
   id: number
@@ -18,15 +20,24 @@ interface SystemLog {
 }
 interface LogResponse { items: SystemLog[]; next_before_id: number; has_more: boolean }
 
-const { t, locale } = useI18n()
+const props = withDefaults(defineProps<{ standalone?: boolean; initialQuery?: string; initialLevel?: string }>(), { standalone: false })
+const { t, locale } = useI18n(), route = useRoute(), auth = useAuthStore()
+const initialQuery = () => props.initialQuery ?? (typeof route.query.query === 'string' ? route.query.query : '')
+const initialLevel = () => {
+  const value = props.initialLevel ?? (typeof route.query.level === 'string' ? route.query.level : '')
+  return ['debug', 'info', 'warn', 'error'].includes(value) ? value : ''
+}
 const items = ref<SystemLog[]>([])
-const queryInput = ref('')
-const query = ref('')
-const level = ref('')
+const queryInput = ref(initialQuery())
+const query = ref(initialQuery())
+const level = ref(initialLevel())
 const nextBeforeID = ref(0)
 const hasMore = ref(false)
 const loading = ref(false)
 const loadingMore = ref(false)
+const error = ref('')
+const readable = computed(() => auth.authorizationState === 'ready' && auth.canAny(['monitor.read']))
+const actor = computed(() => JSON.stringify([auth.user?.id, auth.user?.project_id, auth.user?.is_superuser, [...(auth.user?.permissions ?? [])].sort(), auth.authorizationState, readable.value]))
 let revision = 0, disposed = false, controller: AbortController | undefined
 
 const levelLabels = computed<Record<string, string>>(() => ({
@@ -48,13 +59,14 @@ function formatTime(value: string) {
 }
 
 async function load(append = false) {
-  if (disposed || (append && (loading.value || loadingMore.value))) return
+  if (disposed || !readable.value || (append && (loading.value || loadingMore.value))) return
   controller?.abort()
   const currentController = new AbortController()
   controller = currentController
-  const request = ++revision
+  const request = ++revision, context = actor.value
   loading.value = !append
   loadingMore.value = append
+  error.value = ''
   try {
     const response = await client.get<LogResponse>('/logs', {
       params: {
@@ -65,12 +77,12 @@ async function load(append = false) {
       },
       signal: currentController.signal,
     })
-    if (disposed || request !== revision || currentController.signal.aborted) return
+    if (disposed || request !== revision || currentController.signal.aborted || context !== actor.value) return
     items.value = append ? [...items.value, ...response.data.items] : response.data.items
     nextBeforeID.value = response.data.next_before_id || 0
     hasMore.value = response.data.has_more
-  } catch (error) {
-    if (!disposed && request === revision && !currentController.signal.aborted) message.error(apiErrorMessage(error))
+  } catch (cause) {
+    if (!disposed && request === revision && !currentController.signal.aborted && context === actor.value) error.value = apiErrorMessage(cause)
   } finally {
     if (request === revision) {
       loading.value = false
@@ -86,15 +98,26 @@ function search() {
 }
 
 watch(level, () => void load(false))
-onMounted(() => void load(false))
+watch(actor, () => {
+  revision++; controller?.abort(); controller = undefined
+  items.value = []; nextBeforeID.value = 0; hasMore.value = false
+  loading.value = false; loadingMore.value = false; error.value = ''
+  if (readable.value) void load(false)
+}, { immediate: true })
+watch([initialQuery, initialLevel], ([text, severity]) => {
+  query.value = text; queryInput.value = text
+  if (level.value !== severity) level.value = severity
+  else void load(false)
+})
 onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); controller = undefined })
 </script>
 
 <template>
-  <section>
+  <section :class="{ 'system-logs-standalone': standalone }">
     <PageToolbar :description="t('systemLogs.description')">
       <a-tag color="processing">{{ t('systemLogs.currentProcess') }}</a-tag>
       <a-button :loading="loading" @click="load(false)"><RefreshCw :size="15" />{{ t('common.refresh') }}</a-button>
+      <SessionPopoutLink v-if="!standalone" kind="system-log" :query="query" :level="level" :title="t('systemLogs.description')" :disabled="!readable" />
     </PageToolbar>
     <a-alert type="info" show-icon :message="t('systemLogs.scopeHint')" class="scope-alert" />
     <div class="log-filter vben-card">
@@ -102,7 +125,8 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); contro
       <a-select v-model:value="level" :options="[{ label: t('systemLogs.level.all'), value: '' }, ...Object.entries(levelLabels).map(([value,label]) => ({ value,label }))]" />
       <a-button type="primary" @click="search">{{ t('common.search') }}</a-button>
     </div>
-    <a-spin :spinning="loading">
+    <a-alert v-if="error" type="error" show-icon :message="error" class="log-error"><template #action><a-button size="small" :loading="loading || loadingMore" @click="load(false)">重试</a-button></template></a-alert>
+    <a-spin :spinning="loading && !items.length">
       <div class="log-list vben-card">
         <a-empty v-if="!items.length" :description="t('systemLogs.empty')" />
         <article v-for="item in items" :key="item.id" class="log-item" :class="`level-${item.level}`">
@@ -123,5 +147,6 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); contro
 </template>
 
 <style scoped>
+.system-logs-standalone{min-width:0;padding:16px}.log-error{margin-bottom:12px}
 .scope-alert { margin-bottom: 12px; }.log-filter { display: grid; grid-template-columns: minmax(240px,1fr) 160px auto; gap: 10px; margin-bottom: 14px; padding: 12px; }.log-list { overflow: hidden; }.log-list > .ant-empty { padding: 70px 20px; }.log-item { padding: 16px 18px; border-bottom: 1px solid var(--edo-border); }.log-item header { display: flex; align-items: center; gap: 9px; color: var(--edo-muted); }.log-item header strong { color: var(--edo-text); }.log-item time { margin-left: auto; font-size: 12px; }.log-item pre { margin: 12px 0; overflow: auto; color: var(--edo-text); white-space: pre-wrap; word-break: break-word; }.log-item footer { display: flex; flex-wrap: wrap; gap: 7px; color: var(--edo-muted); font-size: 12px; }.log-item footer span { display: inline-flex; align-items: center; overflow: hidden; border: 1px solid var(--edo-border); border-radius: 5px; background: var(--edo-layout); }.log-item footer b { padding: 3px 6px; border-right: 1px solid var(--edo-border); font-weight: 500; }.log-item footer code { max-width: min(520px,70vw); padding: 3px 6px; overflow: hidden; color: var(--edo-text); text-overflow: ellipsis; white-space: nowrap; }.load-more { display: flex; justify-content: center; padding: 16px; } @media (max-width:700px){.log-filter{grid-template-columns:1fr}.log-item header{flex-wrap:wrap}.log-item time{width:100%;margin:0}}
 </style>

@@ -5,8 +5,10 @@ import { Terminal } from '@xterm/xterm'
 import { RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { projectSocketUrl } from '@/utils/socketUrl'
+import SessionPanel from '@/components/SessionPanel.vue'
+import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
 
-const props = withDefaults(defineProps<{ open: boolean; title: string; path: string; paused?: boolean }>(), { paused: false })
+const props = withDefaults(defineProps<{ open: boolean; title: string; path: string; paused?: boolean; standalone?: boolean; sourceDeploymentID?: string }>(), { paused: false, standalone: false })
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 const { t } = useI18n()
 
@@ -157,16 +159,19 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <a-drawer
+  <SessionPanel
     :open="open"
     :title="title"
+    :standalone="standalone"
     placement="bottom"
     height="72vh"
     class="container-log-drawer"
+    :class="{ standalone }"
     @close="emit('update:open', false)"
   >
     <template #extra>
       <a-tag :color="connectionColor">{{ connectionText }}</a-tag>
+      <SessionPopoutLink v-if="!standalone && !paused" kind="container-log" :path="path" :title="title" :source-deployment-i-d="sourceDeploymentID" />
     </template>
 
     <div class="log-toolbar">
@@ -183,12 +188,13 @@ onBeforeUnmount(() => {
       <a-button :disabled="paused" @click="connect"><RefreshCw :size="15" />{{ t('containerLogs.reconnect') }}</a-button>
     </div>
     <div ref="container" class="log-console" />
-  </a-drawer>
+  </SessionPanel>
 </template>
 
 <style scoped>
 .log-toolbar {
   display: flex;
+  flex: none;
   min-height: 42px;
   align-items: center;
   gap: 14px;
@@ -223,6 +229,8 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: #071018;
 }
+
+.standalone .log-console { flex: 1; height: auto; min-height: 0; }
 
 @media (max-width: 640px) {
   .log-toolbar {

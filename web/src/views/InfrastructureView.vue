@@ -8,6 +8,7 @@ import { useI18n } from 'vue-i18n'
 import client from '@/api/client'
 import { listHosts, listHostStatuses, mergeHostStatuses, type HostCapability, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage, getResources, type ResourceRecord } from '@/api/resources'
+import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
@@ -290,8 +291,8 @@ onBeforeUnmount(() => {
           </header>
           <ResourceTable :rows="containers" :columns="[{ key: 'names', label: '名称' }, { key: 'image_display', label: '镜像版本' }, { key: 'state', label: '状态' }, { key: 'status', label: '详情' }]" :loading="resourceLoading">
             <template #actions="{ row }">
-              <a-button type="link" @click="openContainerLogs(row)"><FileText :size="15" />{{ t('containerLogs.button') }}</a-button>
-              <a-button v-if="auth.canAny(['terminal.open']) && row.state === 'running'" type="link" @click="openTerminal(`容器终端：${containerName(row)}`, `/api/v1/terminals/docker/${encodeURIComponent(selectedDockerID)}/containers/${encodeURIComponent(String(row.id))}/ws`)"><TerminalSquare :size="15" />终端</a-button>
+              <a-button type="link" @click="openContainerLogs(row)"><FileText :size="15" />{{ t('containerLogs.button') }}</a-button><SessionPopoutLink kind="container-log" :title="`容器日志：${containerName(row)}`" :path="`/api/v1/docker/endpoints/${encodeURIComponent(selectedDockerID)}/containers/${encodeURIComponent(String(row.id))}/logs/ws`" />
+              <a-button v-if="auth.canAny(['terminal.open']) && row.state === 'running'" type="link" @click="openTerminal(`容器终端：${containerName(row)}`, `/api/v1/terminals/docker/${encodeURIComponent(selectedDockerID)}/containers/${encodeURIComponent(String(row.id))}/ws`)"><TerminalSquare :size="15" />终端</a-button><SessionPopoutLink v-if="auth.canAny(['terminal.open']) && row.state === 'running'" kind="terminal" :title="`容器终端：${containerName(row)}`" :path="`/api/v1/terminals/docker/${encodeURIComponent(selectedDockerID)}/containers/${encodeURIComponent(String(row.id))}/ws`" />
             </template>
           </ResourceTable>
         </template>
@@ -303,7 +304,7 @@ onBeforeUnmount(() => {
           </header>
           <ResourceTable :rows="pods" :columns="[{ key: 'name', label: 'Pod' }, { key: 'namespace', label: '命名空间' }, { key: 'phase', label: '阶段' }, { key: 'containers', label: '容器' }]" :loading="resourceLoading">
             <template v-if="auth.canAny(['terminal.open'])" #actions="{ row }">
-              <a-button v-for="podContainer in (row.phase === 'Running' && Array.isArray(row.containers) ? row.containers : [])" :key="String(podContainer)" type="link" @click="openTerminal(`Pod 终端：${row.name}（容器：${podContainer}）`, `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedClusterID)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(String(podContainer))}/ws${row.uid ? `?pod_uid=${encodeURIComponent(String(row.uid))}` : ''}`)">{{ podContainer }}</a-button>
+              <template v-for="podContainer in (row.phase === 'Running' && Array.isArray(row.containers) ? row.containers : [])" :key="String(podContainer)"><a-button type="link" @click="openTerminal(`Pod 终端：${row.name}（容器：${podContainer}）`, `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedClusterID)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(String(podContainer))}/ws${row.uid ? `?pod_uid=${encodeURIComponent(String(row.uid))}` : ''}`)">{{ podContainer }}</a-button><SessionPopoutLink kind="terminal" :title="`Pod 终端：${row.name}（容器：${podContainer}）`" :disabled="!row.uid" :path="`/api/v1/terminals/kubernetes/${encodeURIComponent(selectedClusterID)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(String(podContainer))}/ws?pod_uid=${encodeURIComponent(String(row.uid))}`" /></template>
             </template>
           </ResourceTable>
         </template>

@@ -21,6 +21,7 @@ import type {WorkflowResponse} from '@/types/pipeline'
 import BuildPlanWorkspace from '@/components/BuildPlanWorkspace.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
+import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import ComposeRuntimeServices from '@/components/ComposeRuntimeServices.vue'
 import DeploymentComposeResources from '@/components/DeploymentComposeResources.vue'
@@ -791,6 +792,12 @@ function toggleDeploymentDetails(record:DeploymentRecord){
  expandedDeployments.value[record.id]=open
  if(open)void loadDeploymentRuntime(record)
  if(open&&deploymentKind(record)==='docker'&&canReadContainerLogs.value)void loadDockerRuntime(record.runtime_id)
+}
+function deploymentStreamPath(record:DeploymentRecord,terminal=false){
+ const container=dockerContainerForDeployment(record)
+ if(!record.runtime_id||!container?.id)return ''
+ const endpoint=encodeURIComponent(record.runtime_id),id=encodeURIComponent(container.id)
+ return terminal?`/api/v1/terminals/docker/${endpoint}/containers/${id}/ws`:`/api/v1/docker/endpoints/${endpoint}/containers/${id}/logs/ws`
 }
 async function openDeploymentLogs(record:DeploymentRecord){
  if(!canReadContainerLogs.value){message.warning('没有读取容器日志的权限');return}
@@ -2251,10 +2258,10 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
                   <div v-if="deploymentKind(record)==='script'"><dt>重启命令</dt><dd>{{ lifecycleScriptAvailable(record,'restart')?'已配置':'未配置' }}</dd></div>
                 </dl>
                 <div v-if="record.deployment_plan_kind==='compose_stack'&&deploymentRuntimeStates[record.id]?.kind==='compose'" class="compose-runtime-summary">Compose 项目：{{deploymentRuntimeStates[record.id]?.name}}</div>
-                <ComposeRuntimeServices v-if="deploymentRuntimeStates[record.id]?.services?.length" :key="record.id" :services="deploymentRuntimeStates[record.id]?.services || []" :can-logs="['compose','custom'].includes(deploymentRuntimeStates[record.id]?.kind||'')&&canReadContainerLogs" :can-terminal="['compose','custom'].includes(deploymentRuntimeStates[record.id]?.kind||'')&&canOpenContainerTerminal" :can-restart="canComposeContainerControl('restart')" :can-stop="canComposeContainerControl('stop')" :can-recreate="canComposeContainerControl('recreate')" :opening="Boolean(composeContainerOpening)||Boolean(deploymentRuntimeAction)" @control="(id,action)=>openComposeContainerControl(record,id,action)" @logs="openComposeContainerStream(record,$event,'logs')" @terminal="openComposeContainerStream(record,$event,'terminal')" />
+                <ComposeRuntimeServices v-if="deploymentRuntimeStates[record.id]?.services?.length" :key="record.id" :services="deploymentRuntimeStates[record.id]?.services || []" :runtimeID="deploymentRuntimeStates[record.id]?.runtime_id" :sourceDeploymentID="record.id" :can-logs="['compose','custom'].includes(deploymentRuntimeStates[record.id]?.kind||'')&&canReadContainerLogs" :can-terminal="['compose','custom'].includes(deploymentRuntimeStates[record.id]?.kind||'')&&canOpenContainerTerminal" :can-restart="canComposeContainerControl('restart')" :can-stop="canComposeContainerControl('stop')" :can-recreate="canComposeContainerControl('recreate')" :opening="Boolean(composeContainerOpening)||Boolean(deploymentRuntimeAction)" @control="(id,action)=>openComposeContainerControl(record,id,action)" @logs="openComposeContainerStream(record,$event,'logs')" @terminal="openComposeContainerStream(record,$event,'terminal')" />
                 <div class="application-deployment-actions">
-                  <a-button v-if="deploymentKind(record)==='docker'&&canReadContainerLogs" size="small" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText/>{{ t('containerLogs.button') }}</a-button>
-                  <a-button v-if="deploymentKind(record)==='docker'&&canOpenContainerTerminal&&canReadContainerLogs" size="small" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':t('applicationCard.terminalRunningOnly')" @click="openDeploymentTerminal(record)"><TerminalSquare/>{{ t('applicationCard.terminal') }}</a-button>
+                  <a-button v-if="deploymentKind(record)==='docker'&&canReadContainerLogs" size="small" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText/>{{ t('containerLogs.button') }}</a-button><SessionPopoutLink v-if="deploymentKind(record)==='docker'&&canReadContainerLogs" kind="container-log" :path="deploymentStreamPath(record)" :title="`容器日志：${deploymentContainerName(record)}`" :disabled="dockerRuntimeLoading[record.runtime_id]||!dockerContainerForDeployment(record)" />
+                  <a-button v-if="deploymentKind(record)==='docker'&&canOpenContainerTerminal&&canReadContainerLogs" size="small" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':t('applicationCard.terminalRunningOnly')" @click="openDeploymentTerminal(record)"><TerminalSquare/>{{ t('applicationCard.terminal') }}</a-button><SessionPopoutLink v-if="deploymentKind(record)==='docker'&&canOpenContainerTerminal&&canReadContainerLogs" kind="terminal" :path="deploymentStreamPath(record,true)" :title="`容器终端：${deploymentContainerName(record)}`" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" />
                   <a-button v-if="canUpdateDeployments&&deploymentKind(record)==='script'&&deploymentRuntimeStates[record.id]?.kind!=='custom'" size="small" @click="openShellControlConfiguration(record)"><Settings2/>配置命令</a-button>
                   <a-button v-if="record.deployment_plan_kind==='docker'?canComposeContainerControl('stop'):canControlDeployments&&!['compose','compose_stack'].includes(record.deployment_plan_kind||'')&&deploymentRuntimeStates[record.id]?.kind!=='custom'" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'stop')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'stop')||(record.deployment_plan_kind==='docker'&&!deploymentRuntimeStates[record.id]?.resource_id)" :title="lifecycleScriptAvailable(record,'stop')?'':deploymentKind(record)==='script'?'请先在该 Shell 部署实例中保存停止命令':'当前服务状态不完整，暂不可操作'" @click="confirmDeploymentRuntimeAction(record,'stop')"><Power/>停止</a-button>
                   <a-button v-if="record.deployment_plan_kind==='docker'?canComposeContainerControl('restart'):canControlDeployments&&!['compose','compose_stack'].includes(record.deployment_plan_kind||'')&&deploymentRuntimeStates[record.id]?.kind!=='custom'" size="small" :loading="deploymentRuntimeAction===runtimeActionKey(record,'restart')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'restart')||(record.deployment_plan_kind==='docker'&&!deploymentRuntimeStates[record.id]?.resource_id)" :title="lifecycleScriptAvailable(record,'restart')?'':deploymentKind(record)==='script'?'请先在该 Shell 部署实例中保存重启命令':'当前服务状态不完整，暂不可操作'" @click="confirmDeploymentRuntimeAction(record,'restart')"><RotateCw/>重启</a-button>
@@ -2367,7 +2374,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
     <template #bodyCell="{column,record}">
       <ResourceRowActions v-if="column.key==='actions'" :more="false">
         <a-button size="small" @click="expandRunListEntry(true,record)">详情</a-button>
-        <a-button v-if="!record.executionGroup" size="small" @click="openLogs(record)">日志</a-button>
+        <a-button v-if="!record.executionGroup" size="small" @click="openLogs(record)">日志</a-button><SessionPopoutLink v-if="!record.executionGroup" kind="pipeline-log" :runID="record.id" :title="`流水线日志：${applicationName(record)}`" />
         <a-button v-if="canRetryRun(record)" size="small" type="primary" :loading="retryRunID===record.id&&(retryLoading||retrySubmitting)" :disabled="retryLoading||retrySubmitting" @click="openRetry(record)">重新执行</a-button>
       </ResourceRowActions>
       <template v-else-if="record.executionGroup">
@@ -2437,7 +2444,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
               <template #action><a-button size="small" :loading="runDeploymentLoading[run.id]" @click="loadRunDeploymentRecords(run.id)">{{ rollbackT('rollback.retryRecords') }}</a-button></template>
             </a-alert>
             <footer class="run-actions">
-              <a-button @click="openLogs(run)">查看实时日志</a-button>
+              <a-button @click="openLogs(run)">查看实时日志</a-button><SessionPopoutLink kind="pipeline-log" :runID="run.id" :title="`流水线日志：${applicationName(run)}`" />
               <a-button v-if="canStopRun(run)&&auth.canAny(['pipeline_run.execute'])" danger :loading="stoppingRunID===run.id||run.stage==='stopping'" :disabled="!!stoppingRunID||run.stage==='stopping'" @click="confirmStopRun(run)">{{ t(run.stage==='stopping'?'pipelineStop.stopping':'pipelineStop.confirm') }}</a-button>
               <a-button v-if="canRetryRun(run)" type="primary" :loading="retryRunID===run.id&&(retryLoading||retrySubmitting)" :disabled="retryLoading||retrySubmitting" @click="openRetry(run)">重新执行</a-button>
               <a-button v-if="runHasDeployments(run.id)" @click="openReleasePlanApplicationResources('',run.application_id,run.id)">{{ rollbackT('rollback.recordsAndRollback') }}</a-button>
@@ -2729,8 +2736,8 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
     </dl>
     <DeploymentComposeResources v-if="releasePlanResources.open&&deploymentKind(record)==='compose'" :key="`${resourceScopeKey()}:${releasePlanResources.pipelineRunID}:${record.id}`" :record="record" :scope-key="resourceScopeKey()" :project-id="planExecutionSelectedProject" />
     <div v-if="deploymentKind(record)==='docker'" class="release-plan-resource-actions">
-     <a-button v-if="canReadContainerLogs" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText :size="14"/>查看日志</a-button>
-     <a-button v-if="canOpenContainerTerminal&&canReadContainerLogs" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':'容器只有在实时运行中才能打开终端'" @click="openDeploymentTerminal(record)"><TerminalSquare :size="14"/>打开终端</a-button>
+     <a-button v-if="canReadContainerLogs" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText :size="14"/>查看日志</a-button><SessionPopoutLink v-if="canReadContainerLogs" kind="container-log" :path="deploymentStreamPath(record)" :title="`容器日志：${deploymentContainerName(record)}`" :disabled="dockerRuntimeLoading[record.runtime_id]||!dockerContainerForDeployment(record)" />
+     <a-button v-if="canOpenContainerTerminal&&canReadContainerLogs" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':'容器只有在实时运行中才能打开终端'" @click="openDeploymentTerminal(record)"><TerminalSquare :size="14"/>打开终端</a-button><SessionPopoutLink v-if="canOpenContainerTerminal&&canReadContainerLogs" kind="terminal" :path="deploymentStreamPath(record,true)" :title="`容器终端：${deploymentContainerName(record)}`" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" />
      <a-button v-if="canReadDeployments&&canControlDeployments" @click="openDeploymentRollback(record)"><RotateCw :size="14"/>{{ rollbackT('rollback.title') }}</a-button>
      <span v-if="!canReadContainerLogs" class="release-plan-resource-permission">没有 cluster.read 权限，无法读取容器实时状态和日志。</span>
      <span v-else-if="!canOpenContainerTerminal" class="release-plan-resource-permission">没有 terminal.open 权限，无法打开容器终端。</span>
@@ -2745,8 +2752,8 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
 </a-drawer>
 <PipelineLogDrawer v-model:open="log.open" :runID="log.runID" :nodeID="log.nodeID" :title="log.title" :initial-status="log.status"/>
 <ComposeContainerControlModal v-model:open="containerControlDialog.open" :deploymentID="containerControlDialog.deploymentID" :containerID="containerControlDialog.containerID" :action="containerControlDialog.action" @completed="containerControlCompleted"/>
-<ContainerLogDrawer v-model:open="containerLogs.open" :title="containerLogs.title" :path="containerLogs.path"/>
-<TerminalDrawer v-model:open="terminal.open" :title="terminal.title" :path="terminal.path"/>
+<ContainerLogDrawer :source-deployment-i-d="composeStream?.deploymentID" v-model:open="containerLogs.open" :title="containerLogs.title" :path="containerLogs.path"/>
+<TerminalDrawer :source-deployment-i-d="composeStream?.deploymentID" v-model:open="terminal.open" :title="terminal.title" :path="terminal.path"/>
 </section></template>
 
 <style scoped>

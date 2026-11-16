@@ -4,6 +4,7 @@ import { Server } from 'lucide-vue-next'
 import type { K3sInstallation } from '@/api/k3s'
 import { k3sElapsed, k3sHostStatusLabel, k3sInstallationLogView, k3sInstallationRunning, k3sStageLabel } from '@/utils/k3sProvision'
 import { formatDateTime } from '@/utils/time'
+import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
 
 const props=defineProps<{installation:K3sInstallation;now:number}>()
 const actionLabel=computed(()=>props.installation.action==='uninstall'?'卸载':'安装')
@@ -39,7 +40,7 @@ watch(()=>logs.value.text,async()=>{const shouldFollow=following.value;await nex
         <p v-if="host.status==='failed'&&host.message">{{ host.message }}</p>
       </article>
     </div>
-    <section class="progress-logs"><header><div class="log-heading"><h4>{{ actionLabel }}日志</h4><span v-if="running" class="background-hint">可以关闭窗口，{{ actionLabel }}会继续执行。</span></div><a-button v-if="!uninstall" size="small" @click="showLatest">查看最新</a-button></header><p v-if="logs.truncated" class="log-limit">仅显示最近 2 MiB 日志</p><pre ref="viewport" @scroll="onLogScroll" role="log" :aria-label="uninstall?'卸载安全日志':'安装执行日志'" aria-live="off" tabindex="0">{{ logs.text||`等待${actionLabel}日志…` }}</pre></section>
+    <section class="progress-logs"><header><div class="log-heading"><h4>{{ actionLabel }}日志</h4><SessionPopoutLink kind="installation-log" :installationID="installation.id" :title="`${installation.name || 'K3s'} · ${actionLabel}日志`" /><span v-if="running" class="background-hint">可以关闭窗口，{{ actionLabel }}会继续执行。</span></div><a-button v-if="!uninstall" size="small" @click="showLatest">查看最新</a-button></header><p v-if="logs.truncated" class="log-limit">仅显示最近 2 MiB 日志</p><pre ref="viewport" @scroll="onLogScroll" role="log" :aria-label="uninstall?'卸载安全日志':'安装执行日志'" aria-live="off" tabindex="0">{{ logs.text||`等待${actionLabel}日志…` }}</pre></section>
   </section>
 </template>
 

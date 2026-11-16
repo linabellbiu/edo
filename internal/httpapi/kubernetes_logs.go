@@ -31,8 +31,9 @@ func (h kubernetesLogHandler) stream(c *gin.Context) {
 	}
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
-	stream, err := h.kube.PodLogs(ctx, c.Param("id"), c.Param("namespace"), c.Param("pod"), c.Param("container"), int64(options.Tail), options.Follow, options.Timestamps)
+	stream, err := h.kube.PodLogs(ctx, c.Param("id"), c.Param("namespace"), c.Param("pod"), c.Param("container"), int64(options.Tail), options.Follow, options.Timestamps, c.Query("pod_uid"))
 	if err != nil {
+		h.logger.Warn("打开 Pod 日志失败", "operation", "kubernetes_logs_open", "cluster_id", c.Param("id"), "namespace", c.Param("namespace"), "pod", c.Param("pod"), "container", c.Param("container"), "pod_uid", c.Query("pod_uid"), "request_id", requestIDFrom(c), "err", err)
 		clusterHandler{logger: h.logger}.resourceError(c, "kubernetes_logs_open", err)
 		return
 	}

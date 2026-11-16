@@ -6,8 +6,10 @@ import { Check, ChevronRight, CircleDot, Clock3, GitBranch, Hand, Package, Rocke
 
 import type { PipelineExecutionGraph, PipelineExecutionStage, PipelineRunGraphNode, WorkflowNodeType } from '@/types/pipeline'
 import PipelineStageDurations from './PipelineStageDurations.vue'
+import SessionPopoutLink from './SessionPopoutLink.vue'
 
 const props = defineProps<{
+  runId?: string
   graph?: PipelineExecutionGraph
   currentNodeId?: string
   status: string
@@ -125,6 +127,7 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
                 <ChevronRight v-if="batchIndex" class="task-arrow" :size="17" />
                 <div class="run-batch"><small v-if="batch.length>1" class="parallel-label">并行执行</small>
                 <template v-for="node in batch" :key="node.id">
+                <div class="task-log-entry">
                 <Tooltip :title="nodeDescription(node)" :trigger="['hover', 'focus']">
                 <button
                   type="button"
@@ -147,6 +150,8 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
                   </span>
                 </button>
                 </Tooltip>
+                <SessionPopoutLink v-if="runId" kind="pipeline-log" :run-i-d="runId" :node-i-d="node.id" :title="`任务日志：${nodeDescription(node)}`" />
+                </div>
                 </template></div>
               </template>
             </div>
@@ -160,6 +165,7 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
 </template>
 
 <style scoped>
+.task-log-entry{display:flex;align-items:center;gap:5px}
 .run-graph{overflow:hidden;border:1px solid var(--edo-border);border-radius:13px;background:color-mix(in srgb,var(--edo-surface-soft) 78%,var(--edo-surface))}
 .run-graph>header{display:flex;min-height:52px;align-items:center;justify-content:space-between;gap:14px;padding:9px 14px;border-bottom:1px solid color-mix(in srgb,var(--edo-border) 78%,transparent);background:color-mix(in srgb,var(--edo-surface) 82%,transparent)}
 .run-graph>header strong,.run-graph>header span{display:block}.run-graph>header strong{font-size:13px}.run-graph>header>div span{margin-top:1px;color:var(--edo-muted);font-size:11px}

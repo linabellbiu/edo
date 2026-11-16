@@ -3,6 +3,7 @@ import { onBeforeUnmount, ref, watch } from 'vue'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import PipelineRunGraph from './PipelineRunGraph.vue'
+import SessionPopoutLink from './SessionPopoutLink.vue'
 import type { PipelineExecutionGraph, PipelineRunGraphNode } from '@/types/pipeline'
 const props=defineProps<{runId:string;updatedAt?:string;graph?:PipelineExecutionGraph;currentNodeId?:string;status:string;stage?:string}>()
 const emit=defineEmits<{'task-logs':[node:Pick<PipelineRunGraphNode,'id'|'name'>]}>()
@@ -51,11 +52,11 @@ function color(status:string){return ({succeeded:'green',passed:'green',failed:'
 </script>
 <template>
  <div class="task-history">
-  <PipelineRunGraph compact :graph="graph" :current-node-id="currentNodeId" :status="status" :stage="stage" :tasks="tasks" @task-logs="emit('task-logs',$event)"/>
+  <PipelineRunGraph compact :run-id="runId" :graph="graph" :current-node-id="currentNodeId" :status="status" :stage="stage" :tasks="tasks" @task-logs="emit('task-logs',$event)"/>
   <a-alert v-for="(error,section) in errors" :key="section" type="error" show-icon :message="`${sectionLabels[section]}：${error}`"><template #action><a-button size="small" :loading="loading[section]" @click="loadSection(section)">重试</a-button></template></a-alert>
   <span v-if="loading.tasks" class="task-history-loading" role="status">{{tasks.length?'正在更新任务状态…':'正在读取任务状态…'}}</span>
   <a-table v-if="tasks.length" size="small" bordered :data-source="tasks" :pagination="false" row-key="id" :columns="[{title:'任务',dataIndex:'name'},{title:'状态',key:'status'},{title:'当前阶段',key:'stage'},{title:'说明',dataIndex:'message'}]">
-   <template #bodyCell="{column,record}"><template v-if="column.dataIndex==='name'"><button type="button" class="task-log-link" :aria-label="`查看任务日志：${record.name}`" @click="emit('task-logs',{id:record.node_id,name:record.name})">{{record.name}}</button></template><template v-else-if="column.key==='status'"><a-tag :color="color(record.status)">{{record.status==='running'&&record.stage==='queued'?'排队中':label(record.status)}}</a-tag></template><template v-else-if="column.key==='stage'">{{stageLabel(record.stage)}}</template></template>
+   <template #bodyCell="{column,record}"><template v-if="column.dataIndex==='name'"><button type="button" class="task-log-link" :aria-label="`查看任务日志：${record.name}`" @click="emit('task-logs',{id:record.node_id,name:record.name})">{{record.name}}</button><SessionPopoutLink kind="pipeline-log" :run-i-d="runId" :node-i-d="record.node_id" :title="`任务日志：${record.name}`" /></template><template v-else-if="column.key==='status'"><a-tag :color="color(record.status)">{{record.status==='running'&&record.stage==='queued'?'排队中':label(record.status)}}</a-tag></template><template v-else-if="column.key==='stage'">{{stageLabel(record.stage)}}</template></template>
   </a-table>
   <a-alert v-for="delivery in deliveries.filter(v=>v.status!=='obsolete')" :key="delivery.id" :type="delivery.status==='delivered'?'success':delivery.status==='failed'?'warning':'info'" show-icon :message="`仓库检查结果：${delivery.message}（已尝试 ${delivery.attempts} 次）`"/>
   <span v-if="loading.reports&&!reports.length" class="task-history-loading" role="status">正在读取检查报告…</span>

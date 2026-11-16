@@ -436,16 +436,23 @@ func (s *Service) ResourceEvents(ctx context.Context, clusterID, resource, names
 	return events.Items, nil
 }
 
-func (s *Service) PodLogs(ctx context.Context, clusterID, namespace, pod, container string, tail int64, follow, timestamps bool) (io.ReadCloser, error) {
-	return s.podLogs(ctx, clusterID, namespace, pod, container, tail, follow, timestamps, false)
+func (s *Service) PodLogs(ctx context.Context, clusterID, namespace, pod, container string, tail int64, follow, timestamps bool, expectedUID ...string) (io.ReadCloser, error) {
+	if len(expectedUID) > 1 || len(expectedUID) == 1 && len(expectedUID[0]) > 128 {
+		return nil, ErrInvalidResource
+	}
+	uid := ""
+	if len(expectedUID) == 1 {
+		uid = expectedUID[0]
+	}
+	return s.podLogs(ctx, clusterID, namespace, pod, container, tail, follow, timestamps, false, uid)
 }
 
 // PodLogSnapshot 只读取有限历史日志，允许查看上一次退出的容器，不订阅后续输出。
 func (s *Service) PodLogSnapshot(ctx context.Context, clusterID, namespace, pod, container string, tail int64, previous bool) (io.ReadCloser, error) {
-	return s.podLogs(ctx, clusterID, namespace, pod, container, tail, false, true, previous)
+	return s.podLogs(ctx, clusterID, namespace, pod, container, tail, false, true, previous, "")
 }
 
-func (s *Service) podLogs(ctx context.Context, clusterID, namespace, pod, container string, tail int64, follow, timestamps, previous bool) (io.ReadCloser, error) {
+func (s *Service) podLogs(ctx context.Context, clusterID, namespace, pod, container string, tail int64, follow, timestamps, previous bool, expectedUID string) (io.ReadCloser, error) {
 	if len(validation.IsDNS1123Label(namespace)) != 0 || len(validation.IsDNS1123Subdomain(pod)) != 0 || len(validation.IsDNS1123Label(container)) != 0 || tail < 1 || tail > 5000 {
 		return nil, ErrInvalidResource
 	}
@@ -463,9 +470,32 @@ func (s *Service) podLogs(ctx context.Context, clusterID, namespace, pod, contai
 		return nil, err
 	}
 	// 日志流由请求取消和长连接授权控制，不使用普通 API 请求的总超时。
+	identityTimeout := cfg.Timeout
+	if identityTimeout <= 0 {
+		identityTimeout = 15 * time.Second
+	}
 	cfg.Timeout = 0
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
+		cancel()
+		return nil, err
+	}
+	checkIdentity := func() error {
+		if expectedUID == "" {
+			return nil
+		}
+		checkContext, stop := context.WithTimeout(lease, identityTimeout)
+		defer stop()
+		current, err := client.CoreV1().Pods(namespace).Get(checkContext, pod, metav1.GetOptions{})
+		if err != nil {
+			return resourceError("pods", err)
+		}
+		if string(current.UID) != expectedUID {
+			return ErrResourceConflict
+		}
+		return nil
+	}
+	if err := checkIdentity(); err != nil {
 		cancel()
 		return nil, err
 	}
@@ -473,6 +503,12 @@ func (s *Service) podLogs(ctx context.Context, clusterID, namespace, pod, contai
 	if err != nil {
 		cancel()
 		return nil, resourceError("pods", err)
+	}
+	// Kubernetes 日志接口没有 UID 前置条件，握手后再核对一次，避免核对与开流之间发生同名重建。
+	if err := checkIdentity(); err != nil {
+		_ = stream.Close()
+		cancel()
+		return nil, err
 	}
 	return &authorizationReadCloser{ReadCloser: stream, stop: func() bool { return false }, cancel: cancel}, nil
 }

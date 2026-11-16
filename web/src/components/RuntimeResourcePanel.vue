@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import client from '@/api/client'
 import { type HostCapabilityStatus, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
@@ -149,20 +150,27 @@ async function ping() {
   finally { if (request === pingRequest) pingLoading.value = false }
 }
 function currentRow(row: ResourceRecord, kind: RuntimeKind) { return !rowActionsDisabled.value && loadedContext === resourceContext() && selectedRuntime.value?.kind === kind && (kind === 'docker' ? containers.value : pods.value).includes(row) }
+function dockerStreamPath(row: ResourceRecord, terminal = false) {
+  if (!selectedRuntime.value || !row.id) return ''
+  const endpoint = encodeURIComponent(selectedRuntime.value.id), id = encodeURIComponent(String(row.id))
+  return terminal ? `/api/v1/terminals/docker/${endpoint}/containers/${id}/ws` : `/api/v1/docker/endpoints/${endpoint}/containers/${id}/logs/ws`
+}
+function podTerminalPath(row: ResourceRecord, container: string) {
+  if (!selectedRuntime.value) return ''
+  return `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedRuntime.value.id)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(container)}/ws${row.uid ? `?pod_uid=${encodeURIComponent(String(row.uid))}` : ''}`
+}
 function openContainerLogs(row: ResourceRecord) {
   if (!currentRow(row, 'docker') || !row.id) return
-  const runtime = selectedRuntime.value!
   logContainerID = String(row.id)
-  containerLogs.value = { open: true, title: t('runtimeResources.dockerLogs', { name: runtimeContainerName(row) }), path: `/api/v1/docker/endpoints/${encodeURIComponent(runtime.id)}/containers/${encodeURIComponent(String(row.id))}/logs/ws` }
+  containerLogs.value = { open: true, title: t('runtimeResources.dockerLogs', { name: runtimeContainerName(row) }), path: dockerStreamPath(row) }
 }
 function openDockerTerminal(row: ResourceRecord) {
   if (!currentRow(row, 'docker') || !row.id || !auth.canAny(['terminal.open']) || containerState(row) !== 'running') return
-  terminal.value = { open: true, title: t('runtimeResources.dockerTerminal', { name: runtimeContainerName(row) }), path: `/api/v1/terminals/docker/${encodeURIComponent(selectedRuntime.value!.id)}/containers/${encodeURIComponent(String(row.id))}/ws` }
+  terminal.value = { open: true, title: t('runtimeResources.dockerTerminal', { name: runtimeContainerName(row) }), path: dockerStreamPath(row, true) }
 }
 function openPodTerminal(row: ResourceRecord, container: string) {
   if (!currentRow(row, 'kubernetes') || !auth.canAny(['terminal.open']) || row.phase !== 'Running' || !Array.isArray(row.containers) || !row.containers.includes(container)) return
-  const identity = typeof row.uid === 'string' && row.uid ? `?pod_uid=${encodeURIComponent(row.uid)}` : ''
-  terminal.value = { open: true, title: t('runtimeResources.podTerminal', { name: row.name, container }), path: `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedRuntime.value!.id)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(container)}/ws${identity}` }
+  terminal.value = { open: true, title: t('runtimeResources.podTerminal', { name: row.name, container }), path: podTerminalPath(row, container) }
 }
 function resetContext() {
   authorizationRevision++
@@ -254,7 +262,7 @@ onBeforeUnmount(() => { disposed = true; mounted = false; metadataRequest++; met
           <template #cell-image_display="{ row }"><span class="runtime-cell" tabindex="0">{{ row.image_display || row.image || '—' }}</span></template>
           <template #cell-state="{ row }"><a-tag :color="runtimeStateTone(row.state)">{{ stateLabel(row.state) }}</a-tag></template>
           <template #cell-status="{ row }"><span class="runtime-cell runtime-status" tabindex="0">{{ row.status || '—' }}</span></template>
-          <template #actions="{ row }"><a-button size="small" :disabled="rowActionsDisabled" @click="openContainerLogs(row)"><FileText :size="14" aria-hidden="true" />{{ t('runtimeResources.logs') }}</a-button><a-button v-if="auth.canAny(['terminal.open'])" size="small" :disabled="rowActionsDisabled || containerState(row) !== 'running'" @click="openDockerTerminal(row)"><TerminalSquare :size="14" aria-hidden="true" />{{ t('runtimeResources.terminal') }}</a-button></template>
+          <template #actions="{ row }"><a-button size="small" :disabled="rowActionsDisabled" @click="openContainerLogs(row)"><FileText :size="14" aria-hidden="true" />{{ t('runtimeResources.logs') }}</a-button><SessionPopoutLink kind="container-log" :path="dockerStreamPath(row)" :title="t('runtimeResources.dockerLogs', { name: runtimeContainerName(row) })" :disabled="rowActionsDisabled" /><a-button v-if="auth.canAny(['terminal.open'])" size="small" :disabled="rowActionsDisabled || containerState(row) !== 'running'" @click="openDockerTerminal(row)"><TerminalSquare :size="14" aria-hidden="true" />{{ t('runtimeResources.terminal') }}</a-button><SessionPopoutLink v-if="auth.canAny(['terminal.open'])" kind="terminal" :path="dockerStreamPath(row,true)" :title="t('runtimeResources.dockerTerminal', { name: runtimeContainerName(row) })" :disabled="rowActionsDisabled || containerState(row) !== 'running'" /></template>
           <template #pagination="{ page, limit, total, changePage, changeLimit }"><div class="runtime-pagination"><span>{{ t('runtimeResources.page', { page, total: Math.max(1, Math.ceil(total / limit)) }) }}</span><a-button size="small" :disabled="page <= 1" @click="changePage(page - 1)">{{ t('runtimeResources.previousPage') }}</a-button><a-button size="small" :disabled="page * limit >= total" @click="changePage(page + 1)">{{ t('runtimeResources.nextPage') }}</a-button><label>{{ t('runtimeResources.pageSize') }}<select :value="limit" :aria-label="t('runtimeResources.pageSize')" @change="changeLimit(Number(($event.target as HTMLSelectElement).value))"><option v-for="size in [10, 20, 50, 100]" :key="size" :value="size">{{ size }}</option></select></label></div></template>
         </ResourceTable>
         </div>
@@ -262,7 +270,7 @@ onBeforeUnmount(() => { disposed = true; mounted = false; metadataRequest++; met
         <ResourceTable :key="selectedNode + namespace" :rows="filteredPods" :columns="podColumns" :loading="resourceLoading" :details="false" keep-header :empty-text="resourceError ? t('runtimeResources.unavailable') : emptyText">
           <template #cell-name="{ row }"><strong class="runtime-cell">{{ row.name }}</strong></template><template #cell-phase="{ row }"><a-tag :color="runtimeStateTone(row.phase)">{{ stateLabel(row.phase) }}</a-tag></template>
           <template #cell-containers="{ row }"><span class="runtime-cell">{{ Array.isArray(row.containers) ? row.containers.join('、') || '—' : '—' }}</span></template>
-          <template v-if="auth.canAny(['terminal.open'])" #actions="{ row }"><a-button v-for="podContainer in (Array.isArray(row.containers) ? row.containers : [])" :key="String(podContainer)" size="small" :disabled="rowActionsDisabled || row.phase !== 'Running'" @click="openPodTerminal(row, String(podContainer))"><TerminalSquare :size="14" aria-hidden="true" />{{ podContainer }}</a-button></template>
+          <template v-if="auth.canAny(['terminal.open'])" #actions="{ row }"><template v-for="podContainer in (Array.isArray(row.containers) ? row.containers : [])" :key="String(podContainer)"><a-button size="small" :disabled="rowActionsDisabled || row.phase !== 'Running'" @click="openPodTerminal(row, String(podContainer))"><TerminalSquare :size="14" aria-hidden="true" />{{ podContainer }}</a-button><SessionPopoutLink kind="terminal" :path="podTerminalPath(row,String(podContainer))" :title="t('runtimeResources.podTerminal', { name: row.name, container: podContainer })" :disabled="rowActionsDisabled || row.phase !== 'Running' || !row.uid" /></template></template>
           <template #pagination="{ page, limit, total, changePage, changeLimit }"><div class="runtime-pagination"><span>{{ t('runtimeResources.page', { page, total: Math.max(1, Math.ceil(total / limit)) }) }}</span><a-button size="small" :disabled="page <= 1" @click="changePage(page - 1)">{{ t('runtimeResources.previousPage') }}</a-button><a-button size="small" :disabled="page * limit >= total" @click="changePage(page + 1)">{{ t('runtimeResources.nextPage') }}</a-button><label>{{ t('runtimeResources.pageSize') }}<select :value="limit" :aria-label="t('runtimeResources.pageSize')" @change="changeLimit(Number(($event.target as HTMLSelectElement).value))"><option v-for="size in [10, 20, 50, 100]" :key="size" :value="size">{{ size }}</option></select></label></div></template>
         </ResourceTable>
         </div>

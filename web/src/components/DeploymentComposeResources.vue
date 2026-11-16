@@ -92,14 +92,14 @@ onBeforeUnmount(() => { disposed = true; reset() })
     </a-alert>
     <template v-else-if="runtime">
       <div class="compose-resource-summary"><span>{{ t('deploymentResources.project') }}：{{ runtime.name }}</span><span>{{ t('deploymentResources.liveState') }}：<a-tag :color="composeRuntimeColor(runtime.state, runtime.running)">{{ composeRuntimeStatus(runtime.state, runtime.running).label }}</a-tag></span></div>
-      <ComposeRuntimeServices v-if="runtime.services?.length" :services="runtime.services" :can-logs="canLogs" :can-terminal="canTerminal" :opening="loading || opening" @logs="openStream($event,'logs')" @terminal="openStream($event,'terminal')" />
+      <ComposeRuntimeServices v-if="runtime.services?.length" :services="runtime.services" :runtimeID="runtime.runtime_id" :sourceDeploymentID="record.id" :can-logs="canLogs" :can-terminal="canTerminal" :opening="loading || opening" @logs="openStream($event,'logs')" @terminal="openStream($event,'terminal')" />
       <a-empty v-else :description="t('deploymentResources.empty')" />
       <p v-if="!canLogs" class="compose-resource-permission">{{ t('deploymentResources.noLogs') }}</p>
       <p v-else-if="!canTerminal" class="compose-resource-permission">{{ t('deploymentResources.noTerminal') }}</p>
     </template>
   </a-spin>
-  <ContainerLogDrawer v-model:open="logsOpen" :title="stream?.title || ''" :path="stream?.action === 'logs' ? stream.path : ''" />
-  <TerminalDrawer v-model:open="terminalOpen" :title="stream?.title || ''" :path="stream?.action === 'terminal' ? stream.path : ''" />
+  <ContainerLogDrawer :source-deployment-i-d="record.id" v-model:open="logsOpen" :title="stream?.title || ''" :path="stream?.action === 'logs' ? stream.path : ''" />
+  <TerminalDrawer :source-deployment-i-d="record.id" v-model:open="terminalOpen" :title="stream?.title || ''" :path="stream?.action === 'terminal' ? stream.path : ''" />
 </template>
 
 <style scoped>
