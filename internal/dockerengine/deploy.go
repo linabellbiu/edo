@@ -142,7 +142,7 @@ func (s *Service) deployContainer(
 		if !errdefs.IsNotFound(inspectErr) {
 			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, fmt.Errorf("检查目标主机 Docker 镜像失败: %w", inspectErr))
 		}
-		pulledWithSSH, err := s.pullImageWithSSH(deployContext, endpointID, image, registry)
+		pulledWithSSH, err := s.pullImageWithSSH(deployContext, endpointID, image, registry, stdout, stderr)
 		if err != nil {
 			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, err)
 		}
@@ -155,7 +155,7 @@ func (s *Service) deployContainer(
 			if err != nil {
 				return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, fmt.Errorf("拉取 Docker 镜像失败: %w", err))
 			}
-			if err := pull.Wait(deployContext); err != nil {
+			if err := waitImageTransfer(deployContext, pull, stdout); err != nil {
 				return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, fmt.Errorf("等待 Docker 镜像拉取完成失败: %w", err))
 			}
 		}

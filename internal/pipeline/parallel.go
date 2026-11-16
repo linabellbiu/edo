@@ -134,6 +134,15 @@ func (s *Service) advanceParallelRun(ctx context.Context, run *model.PipelineRun
 				if err := tx.Create(&state).Error; err != nil {
 					return err
 				}
+				logCtx := withPipelineNodeLog(ctx, node.ID, node.Name)
+				if diagnostic, ok := snapshot.TaskDiagnostics[node.ID]; ok {
+					if err := s.appendWorkflowTaskDiagnostic(logCtx, tx, current.ID, diagnostic); err != nil {
+						return err
+					}
+				}
+				if err := s.appendRunLogInTransaction(logCtx, tx, current.ID, "failed", "error", message); err != nil {
+					return err
+				}
 				states[node.ID] = state
 				failures = append(failures, state)
 				if failed == nil {
@@ -276,9 +285,11 @@ func (s *Service) advanceParallelRun(ctx context.Context, run *model.PipelineRun
 		s.logger.Error("推进流水线阶段失败", "operation", "pipeline_parallel_advance", "pipeline_run_id", run.ID, "err", err)
 		return nil, err
 	}
+	if len(failures) > 0 {
+		s.realtime.LogsChanged(ctx, run.ID)
+	}
 	for _, node := range failures {
 		logCtx := withPipelineNodeLog(ctx, node.NodeID, node.Name)
-		s.appendRunLog(logCtx, run.ID, "failed", "error", node.Message)
 		s.notifyFailedWorkflowNode(logCtx, run.ID, node.NodeID, node.Message)
 	}
 	s.realtime.Changed(ctx, "pipeline_runs", run.ID)

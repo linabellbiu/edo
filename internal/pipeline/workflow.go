@@ -80,6 +80,7 @@ type WorkflowResult struct {
 
 type workflowSnapshot struct {
 	TaskFailures                     map[string]string                           `json:"task_failures,omitempty"`
+	TaskDiagnostics                  map[string]workflowTaskDiagnostic           `json:"task_diagnostics,omitempty"`
 	DefaultTerminalTools             bool                                        `json:"default_terminal_tools,omitempty"`
 	DefaultContainerInit             bool                                        `json:"default_container_init,omitempty"`
 	PreserveComposeImageReferences   bool                                        `json:"preserve_compose_image_references,omitempty"`
@@ -1550,6 +1551,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	}
 	resolved := *workflow
 	taskFailures := map[string]string{}
+	ctx, taskDiagnostics := withWorkflowTaskDiagnostics(ctx, workflow)
 	for _, issue := range workflowStructureIssues(workflow.Source, workflow.Stages) {
 		if issue.Code != "disabled_upstream_task" {
 			s.logger.WarnContext(ctx, "流水线结构无效", "operation", "workflow_run_structure", "workflow_id", workflow.ID, "issue_code", issue.Code, "err", ErrInvalidWorkflow)
@@ -2083,6 +2085,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
 		TaskFailures:                     taskFailures,
+		TaskDiagnostics:                  taskDiagnostics.entries,
 		DefaultTerminalTools:             true,
 		DefaultContainerInit:             true,
 		PreserveComposeImageReferences:   true,

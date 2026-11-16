@@ -236,7 +236,7 @@ func connectForSSHTest(ctx context.Context, connector *sshConnector, fingerprint
 	})
 }
 
-func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string, registry RegistryAuth) (bool, error) {
+func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string, registry RegistryAuth, outputs ...io.Writer) (bool, error) {
 	endpoint, err := s.Find(ctx, endpointID)
 	if err != nil {
 		return false, err
@@ -271,7 +271,7 @@ func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string
 		return true, err
 	}
 	command, commandInput := mode.prepare(command, registryInput)
-	if err := runSSHCommandWithInput(ctx, client, command, commandInput, io.Discard); err != nil {
+	if err := runSSHCommandWithStreams(ctx, client, command, commandInput, imageTransferOutput(outputs, 0), imageTransferOutput(outputs, 1)); err != nil {
 		return true, fmt.Errorf("远程执行 docker pull 失败: %w", err)
 	}
 	return true, nil

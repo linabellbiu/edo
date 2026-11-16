@@ -156,7 +156,7 @@ func (s *Service) prepareDeploymentInputs(ctx context.Context, prepared *executi
 		if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
 			return closers, err
 		}
-		if err := s.docker.PrepareRegistryImage(ctx, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth); err != nil {
+		if err := s.prepareDeploymentImage(ctx, prepared, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth, false); err != nil {
 			return closers, s.deploymentInputError(prepared.node.ID, "deployment_input_pull", err)
 		}
 		if prepared.variables == nil {
@@ -270,7 +270,7 @@ func (s *Service) executeCustomDeployment(ctx context.Context, prepared *executi
 			if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
 				return s.failDeploymentExecution(ctx, failure, "部署执行授权已失效", err)
 			}
-			if err := s.docker.PrepareRegistryImage(ctx, capability.RuntimeID, prepared.target.HostID, image, auth); err != nil {
+			if err := s.prepareDeploymentImage(ctx, prepared, capability.RuntimeID, prepared.target.HostID, image, auth, false); err != nil {
 				return s.failDeploymentExecution(ctx, failure, "目标主机无法拉取本次构建镜像", err)
 			}
 		}

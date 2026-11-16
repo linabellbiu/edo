@@ -369,10 +369,10 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 		var prepareErr error
 		if prepared.snapshot.PreserveComposeImageReferences {
 			s.logComposeOperation(ctx, prepared, fmt.Sprintf("拉取服务 %s 镜像 %s（使用仓库 %s 的认证）", service, image.ImageRef, registry.Name))
-			prepareErr = s.docker.PrepareConfiguredRegistryImage(ctx, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth)
+			prepareErr = s.prepareDeploymentImage(ctx, prepared, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth, true)
 		} else {
 			s.logComposeOperation(ctx, prepared, "检查或拉取历史运行的固定镜像："+image.ImageRef)
-			prepareErr = s.docker.PrepareRegistryImage(ctx, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth)
+			prepareErr = s.prepareDeploymentImage(ctx, prepared, capability.RuntimeID, prepared.target.HostID, image.ImageRef, auth, false)
 		}
 		if err := prepareErr; err != nil {
 			s.logComposeImageFailure(ctx, prepared, err)

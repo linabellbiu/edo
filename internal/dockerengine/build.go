@@ -169,7 +169,7 @@ func (s *Service) buildAndPushWithOptions(
 	if err != nil {
 		return BuiltImage{}, fmt.Errorf("提交 Docker 镜像推送失败: %w", err)
 	}
-	if err := push.Wait(buildContextTimeout); err != nil {
+	if err := waitImageTransfer(buildContextTimeout, push, output); err != nil {
 		return BuiltImage{}, fmt.Errorf("等待 Docker 镜像推送完成失败: %w", err)
 	}
 	inspect, err := apiClient.ImageInspect(buildContextTimeout, image)

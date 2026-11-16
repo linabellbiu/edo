@@ -101,15 +101,15 @@ func (e *ScriptContainerExitError) Error() string {
 // 容器使用匿名卷承载源码，根文件系统只读，退出后强制移除容器及匿名卷。
 func (s *Service) RunScriptContainer(ctx context.Context, input ScriptContainerInput) (ScriptContainerResult, error) {
 	if s == nil {
-		return ScriptContainerResult{}, ErrInvalidScriptContainer
+		return ScriptContainerResult{ExitCode: -1}, ErrInvalidScriptContainer
 	}
 	input, err := normalizeScriptContainerInput(input)
 	if err != nil {
-		return ScriptContainerResult{}, err
+		return ScriptContainerResult{ExitCode: -1}, err
 	}
 	archive, err := createScriptSourceArchive(ctx, input.SourceDirectory)
 	if err != nil {
-		return ScriptContainerResult{}, err
+		return ScriptContainerResult{ExitCode: -1}, err
 	}
 	defer func() {
 		name := archive.Name()
@@ -119,7 +119,7 @@ func (s *Service) RunScriptContainer(ctx context.Context, input ScriptContainerI
 
 	apiClient, err := s.builderExecutionClient()
 	if err != nil {
-		return ScriptContainerResult{}, err
+		return ScriptContainerResult{ExitCode: -1}, err
 	}
 	defer apiClient.Close()
 	executionContext, cancel := context.WithTimeout(ctx, input.Timeout)
@@ -127,46 +127,46 @@ func (s *Service) RunScriptContainer(ctx context.Context, input ScriptContainerI
 
 	ping, err := apiClient.Ping(executionContext, client.PingOptions{NegotiateAPIVersion: true})
 	if err != nil {
-		return ScriptContainerResult{}, fmt.Errorf("连接脚本构建运行时失败: %w", err)
+		return ScriptContainerResult{ExitCode: -1}, fmt.Errorf("连接脚本构建运行时失败: %w", err)
 	}
 	if !strings.EqualFold(ping.OSType, "linux") {
-		return ScriptContainerResult{}, ErrScriptRuntimeImage
+		return ScriptContainerResult{ExitCode: -1}, ErrScriptRuntimeImage
 	}
-	imageID, err := ensureScriptRuntimeImage(executionContext, apiClient, input.Image, input.Platform)
+	imageID, err := ensureScriptRuntimeImage(executionContext, apiClient, input.Image, input.Platform, input.Stdout)
 	if err != nil {
-		return ScriptContainerResult{}, err
+		return ScriptContainerResult{ExitCode: -1}, err
 	}
 
 	created, err := apiClient.ContainerCreate(executionContext, scriptContainerCreateOptions(input, imageID))
 	if err != nil {
-		return ScriptContainerResult{}, fmt.Errorf("创建脚本执行容器失败: %w", err)
+		return ScriptContainerResult{ExitCode: -1}, fmt.Errorf("创建脚本执行容器失败: %w", err)
 	}
 	containerID := created.ID
 	defer removeScriptContainer(apiClient, containerID)
 
 	if _, err := archive.Seek(0, io.SeekStart); err != nil {
-		return ScriptContainerResult{}, fmt.Errorf("读取脚本源码归档失败: %w", err)
+		return ScriptContainerResult{ExitCode: -1}, fmt.Errorf("读取脚本源码归档失败: %w", err)
 	}
 	if _, err := apiClient.CopyToContainer(executionContext, containerID, client.CopyToContainerOptions{
 		DestinationPath: scriptWorkspace,
 		Content:         archive,
 		CopyUIDGID:      true,
 	}); err != nil {
-		return ScriptContainerResult{}, fmt.Errorf("传入脚本源码失败: %w", err)
+		return ScriptContainerResult{ExitCode: -1}, fmt.Errorf("传入脚本源码失败: %w", err)
 	}
 	if _, err := apiClient.CopyToContainer(executionContext, containerID, client.CopyToContainerOptions{
 		DestinationPath: scriptWorkspace,
 		Content:         scriptArchive(input.Script),
 		CopyUIDGID:      true,
 	}); err != nil {
-		return ScriptContainerResult{}, fmt.Errorf("传入执行脚本失败: %w", err)
+		return ScriptContainerResult{ExitCode: -1}, fmt.Errorf("传入执行脚本失败: %w", err)
 	}
 
 	if len(input.FileVariables) > 0 {
 		if _, err := apiClient.CopyToContainer(executionContext, containerID, client.CopyToContainerOptions{
 			DestinationPath: scriptWorkspace, Content: scriptSecretArchive(input.FileVariables), CopyUIDGID: true,
 		}); err != nil {
-			return ScriptContainerResult{}, fmt.Errorf("传入文件密钥失败: %w", err)
+			return ScriptContainerResult{ExitCode: -1}, fmt.Errorf("传入文件密钥失败: %w", err)
 		}
 	}
 
@@ -177,7 +177,7 @@ func (s *Service) RunScriptContainer(ctx context.Context, input ScriptContainerI
 		Stream: true, Stdout: true, Stderr: true,
 	})
 	if err != nil {
-		return ScriptContainerResult{}, fmt.Errorf("连接脚本输出失败: %w", err)
+		return ScriptContainerResult{ExitCode: -1}, fmt.Errorf("连接脚本输出失败: %w", err)
 	}
 	outputComplete := make(chan error, 1)
 	go func() {
@@ -187,25 +187,28 @@ func (s *Service) RunScriptContainer(ctx context.Context, input ScriptContainerI
 	if _, err := apiClient.ContainerStart(executionContext, containerID, client.ContainerStartOptions{}); err != nil {
 		attached.Close()
 		waitForScriptOutput(outputComplete)
-		return ScriptContainerResult{}, fmt.Errorf("启动脚本执行容器失败: %w", err)
+		return ScriptContainerResult{ExitCode: -1}, fmt.Errorf("启动脚本执行容器失败: %w", err)
 	}
 
 	waitResponse, err := waitForScriptContainer(executionContext, apiClient, containerID, waitResult)
 	if err != nil {
-		attached.Close()
-		waitForScriptOutput(outputComplete)
-		return ScriptContainerResult{}, err
-	}
-	if outputErr := finishScriptOutput(&attached.HijackedResponse, outputComplete); outputErr != nil {
-		return ScriptContainerResult{}, fmt.Errorf("读取脚本输出失败: %w", outputErr)
+		outputErr := finishScriptOutput(&attached.HijackedResponse, outputComplete)
+		return ScriptContainerResult{ExitCode: -1, ImageID: imageID}, errors.Join(err, outputErr)
 	}
 	result := ScriptContainerResult{ExitCode: waitResponse.StatusCode, ImageID: imageID}
+	var exitErr error
+	if waitResponse.StatusCode != 0 {
+		exitErr = &ScriptContainerExitError{ExitCode: waitResponse.StatusCode}
+	}
+	if outputErr := finishScriptOutput(&attached.HijackedResponse, outputComplete); outputErr != nil {
+		return result, errors.Join(exitErr, fmt.Errorf("读取脚本输出失败: %w", outputErr))
+	}
 	if waitResponse.Error != nil {
-		return result, errors.New("脚本执行容器异常退出")
+		return result, errors.Join(exitErr, fmt.Errorf("脚本执行容器异常退出: %s", waitResponse.Error.Message))
 	}
 	result.Reports, err = copyScriptReports(executionContext, apiClient, containerID, input.ReportPaths)
 	if err != nil {
-		return result, fmt.Errorf("收集检查报告失败: %w", err)
+		return result, errors.Join(exitErr, fmt.Errorf("收集检查报告失败: %w", err))
 	}
 	if waitResponse.StatusCode == 0 && len(input.CachePaths) > 0 {
 		result.CachePaths, err = copyScriptCache(executionContext, apiClient, containerID, input.CachePaths, input.CacheOutputDirectory)
@@ -284,7 +287,7 @@ func (s *Service) PrepareScriptRuntimeImage(ctx context.Context, image string) (
 	if !strings.EqualFold(ping.OSType, "linux") {
 		return status, ErrScriptRuntimeImage
 	}
-	imageID, err := ensureScriptRuntimeImage(ctx, apiClient, image, "")
+	imageID, err := ensureScriptRuntimeImage(ctx, apiClient, image, "", nil)
 	if err != nil {
 		return status, err
 	}
@@ -472,7 +475,7 @@ func secureScriptSourcePath(root, relative string) (string, error) {
 	return resolved, nil
 }
 
-func ensureScriptRuntimeImage(ctx context.Context, apiClient *client.Client, image, platform string) (string, error) {
+func ensureScriptRuntimeImage(ctx context.Context, apiClient *client.Client, image, platform string, output io.Writer) (string, error) {
 	inspect, err := apiClient.ImageInspect(ctx, image)
 	architecture := strings.TrimPrefix(platform, "linux/")
 	if err == nil && architecture != "" && !strings.EqualFold(inspect.Architecture, architecture) {
@@ -490,7 +493,7 @@ func ensureScriptRuntimeImage(ctx context.Context, apiClient *client.Client, ima
 		if pullErr != nil {
 			return "", fmt.Errorf("拉取脚本运行镜像失败: %w", pullErr)
 		}
-		if pullErr := pull.Wait(ctx); pullErr != nil {
+		if pullErr := waitImageTransfer(ctx, pull, output); pullErr != nil {
 			return "", fmt.Errorf("等待脚本运行镜像拉取完成失败: %w", pullErr)
 		}
 		inspect, err = apiClient.ImageInspect(ctx, image)
@@ -770,7 +773,7 @@ func finishScriptOutput(attached *client.HijackedResponse, complete <-chan error
 		return err
 	case <-timer.C:
 		attached.Close()
-		return waitForScriptOutput(complete)
+		return errors.Join(errors.New("等待脚本输出完整结束超时"), waitForScriptOutput(complete))
 	}
 }
 

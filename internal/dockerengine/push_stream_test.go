@@ -1,6 +1,7 @@
 package dockerengine
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -91,12 +92,16 @@ func TestBuildAndPushStreamOutlivesOrdinaryRequestTimeout(t *testing.T) {
 			server.Start()
 			t.Cleanup(server.Close)
 			service, source := pushStreamTestService(t, server.URL)
-			result, err := service.BuildAndPushArtifactWithOptions(t.Context(), source, "Dockerfile", pushStreamTestImage, test.auth, BuildOptions{CacheEnabled: true}, 3*time.Second, io.Discard)
+			var output bytes.Buffer
+			result, err := service.BuildAndPushArtifactWithOptions(t.Context(), source, "Dockerfile", pushStreamTestImage, test.auth, BuildOptions{CacheEnabled: true}, 3*time.Second, &output)
 			if err != nil {
 				t.Fatalf("推送响应体不应被普通请求总超时截断: %v", err)
 			}
 			if pushed.Load() != 1 || inspected.Load() != 1 || result.SizeBytes != 12345 || result.ImageRef != "registry.invalid/team/api@sha256:"+strings.Repeat("b", 64) {
 				t.Fatalf("推送完成后没有核验摘要和大小: pushed=%d inspected=%d result=%+v", pushed.Load(), inspected.Load(), result)
+			}
+			if !strings.Contains(output.String(), "Pushing") || !strings.Contains(output.String(), "Pushed") {
+				t.Fatalf("推送真实进度未进入执行输出: %q", output.String())
 			}
 			select {
 			case <-closed:

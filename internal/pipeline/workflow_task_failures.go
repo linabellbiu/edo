@@ -74,12 +74,15 @@ func (s *Service) readWorkflowSnapshotResource(ctx context.Context, query *gorm.
 	return err
 }
 
-// 运行快照按任务冻结异常；原始诊断仅进入服务日志，不阻断独立任务。
+// 安全提示与源头明确提供的脱敏诊断分别冻结，不阻断独立任务。
 func (s *Service) recordWorkflowTaskFailure(ctx context.Context, failures map[string]string, nodeID, operation, message string, err error) {
 	if s.logger != nil {
 		s.logger.Log(ctx, slog.LevelError, "冻结流水线任务失败", "operation", operation, "node_id", nodeID, "err", err)
 	}
 	if failures[nodeID] == "" {
 		failures[nodeID] = message
+		if diagnostics, ok := ctx.Value(workflowTaskDiagnosticsKey{}).(*workflowTaskDiagnostics); ok {
+			diagnostics.record(nodeID, operation, err)
+		}
 	}
 }

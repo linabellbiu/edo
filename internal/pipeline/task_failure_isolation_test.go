@@ -56,6 +56,24 @@ func assertTaskFailureCannotExecute(t *testing.T, s *Service, run *model.Pipelin
 		if err := scoped.db.Model(&model.Job{}).Where("idempotency_key = ?", "pipeline-node:"+probe.ID+":"+nodeID).Count(&count).Error; err != nil || count != 0 {
 			t.Fatalf("异常任务创建了 Job: count=%d err=%v", count, err)
 		}
+		if diagnostic, exists := snapshot.TaskDiagnostics[nodeID]; exists {
+			logs, _, err := scoped.ListNodeRunLogs(context.Background(), probe.ID, nodeID, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, entry := range logs {
+				if entry.Stage == "prepare" && entry.Level == "error" && strings.Contains(entry.Message, diagnostic.Detail) {
+					found = true
+				}
+				if entry.Level == "output" || entry.Level == "stderr" {
+					t.Fatal("没有 Job 的准备失败伪造了程序输出", entry)
+				}
+			}
+			if !found {
+				t.Fatalf("任务日志缺少冻结的准备诊断: %+v", logs)
+			}
+		}
 		return rollback
 	})
 	if !errors.Is(probeErr, rollback) {

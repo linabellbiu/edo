@@ -1,6 +1,7 @@
 package dockerengine
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -42,10 +43,14 @@ func TestConfiguredRegistryImagePullsOriginalTagEvenWhenCached(t *testing.T) {
 	defer server.Close()
 	endpoint := createMonitorEndpoint(t, db, "tag-pull", strings.Replace(server.URL, "http://", "tcp://", 1), "tag-host")
 	auth := RegistryAuth{ServerAddress: "https://registry.example.com", Username: "user", Credential: "private-password"}
+	var output bytes.Buffer
 	for range 2 {
-		if err := s.PrepareConfiguredRegistryImage(t.Context(), endpoint.ID, "tag-host", "registry.example.com/team/app:v4", auth); err != nil {
+		if err := s.PrepareConfiguredRegistryImage(t.Context(), endpoint.ID, "tag-host", "registry.example.com/team/app:v4", auth, &output); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if strings.Count(output.String(), "Downloaded") != 2 {
+		t.Fatalf("Compose 真实拉取输出丢失: %q", output.String())
 	}
 	if pulls.Load() != 2 || inspects.Load() != 2 {
 		t.Fatal("缓存 Tag 导致跳过实际拉取", pulls.Load(), inspects.Load())

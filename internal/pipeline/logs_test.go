@@ -3,6 +3,7 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -89,16 +90,23 @@ func TestPipelineRunLogsShareOneRunLevelBudget(t *testing.T) {
 	if err := db.Create(&application).Error; err != nil {
 		t.Fatal(err)
 	}
+	snapshot, err := json.Marshal(workflowSnapshot{SchemaVersion: model.WorkflowSchemaVersion,
+		Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger},
+		Stages: []model.WorkflowStage{{ID: "build", Tasks: []model.WorkflowNode{{ID: "budget-task", Type: model.WorkflowNodeBuild}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	run := model.PipelineRun{
 		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: "manual", Ref: "refs/heads/main",
 		CommitSHA: strings.Repeat("b", 40), Status: model.PipelineRunRunning, Stage: "build",
 		LogBytes:  uint64(maximumPipelineRunLogBytes - len(pipelineRunLogTruncatedMessage) - 5),
-		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now, WorkflowSnapshot: string(snapshot),
 	}
 	if err := db.Create(&run).Error; err != nil {
 		t.Fatal(err)
 	}
-	service.appendRunLog(context.Background(), run.ID, "build", "output", "0123456789")
+	service.appendRunLog(withPipelineNodeLog(context.Background(), "budget-task", ""), run.ID, "build", "output", "0123456789")
 	var stored model.PipelineRun
 	if err := db.Select("log_bytes", "log_truncated").First(&stored, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
@@ -112,6 +120,14 @@ func TestPipelineRunLogsShareOneRunLevelBudget(t *testing.T) {
 	}
 	if len(logs) != 2 || logs[0].Message != "01234" || logs[1].Message != pipelineRunLogTruncatedMessage {
 		t.Fatalf("配额边界的截断日志不正确: %+v", logs)
+	}
+	nodeLogs, _, err := service.ListNodeRunLogs(context.Background(), run.ID, "budget-task", 0, 20)
+	if err != nil || len(nodeLogs) != 2 || nodeLogs[1].Level != "warning" || nodeLogs[1].Message != pipelineRunLogTruncatedMessage {
+		t.Fatalf("任务日志缺少运行级配额截断提示: %+v %v", nodeLogs, err)
+	}
+	allLogs, _, err := service.ListRunLogs(context.Background(), run.ID, 0, 20)
+	if err != nil || len(allLogs) != 2 || allLogs[1].ID != nodeLogs[1].ID {
+		t.Fatalf("任务归属改变了全运行日志: %+v %v", allLogs, err)
 	}
 	service.appendRunLog(context.Background(), run.ID, "deploy", "output", "must-not-be-stored")
 	var count int64

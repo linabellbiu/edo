@@ -118,6 +118,13 @@ func TestWorkflowSnapshotPreservesClusterFailureReason(t *testing.T) {
 			}
 			run, err := s.newResolvedWorkflowRun(ctx, app, app.Workflow, app.Workflow.Source, "manual", "refs/heads/main", strings.Repeat("a", 40), "admin", "", time.Now())
 			snapshot := assertTaskFailureCannotExecute(t, s, run, err, "deploy")
+			diagnostic := snapshot.TaskDiagnostics["deploy"]
+			if diagnostic.Operation != "workflow_task_resources" || diagnostic.Detail == "" {
+				t.Fatalf("集群准备失败没有冻结真实诊断: %+v", diagnostic)
+			}
+			if test.status == 0 && (!strings.Contains(diagnostic.Detail, "/api/v1/nodes") || !strings.Contains(diagnostic.Detail, "connection refused")) {
+				t.Fatalf("底层节点 API 连接错误丢失: %+v", diagnostic)
+			}
 			if got := snapshot.TaskFailures["deploy"]; got != "部署节点架构："+test.want.Error() || strings.Contains(got, "private-upstream-detail") || strings.Contains(got, server.URL) {
 				t.Fatalf("集群失败原因丢失或泄漏内部信息: %q", got)
 			}
