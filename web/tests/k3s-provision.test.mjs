@@ -30,6 +30,7 @@ function harness({action='create',codes=permissions,api={},assumeDetected=true}=
   const auth=vue.reactive({user:{id:'operator',project_id:'project-a'},canAny(required){return Boolean(this.user)&&required.some(code=>codes.includes(code))}})
   const props=vue.reactive({open:false,action,cluster:action==='join'?'cluster-a':'',endpoint:action==='join'?'https://cluster.example:6443':'',hosts:[host('1'),host('2')]})
   const methods={
+    getLocalK3dRuntime:async signal=>{requests.push({method:'local-runtime',signal});return {bind_address:'0.0.0.0',api_host:'builder.fixture',architecture:'arm64'}},
     getK3sCatalog:async(cluster,signal)=>{requests.push({method:'catalog',cluster,signal});return cluster?{...catalog,default_version:targetVersion,target_version:targetVersion}:catalog},
     checkK3sPreflight:async(body,signal)=>{requests.push({method:'check',body,signal});return reportFor(body)},
     getLastFailedK3sInstallation:async(cluster,action,signal)=>{requests.push({method:'last-failure',cluster,action,signal});return undefined},
@@ -1267,4 +1268,41 @@ test('切换安装模式或加入角色后继续读取上一失败日志，丢�
       assert.equal(ctx.state.previousFailureLogs.value.text,'本范围的最新失败日志');assert.equal(ctx.state.installation.value,undefined)
     }finally{ctx.stop()}
   }
+})
+
+const localK3dHost=()=>({id:'local-fixture',name:'任意本地主机名称',address:'localhost',mode:'local',is_builtin:true,is_active:true,credential_configured:false,architecture:'amd64',capabilities:[{kind:'docker',status:'ready'}]})
+test('k3d 根据本地 Docker 能力选择主机，运行时检测提供地址与架构，计划可正常确认',async()=>{
+  const local=localK3dHost()
+  const h=harness({api:{previewK3sPlan:async body=>({...k3dPlan(body.k3d),endpoint:body.endpoint,hosts:[{id:local.id,name:local.name,address:local.address,role:'host'}],preflight:reportFor(body)})}})
+  try{
+    h.props.hosts.push(local);await h.open();h.ready()
+    assert.equal(h.state.hostChoices.value.some(host=>host.id===local.id),false)
+    h.state.form.mode='k3d';h.state.form.name='Local cluster';h.state.form.server_host_id=local.id;await settle()
+    assert.equal(h.state.hostOptions.value.find(option=>option.value===local.id).disabled,false)
+    assert.equal(h.state.k3dArchitecture.value,'arm64')
+    assert.equal(h.state.form.k3d.bind_address,'0.0.0.0')
+    assert.equal(h.state.k3dEndpoint.value,'https://builder.fixture:16443')
+    assert.equal(h.state.canCheck.value,true)
+    await h.state.checkPreflight();await h.state.preview();await settle()
+    assert.ok(h.state.plan.value);assert.equal(h.state.planModeValid.value,true)
+    assert.equal(h.state.canExecute.value,true);assert.equal(h.state.localRuntime.value.api_host,'builder.fixture')
+    h.state.plan.value=undefined;await settle();h.state.form.k3d_api_host='custom.fixture';h.state.form.k3d.api_port=18443;await settle()
+    assert.equal(h.state.input().endpoint,'https://custom.fixture:18443')
+  }finally{h.stop()}
+})
+test('本地 Docker 未就绪明确禁用，运行时读取失败阻止检测，迟到响应不覆盖远程配置',async()=>{
+ const local=localK3dHost(),pending=deferred()
+ const h=harness({api:{getLocalK3dRuntime:()=>pending.promise}})
+ try{
+  h.props.hosts.push(local);await h.open();h.ready();h.state.form.mode='k3d';h.state.form.server_host_id=local.id;await settle()
+  assert.equal(h.state.canCheck.value,false)
+  h.state.form.server_host_id='2';await settle()
+  pending.resolve({bind_address:'0.0.0.0',api_host:'late.fixture',architecture:'arm64'});await settle()
+  assert.equal(h.state.form.k3d.bind_address,'192.0.2.2');assert.equal(h.state.form.k3d_api_host,'')
+  local.capabilities=[];h.state.hosts.value=h.state.hosts.value.map(host=>host.id===local.id?local:host)
+  assert.match(h.state.hostOptions.value.find(option=>option.value===local.id).label,/Docker 能力未就绪/)
+  assert.equal(h.state.hostOptions.value.find(option=>option.value===local.id).disabled,true)
+ }finally{h.stop()}
+ const bad=harness({api:{getLocalK3dRuntime:async()=>{throw new Error('Docker 未运行')}}})
+ try{bad.props.hosts.push(localK3dHost());await bad.open();bad.ready();bad.state.form.mode='k3d';bad.state.form.server_host_id=local.id;await settle();assert.equal(bad.state.canCheck.value,false);assert.match(bad.state.localRuntimeError.value,/Docker 未运行/)}finally{bad.stop()}
 })

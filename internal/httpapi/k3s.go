@@ -27,12 +27,27 @@ func registerK3sRoutes(protected *gin.RouterGroup, deps Dependencies) {
 	canViewTask := requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterCreate, "kubernetes.node.create", access.PermissionK3sUninstall)
 	protected.GET("/kubernetes/k3s/options", canInstall, h.options)
 	protected.GET("/kubernetes/k3s/k3d/images", canInstall, h.k3dImages)
+	protected.GET("/kubernetes/k3s/k3d/local-runtime", canInstall, h.localK3dInfo)
 	protected.POST("/kubernetes/k3s/preflight", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.preflight", "host"), h.check)
 	protected.POST("/kubernetes/k3s/plans", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.plan", "k3s_installation"), h.preview)
 	protected.POST("/kubernetes/k3s/installations", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.install", "k3s_installation"), h.execute)
 	protected.GET("/kubernetes/k3s/installations", canViewTask, h.list)
 	protected.GET("/kubernetes/k3s/installations/:id", canViewTask, h.detail)
 	registerK3sUninstallRoutes(protected, deps)
+}
+
+func (h k3sHandler) localK3dInfo(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !h.authorize(c, "create") || !h.available(c) {
+		return
+	}
+	actor, _ := currentUser(c)
+	result, err := h.service.LocalK3dInfo(c.Request.Context(), actor.ID)
+	if err != nil {
+		h.writeError(c, "k3d_local_runtime", err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (h k3sHandler) k3dImages(c *gin.Context) {

@@ -67,6 +67,7 @@ func ValidationMessage(err error) string {
 }
 
 type Input struct {
+	localK3d            *localK3dSnapshot
 	targetVersion       string
 	targetCAData        []byte
 	serverJoin          *kube.ServerJoinInfo

@@ -28,12 +28,13 @@ export function k3sOptionDefaultText(option: K3sOption) {
   return String(option.default)
 }
 
-export function availableK3sHosts(hosts: InfrastructureHost[]) {
-  return hosts.filter(host => host.mode === 'ssh' && host.is_active && !host.is_builtin)
+export function availableK3sHosts(hosts: InfrastructureHost[],allowLocal=false) {
+  return hosts.filter(host => host.is_active&&(host.mode==='ssh'&&!host.is_builtin||allowLocal&&host.mode==='local'&&host.is_builtin))
 }
 
-export function k3sHostDisabledReason(host: InfrastructureHost) {
-  if (host.credential_configured === false) return '未配置 SSH 凭据'
+export function k3sHostDisabledReason(host: InfrastructureHost,allowLocal=false) {
+  if(allowLocal&&host.mode==='local'){if(!host.capabilities.some(capability=>capability.kind==='docker'&&capability.status==='ready'))return 'Docker 能力未就绪'}
+  else if (host.credential_configured === false) return '未配置 SSH 凭据'
   if (host.capabilities.some(capability => capability.kind === 'kubernetes' && capability.runtime_id)) return '已关联 Kubernetes 集群'
   return ''
 }

@@ -68,3 +68,11 @@ test('k3d 默认绑定地址仅来自有效的 host.address，不推断 DNS 或�
   }
   assert.equal(defaultK3dBindAddress({ address: 'nas.example.com', mapped_address: '192.168.1.10', api_server: 'https://192.168.1.10:6443' }), '')
 })
+
+test('本地模式依据运行环境允许通配或回环绑定，API 地址必须使用可连接目标',()=>{
+ const {validK3dBindAddress,validK3dAPIHost}=loadFrontend('../src/utils/k3dProvision.ts')
+ assert.equal(validK3dBindAddress('0.0.0.0',true),true);assert.equal(validK3dBindAddress('127.0.0.1',true),true)
+ assert.equal(validK3dBindAddress('0.0.0.0'),false)
+ for(const host of ['docker-runtime.example','127.0.0.1','host.docker.internal'])assert.equal(validK3dAPIHost(host),true)
+ for(const host of ['0.0.0.0','https://host','host:16443','user@host','host/path','host?x=y',''])assert.equal(validK3dAPIHost(host),false)
+})

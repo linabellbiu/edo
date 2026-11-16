@@ -121,7 +121,7 @@ func (s *Service) recheckReportScope(ctx context.Context, review model.K3sInstal
 }
 
 func reviewSnapshot(input Input, digests map[string]string, actor *model.User, cluster *model.KubernetesCluster) savedInput {
-	snapshot := savedInput{Input: input, Sources: input.sources, HostDigests: digests, AuthVersion: actor.AuthVersion, TargetVersion: input.targetVersion, PreflightVersion: preflightVersion}
+	snapshot := savedInput{LocalK3d: input.localK3d, Input: input, Sources: input.sources, HostDigests: digests, AuthVersion: actor.AuthVersion, TargetVersion: input.targetVersion, PreflightVersion: preflightVersion}
 	if input.Mode == "k3d" {
 		snapshot.K3dVersion, snapshot.K3dK3sVersion = k3dVersion, k3dImageVersion(input.K3d)
 	}

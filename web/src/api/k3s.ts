@@ -30,6 +30,10 @@ export interface K3dConfig {
 export async function getK3dImages(source: Exclude<K3dImageSource,'custom'>, signal?: AbortSignal) {
   return (await client.get<K3dImageCatalog>('/kubernetes/k3s/k3d/images',{params:{source},signal,timeout:50_000})).data
 }
+export interface LocalK3dRuntime { bind_address:string;api_host:string;architecture:string }
+export async function getLocalK3dRuntime(signal?:AbortSignal) {
+  return (await client.get<LocalK3dRuntime>('/kubernetes/k3s/k3d/local-runtime',{signal,timeout:15_000})).data
+}
 export interface K3sOption {
   name: string
   label: string

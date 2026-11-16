@@ -82,13 +82,13 @@ func k3dMemoryArgument(mib int64) string {
 
 func (s *Service) normalizeK3d(ctx context.Context, input Input) (Input, []Host, map[string]string, *model.KubernetesCluster, []string, error) {
 	if input.Action != "create" || (input.Profile != "default" && input.Profile != "custom") || input.ServerHostID == "" || input.ClusterID != "" || len(input.AgentHostIDs) != 0 || len(input.JoinHostIDs) != 0 || input.JoinRole != "" || input.ServerToken != "" || len(input.ServerOptions) != 0 || len(input.AgentOptions) != 0 || len(input.Installer) != 0 || strings.TrimSpace(input.Overrides) != "" || input.DownloadSource != "" || input.SystemImageRegistry != nil {
-		return input, nil, nil, nil, nil, &ValidationError{Message: "k3d 只支持在一台 SSH 主机创建集群，不接受原生安装参数或加入节点配置"}
+		return input, nil, nil, nil, nil, &ValidationError{Message: "k3d 只支持在一台本地或 SSH 主机创建集群，不接受原生安装参数或加入节点配置"}
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	if !validName.MatchString(input.Name) {
 		return input, nil, nil, nil, nil, ErrInvalidInput
 	}
-	host, _, err := s.loadHost(ctx, input.ServerHostID)
+	host, _, err := s.loadInstallationHost(ctx, "k3d", input.ServerHostID)
 	if err != nil {
 		return input, nil, nil, nil, nil, err
 	}
@@ -96,7 +96,27 @@ func (s *Service) normalizeK3d(ctx context.Context, input Input) (Input, []Host,
 		return input, nil, nil, nil, nil, err
 	}
 	options := K3dOptions{APIPort: 16443, BindAddress: host.Address}
-	if input.K3d != nil {
+	if host.Mode == model.HostModeLocal {
+		local, err := s.localK3d.describe(ctx)
+		if err != nil {
+			return input, nil, nil, nil, nil, err
+		}
+		input.localK3d = &localK3dSnapshot{Revision: local.revision, DaemonID: local.daemonID}
+		options.BindAddress = local.BindAddress
+		if input.K3d != nil {
+			options = *input.K3d
+			if options.BindAddress == "" {
+				options.BindAddress = local.BindAddress
+			}
+			if options.APIPort == 0 {
+				options.APIPort = 16443
+			}
+		}
+		if input.Endpoint == "" {
+			input.Endpoint = "https://" + net.JoinHostPort(local.APIHost, strconv.Itoa(options.APIPort))
+		}
+	}
+	if input.K3d != nil && host.Mode != model.HostModeLocal {
 		options = *input.K3d
 		if options.APIPort == 0 {
 			options.APIPort = 16443
@@ -119,11 +139,11 @@ func (s *Service) normalizeK3d(ctx context.Context, input Input) (Input, []Host,
 	}
 	address, err := netip.ParseAddr(strings.TrimSpace(options.BindAddress))
 	address = address.Unmap()
-	if err != nil || !address.Is4() || !address.IsGlobalUnicast() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.Zone() != "" || agents < 0 || agents > 8 || options.APIPort < 1024 || options.APIPort > 65535 {
+	if err != nil || !address.Is4() || (!address.IsGlobalUnicast() && !(host.Mode == model.HostModeLocal && (address.IsLoopback() || address.IsUnspecified()))) || (address.IsLoopback() && host.Mode != model.HostModeLocal) || address.IsLinkLocalUnicast() || address.Zone() != "" || agents < 0 || agents > 8 || options.APIPort < 1024 || options.APIPort > 65535 {
 		return input, nil, nil, nil, nil, &ValidationError{Message: "k3d 需要主机实际的非回环单播 IPv4、1024 至 65535 的 API 端口，以及 0 至 8 个 Worker"}
 	}
 	first := address.As4()[0]
-	if first == 0 || first >= 224 {
+	if first == 0 && !(host.Mode == model.HostModeLocal && address.IsUnspecified()) || first >= 224 {
 		return input, nil, nil, nil, nil, &ValidationError{Message: "k3d API 绑定地址不能使用保留或组播 IPv4"}
 	}
 	options.BindAddress = address.Unmap().String()
@@ -136,8 +156,11 @@ func (s *Service) normalizeK3d(ctx context.Context, input Input) (Input, []Host,
 	if err != nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" || endpoint.Port() != strconv.Itoa(options.APIPort) || strings.ContainsAny(input.Endpoint, "\r\n\x00") {
 		return input, nil, nil, nil, nil, &ValidationError{Message: "k3d API 地址必须是 HTTPS 地址，端口须与绑定端口一致"}
 	}
-	if advertised, err := netip.ParseAddr(endpoint.Hostname()); err == nil && advertised.Unmap() != address.Unmap() {
+	if advertised, err := netip.ParseAddr(endpoint.Hostname()); err == nil && advertised.Unmap() != address.Unmap() && host.Mode != model.HostModeLocal {
 		return input, nil, nil, nil, nil, &ValidationError{Message: "k3d API 地址的 IP 必须与所选绑定地址一致"}
+	}
+	if host.Mode == model.HostModeLocal && (endpoint.Hostname() == "0.0.0.0" || endpoint.Hostname() == "::") {
+		return input, nil, nil, nil, nil, &ValidationError{Message: "本地 k3d API 地址必须填写 EDO 可以访问的主机名或 IP"}
 	}
 	var existing int64
 	if err := s.db.WithContext(ctx).Model(&model.KubernetesCluster{}).Where("name = ?", input.Name).Count(&existing).Error; err != nil {
@@ -169,6 +192,9 @@ func k3dImageVolumeName(id string) string {
 }
 
 func (s *Service) runK3dPreflight(ctx context.Context, input Input, hosts []Host) (*PreflightReport, error) {
+	if input.ServerHostID == model.BuiltinLocalHostID {
+		return s.localK3d.preflight(ctx, input, hosts)
+	}
 	if len(hosts) != 1 || input.K3d == nil {
 		return nil, ErrInvalidInput
 	}
@@ -210,6 +236,9 @@ func (s *Service) runK3dPreflight(ctx context.Context, input Input, hosts []Host
 }
 
 func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation, snapshot savedInput) error {
+	if snapshot.Input.ServerHostID == model.BuiltinLocalHostID {
+		return s.performLocalK3d(ctx, record, snapshot)
+	}
 	resourceName := k3dResourceName(record.ID)
 	if resourceName == "" {
 		slog.ErrorContext(ctx, "k3d 安装任务标识无效", "operation", "k3d_resource_name", "err", ErrInvalidInput)
@@ -328,6 +357,12 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 }
 
 func (s *Service) waitForK3dConnection(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, host model.Host, bundle sshclient.Bundle) (string, error) {
+	return s.waitForK3dConnectionRead(ctx, record, snapshot, func(ctx context.Context) (string, error) {
+		return s.transport.Read(ctx, host, bundle, k3dReadConfigScript(record.ID))
+	})
+}
+
+func (s *Service) waitForK3dConnectionRead(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, read func(context.Context) (string, error)) (string, error) {
 	if err := k3dWaitContextError(ctx); err != nil {
 		return "", err
 	}
@@ -353,7 +388,7 @@ func (s *Service) waitForK3dConnection(ctx context.Context, record *model.K3sIns
 			}
 			return "", err
 		}
-		raw, readErr := s.transport.Read(ctx, host, bundle, k3dReadConfigScript(record.ID))
+		raw, readErr := read(ctx)
 		if err := k3dWaitContextError(ctx); err != nil {
 			return "", err
 		}

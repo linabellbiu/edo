@@ -27,6 +27,7 @@ import (
 	"edo/internal/access"
 	"edo/internal/config"
 	"edo/internal/database"
+	"edo/internal/dockerengine"
 	"edo/internal/hostcredential"
 	"edo/internal/kube"
 	"edo/internal/model"
@@ -41,6 +42,7 @@ const executionTimeout = 45 * time.Minute
 var validName = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{1,127}$`)
 
 type savedInput struct {
+	LocalK3d               *localK3dSnapshot       `json:"local_k3d,omitempty"`
 	Uninstall              *savedUninstall         `json:"uninstall,omitempty"`
 	Input                  Input                   `json:"input"`
 	HostDigests            map[string]string       `json:"host_digests"`
@@ -71,6 +73,7 @@ type clusterService interface {
 }
 
 type Service struct {
+	localK3d        *localK3dRuntime
 	k3dImages       k3dImageCatalogCache
 	db              *gorm.DB
 	secrets         *secret.Manager
@@ -82,7 +85,7 @@ type Service struct {
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, kubernetes *kube.Service, authorizer Authorizer, cfg config.Runtime) *Service {
-	return &Service{db: db, secrets: secrets, kubernetes: kubernetes, authorizer: authorizer, transport: &sshTransport{timeout: cfg.ConnectTimeout}, owner: uuid.NewString()}
+	return &Service{localK3d: newLocalK3dRuntime(dockerengine.NewService(db, secrets, cfg)), db: db, secrets: secrets, kubernetes: kubernetes, authorizer: authorizer, transport: &sshTransport{timeout: cfg.ConnectTimeout}, owner: uuid.NewString()}
 }
 
 func (s *Service) WithTransport(transport Transport) *Service {
@@ -609,12 +612,17 @@ func (s *Service) recheckInstallationAuthority(ctx context.Context, actorID, act
 				return err
 			}
 		}
-		host, _, err := s.loadHost(ctx, id)
+		host, _, err := s.loadInstallationHost(ctx, snapshot.Input.Mode, id)
 		if err != nil {
 			return err
 		}
 		if hostDigest(host) != digest {
 			return ErrHostChanged
+		}
+	}
+	if snapshot.LocalK3d != nil {
+		if err := s.localK3d.checkRevision(ctx, snapshot.LocalK3d); err != nil {
+			return err
 		}
 	}
 	if action == "uninstall" {
@@ -734,6 +742,13 @@ func (s *Service) Execute(ctx context.Context, actorID, planID string) (*Install
 		}
 		validation := *s
 		validation.db = tx
+		if s.localK3d != nil {
+			if docker, ok := s.localK3d.docker.(*dockerengine.Service); ok {
+				runtime := *s.localK3d
+				runtime.docker = docker.WithTransaction(tx)
+				validation.localK3d = &runtime
+			}
+		}
 		if err := validation.recheck(ctx, record, snapshot); err != nil {
 			return err
 		}

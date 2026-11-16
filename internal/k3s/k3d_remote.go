@@ -2,9 +2,8 @@ package k3s
 
 import (
 	"fmt"
-	"net"
-	"net/url"
 	"strconv"
+	"strings"
 
 	"edo/internal/hostidentity"
 )
@@ -143,21 +142,24 @@ printf 'EDO_K3S_IDENTITY_BEGIN\n'
 }
 
 func k3dCreateCommand(input Input, installationID string) string {
-	options := input.K3d
-	name := k3dResourceName(installationID)
-	if options == nil || name == "" || validateK3dResources(options) != nil {
+	args := k3dCreateArguments(input, installationID)
+	if len(args) == 0 {
 		return ""
 	}
-	server, worker := k3dResources(options)
-	endpoint, _ := url.Parse(input.Endpoint)
-	return "edo_cli cluster create " + shellQuote(name) + " --servers 1 --agents " + strconv.Itoa(k3dAgents(options)) +
-		" --api-port " + shellQuote(net.JoinHostPort(options.BindAddress, strconv.Itoa(options.APIPort))) +
-		" --image " + shellQuote(k3dImage(options)) +
-		" --servers-memory " + k3dMemoryArgument(server.MemoryMiB) + " --agents-memory " + k3dMemoryArgument(worker.MemoryMiB) +
-		" --verbose --no-lb --no-rollback --wait=false --timeout 5m --kubeconfig-update-default=false --kubeconfig-switch-context=false" +
-		" --runtime-label " + shellQuote("edo.dev/installation="+installationID+"@all") +
-		" --k3s-node-label " + shellQuote("edo.dev/installation="+installationID+"@all") +
-		" --k3s-arg " + shellQuote("--tls-san="+endpoint.Hostname()+"@server:0")
+	parts := make([]string, len(args))
+	for i, arg := range args {
+		previous := ""
+		if i > 0 {
+			previous = args[i-1]
+		}
+		switch previous {
+		case "create", "--api-port", "--image", "--runtime-label", "--k3s-node-label", "--k3s-arg":
+			parts[i] = shellQuote(arg)
+		default:
+			parts[i] = arg
+		}
+	}
+	return "edo_cli " + strings.Join(parts, " ")
 }
 
 func k3dPrepareToolScript(input Input, installationID string) (string, error) {

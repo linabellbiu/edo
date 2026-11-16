@@ -28,7 +28,7 @@ export function validK3dImageSelection(config:K3dConfig): boolean {
 }
 
 export function k3dImagesForArchitecture(catalog:K3dImageCatalog|undefined,architecture:string) {
-  return catalog?.versions.filter(item=>!architecture||item.platforms.includes(`linux/${architecture}`))??[]
+  return catalog?.versions.filter(item=>!architecture||item.platforms.some(platform=>platform===`linux/${architecture}`||platform.startsWith(`linux/${architecture}/`)))??[]
 }
 
 export function k3dImageSourceLabel(source?:K3dImageSource) {
@@ -45,7 +45,7 @@ export function sameK3dResources(left?: K3dNodeResources, right?: K3dNodeResourc
   return !!left && !!right && !k3dResourceError(left) && left.cpu_millis === right.cpu_millis && left.memory_mib === right.memory_mib
 }
 
-export function validK3dBindAddress(value: unknown): boolean {
+export function validK3dBindAddress(value: unknown,local=false): boolean {
   // k3d 5.9.0 的 --api-port 解析器不支持 IPv6；此限制不影响原生 K3s。
   if (typeof value !== 'string' || !value || value.length > 15) return false
   const octets = value.split('.')
@@ -56,6 +56,7 @@ export function validK3dBindAddress(value: unknown): boolean {
   } catch {
     return false
   }
+  if(local&&(value==='0.0.0.0'||value==='127.0.0.1'))return true
   const first = Number(octets[0])
   return first !== 0 && first !== 127 && first < 224 && !(first === 169 && Number(octets[1]) === 254)
 }
@@ -64,4 +65,9 @@ export function defaultK3dBindAddress(host?: { address: string }): string {
   const address = host?.address
   // 这里只提供输入初值，不证明该地址属于目标网卡；实际绑定仍由后端核对。
   return typeof address === 'string' && validK3dBindAddress(address) ? address : ''
+}
+
+export function validK3dAPIHost(value:string):boolean {
+  if(!value||value.length>253||/[\s/:@?#\\]/.test(value)||value==='0.0.0.0')return false
+  try{return new URL(`https://${value}`).hostname===value}catch{return false}
 }

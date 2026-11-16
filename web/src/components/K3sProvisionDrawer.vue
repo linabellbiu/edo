@@ -6,7 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { listHosts, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import {
-  getK3sCatalog, getK3sInstallation, getLastFailedK3sInstallation, checkK3sPreflight, previewK3sPlan, startK3sInstallation,
+  getLocalK3dRuntime, type LocalK3dRuntime, getK3sCatalog, getK3sInstallation, getLastFailedK3sInstallation, checkK3sPreflight, previewK3sPlan, startK3sInstallation,
   type K3sCatalog, type K3sInstallation, type K3sPlan, type K3sPlanHost, type K3sPlanInput, type K3sPreflightReport, type K3sPreflightCheck, type K3sJoinRole, type K3sInstallMode, type K3dConfig, type K3dImageSource, type K3sDownloadSource,
 } from '@/api/k3s'
 import K3sOptionFields from '@/components/K3sOptionFields.vue'
@@ -18,7 +18,7 @@ import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import { hasCustomK3sDatastore } from '@/utils/k3sDatastore'
 import { useAuthStore } from '@/stores/auth'
 import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sInstallationLabel, k3sInstallationLogView, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, k3sPlanHostRoleLabels, k3sServerAgentEnabled, validateK3sOverrides } from '@/utils/k3sProvision'
-import { defaultK3dConfig, defaultK3dBindAddress, k3dResourceError, sameK3dResources, validK3dBindAddress, validK3dImageSelection, k3dImageSourceLabel } from '@/utils/k3dProvision'
+import { defaultK3dConfig, defaultK3dBindAddress, k3dResourceError, sameK3dResources, validK3dBindAddress, validK3dAPIHost, validK3dImageSelection, k3dImageSourceLabel } from '@/utils/k3dProvision'
 
 const props = withDefaults(defineProps<{open:boolean;action?:'create'|'join';cluster?:string;endpoint?:string;hosts?:InfrastructureHost[]}>(), {
   action:'create',cluster:'',endpoint:'',
@@ -43,7 +43,7 @@ const checking=ref(false),checkedInput=ref(''),checkedContext=ref('')
 const k3dImageReady=ref(false)
 const preflightView=ref<{focus:()=>void}>(),errorRegion=ref<HTMLElement>()
 const emptyForm = () => ({
-  mode:'native' as K3sInstallMode,k3d:defaultK3dConfig(),
+  mode:'native' as K3sInstallMode,k3d:defaultK3dConfig(),k3d_api_host:'',
   k3d_image_drafts:{} as Partial<Record<K3dImageSource,string>>,
   datastore:'sqlite' as 'sqlite'|'etcd',
   download_source:'official_cn' as K3sDownloadSource,system_image_source:'community_cn' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
@@ -58,12 +58,16 @@ let pollTimer:ReturnType<typeof setTimeout>|undefined,clock:ReturnType<typeof se
 let pollFailures=0
 const selectedProject = ref(readSelectedProject())
 const context = computed(() => JSON.stringify([auth.user?.id??'',auth.user?.project_id??'',selectedProject.value,props.action,props.cluster]))
-const hostChoices = computed(() => availableK3sHosts(hosts.value))
+const hostChoices = computed(() => availableK3sHosts(hosts.value,isK3d.value))
 const hostOptions = computed(() => hostChoices.value.map(host=>({
-  value:host.id,label:`${host.name} · ${host.address}${k3sHostDisabledReason(host)?`（${k3sHostDisabledReason(host)}）`:''}`,
-  disabled:Boolean(k3sHostDisabledReason(host)),
+  value:host.id,label:`${host.name} · ${host.address}${k3sHostDisabledReason(host,isK3d.value)?`（${k3sHostDisabledReason(host,isK3d.value)}）`:''}`,
+  disabled:Boolean(k3sHostDisabledReason(host,isK3d.value)),
 })))
 const isK3d = computed(() => props.action==='create'&&form.mode==='k3d')
+const isLocalK3d=computed(()=>isK3d.value&&hosts.value.some(host=>host.id===form.server_host_id&&host.mode==='local'&&host.is_builtin))
+const localRuntime=ref<LocalK3dRuntime>(),localRuntimeLoading=ref(false),localRuntimeError=ref('')
+let localRuntimeRequest:AbortController|undefined
+const k3dArchitecture=computed(()=>isLocalK3d.value?localRuntime.value?.architecture??'':hosts.value.find(host=>host.id===form.server_host_id)?.architecture??'')
 const serverRunsAgent = computed(() => props.action==='create'&&!isK3d.value&&k3sServerAgentEnabled(form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:''))
 const agentOptions = computed(() => hostOptions.value.filter(option=>serverRunsAgent.value||option.value!==form.server_host_id))
 // 回填只补空值，保留用户后来分别选择的控制平面和 Worker。
@@ -112,7 +116,7 @@ const sourceFacts = computed(() => {
 })
 const summarySourceFacts = computed(()=>sourceFacts.value.filter(fact=>fact.key==='system_image_registry'))
 const downloadSourceFacts = computed(()=>sourceFacts.value.filter(fact=>fact.key!=='system_image_registry'))
-const k3dEndpoint = computed(() => {const address=form.k3d.bind_address.trim();return validK3dBindAddress(address)?`https://${address}:${form.k3d.api_port}`:''})
+const k3dEndpoint = computed(() => {const address=isLocalK3d.value?form.k3d_api_host.trim():form.k3d.bind_address.trim();return (isLocalK3d.value?validK3dAPIHost(address):validK3dBindAddress(address))?`https://${address}:${form.k3d.api_port}`:''})
 const joinMaster = computed(() => props.action==='join'&&form.join_role==='server')
 const joinHostSelection = computed({
   get:()=>joinMaster.value?form.join_host_ids[0]:form.join_host_ids,
@@ -178,7 +182,7 @@ function nativeSourcesMatch(value:K3sPlan,payload:K3sPlanInput) {
   const sources=value.sources
   return !!sources&&sources.download_source===payload.download_source&&Boolean(sources.installer_url&&sources.artifact_url)&&(payload.action!=='create'||sources.system_image_registry===(payload.system_image_registry??''))
 }
-function validK3dConfig(value?:K3dConfig) {return !!value&&Number.isInteger(value.agents)&&value.agents>=0&&value.agents<=8&&Number.isInteger(value.api_port)&&value.api_port>=1024&&value.api_port<=65535&&validK3dBindAddress(value.bind_address)&&validK3dImageSelection(value)&&!k3dResourceError(value.server_resources)&&!k3dResourceError(value.worker_resources)}
+function validK3dConfig(value?:K3dConfig) {return !!value&&Number.isInteger(value.agents)&&value.agents>=0&&value.agents<=8&&Number.isInteger(value.api_port)&&value.api_port>=1024&&value.api_port<=65535&&validK3dBindAddress(value.bind_address,isLocalK3d.value)&&(!isLocalK3d.value||Boolean(localRuntime.value&&!localRuntimeLoading.value&&!localRuntimeError.value&&validK3dAPIHost(form.k3d_api_host.trim())))&&validK3dImageSelection(value)&&!k3dResourceError(value.server_resources)&&!k3dResourceError(value.worker_resources)}
 function k3dPlanMatches(value:K3sPlan) {const config=value.k3d;return validK3dConfig(config)&&value.hosts?.length===1&&value.hosts[0]?.role==='host'&&value.hosts[0]?.id===form.server_host_id&&config?.agents===form.k3d.agents&&config?.api_port===form.k3d.api_port&&config?.bind_address===form.k3d.bind_address.trim()&&config?.image_source===form.k3d.image_source&&config?.image===form.k3d.image&&sameK3dResources(config?.server_resources,form.k3d.server_resources)&&sameK3dResources(config?.worker_resources,form.k3d.worker_resources)&&value.endpoint===k3dEndpoint.value}
 function readPreflight(value:unknown):K3sPreflightReport|undefined {
   if(!value||typeof value!=='object')return
@@ -223,7 +227,7 @@ function stopPoll() {
   if(pollTimer)clearTimeout(pollTimer)
   pollTimer=undefined;pollRequest?.abort();pollRequest=undefined
 }
-function cancelRequests() {revision++;request?.abort();request=undefined;failureRequest?.abort();failureRequest=undefined;stopPoll()}
+function cancelRequests() {localRuntimeRequest?.abort();localRuntimeRequest=undefined;revision++;request?.abort();request=undefined;failureRequest?.abort();failureRequest=undefined;stopPoll()}
 function resetForm() {
   previousFailure.value=undefined;failureError.value='';failureLoading.value=false
   restoringMode=true;modeDrafts={};Object.assign(form,{...emptyForm(),endpoint:props.action==='join'?props.endpoint:''});restoringMode=false
@@ -362,8 +366,26 @@ watch(()=>form.download_source,source=>{
   if(source==='official'&&form.system_image_source==='community_cn')form.system_image_source='official'
 },{flush:'sync'})
 watch(()=>form.server_host_id,(id,previous)=>{
-  if(isK3d.value&&(!form.k3d.bind_address||form.k3d.bind_address===defaultK3dBindAddress(hosts.value.find(host=>host.id===previous))))form.k3d.bind_address=defaultK3dBindAddress(hosts.value.find(host=>host.id===id))
+  if(isK3d.value&&(!form.k3d.bind_address||hosts.value.find(host=>host.id===previous)?.mode==='local'||form.k3d.bind_address===defaultK3dBindAddress(hosts.value.find(host=>host.id===previous))))form.k3d.bind_address=defaultK3dBindAddress(hosts.value.find(host=>host.id===id))
 })
+async function loadLocalRuntime() {
+  localRuntimeRequest?.abort();const controller=new AbortController();localRuntimeRequest=controller
+  localRuntimeLoading.value=false
+  if(installation.value||plan.value)return
+  localRuntime.value=undefined;localRuntimeError.value=''
+  if(!props.open||!isLocalK3d.value||!canExecute.value)return
+  const currentContext=context.value;localRuntimeLoading.value=true
+  try {
+    const result=await getLocalK3dRuntime(controller.signal)
+    if(!mounted||controller.signal.aborted||!props.open||!isLocalK3d.value||!matchesContext(currentContext))return
+    if(!result||typeof result.architecture!=='string'||!/^[-a-z0-9]+$/.test(result.architecture)||!validK3dBindAddress(result.bind_address,true)||result.api_host!==''&&!validK3dAPIHost(result.api_host))throw new Error('本地 Docker 返回的连接信息不完整')
+    localRuntime.value=result
+    if(!form.k3d.bind_address)form.k3d.bind_address=result.bind_address
+    if(!form.k3d_api_host)form.k3d_api_host=result.api_host
+  } catch(err) {if(mounted&&!controller.signal.aborted&&props.open&&isLocalK3d.value&&matchesContext(currentContext))localRuntimeError.value=apiErrorMessage(err)}
+  finally {if(localRuntimeRequest===controller)localRuntimeLoading.value=false}
+}
+watch([()=>props.open,isLocalK3d,context,canExecute,()=>Boolean(plan.value||installation.value)],()=>void loadLocalRuntime())
 watch(()=>form.join_role,()=>{
   if(props.action!=='join'||installation.value)return
   cancelRequests();busy.value=false;loading.value=false
@@ -405,9 +427,11 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
             <a-form-item v-if="!isK3d" :label="action==='create'?'API 地址（可选）':'API 地址'" :required="action==='join'" :class="{'wide':action==='join'}"><a-input v-model:value="form.endpoint" :placeholder="endpointPlaceholder" /><div class="field-help">{{ action==='create'?'留空使用控制平面主机地址和最终监听端口；可填写负载均衡或其他访问地址。':'EDO 和新节点都需要能访问此地址。' }}</div></a-form-item>
             <a-form-item v-if="action==='create'" :label="isK3d?t('k8s.k3dHost'):'控制平面主机'" required><a-select v-model:value="serverHostSelection" :aria-label="isK3d?t('k8s.k3dHost'):'控制平面主机'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="isK3d?t('k8s.k3dHostPlaceholder'):'选择安装 K3s Server 的主机'" /></a-form-item>
             <a-form-item v-if="action==='create'&&!isK3d" :label="t('k8s.workerHosts')"><a-select v-model:value="workerHostSelection" :aria-label="t('k8s.workerHosts')" mode="multiple" show-search option-filter-prop="label" :options="agentOptions" :placeholder="t('k8s.workerHostsPlaceholder')" /></a-form-item><a-form-item v-else-if="action==='join'" :label="joinMaster?'控制平面主机（Master）':'工作节点主机（Worker）'" required><a-select v-model:value="joinHostSelection" :mode="joinMaster?undefined:'multiple'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="joinMaster?'选择加入控制平面的新主机':'选择加入工作节点的新主机'" /><div class="field-help">{{ joinMaster?'Master 每个计划仅加入 1 台，须等待当前节点就绪后逐台添加。':'Worker 每次最多选择 20 台新主机。' }}</div></a-form-item><a-form-item v-if="joinMaster" label="目标集群 Server Token" required class="wide"><a-input-password v-model:value="form.server_token" aria-label="目标集群 Server Token" :visibility-toggle="false" :maxlength="4096" autocomplete="off" placeholder="输入目标集群的 Server Token" /><div class="field-help">仅用于本次控制平面加入。切换角色或关闭窗口后清除，不用于工作节点加入。</div></a-form-item>
-            <template v-if="isK3d"><a-form-item :label="t('k8s.k3dAgents')" required><a-input-number v-model:value="form.k3d.agents" :aria-label="t('k8s.k3dAgents')" :min="0" :max="8" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dApiPort')" required><a-input-number v-model:value="form.k3d.api_port" :aria-label="t('k8s.k3dApiPort')" :min="1024" :max="65535" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dBindAddress')" required class="wide"><a-input v-model:value="form.k3d.bind_address" :aria-label="t('k8s.k3dBindAddress')" :placeholder="t('k8s.k3dBindPlaceholder')" /><div class="field-help">{{ t('k8s.k3dBindHint') }}</div></a-form-item><a-form-item :label="t('k8s.k3dEndpoint')" class="wide"><a-input :value="k3dEndpoint" readonly :aria-label="t('k8s.k3dEndpoint')" /></a-form-item></template>
+            <template v-if="isK3d"><a-form-item :label="t('k8s.k3dAgents')" required><a-input-number v-model:value="form.k3d.agents" :aria-label="t('k8s.k3dAgents')" :min="0" :max="8" :precision="0" /></a-form-item><a-form-item :label="t('k8s.k3dApiPort')" required><a-input-number v-model:value="form.k3d.api_port" :aria-label="t('k8s.k3dApiPort')" :min="1024" :max="65535" :precision="0" /></a-form-item><a-form-item :label="isLocalK3d?'API 绑定地址':t('k8s.k3dBindAddress')" required :class="{wide:!isLocalK3d}"><a-input v-model:value="form.k3d.bind_address" :aria-label="isLocalK3d?'API 绑定地址':t('k8s.k3dBindAddress')" :placeholder="t('k8s.k3dBindPlaceholder')" /><div v-if="!isLocalK3d" class="field-help">{{ t('k8s.k3dBindHint') }}</div></a-form-item><a-form-item v-if="isLocalK3d" label="API 连接主机" required><a-input v-model:value="form.k3d_api_host" aria-label="API 连接主机" placeholder="EDO 可访问的主机名或 IP" /></a-form-item><a-form-item :label="t('k8s.k3dEndpoint')" class="wide"><a-input :value="k3dEndpoint" readonly :aria-label="t('k8s.k3dEndpoint')" /></a-form-item></template>
           </div>
-          <K3dImageFields v-if="isK3d" v-model:value="form.k3d" v-model:drafts="form.k3d_image_drafts" :architecture="hosts.find(host=>host.id===form.server_host_id)?.architecture||''" :disabled="!canExecute" :scope="context" @valid="k3dImageReady=$event" />
+          <p v-if="isLocalK3d&&localRuntimeLoading" role="status" class="field-help">正在读取本地 Docker 连接…</p>
+          <a-alert v-if="isLocalK3d&&localRuntimeError" type="error" show-icon :message="localRuntimeError"><template #action><a-button size="small" @click="loadLocalRuntime">重试</a-button></template></a-alert>
+          <K3dImageFields v-if="isK3d" v-model:value="form.k3d" v-model:drafts="form.k3d_image_drafts" :architecture="k3dArchitecture" :disabled="!canExecute" :scope="context" @valid="k3dImageReady=$event" />
           <section v-if="isK3d" class="k3d-resources" aria-label="节点资源配置">
             <h4 class="k3d-resource-heading">节点资源</h4>
             <div v-for="role in k3dResourceRoles" :key="role.key" class="k3d-resource-row">
