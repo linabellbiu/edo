@@ -40,7 +40,8 @@ async function render(source, state, components = {}) {
   const { code } = compile(source, { mode: 'function', prefixIdentifiers: true, expressionPlugins: ['typescript'] })
   const output = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const render = new Function('Vue', output)(vue)
-  const app = vue.createSSRApp({ setup: () => state, render })
+  const resourceStates = Object.fromEntries(['applications', 'templates', 'buildPlans', 'deploymentPlans', 'notifications'].map(key => [key, { loading: false, ready: true, error: '' }]))
+  const app = vue.createSSRApp({ setup: () => ({ resourceStates, ...state }), render })
   for (const name of ['a-alert', 'a-button', 'a-select', 'a-form-item', 'a-input', 'a-textarea', 'a-checkbox', 'a-tooltip', 'Bell', 'Plus', 'Trash2']) app.component(name, passthrough)
   for (const [name, component] of Object.entries(components)) app.component(name, component)
   return renderToString(app)

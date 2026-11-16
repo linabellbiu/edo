@@ -3,7 +3,7 @@ import { dockerTargetError, dockerBuildPlatformError } from '@/utils/buildTarget
 import BuildPlanFields from '@/components/BuildPlanFields.vue'
 import type {PipelineBuildPlan} from '@/types/pipeline'
 import DeliveryVariablesView from './DeliveryVariablesView.vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
@@ -139,10 +139,14 @@ const planExecutionRequests=new Set<AbortController>()
 let planExecutionOpenedScope:PlanExecutionScope|undefined
 let planExecutionEpoch=0,planExecutionDisposed=false
 let resourceLoadedScope='',resourceLoadingScope='',resourceRefreshRevision=0
+const resourceErrors=ref<Record<string,string>>({}),resourcePending=ref<Record<string,boolean>>({})
+const resourceRequests=new Map<string,{scope:string;controller:AbortController;promise:Promise<void>;again:boolean}>()
+const resourceLabels:Record<string,string>={applications:'应用',repositories:'代码仓库','git-credentials':'仓库凭据','build-plans':'构建方案','image-registries':'镜像仓库','pipeline-runs':'流水线运行','release-plans':'发布计划',deployments:'部署记录','deployment-plans':'部署方案','workflow-templates':'流水线模板'}
+function cancelResourceReads(){for(const request of resourceRequests.values())request.controller.abort();resourceRequests.clear();resourcePending.value={};resourceErrors.value={}}
 let resourceStatusDialog:ReturnType<typeof Modal.confirm>|undefined
 function resourceScopeKey(){return JSON.stringify([planExecutionScopeIdentity.value,planExecutionEpoch,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||''])}
 function resourceReadOptions(){return {headers:{'X-EDO-Project-ID':planExecutionSelectedProject.value}}}
-function resetResourceStatus(){if(resourceStatusDialog)resourceMutationID.value='';resourceStatusDialog?.destroy();resourceStatusDialog=undefined;resourceLoadedScope='';resourceLoadingScope='';resourceRefreshRevision++;loading.value=false;if(['applications','repositories'].includes(props.section)){applications.value=[];repositories.value=[];closeApplicationDetails()}}
+function resetResourceStatus(){cancelResourceReads();if(resourceStatusDialog)resourceMutationID.value='';resourceStatusDialog?.destroy();resourceStatusDialog=undefined;resourceLoadedScope='';resourceLoadingScope='';resourceRefreshRevision++;loading.value=false;if(['applications','repositories'].includes(props.section)){applications.value=[];repositories.value=[];closeApplicationDetails()}}
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const workflowPickerOpen=ref(false)
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
@@ -319,7 +323,7 @@ function visibleDeploymentRunIDs(){
 function runHasDeployments(runID:string){return canReadDeployments.value&&Boolean(runDeploymentRecords.value[runID]?.length)}
 async function loadRunDeploymentRecords(runID:string){
  if(!visibleDeploymentRunIDs().includes(runID))return
- runDeploymentRequests.get(runID)?.abort()
+ if(runDeploymentRequests.has(runID))return
  const controller=new AbortController()
  runDeploymentRequests.set(runID,controller)
  runDeploymentLoading.value[runID]=true
@@ -1042,57 +1046,63 @@ function changeRunPage(pagination:{current?:number;pageSize?:number}){
  void router.push({query:pipelineRunRouteQuery(route.query,filters)})
 }
 
+function readResourceList<T>(key:string,field:string,target:Ref<T[]>,permission:string):Promise<void>{
+ if(!auth.canAny([permission])){target.value=[];return Promise.resolve()}
+ const scope=JSON.stringify([resourceScopeKey(),props.section,releaseView.value]),existing=resourceRequests.get(key)
+ if(existing?.scope===scope){existing.again=true;return existing.promise}
+ existing?.controller.abort()
+ const controller=new AbortController()
+ const current=()=>!planExecutionDisposed&&!controller.signal.aborted&&resourceRequests.get(key)?.controller===controller&&scope===JSON.stringify([resourceScopeKey(),props.section,releaseView.value])&&auth.canAny([permission])
+ resourcePending.value[key]=true;delete resourceErrors.value[key]
+ const promise=(async()=>{
+  try{
+   const {data}=await client.get<Record<string,T[]>>(`/${key}${key==='pipeline-runs'||key==='deployments'?'?limit=200':''}`,{...resourceReadOptions(),signal:controller.signal})
+   if(current()){target.value=data[field]||[];if(key===props.section)resourceLoadedScope=resourceScopeKey()}
+  }catch(error){if(current()){resourceErrors.value[key]=apiErrorMessage(error);if(key===props.section)resourceLoadedScope=''}}
+  finally{const request=resourceRequests.get(key);if(request?.controller===controller){const again=current()&&request.again;resourceRequests.delete(key);delete resourcePending.value[key];if(again)void readResourceList(key,field,target,permission)}}
+ })()
+ resourceRequests.set(key,{scope,controller,promise,again:false})
+ return promise
+}
+const resourceReaders:Record<string,()=>Promise<void>>={
+ applications:()=>readResourceList('applications','applications',applications,'application.read'),
+ repositories:()=>readResourceList('repositories','repositories',repositories,'repository.read'),
+ 'git-credentials':()=>readResourceList('git-credentials','credentials',credentials,'credential.read'),
+ 'build-plans':()=>readResourceList('build-plans','build_plans',buildPlans,'build_plan.read'),
+ 'image-registries':()=>readResourceList('image-registries','image_registries',registries,'image_registry.read'),
+ 'pipeline-runs':()=>readResourceList('pipeline-runs','pipeline_runs',runs,'pipeline_run.read'),
+ 'release-plans':()=>readResourceList('release-plans','release_plans',releasePlans,'release_plan.read'),
+ deployments:()=>readResourceList('deployments','deployments',deployments,'deployment.read'),
+ 'deployment-plans':()=>readResourceList('deployment-plans','deployment_plans',deploymentPlans,'deployment_plan.read'),
+ 'workflow-templates':()=>readResourceList('workflow-templates','workflow_templates',workflowTemplates,'workflow.read'),
+}
 async function refresh(){
- const section=props.section,view=releaseView.value,scope=resourceScopeKey(),revision=++resourceRefreshRevision,options=resourceReadOptions()
+ const section=props.section,view=releaseView.value,scope=resourceScopeKey(),revision=++resourceRefreshRevision
  const readPermission=resourceFormReadPermission.value,primaryReadRequested=auth.canAny([readPermission])
  resourceLoadingScope=primaryReadRequested?scope:'';loading.value=true
  if(!primaryReadRequested)resourceLoadedScope=''
+ // 每类数据独立回填；页面主体不等待候选项、运行资源或其他区域。
+ const requests=new Map(Object.entries(resourceReaders).filter(([key])=>key!=='pipeline-runs'||section!=='release-plans'||view!=='runs').map(([key,read])=>[key,read()]))
  try{
-  const requests=await Promise.all([
-   auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications',options):null,
-   auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories',options):null,
-   auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials',options):null,
-   auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans',options):null,
-   auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries',options):null,
-   auth.canAny(['pipeline_run.read'])&&!(section==='release-plans'&&view==='runs')?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200',options):null,
-   auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans',options):null,
-   canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200',options):null,
-   auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans',options):null,
-   auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates',options):null,
-  ])
-  if(section!==props.section||view!==releaseView.value||scope!==resourceScopeKey()||revision!==resourceRefreshRevision)return
-  resourceLoadedScope=primaryReadRequested&&auth.canAny([readPermission])?scope:''
-  applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[]
-  buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[]
-  if(!(section==='release-plans'&&view==='runs'))runs.value=requests[5]?.data.pipeline_runs||[]
-  releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[]
-  deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[]
   if(section==='release-plans'&&view==='runs')await loadRunPage(true)
+  else await requests.get(section)
+  if(section!==props.section||view!==releaseView.value||scope!==resourceScopeKey()||revision!==resourceRefreshRevision)return
+  resourceLoadedScope=primaryReadRequested&&auth.canAny([readPermission])&&!resourceErrors.value[section]?scope:''
   if(requestedRunID.value)void revealRequestedRun()
-  await refreshVisibleRunDeployments();await refreshRunApprovals()
- }catch(error){if(scope===resourceScopeKey()&&revision===resourceRefreshRevision)message.error(apiErrorMessage(error))}
- finally{if(revision===resourceRefreshRevision){loading.value=false;resourceLoadingScope='';if(!primaryReadRequested)refreshAuthorizedResourceScope()}}
+  void refreshVisibleRunDeployments();void refreshRunApprovals()
+ }finally{if(revision===resourceRefreshRevision){loading.value=false;resourceLoadingScope='';if(!primaryReadRequested)refreshAuthorizedResourceScope()}}
 }
 function refreshAuthorizedResourceScope(){
- // 授权范围变化后重取列表；同范围校准和已经在途的读取不重复请求。
  if(!['applications','repositories','build-plans','image-registries'].includes(props.section)||!auth.authorizationReady||!resourceFormIdentityReady())return
  const scope=resourceScopeKey()
  if(resourceLoadedScope!==scope&&resourceLoadingScope!==scope)void refresh()
 }
-let stateRefreshing=false
 async function refreshApplicationState(){
- const section=props.section,view=releaseView.value,scope=resourceScopeKey()
- if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`]))return
- stateRefreshing=true
- try{
- const [applicationResult,runResult,deploymentResult,deploymentPlanResult]=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):Promise.resolve({data:{applications:[] as Application[]}}),auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}),canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):Promise.resolve({data:{deployment_plans:[] as DeploymentPlan[]}})])
-  if(section!==props.section||view!==releaseView.value||scope!==resourceScopeKey())return
-  applications.value=applicationResult.data.applications||[]
-  runs.value=runResult.data.pipeline_runs||[]
-  if(deploymentResult)deployments.value=deploymentResult.data.deployments||[]
-  deploymentPlans.value=deploymentPlanResult.data.deployment_plans||[]
-  clearStaleDeploymentState()
- }catch{}finally{stateRefreshing=false}
+ if(!auth.canAny(['application.read']))return
+ void resourceReaders['pipeline-runs']()
+ void resourceReaders['deployment-plans']()
+ void resourceReaders.deployments().then(clearStaleDeploymentState)
+ await resourceReaders.applications()
 }
 function refreshVisibleDeploymentRuntime(){
  const visibleRecords=applicationCards.value.filter(card=>applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments').flatMap(card=>card.deploymentInstances).filter(record=>expandedDeployments.value[record.id])
@@ -1100,28 +1110,18 @@ function refreshVisibleDeploymentRuntime(){
  for(const runtimeID of visibleRuntimeIDs)void loadDockerRuntime(runtimeID,true,true)
  for(const record of visibleRecords)void loadDeploymentRuntime(record,true)
 }
-async function refreshReleasePlanState(scope?:PlanExecutionScope,options?:{headers:{'X-EDO-Project-ID':string};signal:AbortSignal}){
- const section=props.section,view=releaseView.value
- if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`])||(scope&&!currentPlanExecutionScope(scope)))return
- stateRefreshing=true
- try{
-  const [appResult,runResult,planResult]=await Promise.all([
-   auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications',options):Promise.resolve({data:{applications:[] as Application[]}}),
-   view!=='runs'&&auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200',options):Promise.resolve({data:{pipeline_runs:[] as Run[]}}),
-   client.get<{release_plans:ReleasePlan[]}>('/release-plans',options),
-  ])
-  if(section!==props.section||view!==releaseView.value||(scope&&!currentPlanExecutionScope(scope)))return
-  applications.value=appResult.data.applications||[]
-  if(view!=='runs')runs.value=runResult.data.pipeline_runs||[]
-  releasePlans.value=planResult.data.release_plans||[]
-  if(view==='runs')await loadRunPage(false,scope)
- }catch{}finally{stateRefreshing=false}
+async function refreshReleasePlanState(scope?:PlanExecutionScope,_options?:{headers:{'X-EDO-Project-ID':string};signal:AbortSignal}){
+ if(!auth.canAny([`${sectionPermission.value}.read`])||(scope&&!currentPlanExecutionScope(scope)))return
+ void resourceReaders.applications()
+ if(releaseView.value==='runs'){void resourceReaders['release-plans']();await loadRunPage(false,scope)}
+ else{void resourceReaders['pipeline-runs']();await resourceReaders['release-plans']()}
 }
 async function refreshRunState(){
- if(stateRefreshing||!auth.canAny(['pipeline_run.read']))return
- stateRefreshing=true
- try{await loadRunPage();await refreshVisibleRunDeployments();await refreshRunApprovals();if(rollbackDialog.open||releasePlanResources.open)await refreshRollbackRecords()}
- finally{stateRefreshing=false}
+ if(!auth.canAny(['pipeline_run.read']))return
+ // 展开的某个运行资源读取缓慢时，其他运行的状态仍可继续更新。
+ void refreshVisibleRunDeployments();void refreshRunApprovals()
+ if(rollbackDialog.open||releasePlanResources.open)void refreshRollbackRecords()
+ if(!runListLoading.value)await loadRunPage()
 }
 
 function formatVariableText(values?:Record<string,string>){return Object.entries(values||{}).map(([name,value])=>`${name}=${value}`).join('\n')}
@@ -1651,7 +1651,7 @@ async function loadReleasePlanApplicationResources(){
   releasePlanResources.records=(response.data.deployments||[]).filter(record=>record.pipeline_run_id===pipelineRunID)
   if(canReadContainerLogs.value){
    const runtimeIDs=new Set(releasePlanResources.records.filter(record=>deploymentKind(record)==='docker').map(record=>record.runtime_id).filter(Boolean))
-   await Promise.all([...runtimeIDs].map(runtimeID=>loadDockerRuntime(runtimeID,true)))
+   for(const runtimeID of runtimeIDs)void loadDockerRuntime(runtimeID,true)
   }
  }catch(error){
   if(!current())return
@@ -2042,12 +2042,11 @@ function queueDeliveryRefresh(syncOnly=false){
   deliveryRefreshTimer=undefined
   if(document.hidden)return
   // 状态事件可能在上一轮 HTTP 同步期间到达，必须留到下一轮处理。
-  if(stateRefreshing||loading.value){queueDeliveryRefresh(applicationSyncOnly);return}
+  if(loading.value){queueDeliveryRefresh(applicationSyncOnly);return}
   if(!applicationSyncOnly)lastDeliverySync=Date.now()
   if(props.section==='applications'&&applicationSyncOnly){
    const scope=resourceScopeKey()
-   stateRefreshing=true
-   try{const result=await (auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications',resourceReadOptions()):Promise.resolve({data:{applications:[] as Application[]}}));if(scope===resourceScopeKey())applications.value=result.data.applications||[]}catch{}finally{stateRefreshing=false}
+   if(scope===resourceScopeKey())await resourceReaders.applications()
   }
   else if(props.section==='applications')await refreshApplicationState()
   else if(props.section==='release-plans'&&releaseView.value==='runs')await refreshRunState()
@@ -2152,6 +2151,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
 </script>
 
 <template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
+<a-alert v-for="(error,key) in resourceErrors" :key="key" type="error" show-icon :message="`${resourceLabels[key]}：${error}`" class="resource-load-error"><template #action><a-button size="small" :loading="resourcePending[key]" @click="resourceReaders[key]?.()">重试</a-button></template></a-alert>
 <div v-if="props.section==='applications'" class="apps-workspace">
   <div class="apps-filter-bar">
     <a-input v-model:value="applicationSearch" allow-clear :placeholder="t('applicationWorkspace.search')" :aria-label="t('applicationWorkspace.search')" class="apps-search"><template #prefix><Search :size="16"/></template></a-input>
@@ -2323,7 +2323,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
 />
 <div v-else-if="props.section!=='release-plans'" class="resource-section-stack">
  <div class="vben-card">
-  <ResourceTable :rows="activeRows" :columns="activeColumns" :loading="loading" :active-row-key="activeResourceID">
+  <ResourceTable :rows="activeRows" :columns="activeColumns" :loading="loading&&!activeRows.length" :active-row-key="activeResourceID">
    <template #cell-sync_status="{value}"><a-tag :color="value==='changed'?'warning':value==='synced'?'success':'default'">{{ value }}</a-tag></template>
    <template #cell-provider="{value}"><a-tag>{{ registryProviderLabel(value as RegistryProvider) }}</a-tag></template>
    <template #cell-endpoint="{row}">{{ registryEndpointLabel(row as Registry) }}</template>
@@ -2357,7 +2357,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
     table-layout="fixed"
     :columns="runColumns"
     :data-source="runListEntries"
-    :loading="runListLoading||(loading&&!runs.length)"
+    :loading="(runListLoading||loading)&&!runs.length"
     :pagination="runPagination"
     :scroll="{x:1580}"
     :row-class-name="runListRowClass"
@@ -2750,6 +2750,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
 </section></template>
 
 <style scoped>
+.resource-load-error{margin-bottom:12px}
 .run-filter-toolbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;padding:16px;border-bottom:1px solid var(--edo-border)}.run-filter-toolbar label{display:flex;align-items:center;gap:8px;color:var(--edo-muted);font-size:13px}.run-filter-toolbar :deep(.ant-select){min-width:140px}.run-filter-error{margin:12px 16px}@media(max-width:640px){.run-filter-toolbar label{width:100%;justify-content:space-between}.run-filter-toolbar :deep(.ant-select),.run-filter-toolbar :deep(.ant-picker){flex:1;min-width:0}}
 
 .application-failed-deployments{margin-top:14px}.application-failed-deployments h4{margin:0 0 8px;color:var(--edo-text)}.application-failed-deployments article{padding:12px;border:1px solid var(--edo-border);border-radius:8px}.application-failed-deployments article+article{margin-top:8px}.application-failed-deployments p{margin:6px 0;overflow-wrap:anywhere}.application-failed-deployments .ant-btn{margin:4px 6px 0 0}

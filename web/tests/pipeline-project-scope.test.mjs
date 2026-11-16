@@ -395,3 +395,75 @@ for(const fallback of [undefined,'linux/arm64'])test(`构建平台默认/继承 
  h.state.selectNode('build');h.state.updateSelectedBuildPlatform('linux/amd64')
  assert.equal(h.state.selectedNode.value.config.build_platform,'linux/arm64')
 })
+
+for (const [path, key] of [['/applications', 'applications'], ['/workflow-templates', 'templates'], ['/build-plans', 'buildPlans'], ['/deployment-plans', 'deploymentPlans'], ['/notification-channels', 'notifications']]) {
+  test(`目录 ${path} 挂起不阻塞流水线图，失败和重试不覆盖任务草稿`, async t => {
+    const pending = deferred()
+    let blocked = true
+    const h = await harness({ get: request => request.path === path && blocked ? pending.promise : undefined })
+    t.after(h.stop)
+    assert.equal(h.state.workflow.value?.id, 'flow-project-a')
+    assert.equal(h.state.loading.value, false)
+    assert.equal(h.state.resourceStates[key].loading, true)
+    assert.equal(h.state.workflowOptions.value[0].label, '流水线 project-a')
+    h.state.selectNode('shell')
+    h.state.updateSelectedNode({ name: '尚未保存的任务名称' })
+    pending.reject(new Error('读取超时'))
+    await settle()
+    assert.equal(h.state.scopeError.value, '')
+    assert.ok(h.state.resourceStates[key].error)
+    assert.equal(h.state.stages.value[0].tasks[0].name, '尚未保存的任务名称')
+    blocked = false
+    await h.state.loadEditorResource(key)
+    assert.equal(h.state.resourceStates[key].error, '')
+    assert.equal(h.state.resourceStates[key].ready, true)
+    assert.equal(h.state.stages.value[0].tasks[0].name, '尚未保存的任务名称')
+    assert.equal(h.state.dirty.value, true)
+    assert.deepEqual(writes(h), [])
+  })
+}
+
+test('直接打开共用流水线不等待目录；加载中不能将方案误报为失效', async t => {
+  const pending = deferred()
+  const h = await harness({ query: { template: 'flow-project-a' }, get: request => ['/workflow-templates', '/build-plans', '/deployment-plans'].includes(request.path) ? pending.promise : undefined })
+  t.after(h.stop)
+  assert.equal(h.state.workflow.value?.id, 'flow-project-a')
+  assert.equal(h.state.loading.value, false)
+  assert.equal(h.state.templateOptions.value[0].label, '流水线 project-a')
+  assert.match(h.state.resourceReferenceLabel('deploymentPlans', '原部署方案不可用'), /正在加载/)
+  assert.match(h.state.resourceReferenceLabel('buildPlans', '原构建方案不可用'), /正在加载/)
+  pending.resolve({ data: { workflow_templates: [], build_plans: [], deployment_plans: [] } })
+  await settle()
+  assert.equal(h.state.resourceReferenceLabel('deploymentPlans', '原部署方案不可用'), '原部署方案不可用')
+})
+
+test('目录过期响应不覆盖新项目，也不会清除新项目的加载状态', async t => {
+  const old = deferred(), current = deferred()
+  const h = await harness({ get: request => request.path === '/deployment-plans' ? (request.options.headers['X-EDO-Project-ID'] === 'project-a' ? old.promise : current.promise) : undefined })
+  t.after(h.stop)
+  await changeProject(h, 'project-b')
+  old.resolve({ data: { deployment_plans: [{ id: 'old-secret-plan' }] } })
+  await settle()
+  assert.equal(h.state.workflow.value?.id, 'flow-project-b')
+  assert.equal(h.state.resourceStates.deploymentPlans.loading, true)
+  assert.deepEqual(h.state.deploymentPlans.value, [])
+  current.resolve({ data: { deployment_plans: [{ id: 'new-plan' }] } })
+  await settle()
+  assert.deepEqual(h.state.deploymentPlans.value.map(plan => plan.id), ['new-plan'])
+})
+
+test('图读取失败显示错误可重试；切换流水线的只读等待不阻止离开', async t => {
+  let failed = true
+  const h = await harness({ get: request => {
+    if (request.path === '/applications/app-project-a/workflows/flow-project-a' && failed) throw new Error('超时')
+  } })
+  t.after(h.stop)
+  assert.equal(h.state.workflow.value, null)
+  assert.equal(h.state.loading.value, false)
+  assert.match(h.state.scopeError.value, /流水线加载失败/)
+  failed = false
+  await h.state.loadResources()
+  assert.equal(h.state.workflow.value.id, 'flow-project-a')
+  h.state.switching.value = true
+  assert.equal(await h.routeLeaves[0](), true)
+})

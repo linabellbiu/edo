@@ -214,6 +214,12 @@ const formOpen = ref(false)
 const kubernetesEditorError=ref('')
 const editingID = ref('')
 const loading = ref(false)
+type PlanResource = 'plans' | 'hosts' | 'environments' | 'docker' | 'clusters'
+const resourceLabels:Record<PlanResource,string>={plans:'部署方案',hosts:'执行主机',environments:'主机组',docker:'Docker 运行时',clusters:'Kubernetes 集群'}
+const resourcePending=ref<Partial<Record<PlanResource,boolean>>>({}),resourceErrors=ref<Partial<Record<PlanResource,string>>>({})
+const resourceRequests=new Map<PlanResource,{scope:string;controller:AbortController;promise:Promise<void>;again:boolean}>()
+function cancelResourceReads(){for(const request of resourceRequests.values())request.controller.abort();resourceRequests.clear();resourcePending.value={};resourceErrors.value={}}
+
 const saving = ref(false)
 const testing = ref(false)
 const mutatingID = ref('')
@@ -227,7 +233,7 @@ let disposed = false, refreshRevision = 0
 const loadedPlanScope = ref('')
 function scopeKey() { return JSON.stringify([planScope.value, typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '']) }
 function syncProject() { selectedProject.value = typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '' }
-function resetMutation() { mutationDialog?.destroy(); mutationDialog = undefined; mutatingID.value = ''; refreshRevision++; loading.value = false }
+function resetMutation() { cancelResourceReads(); mutationDialog?.destroy(); mutationDialog = undefined; mutatingID.value = ''; refreshRevision++; loading.value = false }
 watch([planScope, () => auth.authorizationReady], () => {
   resetMutation(); plans.value = []; hosts.value = []; environments.value = []; docker.value = []; clusters.value = []
   if (!disposed && selectedProject.value && auth.user?.project_id === selectedProject.value && auth.canAny([props.inline?'workflow.update':'deployment_plan.read'])) void refresh()
@@ -294,6 +300,10 @@ const canReadHosts = computed(() => auth.canAny(['cluster.read', 'deployment.rea
 const canReadEnvironments = computed(() => auth.canAny(['deployment.read']))
 const canReadRuntimes = computed(() => auth.canAny(['cluster.read']))
 const canTestInfrastructure = computed(() => auth.canAny(['cluster.execute']))
+const targetResourceKeys=computed<PlanResource[]>(()=>form.reusable?[]:form.kind==='kubernetes'?['clusters']:['hosts','environments',...(['docker','compose'].includes(form.kind)?['docker' as const]:[])])
+const targetOptionsPending=computed(()=>targetResourceKeys.value.some(key=>resourcePending.value[key]))
+const targetOptionsFailed=computed(()=>targetResourceKeys.value.some(key=>resourceErrors.value[key]))
+
 const environmentByID = computed(() => new Map(environments.value.map(item => [item.id, item])))
 const hostByID = computed(() => new Map(hosts.value.map(item => [item.id, item])))
 const dockerByID = computed(() => new Map(docker.value.filter(item => item.is_active).map(item => [item.id, item])))
@@ -476,35 +486,40 @@ function reset() {
   editingID.value = ''
 }
 
+function readPlanResource(key:PlanResource):Promise<void>{
+  if(disposed)return Promise.resolve()
+  const scope=scopeKey(),previous=resourceRequests.get(key)
+  if(previous?.scope===scope){previous.again=true;return previous.promise}
+  previous?.controller.abort()
+  const controller=new AbortController()
+  const allowed=()=>key==='plans'?auth.canAny([props.inline?'workflow.update':'deployment_plan.read']):key==='hosts'?canReadHosts.value:key==='environments'?canReadEnvironments.value:canReadRuntimes.value
+  const current=()=>!disposed&&!controller.signal.aborted&&scope===scopeKey()&&resourceRequests.get(key)?.controller===controller&&allowed()
+  if(!allowed())return Promise.resolve()
+  resourcePending.value[key]=true;delete resourceErrors.value[key]
+  const options={signal:controller.signal,headers:{'X-EDO-Project-ID':selectedProject.value}}
+  const promise=(async()=>{
+    try{
+      switch(key){
+        case 'plans':{const data=props.inline?await Promise.resolve([]):(await client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans',options)).data.deployment_plans;if(current()){plans.value=data||[];loadedPlanScope.value=scope}break}
+        case 'hosts':{const data=await listHosts(controller.signal);if(current())hosts.value=data;break}
+        case 'environments':{const data=await listEnvironments(controller.signal);if(current())environments.value=data;break}
+        case 'docker':{const data=(await client.get<{endpoints:Runtime[]}>('/docker/endpoints',options)).data.endpoints;if(current())docker.value=data||[];break}
+        case 'clusters':{const data=(await client.get<{clusters:Runtime[]}>('/kubernetes/clusters',options)).data.clusters;if(current())clusters.value=data||[];break}
+      }
+    }catch(error){if(current())resourceErrors.value[key]=apiErrorMessage(error)}
+    finally{const request=resourceRequests.get(key);if(request?.controller===controller){const again=current()&&request.again;resourceRequests.delete(key);delete resourcePending.value[key];if(again)void readPlanResource(key)}}
+  })()
+  resourceRequests.set(key,{scope,controller,promise,again:false})
+  return promise
+}
 async function refresh() {
   if (disposed || !auth.canAny([props.inline?'workflow.update':'deployment_plan.read'])) return
   const scope = scopeKey(), revision = ++refreshRevision
   const current = () => !disposed && scope === scopeKey() && revision === refreshRevision
   loading.value = true
-  try {
-    const [planResponse, dockerResponse, clusterResponse, hostItems, environmentItems] = await Promise.all([
-      props.inline?Promise.resolve({data:{deployment_plans:[] as DeploymentPlan[]}}):client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans'),
-      canReadRuntimes.value
-        ? client.get<{ endpoints: Runtime[] }>('/docker/endpoints')
-        : Promise.resolve({ data: { endpoints: [] as Runtime[] } }),
-      canReadRuntimes.value
-        ? client.get<{ clusters: Runtime[] }>('/kubernetes/clusters')
-        : Promise.resolve({ data: { clusters: [] as Runtime[] } }),
-      canReadHosts.value ? listHosts() : Promise.resolve([] as InfrastructureHost[]),
-      canReadEnvironments.value ? listEnvironments() : Promise.resolve([] as InfrastructureEnvironment[]),
-    ])
-    if (!current()) return
-    plans.value = planResponse.data.deployment_plans || []
-    docker.value = dockerResponse.data.endpoints || []
-    clusters.value = clusterResponse.data.clusters || []
-    hosts.value = hostItems
-    environments.value = environmentItems
-    loadedPlanScope.value = scope
-  } catch (error) {
-    if (current()) message.error(apiErrorMessage(error))
-  } finally {
-    if (current()) loading.value = false
-  }
+  for(const key of ['hosts','environments','docker','clusters'] as PlanResource[])void readPlanResource(key)
+  try{await readPlanResource('plans')}
+  finally{if(current())loading.value=false}
 }
 
 function create() {
@@ -714,7 +729,8 @@ function changeEnvironment(environmentID: unknown) {
 }
 
 function reconcileExecutionTarget() {
-  if (form.reusable) return
+  // 候选项未就绪时保留已有目标，不能按临时空列表清空保存的关联。
+  if (form.reusable || targetOptionsPending.value || targetOptionsFailed.value) return
   if (form.kind === 'kubernetes') {
     changeKubernetesRuntime(form.runtime_id)
     return
@@ -834,6 +850,8 @@ function validateDockerConfig() {
 }
 
 function validate() {
+  if(targetOptionsPending.value)return '正在读取执行目标，请稍后重试'
+  if(targetOptionsFailed.value)return '执行目标读取失败，请先重试'
   reconcileExecutionTarget()
   if (!form.name.trim()) return '请输入方案名称'
   if(form.kind==='kubernetes'&&kubernetesEditorError.value)return kubernetesEditorError.value
@@ -1055,10 +1073,11 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
       <a-button v-if="canCreate" type="primary" @click="create"><Plus :size="15" />新建部署方案</a-button>
     </PageToolbar>
 
+    <template v-if="!inline&&!formOpen"><a-alert v-for="(error,key) in resourceErrors" :key="key" class="resource-load-error" type="error" show-icon :message="`${resourceLabels[key]}：${error}`"><template #action><a-button size="small" :loading="resourcePending[key]" @click="readPlanResource(key)">重试</a-button></template></a-alert></template>
     <div v-if="!inline" class="expandable-plan-list deployment-plan-list vben-card">
       <a-table
         class="plan-table resource-list-table" row-key="id" size="small" table-layout="fixed" :columns="planColumns" :data-source="plans"
-        :loading="loading" :pagination="planPagination" :scroll="{ x: 1520 }" :row-class-name="planRowClass"
+        :loading="loading&&!plans.length" :pagination="planPagination" :scroll="{ x: 1520 }" :row-class-name="planRowClass"
         :locale="{ emptyText: t('planList.deploymentEmpty') }"
         @change="changePlanPage"
       >
@@ -1122,6 +1141,8 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
 
     <a-drawer v-model:open="formOpen" :title="inline?'流水线自定义部署方案':editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">
       <a-form layout="vertical" class="deployment-form">
+        <template v-for="key in targetResourceKeys" :key="key"><a-alert v-if="resourceErrors[key]" class="resource-load-error" type="error" show-icon :message="`${resourceLabels[key]}：${resourceErrors[key]}`"><template #action><a-button size="small" :loading="resourcePending[key]" @click="readPlanResource(key)">重试</a-button></template></a-alert></template>
+        <p v-if="targetOptionsPending" class="target-loading" role="status">正在读取执行目标…</p>
         <div class="form-section">
           <header><b>1</b><div><strong>方案信息<DeploymentFieldHelp text="使用能直接辨认用途和主机组的名称。" label="方案信息说明" /></strong></div></header>
           <div class="form-grid">
@@ -1131,7 +1152,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         </div>
 
         <div v-if="!form.reusable&&form.kind!=='kubernetes'" class="host-target-section">
-          <DeploymentHostSelection :groupID="form.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :all-hosts="hosts" :host-options="deploymentHostOptions" :host-issues="deploymentHostIssues" :ready="!loading" :disabled="saving||!canReadEnvironments||!canReadHosts" @change="selectDeploymentTarget" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()">
+          <DeploymentHostSelection :groupID="form.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :all-hosts="hosts" :host-options="deploymentHostOptions" :host-issues="deploymentHostIssues" :ready="!resourcePending.hosts&&!resourcePending.environments&&!resourceErrors.hosts&&!resourceErrors.environments" :disabled="saving||!canReadEnvironments||!canReadHosts" @change="selectDeploymentTarget" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()">
             <template #extra><a-button v-if="auth.canAny(['deployment.create'])" aria-label="创建主机组" title="创建主机组" @click="router.push('/hosts?create_group=1')"><Plus :size="15" /></a-button></template>
           </DeploymentHostSelection>
           <div v-if="!canReadEnvironments" class="permission-note">需要发布记录查看权限才能选择执行主机组。</div>
@@ -1299,7 +1320,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         <div class="drawer-actions">
           <a-button :disabled="saving || testing" @click="formOpen = false">取消</a-button>
           <a-button v-if="!form.reusable && canTestInfrastructure" :loading="testing" :disabled="saving" @click="testConnection">检查连接</a-button>
-          <a-button type="primary" :loading="saving" :disabled="saving || testing || !canUseForm()" @click="save">{{inline?'使用此方案':'保存部署方案'}}</a-button>
+          <a-button type="primary" :loading="saving" :disabled="saving || testing || !canUseForm() || targetOptionsPending || targetOptionsFailed" @click="save">{{inline?'使用此方案':'保存部署方案'}}</a-button>
         </div>
       </template>
     </a-drawer>
@@ -1308,6 +1329,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
 </template>
 
 <style scoped>
+.resource-load-error{margin-bottom:12px}.target-loading{color:var(--edo-muted);font-size:12px}
 .host-target-section{margin:0 0 12px}.deployment-form :deep(.ant-form-item){margin-bottom:12px}.deployment-form :deep(.deployment-execution-fields .ant-form-item){margin-bottom:0}.deployment-form :deep(.ant-form-item-label){padding-bottom:4px}.deployment-kind{display:flex;align-items:center;white-space:nowrap;gap:7px;font-size:12px}.deployment-kind :deep(svg){width:18px;height:18px;flex:0 0 18px}
 .deployment-plan-list :deep(.plan-table-row){cursor:default}
 .deployment-plan-list .plan-cell .deployment-description{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere;line-height:1.5;cursor:help}

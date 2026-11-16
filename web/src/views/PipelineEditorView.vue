@@ -156,6 +156,11 @@ const stages = ref<PipelineStageDraft[]>([])
 const selectedNodeID = ref('')
 const issues = ref<WorkflowIssue[]>([])
 const loading = ref(true)
+type EditorResource = 'applications' | 'templates' | 'buildPlans' | 'deploymentPlans' | 'notifications'
+const resourceLabels: Record<EditorResource, string> = { applications: '应用目录', templates: '流水线目录', buildPlans: '构建方案', deploymentPlans: '部署方案', notifications: '通知渠道' }
+const resourceStates = reactive(Object.fromEntries(Object.keys(resourceLabels).map(key => [key, { loading: false, ready: false, error: '' }])) as Record<EditorResource, { loading: boolean; ready: boolean; error: string }>)
+const resourceRequests = new Map<EditorResource, Promise<void>>()
+const resourceErrors = computed(() => (Object.keys(resourceLabels) as EditorResource[]).filter(key => resourceStates[key].error))
 const switching = ref(false)
 const saving = ref(false)
 const autoSaving = ref(false)
@@ -210,7 +215,7 @@ function failedScope(cause:unknown, scope:EditorScope) {
   resetScope(false);scopeError.value=apiErrorMessage(cause);return true
 }
 function resetScope(reload=true) {
-  scopeRevision++;graphRevision++;scopeController.abort();scopeController=new AbortController();loadedContext.value=''
+  scopeRevision++;graphRevision++;resourceRequests.clear();Object.values(resourceStates).forEach(state=>{state.loading=false;state.ready=false;state.error='' });scopeController.abort();scopeController=new AbortController();loadedContext.value=''
   window.clearTimeout(autoSaveTimer);destroySortables();stageRemovalDialog?.destroy();stageRemovalDialog=undefined;discardResolve?.(false);discardResolve=undefined;discardDialog?.destroy();discardDialog=undefined
   applications.value=[];templates.value=[];buildPlans.value=[];deploymentPlans.value=[];notificationChannels.value=[];builtinVariables.value=[];workflow.value=null;sources.value=[];stages.value=[];issues.value=[]
   selectedNodeID.value='';selectedStageID.value='';libraryStageID.value='';panelMode.value='closed';propertyTab.value='common';presetOpen.value=false;presetContext='';saveConfirmOpen.value=false;saveConfirmSubmitting.value=false
@@ -237,7 +242,7 @@ const canModifyBuildPlan=computed(()=>!!selectedLibraryBuildPlan.value&&scopeCan
 const selectedBuildPlanOptions=computed(()=>{
  const options=canReadBuildPlan.value?buildPlanOptions.value:[]
  const id=selectedNode.value?.config.build_plan_id
- return id&&!options.some(option=>option.value===id)?[{value:id,label:selectedLibraryBuildPlan.value?.name||(canReadBuildPlan.value?'原构建方案不可用':'无权查看原构建方案'),detail:'',disabled:true},...options]:options
+ return id&&!options.some(option=>option.value===id)?[{value:id,label:selectedLibraryBuildPlan.value?.name||(canReadBuildPlan.value?resourceReferenceLabel('buildPlans','原构建方案不可用'):'无权查看原构建方案'),detail:'',disabled:true},...options]:options
 })
 const canCreateDeploymentPlan = computed(() => scopeCan('deployment_plan.create'))
 const canReadDeploymentPlan = computed(() => scopeCan('deployment_plan.read'))
@@ -256,17 +261,24 @@ const editorApplication = computed<ApplicationRecord | null>(() => {
 const selectedTemplateID = computed(() => publicMode.value
   ? templateID.value
   : workflow.value?.workflow_template_id || '')
-const workflowOptions = computed(() => (editorApplication.value?.workflows || []).map(item => ({
+const workflowOptions = computed(() => {
+  const items = editorApplication.value?.workflows || []
+  const current = workflow.value
+  return (current && !items.some(item => item.id === current.id) ? [current, ...items] : items).map(item => ({
   value: item.id,
   label: item.workflow_template?.name || item.name,
   detail: `状态：${item.is_active ? '已启用' : '草稿'}`,
-})))
-const templateOptions = computed(() => templates.value.map(item => ({
+}))
+})
+const templateOptions = computed(() => {
+  const current = publicMode.value ? workflow.value : null
+  return (current && !templates.value.some(item => item.id === current.id) ? [current, ...templates.value] : templates.value).map(item => ({
   value: item.id,
   label: item.name,
   detail: `状态：${item.is_active ? '已启用' : '草稿'}`,
-})))
-const codeSourceName = computed(() => editorApplication.value?.repository?.name || (auth.canAny(['application.read']) ? '未配置代码仓库' : '代码源'))
+}))
+})
+const codeSourceName = computed(() => editorApplication.value?.repository?.name || (!resourceStates.applications.ready || resourceStates.applications.error || !auth.canAny(['application.read']) ? '代码源' : '未配置代码仓库'))
 const allNodes = computed(() => [...sources.value, ...stages.value.flatMap(stage => stage.tasks)])
 const selectedNode = computed(() => allNodes.value.find(item => item.id === selectedNodeID.value) || null)
 const selectedTask = computed(() => selectedNode.value && isTaskType(selectedNode.value.type) ? selectedNode.value : null)
@@ -500,69 +512,125 @@ async function loadBuiltinVariableCatalog(scope = captureScope()) {
   } finally { if(currentScope(scope))builtinVariableLoading.value = false }
 }
 
-async function loadResources() {
-  const scope=captureScope()
-  if(!currentScope(scope))return
-  loading.value = true;scopeError.value=''
-  void loadBuiltinVariableCatalog(scope)
-  try {
-    const options=scopeOptions(scope)
-    const notificationChannelRequest = canReadNotificationChannels.value
-      ? client.get<{ channels: NotificationChannel[] }>('/notification-channels',options)
-      : Promise.resolve({ data: { channels: [] as NotificationChannel[] } })
-    const [applicationResult, templateResult, buildPlanResult, deploymentPlanResult, notificationChannelResult] = await Promise.all([
-      auth.canAny(['application.read']) ? client.get<{ applications: ApplicationRecord[] }>('/applications',options) : Promise.resolve({data:{applications:[]}}),
-      client.get<{ workflow_templates: Workflow[] }>('/workflow-templates',options),
-      auth.canAny(['build_plan.read']) ? client.get<{ build_plans: PipelineBuildPlan[] }>('/build-plans',options) : Promise.resolve({data:{build_plans:[]}}),
-      auth.canAny(['deployment_plan.read']) ? client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans',options) : Promise.resolve({data:{deployment_plans:[]}}),
-      notificationChannelRequest,
-    ])
-    if(!currentScope(scope))return
-    let visibleApplications = applicationResult.data.applications || []
-    if (applicationID.value && !auth.canAny(['application.read'])) {
-      const { data } = await client.get<{ workflows: WorkflowCatalogEntry[] }>('/workflows', options)
-      if (!currentScope(scope)) return
-      const grouped = new Map<string, ApplicationRecord>()
-      for (const item of data.workflows || []) {
-        if (item.kind !== 'application' || !item.application_id) continue
-        const app = grouped.get(item.application_id) || { id: item.application_id, name: item.application_name || '关联应用', workflows: [] }
-        app.workflows!.push(item)
-        grouped.set(app.id, app)
+function resourceReferenceLabel(key: EditorResource, missing: string) {
+  const state = resourceStates[key]
+  return state.loading ? `正在加载${resourceLabels[key]}…` : state.error ? `${resourceLabels[key]}加载失败` : missing
+}
+
+async function loadEditorResource(key: EditorResource, scope = captureScope()): Promise<void> {
+  if (!currentScope(scope)) return
+  const pending = resourceRequests.get(key)
+  if (pending) return pending
+  const state = resourceStates[key]
+  state.loading = true
+  state.error = ''
+  const request = (async () => {
+    const options = scopeOptions(scope)
+    try {
+      switch (key) {
+        case 'applications': {
+          if (auth.canAny(['application.read'])) {
+            const { data } = await client.get<{ applications: ApplicationRecord[] }>('/applications', options)
+            if (currentScope(scope)) applications.value = data.applications || []
+          } else if (applicationID.value) {
+            const { data } = await client.get<{ workflows: WorkflowCatalogEntry[] }>('/workflows', options)
+            if (!currentScope(scope)) return
+            const grouped = new Map<string, ApplicationRecord>()
+            for (const item of data.workflows || []) {
+              if (item.kind !== 'application' || !item.application_id) continue
+              const app = grouped.get(item.application_id) || { id: item.application_id, name: item.application_name || '关联应用', workflows: [] }
+              app.workflows!.push(item)
+              grouped.set(app.id, app)
+            }
+            applications.value = [...grouped.values()]
+          }
+          // 目录晚于图返回时保留当前已经保存的版本。
+          if (currentScope(scope) && workflow.value && applicationID.value) updateApplicationWorkflow(workflow.value)
+          break
+        }
+        case 'templates': {
+          const { data } = await client.get<{ workflow_templates: Workflow[] }>('/workflow-templates', options)
+          if (currentScope(scope)) templates.value = (data.workflow_templates || []).map(item => publicMode.value && item.id === workflow.value?.id ? workflow.value : item)
+          break
+        }
+        case 'buildPlans': {
+          if (!auth.canAny(['build_plan.read'])) break
+          const { data } = await client.get<{ build_plans: PipelineBuildPlan[] }>('/build-plans', options)
+          if (currentScope(scope)) buildPlans.value = data.build_plans || []
+          break
+        }
+        case 'deploymentPlans': {
+          if (!auth.canAny(['deployment_plan.read'])) break
+          const { data } = await client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans', options)
+          if (currentScope(scope)) deploymentPlans.value = data.deployment_plans || []
+          break
+        }
+        case 'notifications': {
+          if (!canReadNotificationChannels.value) break
+          const { data } = await client.get<{ channels: NotificationChannel[] }>('/notification-channels', options)
+          if (currentScope(scope)) notificationChannels.value = data.channels || []
+          break
+        }
       }
-      visibleApplications = [...grouped.values()]
+      if (currentScope(scope)) state.ready = true
+    } catch (error) {
+      if (!failedScope(error, scope)) state.error = `${resourceLabels[key]}加载失败：${apiErrorMessage(error)}`
+    } finally {
+      if (currentScope(scope)) state.loading = false
     }
-    applications.value = visibleApplications
-    templates.value = templateResult.data.workflow_templates || []
-    buildPlans.value = buildPlanResult.data.build_plans || []
-    deploymentPlans.value = deploymentPlanResult.data.deployment_plans || []
-    notificationChannels.value = notificationChannelResult.data.channels || []
-    loadedContext.value=scope.identity
-    if (publicMode.value && route.query.create === '1' && canCreate.value) {
-      presetContext=scope.identity;presetOpen.value = true
-      await router.replace({ path: '/pipeline-plans/editor' })
-      if(!currentScope(scope))return
-    }
+  })()
+  resourceRequests.set(key, request)
+  await request
+  if (resourceRequests.get(key) === request) resourceRequests.delete(key)
+}
+
+async function loadResources() {
+  const scope = captureScope()
+  if (!currentScope(scope)) return
+  loading.value = true
+  scopeError.value = ''
+  void loadBuiltinVariableCatalog(scope)
+  // 目录各自更新；图只等待定位当前流水线必需的数据。
+  for (const key of Object.keys(resourceLabels) as EditorResource[]) void loadEditorResource(key, scope)
+  try {
     if (applicationID.value) {
-      await loadApplication(applicationID.value,workflowID.value,scope)
-      if(!currentScope(scope))return
+      if (!workflowID.value) await loadEditorResource('applications', scope)
+      if (!currentScope(scope)) return
+      if (!workflowID.value && resourceStates.applications.error) throw new Error(resourceStates.applications.error)
+      await loadApplication(applicationID.value, workflowID.value, scope)
+      if (!currentScope(scope)) return
       if (workflowID.value && route.query.workflow !== workflowID.value) await router.replace({ query: { application: applicationID.value, workflow: workflowID.value } })
+    } else if (templateID.value) {
+      await loadTemplate(templateID.value, scope)
+    } else {
+      loadedContext.value = scope.identity
+      if (route.query.create === '1' && canCreate.value) {
+        presetContext = scope.identity
+        presetOpen.value = true
+        await router.replace({ path: '/pipeline-plans/editor' })
+      } else {
+        await loadEditorResource('templates', scope)
+        if (!currentScope(scope)) return
+        if (resourceStates.templates.error) throw new Error(resourceStates.templates.error)
+        if (templates.value.length) {
+          templateID.value = templates.value[0].id
+          await router.replace({ query: { template: templateID.value } })
+          if (currentScope(scope)) await loadTemplate(templateID.value, scope)
+        }
+      }
     }
-    else if (templateID.value) await loadTemplate(templateID.value,scope)
-    else if (templates.value.length) {
-      templateID.value = templates.value[0].id
-      await router.replace({ query: { template: templateID.value } })
-      if(!currentScope(scope))return
-      await loadTemplate(templateID.value,scope)
-    }
-  } catch (error) { if(!failedScope(error,scope)){scopeError.value=apiErrorMessage(error);message.error(scopeError.value)} }
-  finally { if(currentScope(scope))loading.value = false }
+  } catch (error) {
+    if (!failedScope(error, scope)) scopeError.value = `流水线加载失败：${apiErrorMessage(error)}`
+  } finally {
+    if (currentScope(scope)) loading.value = false
+  }
 }
 
 async function loadApplication(id: string, requestedWorkflowID = workflowID.value, scope = captureScope()) {
   if(!currentScope(scope))return
   const request=++graphRevision
   const application = applications.value.find(item => item.id === id)
-  const selected = requestedWorkflowID ? application?.workflows?.find(item => item.id === requestedWorkflowID) : application?.workflows?.[0]
+  const selected = requestedWorkflowID ? { id: requestedWorkflowID } : application?.workflows?.[0]
   if (!selected) { workflowID.value = ''; workflow.value = null; sources.value = []; stages.value = []; scopeError.value = '当前应用没有这条可查看的流水线'; return }
   const result = await client.get<WorkflowResponse>(`/applications/${id}/workflows/${selected.id}`,scopeOptions(scope))
   if(!currentScope(scope)||request!==graphRevision)return
@@ -1232,7 +1300,7 @@ function taskSummary(node: WorkflowNode) {
   if (node.type === 'build') {
     const plan = node.config.inline_build || buildPlans.value.find(item => item.id === node.config.build_plan_id)
     if(node.config.inline_build)return plan?.kind==='dockerfile'?`镜像构建：${plan.dockerfile_path||'Dockerfile'} · ${plan.context_path||'.'}`:'自定义构建'
-    const summary = `构建方案：${plan?.name || '未选择'}`
+    const summary = `构建方案：${plan?.name || (node.config.build_plan_id ? resourceReferenceLabel('buildPlans', '原方案不可用') : '未选择')}`
     if (!node.config.toolchain_language || !node.config.toolchain_version) return summary
     return `${summary}；版本：${toolchainName(node.config.toolchain_language)} ${node.config.toolchain_version}`
   }
@@ -1245,7 +1313,7 @@ function taskSummary(node: WorkflowNode) {
   if (node.type === 'deploy') {
     if(node.config.inline_deployment_plan)return deploymentKindNames[node.config.inline_deployment_plan.kind]
     const plan = stageSourcePlan(node)
-    return `部署方案：${plan?.name || '未选择'}`
+    return `部署方案：${plan?.name || (node.config.deployment_plan_id ? resourceReferenceLabel('deploymentPlans', '原方案不可用') : '未选择')}`
   }
   return node.config.description || taskMeta[node.type as TaskNodeType]?.hint || ''
 }
@@ -1263,7 +1331,7 @@ function deploymentPlanOptions(taskID: string) {
     detail: `部署方式：${deploymentKindNames[item.kind]}`,
     disabled: !selectableIDs.has(item.id),
   }))
-  if(currentID&&!current)options.unshift({value:currentID,label:canReadDeploymentPlan.value?'原部署方案不可用':'无权查看原部署方案',detail:'',disabled:true})
+  if(currentID&&!current)options.unshift({value:currentID,label:canReadDeploymentPlan.value?resourceReferenceLabel('deploymentPlans','原部署方案不可用'):'无权查看原部署方案',detail:'',disabled:true})
   return options
 }
 
@@ -1596,10 +1664,6 @@ onBeforeRouteUpdate(async to => {
 
 onBeforeRouteLeave(async () => {
   if(!scopeAllowed()||loadedContext.value!==scopeIdentity())return true
-  if (switching.value) {
-    message.warning('流水线正在加载，请稍后再离开。')
-    return false
-  }
   if (saving.value) {
     message.warning('流水线正在保存，请稍后再离开。')
     return false
@@ -1610,10 +1674,13 @@ onBeforeRouteLeave(async () => {
 
 <template>
   <section class="pipeline-editor-page">
-    <a-alert v-if="scopeError" type="warning" show-icon :message="scopeError"/>
+    <a-alert v-if="scopeError" type="error" show-icon :message="scopeError"><template #action><a-button v-if="scopeAllowed()" size="small" :loading="loading" @click="loadResources">重试</a-button></template></a-alert>
+    <div v-for="key in resourceErrors" :key="key" class="resource-load-error" role="alert">
+      <span>{{ resourceStates[key].error }}</span><a-button type="link" size="small" :loading="resourceStates[key].loading" @click="loadEditorResource(key)">重试</a-button>
+    </div>
     <div class="pipeline-command vben-card">
       <div class="pipeline-command-main">
-        <a-button type="text" :disabled="saving || switching" @click="router.push(publicMode ? '/pipeline-plans' : '/applications')"><ChevronLeft :size="17" />返回</a-button>
+        <a-button type="text" :disabled="saving" @click="router.push(publicMode ? '/pipeline-plans' : '/applications')"><ChevronLeft :size="17" />返回</a-button>
         <span class="command-divider" />
         <label v-if="!publicMode" class="plan-switcher">
           <span>应用流水线</span>
@@ -1650,12 +1717,12 @@ onBeforeRouteLeave(async () => {
     </div>
 
     <a-skeleton v-if="loading && !workflow" active :paragraph="{ rows: 12 }" />
-    <a-empty v-else-if="!workflow" class="pipeline-empty" :description="publicMode ? '还没有可编辑的流水线' : '这个应用还没有流水线'">
+    <a-empty v-else-if="!workflow && !scopeError" class="pipeline-empty" :description="publicMode ? '还没有可编辑的流水线' : '这个应用还没有流水线'">
       <a-button v-if="canCreate && publicMode" type="primary" :disabled="saving" @click="openPresetSelector">创建第一条流水线</a-button>
       <a-button v-else-if="!publicMode" type="primary" @click="router.push('/applications')">返回应用配置</a-button>
     </a-empty>
 
-    <div v-else class="pipeline-studio" :class="{ immersive, 'panel-open': panelMode !== 'closed' }" :inert="saving && !autoSaving">
+    <div v-else-if="workflow" class="pipeline-studio" :class="{ immersive, 'panel-open': panelMode !== 'closed' }" :inert="saving && !autoSaving">
       <main class="pipeline-board-shell vben-card">
         <header class="board-toolbar">
           <div>
@@ -1910,13 +1977,13 @@ onBeforeRouteLeave(async () => {
               <a-form-item label="配置来源"><a-radio-group :value="buildSource(selectedNode)" :disabled="!canEdit" @update:value="changeBuildSource($event)"><a-radio-button value="inline">当前任务配置</a-radio-button><a-radio-button value="plan">选择构建方案</a-radio-button></a-radio-group></a-form-item>
               <template v-if="buildSource(selectedNode)==='plan'">
                 <a-form-item label="构建方案" required>
-                  <div class="resource-picker"><a-select :value="selectedNode.config.build_plan_id" :disabled="!canEdit||!canReadBuildPlan||!!selectedNode.config.build_plan_id&&changingBuildPlanNodeID!==selectedNode.id" :options="selectedBuildPlanOptions" placeholder="选择构建方案" @update:value="changeLibraryBuildPlan(String($event||''))"/>
+                  <div class="resource-picker"><a-select :value="selectedNode.config.build_plan_id" :loading="resourceStates.buildPlans.loading" :disabled="!canEdit||!canReadBuildPlan||!resourceStates.buildPlans.ready||!!selectedNode.config.build_plan_id&&changingBuildPlanNodeID!==selectedNode.id" :options="selectedBuildPlanOptions" placeholder="选择构建方案" @update:value="changeLibraryBuildPlan(String($event||''))"/>
                     <a-button v-if="selectedNode.config.build_plan_id&&canEdit&&canReadBuildPlan" type="link" @click="unlockBuildPlanSelection">更换</a-button>
                     <a-button v-if="canModifyBuildPlan" type="link" :href="resourceViewHref('/build-plans','plan',selectedLibraryBuildPlan!.id)+'&amp;edit=1'" aria-label="修改构建方案" @click.prevent="modifyLinkedBuildPlan">修改</a-button>
                     <a-button v-if="canCreateBuildPlan" :disabled="!canEdit" class="resource-create" aria-label="创建构建方案" @click="createBuildPlan"><Plus :size="16"/></a-button>
                   </div>
                 </a-form-item>
-                <a-alert v-if="!selectedLibraryBuildPlan||!selectedLibraryBuildPlan.is_active" type="warning" show-icon :message="!canReadBuildPlan?'无权查看原构建方案，原关联继续保留':selectedLibraryBuildPlan?'原构建方案已停用，请修改或更换方案':'请选择可用构建方案；原有失效关联会继续保留'"/>
+                <a-alert v-if="!resourceStates.buildPlans.loading&&!resourceStates.buildPlans.error&&(!selectedLibraryBuildPlan||!selectedLibraryBuildPlan.is_active)" type="warning" show-icon :message="!canReadBuildPlan?'无权查看原构建方案，原关联继续保留':selectedLibraryBuildPlan?'原构建方案已停用，请修改或更换方案':'请选择可用构建方案；原有失效关联会继续保留'"/>
               </template>
               <PipelineBuildFields v-if="buildSource(selectedNode)==='plan'&&selectedLibraryBuildPlan" :key="selectedNode.id+':plan:'+selectedLibraryBuildPlan.id" :node="selectedNode" :build-plan="selectedLibraryBuildPlan" disabled/>
               <PipelineBuildFields v-else-if="buildSource(selectedNode)==='inline'" :key="selectedNode.id+':inline'" :node="selectedNode" :disabled="!canEdit" @change="updateSelectedNode({},$event)" @invalid="buildFieldErrors[selectedNode!.id]=$event"/>
@@ -1941,7 +2008,7 @@ onBeforeRouteLeave(async () => {
             <template v-else-if="selectedNode.type === 'deploy'">
               <h3 class="task-section-heading"><Layers3 :size="15" aria-hidden="true" />任务信息</h3>
               <a-form-item label="配置来源"><a-radio-group :value="deploymentSource(selectedNode)" :disabled="!canEdit" :options="[{value:'inline',label:'自定义方案'},{value:'plan',label:'选择部署方案'}]" @update:value="changeDeploymentSource($event)"/></a-form-item>
-              <a-form-item v-if="deploymentSource(selectedNode)==='plan'"><template #label><span class="linked-deployment-label">部署方案<a-button v-if="selectedNode.config.deployment_plan_id" type="link" size="small" :disabled="!canEdit||!canReadDeploymentPlan" @click="unlockDeploymentPlanSelection">更换方案</a-button><a-button v-if="canCreateDeploymentPlan" type="link" size="small" :disabled="!canEdit" @click="createDeploymentPlan">新建方案</a-button><a v-if="canModifyDeploymentPlan" :href="'/deployment-plans?plan='+encodeURIComponent(selectedLibraryDeploymentPlan?.id||'')+'&amp;edit=1'" aria-label="修改通用部署方案" @click.prevent="modifyLinkedDeploymentPlan">修改方案</a></span></template><a-select :value="selectedNode.config.deployment_plan_id||undefined" :options="deploymentPlanOptions(selectedNode.id)" show-search option-filter-prop="label" :disabled="!canEdit||!canReadDeploymentPlan||Boolean(selectedNode.config.deployment_plan_id&&changingDeploymentPlanNodeID!==selectedNode.id)" placeholder="选择通用部署方案" @update:value="changeLibraryDeploymentPlan(String($event))"/></a-form-item>
+              <a-form-item v-if="deploymentSource(selectedNode)==='plan'"><template #label><span class="linked-deployment-label">部署方案<a-button v-if="selectedNode.config.deployment_plan_id" type="link" size="small" :disabled="!canEdit||!canReadDeploymentPlan" @click="unlockDeploymentPlanSelection">更换方案</a-button><a-button v-if="canCreateDeploymentPlan" type="link" size="small" :disabled="!canEdit" @click="createDeploymentPlan">新建方案</a-button><a v-if="canModifyDeploymentPlan" :href="'/deployment-plans?plan='+encodeURIComponent(selectedLibraryDeploymentPlan?.id||'')+'&amp;edit=1'" aria-label="修改通用部署方案" @click.prevent="modifyLinkedDeploymentPlan">修改方案</a></span></template><a-select :value="selectedNode.config.deployment_plan_id||undefined" :options="deploymentPlanOptions(selectedNode.id)" :loading="resourceStates.deploymentPlans.loading" show-search option-filter-prop="label" :disabled="!canEdit||!canReadDeploymentPlan||!resourceStates.deploymentPlans.ready||Boolean(selectedNode.config.deployment_plan_id&&changingDeploymentPlanNodeID!==selectedNode.id)" placeholder="选择通用部署方案" @update:value="changeLibraryDeploymentPlan(String($event))"/></a-form-item>
 
               <PipelineDeployFields @invalid="deploymentFieldError" @validation-change="deploymentValidationChanged" v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :key="selectedNode.id" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
               <template v-else-if="selectedNode.config.inline_deployment_plan">
@@ -1949,7 +2016,7 @@ onBeforeRouteLeave(async () => {
                 <DeploymentPlanReferencePreview :plan="{...selectedNode.config.inline_deployment_plan,id:'inline'}" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
               <template v-else-if="selectedNode.config.deployment_plan_id">
-                <p v-if="!selectedLibraryDeploymentPlan" class="field-error" role="alert">原部署方案不可用</p>
+                <p v-if="!selectedLibraryDeploymentPlan" :class="resourceStates.deploymentPlans.ready && !resourceStates.deploymentPlans.error ? 'field-error' : 'panel-note'" role="status">{{ resourceReferenceLabel('deploymentPlans', '原部署方案不可用') }}</p>
                 <KubernetesPlanStageFields @invalid="deploymentFieldError" @validation-change="deploymentValidationChanged" v-if="selectedLibraryDeploymentPlan?.kind==='kubernetes'" :key="selectedNode.id" :node="selectedNode" :plan="selectedLibraryDeploymentPlan" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
                 <DeploymentPlanReferencePreview v-else-if="selectedLibraryDeploymentPlan" :plan="selectedLibraryDeploymentPlan" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
@@ -1972,6 +2039,7 @@ onBeforeRouteLeave(async () => {
                 message="当前账号没有读取通知渠道的权限"
                 description="已有规则会继续保留，但不能在这里查看或修改通知渠道。"
               />
+              <p v-else-if="resourceStates.notifications.loading" class="panel-note" role="status">正在加载通知渠道…</p>
               <div v-else-if="activeNotificationChannels.length && selectedTask.config.notifications?.length" class="node-notification-list">
                 <article v-for="rule in selectedTask.config.notifications" :key="rule.id" class="node-notification-rule">
                   <div class="node-notification-rule-head">
@@ -2109,6 +2177,7 @@ onBeforeRouteLeave(async () => {
 .linked-deployment-label{display:inline-flex;align-items:center;gap:8px}.linked-deployment-label>a{color:var(--edo-primary);text-decoration:none}.linked-deployment-label>a:hover{text-decoration:underline}.linked-deployment-label>a:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}
 
 .pipeline-editor-page { --pipeline-issue-color: #b42332; display: flex; height: calc(100dvh - 124px); min-height: 0; flex-direction: column; overflow: hidden; }
+.resource-load-error { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; color: var(--pipeline-issue-color); overflow-wrap: anywhere; }
 :global([data-theme="dark"] .pipeline-editor-page) { --pipeline-issue-color: #ff929b; }
 .pipeline-task-issues-entry { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 3px 7px; border: 1px solid var(--edo-border); border-radius: 5px; color: var(--pipeline-issue-color); background: var(--edo-surface); cursor: pointer; font-size: 12px; }
 .pipeline-task-issues-entry:focus-visible { outline: 2px solid var(--edo-primary); outline-offset: 2px; }

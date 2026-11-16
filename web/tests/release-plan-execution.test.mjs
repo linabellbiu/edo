@@ -108,13 +108,14 @@ test('未打开详情的忙碌计划每个既有周期补同步，终态后立�
   assert.equal(h.requests.filter(request => request.path === '/release-plans').length, 2)
 })
 
-test('切回计划遇到旧运行页刷新未结束时等待并重试，不丢失计划刷新且不重复排程', async t => {
+test('切回计划不等待旧运行页的慢请求，计划刷新独立完成且不重复排程', async t => {
   const pending = deferred(); let status = 'running', pageReads = 0
   const h = await harness({ hidden: false, get: request => request.path === '/release-plans' ? { data: { release_plans: [{ ...plan(), latest_execution: execution({ status }) }] } } : request.path === '/pipeline-runs' && ++pageReads > 1 ? pending.promise : undefined }); t.after(h.stop)
   h.subscriptions.at(-1).state('connected'); h.route.query = { view: 'runs' }; await settle()
   const oldRefresh = h.state.refreshRunState(); await settle()
   status = 'failed'; h.route.query = {}; await settle(); h.subscriptions.at(-1).event({ type: 'changed', resources: ['release_plans'] })
-  assert.equal(h.timers.size, 1); await h.flushTimers(); assert.equal(h.timers.size, 1)
+  assert.equal(h.timers.size, 1); await h.flushTimers(); assert.equal(h.timers.size, 0)
+  assert.equal(h.state.releasePlans.value[0].latest_execution.status, 'failed', '旧运行请求未返回时，计划已读取最新状态')
   pending.resolve({ data: { pipeline_runs: [], total: 0 } }); await oldRefresh; await h.flushTimers()
   assert.equal(h.state.releasePlans.value[0].latest_execution.status, 'failed'); assert.equal(h.timers.size, 0)
 })
