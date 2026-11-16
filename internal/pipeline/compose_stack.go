@@ -488,6 +488,10 @@ func composeStackScript(content string, config model.WorkflowNodeConfig, directo
 	if settings.HealthURL != "" {
 		health = "run_command curl --fail --silent --show-error --max-time 10 --output /dev/null " + composeShellLiteral(settings.HealthURL)
 	}
-	script := strings.NewReplacer("__EDO_UP_SERVICES__", strings.Join(explicit, " "), "__EDO_WRITE_ENV_FILES__", fileWrites, "__EDO_DOCKER__", docker, "__EDO_COMPOSE_ARGS__", args, "__EDO_PROJECT_NAME__", composeShellLiteral(settings.ProjectName), "__EDO_EXPECTED_IMAGES__", strings.Join(expected, " "), "__EDO_SERVICES__", strings.Join(services, " "), "__EDO_TIMEOUT__", fmt.Sprint(timeout-30), "__EDO_HEALTH_CHECK__", health, "__EDO_ADOPT_EXISTING__", fmt.Sprint(settings.AdoptExisting), "__EDO_WRITE_COMPOSE__", "cat >\"$release/compose.yml\" <<'"+marker+"'\n"+content+"\n"+marker+"\n").Replace(composeStackTemplate)
+	lockScript, lockErr := composeconfig.ProjectLockScript(timeout-30, 75)
+	if lockErr != nil {
+		return "", lockErr
+	}
+	script := strings.NewReplacer("__EDO_PROJECT_LOCK__", lockScript, "__EDO_UP_SERVICES__", strings.Join(explicit, " "), "__EDO_WRITE_ENV_FILES__", fileWrites, "__EDO_DOCKER__", docker, "__EDO_COMPOSE_ARGS__", args, "__EDO_PROJECT_NAME__", composeShellLiteral(settings.ProjectName), "__EDO_EXPECTED_IMAGES__", strings.Join(expected, " "), "__EDO_SERVICES__", strings.Join(services, " "), "__EDO_TIMEOUT__", fmt.Sprint(timeout-30), "__EDO_HEALTH_CHECK__", health, "__EDO_ADOPT_EXISTING__", fmt.Sprint(settings.AdoptExisting), "__EDO_WRITE_COMPOSE__", "cat >\"$release/compose.yml\" <<'"+marker+"'\n"+content+"\n"+marker+"\n").Replace(composeStackTemplate)
 	return script, nil
 }

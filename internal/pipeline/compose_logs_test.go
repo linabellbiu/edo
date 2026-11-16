@@ -94,6 +94,7 @@ func TestComposeFailureDetailsReachTaskLogsWithoutChangingFailureFlow(t *testing
 			if err := os.Mkdir(bin, 0700); err != nil {
 				t.Fatal(err)
 			}
+			installUncontendedComposeTestFlock(t, bin)
 			fixture := `#!/bin/sh
 set -eu
 phase=__PHASE__

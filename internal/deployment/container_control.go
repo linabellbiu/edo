@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"edo/internal/access"
+	"edo/internal/composeconfig"
 	"edo/internal/configfile"
 	"edo/internal/database"
 	"edo/internal/dockerengine"
@@ -24,6 +25,7 @@ import (
 
 var ErrContainerRecreateBaseline = errors.New("原发布配置或镜像已变化，请重新发布后再重建")
 var ErrContainerControlBusy = errors.New("该 Compose 项目正在执行其他操作，请稍后重试")
+var ErrComposeLockUnavailable = errors.New("Compose 文件锁不可用，请检查执行环境的 flock 工具、锁路径和文件系统权限")
 
 type ContainerControlConfirmation struct {
 	Digest string `json:"digest"`
@@ -216,6 +218,9 @@ func (s *Service) containerControlError(record *model.DeploymentRecord, containe
 	if errors.Is(cause, ErrContainerControlBusy) {
 		return ErrContainerControlBusy
 	}
+	if errors.Is(cause, ErrComposeLockUnavailable) {
+		return ErrComposeLockUnavailable
+	}
 	if errors.Is(cause, ErrRuntimeControlUnsupported) {
 		return ErrRuntimeControlUnsupported
 	}
@@ -330,6 +335,9 @@ func (s *Service) recreateComposeService(ctx context.Context, record *model.Depl
 		if result.ExitCode == 23 {
 			return dockerengine.RuntimeState{}, errors.Join(ErrContainerControlBusy, err)
 		}
+		if result.ExitCode == 74 {
+			return dockerengine.RuntimeState{}, errors.Join(ErrComposeLockUnavailable, err)
+		}
 		if result.ExitCode == 24 {
 			return dockerengine.RuntimeState{}, errors.Join(dockerengine.ErrContainerControlChanged, err)
 		}
@@ -385,8 +393,12 @@ func composeRecreateScript(deploymentID string, scope dockerengine.ComposeProjec
 		ids = append(ids, container.ID)
 	}
 	sort.Strings(ids)
+	lockScript, lockErr := composeconfig.ProjectLockScript(0, 23)
+	if lockErr != nil {
+		return "", lockErr
+	}
 	var script strings.Builder
-	fmt.Fprintf(&script, "set -eu\numask 077\nstate=%s\nfile_hash() { if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$1\"; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 \"$1\"; else return 1; fi | cut -d ' ' -f 1; }\nfor dir in .edo .edo/compose \"$state\" %s; do [ -d \"$dir\" ] && [ ! -L \"$dir\" ] || exit 20; done\n[ -f %s ] && [ ! -L %s ] || exit 21\n[ \"$(file_hash %s)\" = %s ] || exit 22\nlock=\"$state/active.lock\"\nmkdir \"$lock\" 2>/dev/null || exit 23\ntrap 'rmdir \"$lock\" 2>/dev/null || true' EXIT\ndocker_command() { %s \"$@\"; }\ndc() { docker_command compose %s \"$@\"; }\nservice=%s\nlog=%s\n", quote(".edo/compose/"+scope.ProjectName), quote(".edo/compose/"+scope.ProjectName+"/"+deploymentID), quote(file), quote(file), quote(file), quote(hex.EncodeToString(sum[:])), docker, args, quote(plan.Service), quote(".edo/compose/"+scope.ProjectName+"/"+deploymentID+"/container-recreate.log"))
+	fmt.Fprintf(&script, "set -eu\numask 077\nstate=%s\nfile_hash() { if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$1\"; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 \"$1\"; else return 1; fi | cut -d ' ' -f 1; }\nfor dir in .edo .edo/compose \"$state\" %s; do [ -d \"$dir\" ] && [ ! -L \"$dir\" ] || exit 20; done\n[ -f %s ] && [ ! -L %s ] || exit 21\n[ \"$(file_hash %s)\" = %s ] || exit 22\n%sdocker_command() { %s \"$@\"; }\ndc() { docker_command compose %s \"$@\"; }\nservice=%s\nlog=%s\n", quote(".edo/compose/"+scope.ProjectName), quote(".edo/compose/"+scope.ProjectName+"/"+deploymentID), quote(file), quote(file), quote(file), quote(hex.EncodeToString(sum[:])), lockScript, docker, args, quote(plan.Service), quote(".edo/compose/"+scope.ProjectName+"/"+deploymentID+"/container-recreate.log"))
 	if usesConfigurationDirectory {
 		// 目录来自冻结发布；HOME 在目标登录用户的 Shell 内展开。
 		directory := scope.ConfigurationDirectory

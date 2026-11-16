@@ -42,3 +42,24 @@ func TestRuntimeControlAuthorizationFailureReturnsSafeForbidden(t *testing.T) {
 		})
 	}
 }
+
+func TestComposeLockFailureReturnsSafeConfigurationReason(t *testing.T) {
+	var logs bytes.Buffer
+	handler := deploymentHandler{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	router := gin.New()
+	router.POST("/deployments/:id/runtime", func(c *gin.Context) {
+		handler.writeRuntimeError(c, "deployment_runtime_recreate", errors.Join(deployment.ErrComposeLockUnavailable, errors.New("fixture private lock path")))
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/deployments/fixture-deployment/runtime", nil))
+	var payload errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusConflict || payload.Code != "compose_lock_unavailable" || payload.Message != deployment.ErrComposeLockUnavailable.Error() || strings.Contains(response.Body.String(), "fixture private lock path") {
+		t.Fatal("锁工具异常被当成正在发布，或泄漏内部诊断", response.Body.String())
+	}
+	if !strings.Contains(logs.String(), "fixture private lock path") || !strings.Contains(logs.String(), "fixture-deployment") {
+		t.Fatal("锁异常没有记录必要上下文")
+	}
+}

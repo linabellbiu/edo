@@ -12,9 +12,7 @@ for dir in .edo .edo/compose ".edo/compose/$project_name"; do
  mkdir -p "$dir"
 done
 state=".edo/compose/$project_name"
-lock="$state/active.lock"
-mkdir "$lock" 2>/dev/null || { echo '该 Compose 项目已有发布锁，请核对正在执行的发布' >&2; exit 1; }
-trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+__EDO_PROJECT_LOCK__
 release="$state/$EDO_DEPLOYMENT_ID"
 mkdir "$release"
 log="$release/compose.log"

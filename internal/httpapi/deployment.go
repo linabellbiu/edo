@@ -212,6 +212,8 @@ func (h deploymentHandler) writeRuntimeError(c *gin.Context, operation string, e
 	switch {
 	case errors.Is(err, deployment.ErrContainerControlBusy):
 		writeError(c, http.StatusConflict, "container_control_busy", deployment.ErrContainerControlBusy.Error())
+	case errors.Is(err, deployment.ErrComposeLockUnavailable):
+		writeError(c, http.StatusConflict, "compose_lock_unavailable", deployment.ErrComposeLockUnavailable.Error())
 	case errors.Is(err, deployment.ErrContainerRecreateBaseline):
 		writeError(c, http.StatusConflict, "container_recreate_baseline_changed", deployment.ErrContainerRecreateBaseline.Error())
 	case errors.Is(err, dockerengine.ErrContainerControlChanged):

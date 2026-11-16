@@ -152,6 +152,7 @@ func TestComposeInlineScriptFailurePreservesOrRestoresImages(t *testing.T) {
 			if err := os.Mkdir(bin, 0o700); err != nil {
 				t.Fatal(err)
 			}
+			installUncontendedComposeTestFlock(t, bin)
 			fake := `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$TRACE"
@@ -209,6 +210,26 @@ exit 99
 				t.Fatal("不应删除项目或在部署主机构建")
 			}
 		})
+	}
+}
+
+// 日志/回滚用例不制造锁竞争；缺少命令的开发机用标准库执行真实内核锁。
+// 完整等待、退出码和中断协议由 composeconfig 的真实 Linux flock 专项验证。
+func installUncontendedComposeTestFlock(t *testing.T, bin string) {
+	t.Helper()
+	if binary, err := exec.LookPath("flock"); err == nil {
+		if err := os.Symlink(binary, filepath.Join(bin, "flock")); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal("此测试需要 flock，或具有 fcntl 标准库的 Python 3", err)
+	}
+	fixture := "#!" + python + "\nimport errno,fcntl,sys\ntry:\n fcntl.flock(int(sys.argv[-1]),fcntl.LOCK_EX|fcntl.LOCK_NB)\nexcept OSError as err:\n sys.exit(75 if err.errno in (errno.EACCES,errno.EAGAIN) else 74)\n"
+	if err := os.WriteFile(filepath.Join(bin, "flock"), []byte(fixture), 0700); err != nil {
+		t.Fatal(err)
 	}
 }
 
