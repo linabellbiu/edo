@@ -36,7 +36,7 @@ var installationStages = map[string]string{
 	"installer_killall": "创建服务停止脚本", "installer_uninstall": "创建卸载脚本", "installer_enable": "启用 K3s 系统服务",
 	"installer_binary": "官方安装器安装程序", "installer_environment": "官方安装器写入服务环境",
 	"installer_service": "官方安装器创建系统服务", "installer_start": "官方安装器启动系统服务",
-	"k3d_tool": "准备 k3d 工具", "k3d_create": "创建 k3d 容器节点", "k3d_resources": "校验 k3d 资源限制",
+	"k3d_tool": "准备 k3d 工具", "k3d_create": "创建 k3d 容器节点", "k3d_resources": "校验 k3d 资源限制", "k3d_cleanup": "清理本次失败的 k3d 资源",
 }
 
 type installationFailure struct {

@@ -36,6 +36,7 @@ type k3dTestTransport struct {
 	blocked, failCreate bool
 	configMisses        int
 	onRun               func(string)
+	cleanup             *k3dCleanupInventory
 }
 
 func k3dPreflightFixture() string {
@@ -52,6 +53,18 @@ func k3dPreflightFixture() string {
 }
 
 func (t *k3dTestTransport) Read(_ context.Context, _ model.Host, _ sshclient.Bundle, script string) (string, error) {
+	if strings.Contains(script, "EDO_K3D_FLOCK_READY") {
+		return "EDO_K3D_FLOCK_READY\n", nil
+	}
+	if args := cleanupScriptArgs(script); len(args) > 0 {
+		inventory := t.cleanup
+		if inventory == nil {
+			inventory = &k3dCleanupInventory{DaemonID: "remote-daemon"}
+		}
+		if raw, handled, err := cleanupFixtureResponse(args, inventory); handled {
+			return raw, err
+		}
+	}
 	if strings.Contains(script, "kubeconfig get") {
 		if t.configMisses > 0 {
 			t.configMisses--
@@ -75,6 +88,16 @@ func (t *k3dTestTransport) Run(ctx context.Context, host model.Host, bundle sshc
 	}
 	if t.onRun != nil {
 		t.onRun(script)
+	}
+	if strings.Contains(script, "edo_cli cluster create") {
+		_, suffix, found := strings.Cut(script, "edo.dev/installation=")
+		if found {
+			id, _, _ := strings.Cut(suffix, "@all")
+			t.cleanup = cleanupInventoryFixture(id, 1, "remote-daemon")
+		}
+	}
+	if strings.Contains(script, "\"$edo_k3d\" cluster delete") {
+		t.cleanup = &k3dCleanupInventory{DaemonID: "remote-daemon"}
 	}
 	if t.failCreate && strings.Contains(script, "edo_cli cluster create") {
 		return ErrRemote
@@ -293,6 +316,10 @@ func TestK3dWorkerWaitsForRealConnectionAndDoesNotAssociatePhysicalHost(t *testi
 		t.Fatal(err)
 	}
 	nodes := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var registered int64
+		if err := f.db.Model(&model.KubernetesCluster{}).Count(&registered).Error; err != nil || registered != 0 {
+			t.Errorf("节点验收前已出现集群记录: count=%d err=%v", registered, err)
+		}
 		if r.URL.Query().Get("labelSelector") != "edo.dev/installation="+plan.ID {
 			t.Error("节点就绪未按本次安装标签核对")
 		}
@@ -319,7 +346,7 @@ func TestK3dWorkerWaitsForRealConnectionAndDoesNotAssociatePhysicalHost(t *testi
 	}
 	f.service.runInstallation(context.Background(), *record)
 	result, err := f.service.Get(f.ctx, plan.ID)
-	if err != nil || result.Mode != "k3d" || result.K3d == nil || result.Status != "succeeded" || api.tests != 2 || clusters.created != 1 || len(clusters.linked) != 0 || clusters.joins != 0 || len(transport.writes) != 2 {
+	if err != nil || result.Mode != "k3d" || result.K3d == nil || result.Status != "succeeded" || api.tests < 3 || clusters.created != 1 || len(clusters.linked) != 0 || clusters.joins != 0 || len(transport.writes) != 2 {
 		t.Fatalf("k3d 未按独立连接接入: %+v tests=%d created=%d err=%v", result, api.tests, clusters.created, err)
 	}
 	for _, script := range transport.writes {
@@ -329,7 +356,7 @@ func TestK3dWorkerWaitsForRealConnectionAndDoesNotAssociatePhysicalHost(t *testi
 	}
 }
 
-func TestK3dFailureAndRevocationNeverImportOrDeleteResources(t *testing.T) {
+func TestK3dFailureAndRevocationOnlyDeleteOwnedAttemptResources(t *testing.T) {
 	for _, scenario := range []string{"preflight", "revoked", "download-revocation", "update-failure", "waiting-revocation"} {
 		t.Run(scenario, func(t *testing.T) {
 			f, transport, clusters, input := k3dFixture(t)
@@ -361,10 +388,16 @@ func TestK3dFailureAndRevocationNeverImportOrDeleteResources(t *testing.T) {
 			if err := f.db.First(&result, "uuid = ?", plan.ID).Error; err != nil || result.Status != "failed" || clusters.created != 0 {
 				t.Fatalf("失败安装被当作已接入: %+v err=%v", result, err)
 			}
+			deleted := false
 			for _, script := range transport.writes {
-				if strings.Contains(script, "cluster delete") || strings.Contains(script, "docker rm") || strings.Contains(script, "volume rm") {
-					t.Fatal("失败后自动删除了远端资源")
+				deleted = deleted || strings.Contains(script, "cluster delete")
+				if strings.Contains(script, "docker rm") || strings.Contains(script, "volume rm") {
+					t.Fatal("失败清理绕过官方 k3d 工具")
 				}
+			}
+			created := scenario == "update-failure" || scenario == "waiting-revocation"
+			if deleted != created || created && (transport.cleanup == nil || !transport.cleanup.empty()) {
+				t.Fatalf("本次创建资源未精确补偿: created=%v deleted=%v message=%s", created, deleted, result.ErrorMessage)
 			}
 		})
 	}

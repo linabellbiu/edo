@@ -47,6 +47,7 @@ func newProbeShellFixture(t *testing.T, missing string) probeShellFixture {
 		"ps":        "printf '%s' \"${EDO_TEST_PROCESSES:-}\"\nexit \"${EDO_TEST_PS_STATUS:-0}\"\n",
 		"stat":      "printf ext4\nexit \"${EDO_TEST_STAT_STATUS:-0}\"\n",
 		"docker":    "exit 9\n",
+		"flock":     "exit 0\n",
 		"ip":        "printf '2: eth0 inet 192.0.2.10/24 scope global eth0\\n'\n",
 		"systemctl": "printf '%s' \"${EDO_TEST_MANAGER_VERSION-255}\"\nexit \"${EDO_TEST_MANAGER_STATUS:-0}\"\n",
 		"sh":        "printf 'addresses\\t192.0.2.10\\nmachine_id\\t0123456789abcdef0123456789abcdef\\nsystem_uuid\\t\\nboot_id\\t\\n'\n",
@@ -144,6 +145,35 @@ func TestK3dPreflightReportSurvivesTransportErrexit(t *testing.T) {
 	report := parseHostPreflight(Host{ID: "fixture-host", Role: "host"}, output, nil, k3dPreflightDefinitions)
 	if report.Passed || preflightStatus(report, "tools") != "failed" || preflightStatus(report, "docker") != "failed" || len(report.Checks) != len(k3dPreflightDefinitions)+1 || preflightStatus(report, "report") != "" || preflightStatus(report, "connection") != "" {
 		t.Fatalf("k3d 缺少完整且失败闭合的预检报告: %+v", report.Checks)
+	}
+}
+
+func TestK3dPreflightRequiresFlockBeforeCreation(t *testing.T) {
+	for _, missing := range []string{"", "flock"} {
+		t.Run("missing-"+missing, func(t *testing.T) {
+			fixture := newProbeShellFixture(t, missing)
+			agents := 0
+			input := Input{Mode: "k3d", K3d: &K3dOptions{Agents: &agents, APIPort: 16443, BindAddress: "192.0.2.10"}}
+			output, err := fixture.run(t, k3dPreflightScript(input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			report := parseHostPreflight(Host{Role: "host"}, output, nil, k3dPreflightDefinitions)
+			want := "passed"
+			if missing != "" {
+				want = "failed"
+			}
+			if preflightStatus(report, "tools") != want || len(report.Checks) != len(k3dPreflightDefinitions)+1 {
+				t.Fatalf("flock 能力未进入完整只读预检: %+v", report.Checks)
+			}
+			if missing != "" {
+				for _, check := range report.Checks {
+					if check.ID == "tools" && !strings.Contains(check.Message, "flock") {
+						t.Fatal("缺少 flock 的提示未说明实际所需命令")
+					}
+				}
+			}
+		})
 	}
 }
 

@@ -567,7 +567,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	dockerService := dockerengine.NewService(resources.Database, secretManager, cfg.Runtime)
 	kubernetesService := kube.NewService(resources.Database, secretManager, cfg.Runtime)
 	kubernetesService.ConfigureNodeMonitoring(resources.Redis.Client(), resources.Redis.Key("kubernetes", "node-metrics"), logger)
-	k3sService := k3s.NewService(resources.Database, secretManager, kubernetesService, accessService, cfg.Runtime)
+	k3sService := k3s.NewService(resources.Database, secretManager, kubernetesService, accessService, cfg.Runtime).WithConcurrency(cfg.Worker.Concurrency)
 	sshDeploymentService := sshdeploy.NewService(resources.Database, secretManager, cfg.Runtime)
 	hostService := hostmanager.NewService(resources.Database, secretManager, dockerService, kubernetesService)
 	if err := hostService.RefreshLocalCapabilities(serviceCtx); err != nil {

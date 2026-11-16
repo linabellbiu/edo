@@ -12,7 +12,7 @@ var k3dPreflightDefinitions = []preflightCheckDefinition{
 	{"privilege", "SSH 与提权", "已在 root 权限下检查", "需要 root 或可用的 sudo 权限", ""},
 	{"os", "操作系统", "Linux 操作系统", "k3d 自动安装仅支持 Linux 主机", ""},
 	{"architecture", "CPU 架构", "支持当前 CPU 架构", "不支持该 CPU 架构", ""},
-	{"tools", "基础命令", "安装所需命令可用", "需要 Docker、curl、ip、ss、awk、df、getconf、sha256sum、timeout、install、mktemp、ln 和 base64 命令", ""},
+	{"tools", "基础命令", "安装所需命令可用", "需要 Docker、curl、ip、ss、awk、df、getconf、sha256sum、timeout、install、mktemp、ln、base64 和 flock 命令", ""},
 	{"docker", "本地 Docker", "本机 Unix Socket 上的 Linux Docker 版本满足要求", "需要本机 /var/run/docker.sock 上的 Linux Docker 20.10.5 或以上，不使用远端 Docker 或其他 Context", ""},
 	{"runc", "容器运行时版本", "本机 Docker 的 runc 版本满足官方最低要求", "k3d 需要 runc 1.0.0-rc93 或以上", "本机 Docker 未返回可核对的 runc 版本，需另行核验；未将其视为已通过"},
 	{"bind_address", "API 绑定地址", "绑定 IP 属于当前主机", "API 绑定地址必须是所选主机实际网卡上的 IP", ""},
@@ -115,7 +115,7 @@ if [ "$(id -u)" = 0 ]; then edo_check privilege passed; else edo_check privilege
 if [ "$(uname -s)" = Linux ]; then edo_check os passed; else edo_check os failed; fi
 if [ "$edo_arch" != unsupported ]; then edo_check architecture passed; else edo_check architecture failed; fi
 edo_tools=true
-for edo_tool in docker curl ip ss awk df getconf sha256sum timeout install mktemp ln base64 hostname ps; do command -v "$edo_tool" >/dev/null 2>&1 || edo_tools=false; done
+for edo_tool in docker curl ip ss awk df getconf sha256sum timeout install mktemp ln base64 hostname ps flock; do command -v "$edo_tool" >/dev/null 2>&1 || edo_tools=false; done
 if "$edo_tools"; then edo_check tools passed; else edo_check tools failed; fi
 edo_engine=$(timeout 5 env -i PATH="$edo_path" HOME=/var/lib/edo/k3d "$edo_docker_binary" --host=unix:///var/run/docker.sock version --format '{{.Server.Os}} {{.Server.Version}}' 2>/dev/null)
 edo_engine_status=$?
@@ -200,8 +200,7 @@ func k3dInstallScript(input Input, installationID string) (string, error) {
 		return "", err
 	}
 	server, worker := k3dResources(input.K3d)
-	script := `set -eu
-printf 'EDO_K3S_STAGE\tk3d_create\n'
+	script := "set -eu\n" + k3dCleanupLockScript(installationID) + `printf 'EDO_K3S_STAGE\tk3d_create\n'
 [ "$(id -u)" = 0 ]
 if ! mkdir -m 700 /run/edo-k3s-install.lock; then printf 'EDO_K3S_BUSY\n'; exit 43; fi
 trap 'rmdir /run/edo-k3s-install.lock' EXIT

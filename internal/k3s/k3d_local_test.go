@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +39,8 @@ type localCLIFixture struct {
 	config                               string
 	server, worker                       K3dNodeResources
 	limits                               map[string]K3dNodeResources
+	cleanup                              *k3dCleanupInventory
+	cleanupKeep                          bool
 }
 
 func (f *localCLIFixture) LocalCLIEnvironment(context.Context) ([]string, string, func(), error) {
@@ -50,6 +53,17 @@ func (f *localCLIFixture) run(ctx context.Context, binary string, args, env []st
 	f.calls = append(f.calls, append([]string{binary}, args...))
 	joined := strings.Join(args, " ")
 	write := func(value string) error { _, err := io.WriteString(out, value); return err }
+	cleanup := f.cleanup
+	if cleanup == nil {
+		cleanup = &k3dCleanupInventory{DaemonID: f.daemon}
+	}
+	if raw, handled, err := cleanupFixtureResponse(args, cleanup); handled {
+		f.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		return write(raw)
+	}
 	switch {
 	case joined == "info --format {{json .}}":
 		daemon := f.daemon
@@ -92,8 +106,25 @@ func (f *localCLIFixture) run(ctx context.Context, binary string, args, env []st
 				f.id = strings.TrimSuffix(strings.TrimPrefix(args[i+1], "edo.dev/installation="), "@all")
 			}
 		}
+		agents := 0
+		for i, arg := range args {
+			if arg == "--agents" {
+				agents, _ = strconv.Atoi(args[i+1])
+			}
+		}
+		f.cleanup = cleanupInventoryFixture(f.id, agents, f.daemon)
+		if f.wrongOwner {
+			f.cleanup.Containers[0].Installation = "other-installation"
+		}
 		f.mu.Unlock()
 		return write("INFO Pulling image 'registry.test/rancher/k3s:fixture'\n{\"status\":\"Downloading\",\"id\":\"layer-a\"}\rINFO Created cluster " + name + "\nClusterToken: generated-fixture-secret\n")
+	case len(args) == 3 && args[0] == "cluster" && args[1] == "delete":
+		if !f.cleanupKeep && f.cleanup != nil && len(f.cleanup.Containers) > 0 {
+			f.cleanup = &k3dCleanupInventory{DaemonID: f.daemon}
+			f.created = false
+		}
+		f.mu.Unlock()
+		return write("INFO Deleted cluster\n")
 	case strings.HasPrefix(joined, "volume inspect"):
 		id := f.id
 		f.mu.Unlock()
@@ -349,7 +380,7 @@ func TestLocalK3dSeparateFilesystemsKeepActualNodeLimits(t *testing.T) {
 	}
 }
 
-func TestLocalK3dResourceUpdateFailureNeverImportsOrCleansUp(t *testing.T) {
+func TestLocalK3dResourceUpdateFailureCleansOnlyFailedAttempt(t *testing.T) {
 	f, cli, input := localK3dFixture(t)
 	clusters := fakeClusterClient(t, f)
 	f.service.kubernetes = clusters
@@ -367,14 +398,24 @@ func TestLocalK3dResourceUpdateFailureNeverImportsOrCleansUp(t *testing.T) {
 	}
 	f.service.runInstallation(f.ctx, *record)
 	result, err := f.service.Get(f.ctx, plan.ID)
-	if err != nil || result.Status != "failed" || !cli.created || clusters.created != 0 {
+	if err != nil || result.Status != "failed" || cli.created || clusters.created != 0 || cli.cleanup == nil || !cli.cleanup.empty() {
 		t.Fatal("资源设置失败仍接入或报告成功", result, err)
 	}
+	deletes := 0
 	for _, args := range cli.calls {
 		joined := strings.Join(args, " ")
-		if strings.Contains(joined, " delete") || strings.Contains(joined, " rm") || strings.Contains(joined, "kubeconfig get") {
-			t.Fatal("资源设置失败后继续接入或自动清理", joined)
+		if strings.Contains(joined, " delete") {
+			if len(args) != 4 || args[1] != "cluster" || args[2] != "delete" || args[3] != k3dResourceName(record.ID) {
+				t.Fatal("清理目标不是本次准确安装", joined)
+			}
+			deletes++
 		}
+		if strings.Contains(joined, " rm") || strings.Contains(joined, "kubeconfig get") {
+			t.Fatal("资源设置失败后继续接入或绕过官方清理", joined)
+		}
+	}
+	if deletes != 1 || !strings.Contains(result.Error, "创建 k3d 容器节点失败") || !strings.Contains(result.Logs, "Created cluster") || !strings.Contains(result.Logs, "$ k3d cluster delete "+k3dResourceName(record.ID)) {
+		t.Fatal("官方精确清理或原失败日志未保留", result)
 	}
 }
 

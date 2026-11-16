@@ -42,6 +42,8 @@ const executionTimeout = 45 * time.Minute
 var validName = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{1,127}$`)
 
 type savedInput struct {
+	K3dCleanup             *k3dCleanupProof        `json:"k3d_cleanup,omitempty"`
+	K3dFailure             string                  `json:"k3d_failure,omitempty"`
 	LocalK3d               *localK3dSnapshot       `json:"local_k3d,omitempty"`
 	Uninstall              *savedUninstall         `json:"uninstall,omitempty"`
 	Input                  Input                   `json:"input"`
@@ -59,6 +61,8 @@ type savedInput struct {
 }
 
 type clusterService interface {
+	ClientsetForInput(context.Context, kube.Input) (*kubernetes.Clientset, error)
+	PrepareUnlinkedCreate(context.Context, string, kube.Input) (*model.KubernetesCluster, error)
 	Find(context.Context, string) (*model.KubernetesCluster, error)
 	Create(context.Context, string, kube.Input) (*model.KubernetesCluster, error)
 	AppendHosts(context.Context, string, []string) error
@@ -82,10 +86,19 @@ type Service struct {
 	transport       Transport
 	owner           string
 	k3dWaitInterval time.Duration
+	concurrency     int
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, kubernetes *kube.Service, authorizer Authorizer, cfg config.Runtime) *Service {
-	return &Service{localK3d: newLocalK3dRuntime(dockerengine.NewService(db, secrets, cfg)), db: db, secrets: secrets, kubernetes: kubernetes, authorizer: authorizer, transport: &sshTransport{timeout: cfg.ConnectTimeout}, owner: uuid.NewString()}
+	return &Service{localK3d: newLocalK3dRuntime(dockerengine.NewService(db, secrets, cfg)), db: db, secrets: secrets, kubernetes: kubernetes, authorizer: authorizer, transport: &sshTransport{timeout: cfg.ConnectTimeout}, owner: uuid.NewString(), concurrency: 1}
+}
+
+// WithConcurrency 复用后台任务并发配置；主机唯一锁继续限制同一目标。
+func (s *Service) WithConcurrency(concurrency int) *Service {
+	if concurrency > 0 {
+		s.concurrency = concurrency
+	}
+	return s
 }
 
 func (s *Service) WithTransport(transport Transport) *Service {

@@ -182,6 +182,9 @@ func (s *Service) performLocalK3d(ctx context.Context, record *model.K3sInstalla
 	if current.daemonID != snapshot.LocalK3d.DaemonID {
 		return ErrHostChanged
 	}
+	if err := s.prepareK3dCreation(ctx, record, &snapshot); err != nil {
+		return err
+	}
 	if err := s.runHostOperation(ctx, record, hosts, 0, "k3d_create", func(ctx context.Context, out io.Writer) error { return s.localK3d.create(ctx, input, record.ID, out) }); err != nil {
 		return err
 	}
@@ -204,19 +207,12 @@ func (s *Service) performLocalK3d(ctx context.Context, record *model.K3sInstalla
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
-	cluster, err := s.kubernetes.Create(ctx, record.CreatedBy, kube.Input{Name: input.Name, Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &value})
-	if err != nil {
-		return err
-	}
-	record.ClusterID = cluster.ID
-	if err := s.persistProgress(record, map[string]any{"cluster_id": cluster.ID}); err != nil {
-		return err
-	}
+	connectionInput := kube.Input{Name: input.Name, Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &value}
 	readyRecord := *record
 	if err := s.runHostOperation(ctx, record, hosts, 0, "node", func(ctx context.Context, out io.Writer) error {
 		logs.output = out
 		return s.localK3d.withLogs(ctx, input, record.ID, logs, func(ctx context.Context) error {
-			return s.waitForK3d(ctx, &readyRecord, snapshot, 1+k3dAgents(input.K3d))
+			return s.waitForK3dInput(ctx, &readyRecord, snapshot, connectionInput, 1+k3dAgents(input.K3d))
 		})
 	}); err != nil {
 		return err
@@ -224,5 +220,5 @@ func (s *Service) performLocalK3d(ctx context.Context, record *model.K3sInstalla
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
-	return s.hostProgress(record, hosts, 0, "succeeded", "本地 k3d 容器集群已就绪")
+	return s.completeK3d(ctx, record, connectionInput, hosts)
 }

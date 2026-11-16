@@ -493,6 +493,12 @@ func (k *fakeClusters) Create(_ context.Context, _ string, input kube.Input) (*m
 	copy.Name = input.Name
 	return &copy, nil
 }
+func (k *fakeClusters) ClientsetForInput(context.Context, kube.Input) (*kubernetes.Clientset, error) {
+	return k.client, nil
+}
+func (k *fakeClusters) PrepareUnlinkedCreate(ctx context.Context, actor string, input kube.Input) (*model.KubernetesCluster, error) {
+	return k.Create(ctx, actor, input)
+}
 func (k *fakeClusters) AppendHosts(_ context.Context, _ string, ids []string) error {
 	for _, id := range ids {
 		if !slices.Contains(k.linked, id) {

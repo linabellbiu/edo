@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"gorm.io/datatypes"
@@ -23,14 +24,41 @@ import (
 // Run is an application-lifecycle worker, not a request-scoped goroutine. A
 // process restart fails expired leases instead of replaying privileged installs.
 func (s *Service) Run(ctx context.Context) error {
+	var workers sync.WaitGroup
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for ctx.Err() == nil {
+			if err := s.recoverExpired(ctx); err != nil {
+				slog.ErrorContext(ctx, "清理过期 K3s 安装任务失败", "operation", "k3s_lease_recovery", "err", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	for range max(1, s.concurrency) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			s.runPendingInstallations(ctx)
+		}()
+	}
+	<-ctx.Done()
+	workers.Wait()
+	return ctx.Err()
+}
+
+func (s *Service) runPendingInstallations(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := s.recoverExpired(ctx); err != nil {
-			slog.ErrorContext(ctx, "清理过期 K3s 安装任务失败", "operation", "k3s_lease_recovery", "err", err)
+			return
 		}
 		record, err := s.claim(ctx)
 		if err != nil {
@@ -41,7 +69,7 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return
 		case <-ticker.C:
 		}
 	}
@@ -50,38 +78,78 @@ func (s *Service) Run(ctx context.Context) error {
 func (s *Service) recoverExpired(ctx context.Context) error {
 	now := time.Now().UTC()
 	var records []model.K3sInstallation
-	if err := s.db.WithContext(ctx).Where("(status = ? AND lease_expires_at < ?) OR (status = ? AND updated_at < ?)", "running", now, "pending", now.Add(-executionTimeout)).Find(&records).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("(status IN ? AND lease_expires_at < ?) OR (status = ? AND updated_at < ?)", []string{"running", "failed"}, now, "pending", now.Add(-executionTimeout)).Find(&records).Error; err != nil {
 		return err
 	}
+	jobs := make(chan model.K3sInstallation)
+	failures := make(chan error, 1)
+	var workers sync.WaitGroup
+	for range min(max(1, s.concurrency), len(records)) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for record := range jobs {
+				if err := s.recoverExpiredRecord(ctx, record); err != nil {
+					slog.ErrorContext(ctx, "恢复过期 K3s 主机任务失败", "operation", "k3s_recover_installation", "installation_id", record.ID, "err", err)
+					select {
+					case failures <- err:
+					default:
+					}
+				}
+			}
+		}()
+	}
+feed:
 	for _, record := range records {
-		interrupted := "安装进程已中断，请先检查主机上的实际安装状态，再重新操作。"
-		if record.Action == "uninstall" {
-			interrupted = "卸载进程已中断，实际状态未知，请保留现场并检查，不会自动重试。"
-		}
-		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			query := tx.Model(&model.K3sInstallation{}).Where("uuid = ? AND status = ?", record.ID, record.Status)
-			if record.Status == "running" {
-				query = query.Where("lease_expires_at < ?", now)
-			} else {
-				query = query.Where("updated_at < ?", now.Add(-executionTimeout))
-			}
-			updated := query.Updates(map[string]any{"status": "failed", "error_message": interrupted, "finished_at": now, "updated_at": now, "lease_owner": "", "lease_expires_at": nil})
-			if updated.Error != nil {
-				return updated.Error
-			}
-			if updated.RowsAffected == 0 {
-				return nil
-			}
-			if record.Action == "uninstall" && uninstallDestructiveStage(record.Hosts) {
-				return nil
-			}
-			return tx.Where("installation_id = ?", record.ID).Delete(&model.K3sInstallationHostLock{}).Error
-		})
-		if err != nil {
-			return err
+		select {
+		case jobs <- record:
+		case <-ctx.Done():
+			break feed
 		}
 	}
-	return nil
+	close(jobs)
+	workers.Wait()
+	select {
+	case err := <-failures:
+		return err
+	default:
+		return ctx.Err()
+	}
+}
+
+func (s *Service) recoverExpiredRecord(ctx context.Context, record model.K3sInstallation) error {
+	// 每条任务真正取得执行槽后再取时间，避免前一条慢清理耗尽后一条租约。
+	now := time.Now().UTC()
+	if handled, err := s.recoverK3d(ctx, record, now); handled || err != nil {
+		return err
+	}
+	if record.Status == "failed" {
+		// 终态恢复只用于带补偿租约的 k3d，不覆盖原生安装或卸载的失败原因。
+		return nil
+	}
+	interrupted := "安装进程已中断，请先检查主机上的实际安装状态，再重新操作。"
+	if record.Action == "uninstall" {
+		interrupted = "卸载进程已中断，实际状态未知，请保留现场并检查，不会自动重试。"
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		query := tx.Model(&model.K3sInstallation{}).Where("uuid = ? AND status = ?", record.ID, record.Status)
+		if record.Status == "running" {
+			query = query.Where("lease_expires_at < ?", now)
+		} else {
+			query = query.Where("updated_at < ?", now.Add(-executionTimeout))
+		}
+		updated := query.Updates(map[string]any{"status": "failed", "error_message": interrupted, "finished_at": now, "updated_at": now, "lease_owner": "", "lease_expires_at": nil})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected == 0 {
+			return nil
+		}
+		if record.Action == "uninstall" && uninstallDestructiveStage(record.Hosts) {
+			return nil
+		}
+		return tx.Where("installation_id = ?", record.ID).Delete(&model.K3sInstallationHostLock{}).Error
+	})
 }
 
 func (s *Service) claim(ctx context.Context) (*model.K3sInstallation, error) {
@@ -192,6 +260,10 @@ func (s *Service) runInstallation(parent context.Context, record model.K3sInstal
 }
 
 func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err error) {
+	if snapshot, decodeErr := s.decode(record); record.Action == "create" && (decodeErr == nil && snapshot.Input.Mode == "k3d" || k3dRecordHint(record)) {
+		s.finishK3d(ctx, record, err)
+		return
+	}
 	now := time.Now().UTC()
 	status, message := "succeeded", ""
 	if err != nil {

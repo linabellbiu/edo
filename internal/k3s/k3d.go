@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 
 	"edo/internal/kube"
 	"edo/internal/model"
@@ -302,6 +303,9 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err != nil {
 		return err
 	}
+	if err := s.prepareK3dCreation(ctx, record, &snapshot); err != nil {
+		return err
+	}
 	if err := s.runHostOperation(ctx, record, hosts, 0, "k3d_create", func(ctx context.Context, output io.Writer) error {
 		err := s.transport.Run(ctx, current, bundle, script, output)
 		if err != nil && ctx.Err() == nil {
@@ -330,19 +334,12 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
-	cluster, err := s.kubernetes.Create(ctx, record.CreatedBy, kube.Input{Name: input.Name, Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &value})
-	if err != nil {
-		return err
-	}
-	record.ClusterID = cluster.ID
-	if err := s.db.WithContext(ctx).Model(&model.K3sInstallation{}).Where("uuid = ? AND lease_owner = ?", record.ID, s.owner).Update("cluster_id", cluster.ID).Error; err != nil {
-		return err
-	}
+	connectionInput := kube.Input{Name: input.Name, Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &value}
 	readyRecord := *record
 	if err := s.runHostOperation(ctx, record, hosts, 0, "node", func(ctx context.Context, output io.Writer) error {
 		terminalLogs.output = output
 		return s.withTerminalObservations(ctx, current, bundle, k3dTerminalObservations(input, record.ID, true), terminalLogs, func(ctx context.Context) error {
-			return s.waitForK3d(ctx, &readyRecord, snapshot, 1+k3dAgents(input.K3d))
+			return s.waitForK3dInput(ctx, &readyRecord, snapshot, connectionInput, 1+k3dAgents(input.K3d))
 		})
 	}, installationLogSecrets(input, bundle)...); err != nil {
 		return err
@@ -350,10 +347,7 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
-	if err := s.hostProgress(record, hosts, 0, "succeeded", "k3d 容器集群已就绪，未关联物理节点"); err != nil {
-		return err
-	}
-	return s.log(record, "k3d 集群已独立接入 EDO："+resourceName)
+	return s.completeK3d(ctx, record, connectionInput, hosts)
 }
 
 func (s *Service) waitForK3dConnection(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, host model.Host, bundle sshclient.Bundle) (string, error) {
@@ -437,6 +431,24 @@ func (s *Service) waitForK3d(ctx context.Context, record *model.K3sInstallation,
 		}
 		return err
 	}
+	return s.waitForK3dClient(ctx, record, snapshot, expected, client, func(ctx context.Context) error {
+		_, err := s.kubernetes.Ping(ctx, record.ClusterID)
+		return err
+	})
+}
+
+func (s *Service) waitForK3dInput(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, input kube.Input, expected int) error {
+	client, err := s.kubernetes.ClientsetForInput(ctx, input)
+	if err != nil {
+		return err
+	}
+	return s.waitForK3dClient(ctx, record, snapshot, expected, client, func(ctx context.Context) error {
+		_, err := s.kubernetes.Test(ctx, input)
+		return err
+	})
+}
+
+func (s *Service) waitForK3dClient(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, expected int, client *kubernetes.Clientset, ping func(context.Context) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	interval := s.k3dWaitInterval
@@ -455,7 +467,7 @@ func (s *Service) waitForK3d(ctx context.Context, record *model.K3sInstallation,
 			}
 			return err
 		}
-		_, pingErr := s.kubernetes.Ping(ctx, record.ClusterID)
+		pingErr := ping(ctx)
 		if err := k3dWaitContextError(ctx); err != nil {
 			return err
 		}

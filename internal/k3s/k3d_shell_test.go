@@ -16,7 +16,7 @@ import (
 )
 
 func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T) {
-	for _, scenario := range []string{"success", "custom-resources", "custom-cpu-shortfall", "custom-memory-shortfall", "minimum-engine", "bad-checksum", "old-engine", "unknown-engine", "wrong-bind", "occupied-port", "low-cpu", "low-memory", "low-disk", "update-failure", "volume-conflict", "volume-list-failure", "foreign-volume-owner"} {
+	for _, scenario := range []string{"success", "custom-resources", "custom-cpu-shortfall", "custom-memory-shortfall", "minimum-engine", "bad-checksum", "old-engine", "unknown-engine", "wrong-bind", "occupied-port", "low-cpu", "low-memory", "low-disk", "update-failure", "volume-conflict", "volume-list-failure", "foreign-volume-owner", "flock-failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			// 使用短路径，兼容 macOS Unix Socket 的路径长度限制。
 			directory, err := os.MkdirTemp("/tmp", "edo-k3d-shell-")
@@ -99,6 +99,11 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 			writePreflightCommand(t, commands, "docker", docker)
 			// 测试用上下文统一限制时长；桩只去掉 timeout 参数，不访问真实服务。
 			writePreflightCommand(t, commands, "timeout", "shift\nexec \"$@\"\n")
+			lockCommand := "[ \"$*\" = '-w 20 9' ] && [ -e /dev/fd/9 ] || exit 82\nprintf 'flock acquired\\n' >> " + shellQuote(calls) + "\n"
+			if scenario == "flock-failure" {
+				lockCommand = "exit 81\n"
+			}
+			writePreflightCommand(t, commands, "flock", lockCommand)
 			writePreflightCommand(t, commands, "id", "printf 0\n")
 			writePreflightCommand(t, commands, "uname", "case \"${1:-}\" in -s) printf Linux;; *) printf x86_64;; esac\n")
 			writePreflightCommand(t, commands, "hostname", "printf k3d-host\n")
@@ -153,7 +158,7 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 				t.Fatal(err)
 			}
 			originalPath := commands + ":" + os.Getenv("PATH")
-			rewrite := strings.NewReplacer("/var/lib/edo/k3d", filepath.Join(directory, "tools"), "/var/lib/edo", directory, "/var/run/docker.sock", socket, "/run/edo-k3s-install.lock", filepath.Join(directory, "install.lock"), "/proc/meminfo", meminfo, "edo_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "edo_path="+shellQuote(originalPath), "06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0", hash)
+			rewrite := strings.NewReplacer("/var/lib/edo/k3d", filepath.Join(directory, "tools"), "/var/lib/edo", directory, "/var/run/docker.sock", socket, "/run/edo-k3s-install.lock", filepath.Join(directory, "install.lock"), "/run/edo-k3d-", filepath.Join(directory, "edo-k3d-"), "/proc/meminfo", meminfo, "edo_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "edo_path="+shellQuote(originalPath), "06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0", hash)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			run := func(script string) error {
@@ -182,6 +187,9 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 				t.Fatal("前置检查失败仍创建容器")
 			}
 			if wantSuccess {
+				if locked, created := strings.Index(string(encoded), "flock acquired"), strings.Index(string(encoded), "cli cluster create"); locked < 0 || locked > created {
+					t.Fatal("未在取得安装互斥锁后调用官方创建")
+				}
 				for _, expected := range []string{"cli cluster create " + k3dResourceName(id), "--runtime-label edo.dev/installation=" + id + "@all", "--servers-memory " + k3dMemoryArgument(server.MemoryMiB) + " --agents-memory " + k3dMemoryArgument(worker.MemoryMiB), "docker update --cpus " + k3dCPUArgument(server.CPUMillis) + " --memory " + k3dMemoryArgument(server.MemoryMiB) + " --memory-swap " + k3dMemoryArgument(server.MemoryMiB) + " k3d-" + k3dResourceName(id) + "-server-0", "docker update --cpus " + k3dCPUArgument(worker.CPUMillis) + " --memory " + k3dMemoryArgument(worker.MemoryMiB) + " --memory-swap " + k3dMemoryArgument(worker.MemoryMiB) + " k3d-" + k3dResourceName(id) + "-agent-0", "cli kubeconfig get " + k3dResourceName(id)} {
 					if !strings.Contains(string(encoded), expected) {
 						t.Fatalf("未执行固定本地CLI/节点限制: %s", expected)
