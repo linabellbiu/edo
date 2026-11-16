@@ -467,3 +467,19 @@ test('图读取失败显示错误可重试；切换流水线的只读等待不�
   h.state.switching.value = true
   assert.equal(await h.routeLeaves[0](), true)
 })
+
+
+test('目录仍在读取时，浏览历史切换直接读取目标流水线，不被候选列表阻塞', async t => {
+  const pending = deferred()
+  const h = await harness({ get: request => {
+    if (['/applications', '/workflow-templates'].includes(request.path)) return pending.promise
+    if (request.path === '/applications/app-project-a/workflows/another-flow') return { data: { workflow: graph('project-a', { id: 'another-flow' }), issues: [] } }
+    if (request.path === '/workflow-templates/another-template') return { data: { workflow_template: graph('project-a', { id: 'another-template', application_id: '' }), issues: [] } }
+  } })
+  t.after(h.stop)
+  assert.equal(await h.routeUpdates[0]({ query: { application: 'app-project-a', workflow: 'another-flow' } }), true)
+  assert.equal(h.state.workflow.value.id, 'another-flow')
+  assert.equal(await h.routeUpdates[0]({ query: { template: 'another-template' } }), true)
+  assert.equal(h.state.workflow.value.id, 'another-template')
+  assert.deepEqual(writes(h), [])
+})

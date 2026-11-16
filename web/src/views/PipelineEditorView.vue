@@ -1646,13 +1646,13 @@ onBeforeRouteUpdate(async to => {
   loading.value=true;switching.value=true
   try {
     if(nextApplicationID){
-      const selected=applications.value.find(item=>item.id===nextApplicationID)?.workflows?.find(item=>item.id===nextWorkflowID)
-      if(!selected)return false
+      if(!nextWorkflowID)return false
+      const selected={id:nextWorkflowID}
       const result=await client.get<WorkflowResponse>(`/applications/${nextApplicationID}/workflows/${selected.id}`,scopeOptions(scope))
       if(!currentScope(scope)||request!==graphRevision)return false
       loadGraph(result.data.workflow,result.data.issues,scope);applicationID.value=nextApplicationID;workflowID.value=selected.id;templateID.value=''
     }else{
-      if(!templates.value.some(item=>item.id===nextTemplateID))return false
+      if(!nextTemplateID)return false
       const result=await client.get<WorkflowTemplateResponse>(`/workflow-templates/${nextTemplateID}`,scopeOptions(scope))
       if(!currentScope(scope)||request!==graphRevision)return false
       loadGraph(result.data.workflow_template,result.data.issues,scope);templateID.value=nextTemplateID;applicationID.value='';workflowID.value=''
