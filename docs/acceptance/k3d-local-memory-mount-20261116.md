@@ -9,7 +9,7 @@
 - [k3d v5.9.0 NodeCreate](https://github.com/k3d-io/k3d/blob/v5.9.0/pkg/client/node.go#L637) 在传入内存限制时无条件生成客户端 meminfo 并增加 bind mount；`K3D_FIX_MOUNTS` 控制的是另一个启动钩子，不能关闭该挂载。
 - 本地连接可能采用 TCP、Unix Socket 或隔离构建器，不按地址、主机名判断文件系统共享。不传 `--servers-memory` / `--agents-memory`，由官方 CLI 创建集群后，通过原有 `docker update` 按准确标签、集群与容器 ID 设置 Server、每个 Worker 的 CPU、内存和 Swap，随后重新读取实际值核验。
 - SSH 路径仍在 Docker 所在主机运行 CLI，保留原来的创建时内存参数。无新增依赖，不修改官方 CLI、Docker 服务或主机挂载，也不增加代理、内核和网络修复。
-- 本地 CPU 和内存限额在官方创建命令返回后生效，启动瞬间存在短暂空档；不宣称创建时即受限。由于未伪造 `/proc/meminfo`，Kubernetes 报告的节点内存容量可能不同于 Docker 容器限额，真实 Node 指标仍需安装后验收。
+- 本地 CPU 和内存限额在官方创建命令返回后生效，从节点启动至该命令返回期间尚未限制；不宣称创建时即受限。由于未伪造 `/proc/meminfo`，Kubernetes 报告的节点内存容量可能不同于 Docker 容器限额，真实 Node 指标仍需安装后验收。
 
 ## 回归范围
 
@@ -20,3 +20,11 @@
 上述契约测试不连接真实 Docker，不创建或启动任何真实容器。原失败任务与现场保留，未重新安装，不把回归测试作为真实 Ready 和接入验收。
 
 验证结果：完整 `internal/k3s` 回归（含官方 CLI 契约）通过，78.219 秒；本地创建、限额、身份变化与失败路径的 race 回归通过，8.478 秒。无前端改动，本次不重复前端构建或变更 Web 镜像。
+
+## 本地更新回执
+
+- API 从已提交代码 `48d9758` 的干净归档独立构建，运行镜像 `edo-api:local-48d9758`，镜像 revision 与实际命令输出 `EDO 48d9758` 一致。
+- 仅重建本地 API，沿用原主 Compose、覆盖文件和命名数据卷。Web、PostgreSQL、Redis、NATS、Docker 构建器的容器 ID 和启动时间与更新前一致；未执行迁移容器。
+- 本地入口 `http://127.0.0.1:18080` 的 `/healthz`、`/api/v1/health/ready` 返回 200，builder、database、nats、redis 检查全部正常。
+- 切换前没有执行中任务。安装记录仍为 6 条失败、5 条计划、3 条成功；后台任务与流水线状态计数未变。原失败任务的状态、错误和日志摘要与更新前一致，两个节点均仍为 `created`，未启动、删除或重装。
+- 代码与回执仅在本地提交，未推送或远程发布。官方 CLI 契约、应用健康和现场保留分别核对，不作为真实集群 Ready 验收。
