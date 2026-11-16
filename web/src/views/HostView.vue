@@ -156,15 +156,15 @@ const selectedGroupTitle = computed(() => selectedGroupKey.value === ungroupedGr
 const environmentNames = computed(() => new Map(hostGroups.value.map(environment => [environment.id, environment.name])))
 const normalizedSearch = computed(() => searchQuery.value.trim().toLocaleLowerCase())
 const tableColumns = [
-  { title: '主机名称', key: 'name', width: 190 },
-  { title: '连接信息', key: 'connection', width: 180 },
-  { title: '系统资源', key: 'resources', width: 240 },
-  { title: '所属分组', key: 'groups', width: 150 },
-  { title: '主机能力', key: 'capabilities', width: 120 },
-  { title: '关联流水线', key: 'workflows', width: 220 },
-  { title: '关联集群', key: 'cluster', width: 180 },
-  { title: '状态', key: 'status', width: 140 },
-  { title: '操作', key: 'actions', fixed: 'right' as const, width: 120 },
+  { title: '主机名称', key: 'name', width: 180 },
+  { title: '连接信息', key: 'connection', width: 170 },
+  { title: '系统资源', key: 'resources', width: 250 },
+  { title: '所属分组', key: 'groups', width: 120 },
+  { title: '主机能力', key: 'capabilities', width: 112 },
+  { title: '关联流水线', key: 'workflows', width: 200 },
+  { title: '关联集群', key: 'cluster', width: 160 },
+  { title: '状态', key: 'status', width: 112 },
+  { title: '操作', key: 'actions', fixed: 'right' as const, width: 112 },
 ]
 
 const selectedEnvironmentSummary = computed(() => {
@@ -855,14 +855,15 @@ onBeforeUnmount(() => {
           :data-source="filteredHosts"
           :loading="loading"
           :pagination="{ ...hostPagination, showSizeChanger: false }" @change="changeHostPage"
-          :scroll="{ x: 1540 }"
+          :scroll="{ x: 1416 }"
+          table-layout="fixed"
           row-key="id"
           size="middle"
           class="host-table resource-list-table"
         >
           <template #bodyCell="{ column, record }: { column: { key: string }, record: InfrastructureHost }">
             <template v-if="column.key === 'name'">
-              <button type="button" class="host-name" @click="openDetails(record)">
+              <button type="button" class="host-name" :title="record.name" @click="openDetails(record)">
                 <span class="host-icon" :class="{ inactive: !record.is_active }"><Server :size="18" /></span>
                 <span><strong>{{ record.name }}</strong><small>{{ record.is_builtin ? '本地主机' : 'SSH 主机' }}<span v-if="record.architecture"> · {{ record.architecture.toUpperCase() }}</span></small></span>
               </button>
@@ -874,13 +875,14 @@ onBeforeUnmount(() => {
               </div>
             </template>
             <template v-else-if="column.key === 'resources'">
-              <HostResourceSummary :host="record" :revision="resourceRevision" />
+              <HostResourceSummary :host="record" :revision="resourceRevision" compact />
             </template>
             <template v-else-if="column.key === 'groups'">
               <span v-if="!canReadGroups" class="muted-text">无主机组查看权限</span>
-              <div v-else-if="groupNamesOf(record).length" class="group-tags">
-                <a-tag v-for="name in groupNamesOf(record)" :key="name">{{ name }}</a-tag>
-              </div>
+              <a-popover v-else-if="groupNamesOf(record).length" :trigger="['hover','focus','click']">
+                <template #content><div class="host-group-popover"><a-tag v-for="name in groupNamesOf(record)" :key="name">{{ name }}</a-tag></div></template>
+                <button type="button" class="group-tags" :aria-label="`所属分组：${groupNamesOf(record).join('、')}`"><a-tag>{{ groupNamesOf(record)[0] }}</a-tag><span v-if="groupNamesOf(record).length>1" class="muted-text">+{{ groupNamesOf(record).length-1 }}</span></button>
+              </a-popover>
               <span v-else class="muted-text">—</span>
             </template>
             <template v-else-if="column.key === 'capabilities'">
@@ -898,14 +900,14 @@ onBeforeUnmount(() => {
               <span v-if="!canReadWorkflows" class="muted-text">无流水线查看权限</span>
               <a-tooltip v-else-if="workflowLoadError" :title="workflowLoadError"><span class="muted-text">关联读取失败</span></a-tooltip>
               <div v-else-if="hostWorkflows[record.id]?.length" class="host-workflows">
-                <router-link v-for="flow in hostWorkflows[record.id].slice(0,2)" :key="flow.id" :to="workflowLink(flow)" :title="`${flow.application_name} / ${flow.name}${flow.is_active?'':'（已停用）'}`">{{flow.application_name}} / {{flow.name}}</router-link>
-                <a-popover v-if="hostWorkflows[record.id].length>2" :trigger="['click']" title="关联流水线"><template #content><div class="host-workflow-popover"><router-link v-for="flow in hostWorkflows[record.id]" :key="flow.id" :to="workflowLink(flow)">{{flow.application_name}} / {{flow.name}}{{flow.is_active?'':'（已停用）'}}</router-link></div></template><a-button type="link" size="small">共 {{hostWorkflows[record.id].length}} 条流水线</a-button></a-popover>
+                <router-link v-for="flow in hostWorkflows[record.id].slice(0,1)" :key="flow.id" :to="workflowLink(flow)" :title="`${flow.application_name} / ${flow.name}${flow.is_active?'':'（已停用）'}`">{{flow.application_name}} / {{flow.name}}</router-link>
+                <a-popover v-if="hostWorkflows[record.id].length>1" :trigger="['click']" title="关联流水线"><template #content><div class="host-workflow-popover"><router-link v-for="flow in hostWorkflows[record.id]" :key="flow.id" :to="workflowLink(flow)">{{flow.application_name}} / {{flow.name}}{{flow.is_active?'':'（已停用）'}}</router-link></div></template><a-button type="link" size="small">共 {{hostWorkflows[record.id].length}} 条流水线</a-button></a-popover>
               </div>
               <span v-else class="muted-text">—</span>
             </template>
             <template v-else-if="column.key === 'cluster'">
               <span v-if="clusterLoadError" class="muted-text">读取失败</span>
-              <div v-else-if="clusterForHost(record, clusters)" class="host-cluster-cell"><button type="button" class="host-cluster-link" @click="manageCluster(clusterForHost(record, clusters)!)"><RuntimeBrandIcon kind="kubernetes" />{{ clusterForHost(record, clusters)?.name }}<ArrowUpRight :size="12" /></button><KubeHostRoleBadge :cluster="clusterForHost(record, clusters)!.id" :host="record.id" /></div>
+              <div v-else-if="clusterForHost(record, clusters)" class="host-cluster-cell"><button type="button" class="host-cluster-link" @click="manageCluster(clusterForHost(record, clusters)!)"><RuntimeBrandIcon kind="kubernetes" /><span>{{ clusterForHost(record, clusters)?.name }}</span><ArrowUpRight :size="12" /></button><KubeHostRoleBadge :cluster="clusterForHost(record, clusters)!.id" :host="record.id" /></div>
               <span v-else class="muted-text">—</span>
             </template>
             <template v-else-if="column.key === 'status'">
@@ -1099,4 +1101,23 @@ onBeforeUnmount(() => {
 .host-group-node :deep(.ant-btn){padding:0 3px;flex-shrink:0}.all-hosts{display:flex;align-items:center;gap:8px;width:100%;margin-top:12px;padding:8px;border:0;border-radius:4px;background:transparent;color:var(--edo-text);text-align:left;cursor:pointer}.all-hosts span{margin-left:auto;color:var(--edo-muted)}.all-hosts.active,.all-hosts:hover{background:var(--edo-primary-soft);color:var(--edo-primary)}.all-hosts:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
 @media(max-width:1000px){.host-workspace:has(.host-group-tree){grid-template-columns:210px minmax(0,1fr)}}
 @media(max-width:720px){.host-workspace:has(.host-group-tree){grid-template-columns:1fr}.host-group-tree{border-right:0;border-bottom:1px solid var(--edo-border);max-height:280px;overflow:auto}}
+</style>
+
+<style scoped>
+.host-table :deep(.ant-table-thead>tr>th){height:40px;padding:9px 12px}
+.host-table :deep(.ant-table-tbody>tr:not(.ant-table-expanded-row)>td){height:64px;padding:8px 12px;line-height:20px}
+.host-table .host-name{width:100%;gap:8px;font:inherit}
+.host-table .host-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;overflow-wrap:normal}
+.host-table .host-name:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px;border-radius:3px}
+.host-table .two-line-cell strong{font-weight:500}
+.host-table .group-tags{max-width:100%;align-items:center;flex-wrap:nowrap;padding:0;border:0;color:inherit;background:transparent;font:inherit;cursor:pointer;gap:4px}
+.host-table .group-tags :deep(.ant-tag){min-width:0;max-width:100%;flex:0 1 auto;text-overflow:ellipsis;white-space:nowrap}
+.host-table .group-tags>.muted-text{flex-shrink:0;font-size:12px}
+.host-table .group-tags:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px;border-radius:3px}
+.host-group-popover{display:flex;flex-wrap:wrap;gap:6px;max-width:min(360px,80vw)}
+.host-group-popover :deep(.ant-tag){max-width:100%;margin:0;white-space:normal;overflow-wrap:anywhere}
+.host-table .host-workflows{gap:2px;line-height:20px}.host-table .host-workflows>a,.host-table .host-workflows>.ant-btn{color:var(--host-link)}
+.host-table .host-workflows>.ant-btn{line-height:20px;font-size:12px}
+.host-table .host-cluster-cell{min-width:0}
+.host-table .host-cluster-link{max-width:100%}.host-table .host-cluster-link>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>

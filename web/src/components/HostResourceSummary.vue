@@ -7,7 +7,7 @@ import type { InfrastructureHost } from '@/api/infrastructure'
 import { useAuthStore } from '@/stores/auth'
 import { formatHostCapacity, formatHostCPU } from '@/utils/hostResources'
 
-const props = withDefaults(defineProps<{ host: InfrastructureHost; revision?: number }>(), { revision: 0 })
+const props = withDefaults(defineProps<{ host: InfrastructureHost; revision?: number; compact?: boolean }>(), { revision: 0, compact: false })
 const auth = useAuthStore()
 const data = ref<HostResources>()
 const loading = ref(false)
@@ -52,12 +52,12 @@ onBeforeUnmount(() => { mounted = false; request += 1; controller?.abort() })
 </script>
 
 <template>
-  <div class="host-resource-summary" :aria-busy="loading">
+  <div class="host-resource-summary" :class="{ compact }" :aria-busy="loading">
     <span class="host-resource-value"><Cpu :size="13" aria-hidden="true" /><span>CPU</span><strong>{{ formatHostCPU(available?.cpu_cores) }}</strong></span>
     <span class="host-resource-value"><MemoryStick :size="13" aria-hidden="true" /><span>内存</span><strong>{{ formatHostCapacity(available?.memory_total_bytes) }}</strong></span>
     <span class="host-resource-value"><HardDrive :size="13" aria-hidden="true" /><span>根目录</span><strong>{{ formatHostCapacity(available?.disk_total_bytes) }}</strong></span>
     <small v-if="status" class="host-resource-note">{{ status }}<button v-if="!loading && !available && canRead && host.is_active" type="button" @click="load">重试</button></small>
-    <small v-else-if="available?.os" class="host-resource-note">{{ available.os }}</small>
+    <small v-else-if="available?.os" class="host-resource-note" :title="available.os">{{ available.os }}</small>
   </div>
 </template>
 
@@ -70,4 +70,9 @@ onBeforeUnmount(() => { mounted = false; request += 1; controller?.abort() })
 .host-resource-note{display:flex;align-items:center;gap:8px;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}
 .host-resource-note button{border:0;background:none;padding:2px 4px;color:var(--edo-primary);cursor:pointer;font:inherit}
 .host-resource-note button:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
+.compact{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:2px 8px;line-height:20px}
+.compact .host-resource-value:nth-child(3),.compact .host-resource-note{grid-column:auto}
+.compact .host-resource-note{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.compact .host-resource-note:has(button){display:flex;gap:2px;overflow:visible}
+.compact .host-resource-note button{padding:0 2px;white-space:nowrap}
 </style>
