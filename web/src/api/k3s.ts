@@ -101,6 +101,7 @@ export interface K3sPreflightCheck {
   message: string
 }
 export interface K3sHostPreflight {
+  logs?: string
   host_id: string
   host_name: string
   role: 'server' | 'agent' | 'host'

@@ -27,7 +27,7 @@ export function createPreflightPreview(scenario='passed',{calls=[],delay=30_000,
     const privilege=['sudo','centos'].includes(scenario)?{distribution:scenario==='centos'?'CentOS 9':'Ubuntu 24.04',account:'standard',sudo:scenario==='centos'?'not_installed':'passwordless',sudo_enabled:false,ready:false,message:scenario==='centos'?'当前使用普通账号，主机未安装 sudo，暂时无法安装 K3s。':'当前账号可以免密使用 sudo，但尚未允许 EDO 在安装时使用该权限。',guidance:[...(scenario==='centos'?['请联系主机管理员安装 sudo，通过 wheel 组或 sudoers 授权当前账号，或改用 root 账号连接。']:[]),'打开这台主机的配置，勾选“使用 sudo 执行 Docker / 安装操作”。','点击“测试连接”，成功后保存，再返回这里重新检测。']}:undefined
     if(privilege)checks.push({id:'privilege',name:'安装所需的管理员权限',status:'failed',message:privilege.message})
     const passed=!checks.some(check=>check.status==='failed')
-    return {checked_at:new Date(now()).toISOString(),passed,checks:[],hosts:selected.map(host=>({host_id:host.id,host_name:'前端测试主机',hostname:'fixture-host',role:host.role,passed,checks,...(privilege?{privilege}:{})}))}
+    return {checked_at:new Date(now()).toISOString(),passed,checks:[],hosts:selected.map(host=>({host_id:host.id,host_name:'前端测试主机',hostname:'fixture-host',role:host.role,passed,checks,...(scenario==='failed'?{logs:'$ curl --head --location --connect-timeout 5 --max-time 15 https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-amd64\ncurl: (28) Connection timed out after 15000 milliseconds\n[exit 28]\n'}:{}),...(privilege?{privilege}:{})}))}
   }
   async function adapter(config){
     if(config.signal?.aborted)throw new CanceledError('前端检测已取消',config)

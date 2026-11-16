@@ -62,10 +62,19 @@ func (f *fakeTransport) ProbePrivileges(_ context.Context, host model.Host, bund
 	return privilegeFixture(host, bundle), nil
 }
 
-func (f *fakeTransport) Run(_ context.Context, _ model.Host, _ sshclient.Bundle, script string, _ io.Writer) error {
+func (f *fakeTransport) Run(ctx context.Context, _ model.Host, _ sshclient.Bundle, script string, output io.Writer) error {
+	if strings.Contains(script, "# EDO_TERMINAL_OBSERVER") {
+		_, _ = io.WriteString(output, "time=2026-11-16T10:00:00Z level=info msg=\"Starting k3s\"\n")
+		if strings.Contains(script, "--follow") {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.writes = append(f.writes, script)
+	_, _ = io.WriteString(output, "[INFO] Running official installer\n")
 	if f.existing {
 		return ErrExistingInstallation
 	}

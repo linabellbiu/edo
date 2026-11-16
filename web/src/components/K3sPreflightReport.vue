@@ -36,11 +36,16 @@ const safetyMessage=computed(()=>{
       <h4>{{ group.name }}</h4>
       <ul class="preflight-checks"><li v-for="check in group.checks" :key="check.id"><a-tag color="red">不满足</a-tag><div><strong>{{ check.name }}</strong><p>{{ check.message }}</p></div></li></ul>
     </section>
+    <details v-for="host in report.hosts.filter(host=>host.logs)" :key="`logs-${host.host_id}`" class="preflight-terminal">
+      <summary>{{ report.hosts.length>1?`${host.host_name} · `:'' }}执行日志</summary>
+      <pre tabindex="0" role="log" :aria-label="`${host.host_name} 检测执行日志`">{{ host.logs }}</pre>
+    </details>
     <a class="preflight-docs" href="https://docs.k3s.io/zh/installation/configuration" target="_blank" rel="noopener noreferrer">官方安装说明</a>
   </section>
 </template>
 
 <style scoped>
+.preflight-terminal{min-width:0;font-size:12px}.preflight-terminal summary{cursor:pointer;padding:8px 0}.preflight-terminal pre{margin:4px 0;padding:12px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg);color:var(--edo-text);font:12px/1.7 SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}.preflight-terminal :is(summary,pre):focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
 .privilege-result{min-width:0;padding:12px 0;border-bottom:1px solid var(--edo-border);font-size:13px;line-height:1.65;overflow-wrap:anywhere}.privilege-result header{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap}.privilege-result h4{margin:0;font-size:13px;font-weight:500}.privilege-result header>span{color:var(--edo-muted)}.privilege-result p{margin:8px 0}.privilege-result ol{margin:8px 0 12px;padding-left:22px;color:var(--edo-text)}.privilege-result li+li{margin-top:5px}.privilege-permission{color:var(--edo-muted)}
 .preflight-report{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px}.preflight-report>*{min-width:0}.preflight-report :deep(.ant-alert-content){min-width:0;overflow-wrap:anywhere}.preflight-clear{margin:0;font-size:13px}.preflight-group{min-width:0}.preflight-group h4{margin:0 0 4px;font-size:12px;font-weight:600;overflow-wrap:anywhere}.preflight-checks{list-style:none;margin:0;padding:0}.preflight-checks li{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--edo-border);font-size:12px}.preflight-checks .ant-tag{margin:0;flex:none}.preflight-checks strong{font-weight:500}.preflight-checks p{margin:4px 0 0;color:var(--edo-muted);line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.preflight-checks li>div{min-width:0}.preflight-docs{justify-self:start;font-size:12px}
 </style>

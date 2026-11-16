@@ -150,3 +150,10 @@ test('发行版与root/sudo权限按主机就地展示，失败有引导和受�
     html=await render(Report,{report:value});assert.match(html,/无需 sudo/);assert.match(html,/安装权限已就绪/);assert.doesNotMatch(html,/<ol>|<button/)
   }
 })
+
+test('检测可展开真实终端错误，按纯文本显示且保留独立失败项',async()=>{
+ const value=report();value.passed=false;value.hosts[0].passed=false;value.hosts[0].checks=[check('download','failed')]
+ value.hosts[0].logs='$ curl --head https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-amd64\ncurl: (28) Connection timed out\n<img src=x onerror=alert(1)>'
+ const html=await render(Report,{report:value})
+ assert.match(html,/<details/);assert.match(html,/执行日志/);assert.match(html,/curl: \(28\) Connection timed out/);assert.match(html,/&lt;img/);assert.doesNotMatch(html,/<img|<details[^>]*\bopen\b/);assert.match(html,/检查-download/)
+})

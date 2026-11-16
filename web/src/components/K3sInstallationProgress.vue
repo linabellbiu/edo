@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Server } from 'lucide-vue-next'
 import type { K3sInstallation } from '@/api/k3s'
 import { k3sElapsed, k3sHostStatusLabel, k3sInstallationLogView, k3sInstallationRunning, k3sStageLabel } from '@/utils/k3sProvision'
@@ -22,7 +22,10 @@ function confirmedSeconds(start?:string,end?:string){
   const from=Date.parse(start??''),to=Date.parse(end??'')
   return Number.isFinite(from)&&Number.isFinite(to)&&to>=from?Math.floor((to-from)/1000):undefined
 }
-function showLatest(){if(viewport.value)viewport.value.scrollTop=viewport.value.scrollHeight}
+const following=ref(true)
+function onLogScroll(){const element=viewport.value;if(element)following.value=element.scrollHeight-element.scrollTop-element.clientHeight<32}
+function showLatest(){following.value=true;if(viewport.value)viewport.value.scrollTop=viewport.value.scrollHeight}
+watch(()=>logs.value.text,async()=>{const shouldFollow=following.value;await nextTick();if(shouldFollow)showLatest()},{immediate:true})
 </script>
 
 <template>
@@ -36,7 +39,7 @@ function showLatest(){if(viewport.value)viewport.value.scrollTop=viewport.value.
         <p v-if="host.status==='failed'&&host.message">{{ host.message }}</p>
       </article>
     </div>
-    <section class="progress-logs"><header><div class="log-heading"><h4>{{ actionLabel }}日志</h4><span v-if="running" class="background-hint">可以关闭窗口，{{ actionLabel }}会继续执行。</span></div><a-button v-if="!uninstall" size="small" @click="showLatest">查看最新</a-button></header><p v-if="logs.truncated" class="log-limit">仅显示最近 64 KiB 日志</p><pre ref="viewport" role="log" :aria-label="`${actionLabel}安全日志`" aria-live="off" tabindex="0">{{ logs.text||`等待${actionLabel}日志…` }}</pre></section>
+    <section class="progress-logs"><header><div class="log-heading"><h4>{{ actionLabel }}日志</h4><span v-if="running" class="background-hint">可以关闭窗口，{{ actionLabel }}会继续执行。</span></div><a-button v-if="!uninstall" size="small" @click="showLatest">查看最新</a-button></header><p v-if="logs.truncated" class="log-limit">仅显示最近 2 MiB 日志</p><pre ref="viewport" @scroll="onLogScroll" role="log" :aria-label="uninstall?'卸载安全日志':'安装执行日志'" aria-live="off" tabindex="0">{{ logs.text||`等待${actionLabel}日志…` }}</pre></section>
   </section>
 </template>
 

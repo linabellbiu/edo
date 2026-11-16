@@ -97,6 +97,11 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 		output = io.Discard
 	}
 	session.Stdout, session.Stderr, session.Stdin = output, output, input
+	if _, internalRead := output.(*limitedOutput); !internalRead {
+		stdout, stderr := &terminalLineWriter{output: output}, &terminalLineWriter{output: output}
+		session.Stdout, session.Stderr = stdout, stderr
+		defer func() { _ = stdout.flush(); _ = stderr.flush() }()
+	}
 	if err := session.Start(command); err != nil {
 		logSSHTransportFailure(ctx, host.ID, "start", err)
 		return ErrRemote

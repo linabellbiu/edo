@@ -1,6 +1,7 @@
 package k3s
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,6 +35,9 @@ func TestK3dToolDownloadRetriesOnlyTransientReadFailures(t *testing.T) {
 			if scenario.name == "transient-timeout" {
 				curl += "if [ \"$(wc -l < " + shellQuote(calls) + ")\" -eq 1 ]; then exit 28; fi\n"
 			}
+			if scenario.exit != 0 {
+				curl += fmt.Sprintf("printf 'curl: (%d) fixture download error\\n' >&2\n", scenario.exit)
+			}
 			curl += fmt.Sprintf("printf '%%03d' %d\nexit %d\n", scenario.http, scenario.exit)
 			writePreflightCommand(t, dir, "curl", curl)
 			script := "set -eu\nedo_k3d=" + shellQuote(filepath.Join(dir, "absent-tool")) + "\nedo_arch=amd64\nedo_check() { printf 'EDO_K3S_CHECK\\t%s\\t%s\\n' \"$1\" \"$2\"; }\n" + k3dToolPreflight
@@ -50,6 +54,17 @@ func TestK3dToolDownloadRetriesOnlyTransientReadFailures(t *testing.T) {
 			}
 			if !strings.Contains(string(output), fmt.Sprintf("EDO_K3S_K3D_TOOL\t%s\t%d\t%03d", scenario.reason, scenario.exit, scenario.http)) || !strings.Contains(string(output), "EDO_K3S_CHECK\tdownload\t"+status) {
 				t.Fatal("工具检测没有区分实际原因", string(output))
+			}
+			for _, line := range strings.Split(string(output), "\n") {
+				if frame, ok := strings.CutPrefix(line, "EDO_K3S_TERMINAL\t"); ok {
+					decoded, err := base64.StdEncoding.DecodeString(frame)
+					if err != nil || !strings.Contains(string(decoded), "$ timeout 16 curl --fail") || !strings.Contains(string(decoded), "--connect-timeout 5 --max-time 15") {
+						t.Fatal("终端命令与实际请求不一致", err)
+					}
+					if scenario.exit != 0 && !strings.Contains(string(decoded), "fixture download error") {
+						t.Fatal("真实 curl 错误被丢弃")
+					}
+				}
 			}
 			encoded, _ := os.ReadFile(calls)
 			if strings.Count(string(encoded), "call\n") != scenario.requests {

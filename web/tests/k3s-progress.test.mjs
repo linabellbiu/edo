@@ -68,13 +68,13 @@ test('旧记录与非法时间保持空值，未知阶段不回显内部code，�
 
 test('长日志以UTF8字节为界保留完整中文日韩及emoji，保留尾部并可键盘浏览',t=>{
   for(const item of ['中文','日本語','한국어','🚀']){
-    const view=helpers.k3sInstallationLogView({logs:item.repeat(40_000)+'\n最后一行'})
-    assert.equal(view.truncated,true);assert.ok(new TextEncoder().encode(view.text).length<=64*1024);assert.ok(view.text.endsWith('最后一行'));assert.doesNotMatch(view.text,/�|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/u)
+    const view=helpers.k3sInstallationLogView({logs:item.repeat(1_100_000)+'\n最后一行'})
+    assert.equal(view.truncated,true);assert.ok(new TextEncoder().encode(view.text).length<=2*1024*1024);assert.ok(view.text.endsWith('最后一行'));assert.doesNotMatch(view.text,/�|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/u)
   }
   const compact=helpers.k3sInstallationLogView({logs:'06:00:54 vps：官方安装器下载文件\n06:02:52 vps：官方安装器下载文件仍在执行，已持续 117 秒'})
   assert.equal(compact.text,'06:00:54 vps：官方安装器下载文件\n06:02:52 vps：已持续 117 秒')
-  const h=mount(t,{...record(),logs:'中'.repeat(40_000)+'\u001b[31m\u0000\n最后一行'})
-  assert.match(h.content(),/仅显示最近 64 KiB 日志/);const log=walk(h.root).find(n=>n.tag==='pre');assert.ok(new TextEncoder().encode(text(log)).length<=64*1024);assert.doesNotMatch(text(log),/\x1b|\x00/)
+  const h=mount(t,{...record(),logs:'中'.repeat(1_100_000)+'\u001b[31m\u0000\n最后一行'})
+  assert.match(h.content(),/仅显示最近 2 MiB 日志/);const log=walk(h.root).find(n=>n.tag==='pre');assert.ok(new TextEncoder().encode(text(log)).length<=2*1024*1024);assert.doesNotMatch(text(log),/\x1b|\x00/)
   log.scrollHeight=987;walk(h.root).find(n=>n.tag==='button'&&text(n)==='查看最新').props.onClick();assert.equal(log.scrollTop,987)
 })
 
@@ -96,4 +96,22 @@ test('卸载完成只保留日志，去掉重复主机、时间与阶段信息',
   const h=mount(t,{...record(),action:'uninstall',status:'succeeded',finished_at:'2026-10-28T23:20:30+08:00',hosts:[{id:'host-a',name:'重复主机',address:'192.0.2.24',status:'succeeded',stage:'uninstall_verify',message:'官方卸载已完成',stage_started_at:'2026-10-28T23:20:30+08:00',progress_updated_at:'2026-10-28T23:20:30+08:00'}],logs:'官方卸载脚本执行完成'})
   assert.match(h.content(),/卸载日志/);assert.match(h.content(),/官方卸载脚本执行完成/)
   assert.doesNotMatch(h.content(),/重复主机|192\.0\.2\.24|开始时间|结束时间|总耗时|本阶段|最近反馈|核验卸载结果|官方卸载已完成|可以关闭窗口|查看最新/)
+})
+
+test('终端日志追加跟随底部，手动上滚后保留阅读位置，查看最新后恢复跟随',async t=>{
+  const h=mount(t,{...record(),logs:'Pulling image rancher/k3s\n'})
+  await vue.nextTick()
+  const log=walk(h.root).find(n=>n.props.role==='log')
+  assert.equal(log.props['aria-label'],'安装执行日志')
+  Object.assign(log,{scrollHeight:1000,clientHeight:200,scrollTop:800})
+  log.props.onScroll()
+  h.state.installation.logs+='layer-a: Downloading 1MB/10MB\n';await vue.nextTick();await vue.nextTick()
+  assert.equal(log.scrollTop,1000)
+  Object.assign(log,{scrollHeight:1200,scrollTop:100});log.props.onScroll()
+  h.state.installation.logs+='layer-a: Download complete\n';await vue.nextTick();await vue.nextTick()
+  assert.equal(log.scrollTop,100)
+  walk(h.root).find(n=>n.tag==='button'&&text(n)==='查看最新').props.onClick()
+  assert.equal(log.scrollTop,1200)
+  log.scrollHeight=1300;h.state.installation.logs+='Starting k3s\n';await vue.nextTick();await vue.nextTick()
+  assert.equal(log.scrollTop,1300)
 })

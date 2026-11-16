@@ -61,12 +61,16 @@ if [ -e "$edo_k3d" ] || [ -L "$edo_k3d" ]; then
 else
   edo_tool_reason=unavailable
   for edo_tool_attempt in 1 2; do
-    if edo_tool_http=$(timeout 16 curl --fail --silent --head --location --proto '=https' --proto-redir '=https' --max-redirs 5 --tlsv1.2 --connect-timeout 5 --max-time 15 --output /dev/null --write-out '%{http_code}' "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-$edo_arch" 2>/dev/null); then
+    edo_tool_exit=0
+    set -- curl --fail --silent --show-error --head --location --proto '=https' --proto-redir '=https' --max-redirs 5 --tlsv1.2 --connect-timeout 5 --max-time 15 --output /dev/null --write-out '%{http_code}' "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-$edo_arch"
+    edo_tool_command=$(printf '$ timeout 16'; printf ' %s' "$@")
+    edo_tool_result=$(timeout 16 "$@" 2>&1) || edo_tool_exit=$?
+    edo_tool_http=$(printf '%s\n' "$edo_tool_result" | tail -c 4)
+    printf 'EDO_K3S_TERMINAL\t%s\n' "$(printf '%s\n%s\n[exit %s]\n' "$edo_tool_command" "$edo_tool_result" "$edo_tool_exit" | base64 | tr -d '\n')"
+    if [ "$edo_tool_exit" = 0 ]; then
       edo_tool_exit=0
       edo_tool_reason=ready
       break
-    else
-      edo_tool_exit=$?
     fi
     case "$edo_tool_exit" in 6|7|28|124) ;; *) break ;; esac
   done
@@ -150,7 +154,7 @@ func k3dCreateCommand(input Input, installationID string) string {
 		" --api-port " + shellQuote(net.JoinHostPort(options.BindAddress, strconv.Itoa(options.APIPort))) +
 		" --image " + shellQuote(k3dImage(options)) +
 		" --servers-memory " + k3dMemoryArgument(server.MemoryMiB) + " --agents-memory " + k3dMemoryArgument(worker.MemoryMiB) +
-		" --no-lb --no-rollback --wait=false --timeout 5m --kubeconfig-update-default=false --kubeconfig-switch-context=false" +
+		" --verbose --no-lb --no-rollback --wait=false --timeout 5m --kubeconfig-update-default=false --kubeconfig-switch-context=false" +
 		" --runtime-label " + shellQuote("edo.dev/installation="+installationID+"@all") +
 		" --k3s-node-label " + shellQuote("edo.dev/installation="+installationID+"@all") +
 		" --k3s-arg " + shellQuote("--tls-san="+endpoint.Hostname()+"@server:0")
@@ -175,7 +179,7 @@ for edo_dir in /var/lib/edo /var/lib/edo/k3d /var/lib/edo/k3d/v5.9.0; do [ ! -L 
 install -d -m 755 /var/lib/edo/k3d/v5.9.0
 work=$(mktemp -d /var/lib/edo/k3d/v5.9.0/.download.XXXXXX)
 if [ ! -e "$edo_k3d" ]; then
-  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 3 --max-filesize 134217728 "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-$edo_arch" -o "$work/k3d"
+  curl --fail --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 3 --max-filesize 134217728 "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-$edo_arch" -o "$work/k3d"
   printf '%s  %s\n' "$edo_hash" "$work/k3d" | sha256sum -c - >/dev/null
   chmod 755 "$work/k3d"
   ln "$work/k3d" "$edo_k3d"

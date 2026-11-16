@@ -241,7 +241,9 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 		if record.Action == "uninstall" {
 			operation = "卸载"
 		}
-		record.Logs = appendInstallationLog(record.Logs, time.Now().Format("15:04:05")+" "+operation+"未完成："+message+"\n")
+		if record.Action == "uninstall" {
+			record.Logs = appendInstallationLog(record.Logs, time.Now().Format("15:04:05")+" "+operation+"未完成："+message+"\n")
+		}
 	}
 	updates := map[string]any{"status": status, "error_message": message, "finished_at": now, "updated_at": now, "lease_owner": "", "lease_expires_at": nil, "cluster_id": record.ClusterID, "logs": record.Logs, "hosts": record.Hosts}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -304,6 +306,10 @@ func (s *Service) persistProgressContext(ctx context.Context, record *model.K3sI
 }
 
 func (s *Service) log(record *model.K3sInstallation, message string) error {
+	if record.Action != "uninstall" {
+		slog.Info("K3s 安装状态", "installation_id", record.ID, "message", message)
+		return nil
+	}
 	line := time.Now().Format("15:04:05") + " " + message + "\n"
 	record.Logs = appendInstallationLog(record.Logs, line)
 	return s.persistProgress(record, map[string]any{"logs": record.Logs})
@@ -374,8 +380,8 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			return err
 		}
 		if err := s.runHostOperation(ctx, record, hosts, serverIndex, "ssh", func(ctx context.Context, output io.Writer) error {
-			return s.transport.Run(ctx, current, bundle, script, output)
-		}); err != nil {
+			return s.withTerminalObservations(ctx, current, bundle, []terminalObservation{nativeTerminalObservation(host.Role, installInput)}, output, func(ctx context.Context) error { return s.transport.Run(ctx, current, bundle, script, output) })
+		}, installationLogSecrets(installInput, bundle, token)...); err != nil {
 			return err
 		}
 		importRecord := *record
@@ -446,8 +452,8 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			return err
 		}
 		if err := s.runHostOperation(ctx, record, hosts, 0, "ssh", func(ctx context.Context, output io.Writer) error {
-			return s.transport.Run(ctx, current, bundle, script, output)
-		}); err != nil {
+			return s.withTerminalObservations(ctx, current, bundle, []terminalObservation{nativeTerminalObservation(host.Role, installInput)}, output, func(ctx context.Context) error { return s.transport.Run(ctx, current, bundle, script, output) })
+		}, installationLogSecrets(installInput, bundle, installInput.ServerToken)...); err != nil {
 			return err
 		}
 		readyRecord := *record
@@ -545,8 +551,8 @@ func (s *Service) installAgent(ctx context.Context, record *model.K3sInstallatio
 		return err
 	}
 	if err := s.runHostOperation(ctx, record, hosts, index, "ssh", func(ctx context.Context, output io.Writer) error {
-		return s.transport.Run(ctx, current, bundle, script, output)
-	}); err != nil {
+		return s.withTerminalObservations(ctx, current, bundle, []terminalObservation{nativeTerminalObservation(host.Role, input)}, output, func(ctx context.Context) error { return s.transport.Run(ctx, current, bundle, script, output) })
+	}, installationLogSecrets(input, bundle, join.Token)...); err != nil {
 		return err
 	}
 	clusterID, installationID := record.ClusterID, record.ID

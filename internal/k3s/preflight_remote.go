@@ -23,6 +23,7 @@ type PreflightCheck struct {
 }
 
 type HostPreflight struct {
+	Logs      string                `json:"logs,omitempty"`
 	HostID    string                `json:"host_id"`
 	HostName  string                `json:"host_name"`
 	Role      string                `json:"role"`

@@ -43,7 +43,7 @@ export function createOfficialPreview({calls=[],progress=false,failureLog=false,
       return response(config,installation)
     }
     if(method==='get'&&path===`/kubernetes/k3s/installations/${planID}`&&installation){
-      if(progress){const now=Date.now();return response(config,{...installation,status:'running',started_at:new Date(now-180000).toISOString(),hosts:plan.hosts.map(host=>({...host,status:'installing',stage:'installer_download',stage_started_at:new Date(now-117000).toISOString(),progress_updated_at:new Date(now).toISOString(),message:'官方安装器下载文件仍在执行，已持续 117 秒'})),logs:'前端夹具：模拟实际过程记录，未执行安装。\n14:00:00 vps：下载安装器\n14:00:02 vps：下载 K3s 校验文件\n14:00:04 vps：官方安装器下载文件\n14:02:01 vps：官方安装器下载文件仍在执行，已持续 117 秒'})}
+      if(progress){const now=Date.now();return response(config,{...installation,status:'running',started_at:new Date(now-180000).toISOString(),hosts:plan.hosts.map(host=>({...host,status:'installing',stage:'installer_download',stage_started_at:new Date(now-117000).toISOString(),progress_updated_at:new Date(now).toISOString(),message:'官方安装器下载文件仍在执行，已持续 117 秒'})),logs:'[前端测试主机] [INFO] Downloading hash https://rancher-mirror.rancher.cn/k3s/v1.37.1+k3s1/sha256sum-amd64.txt\n[前端测试主机] [INFO] Downloading binary https://rancher-mirror.rancher.cn/k3s/v1.37.1+k3s1/k3s\n[前端测试主机] [INFO] systemd: Starting k3s\n[前端测试主机] [k3s] time=2026-11-16T10:00:00Z level=info msg="Starting k3s v1.37.1+k3s1"'})}
       installation={...installation,status:'failed',error:'前端夹具：模拟官方安装脚本失败（退出码 17）。',logs:'前端夹具：未执行远端安装；模拟失败，不显示成功。'}
       return response(config,installation)
     }

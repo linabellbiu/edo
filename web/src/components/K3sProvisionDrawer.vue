@@ -189,7 +189,7 @@ function readPreflight(value:unknown):K3sPreflightReport|undefined {
     return typeof check.id==='string'&&typeof check.name==='string'&&typeof check.message==='string'&&['passed','warning','failed'].includes(check.status)
   }
   if(typeof report.passed!=='boolean'||typeof report.checked_at!=='string'||!Number.isFinite(Date.parse(report.checked_at))||!Array.isArray(report.checks)||!report.checks.every(validCheck)||!Array.isArray(report.hosts))return
-  if(!report.hosts.every(host=>host&&typeof host.host_id==='string'&&typeof host.host_name==='string'&&['server','agent','host'].includes(host.role)&&typeof host.hostname==='string'&&typeof host.passed==='boolean'&&Array.isArray(host.checks)&&host.checks.every(validCheck)))return
+  if(!report.hosts.every(host=>host&&(host.logs===undefined||typeof host.logs==='string'&&new TextEncoder().encode(host.logs).length<=64*1024)&&typeof host.host_id==='string'&&typeof host.host_name==='string'&&['server','agent','host'].includes(host.role)&&typeof host.hostname==='string'&&typeof host.passed==='boolean'&&Array.isArray(host.checks)&&host.checks.every(validCheck)))return
   if(!report.hosts.every(host=>{
     const value=host.privilege
     if(value===undefined)return true

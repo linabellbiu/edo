@@ -133,7 +133,7 @@ func TestK3dNormalizationDefaultsAndRejectsUnsafeTargets(t *testing.T) {
 	if err != nil || plan.Mode != "k3d" || plan.K3d == nil || k3dAgents(plan.K3d) != 1 || plan.K3d.APIPort != 16443 || plan.Endpoint != "https://192.0.2.10:16443" || len(plan.Hosts) != 1 || plan.Hosts[0].Role != "host" || plan.ServerConfig != "" {
 		t.Fatalf("k3d 默认配置不正确: %+v err=%v", plan, err)
 	}
-	for _, flag := range []string{"--no-rollback", "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false", "edo.dev/installation=" + plan.ID + "@all"} {
+	for _, flag := range []string{"--verbose", "--no-rollback", "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false", "edo.dev/installation=" + plan.ID + "@all"} {
 		if !strings.Contains(plan.Commands[0], flag) {
 			t.Fatalf("计划遗漏官方 CLI 安全参数: %s", flag)
 		}

@@ -2,6 +2,7 @@ package k3s
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,7 +20,7 @@ import (
 	"edo/internal/model"
 )
 
-// 只接受代码内登记的阶段，安装器输出和命令正文均不进入错误或任务日志。
+// 阶段只接受代码内登记值；执行输出另行脱敏，不从任意日志推断安装结果。
 var installationStages = map[string]string{
 	"uninstall_guard": "卸载目标复核", "uninstall": "官方卸载脚本", "uninstall_verify": "卸载结果验证",
 	"uninstall_cleanup": "移除 EDO 关联记录",
@@ -121,6 +122,8 @@ type installationDiagnostics struct {
 	started time.Time
 	updated time.Time
 	onStage func(string, time.Time, time.Time, bool) error
+	onLine  func(string) error
+	onFlush func() error
 	err     error
 }
 
@@ -131,7 +134,7 @@ func (d *installationDiagnostics) Write(value []byte) (int, error) {
 		return 0, d.err
 	}
 	for _, b := range value {
-		if b == '\n' {
+		if b == '\n' || b == '\r' && d.onLine != nil {
 			line := string(d.line)
 			stage := ""
 			if !d.discard {
@@ -148,8 +151,23 @@ func (d *installationDiagnostics) Write(value []byte) (int, error) {
 			if stage != "" {
 				d.setStageLocked(stage, time.Now())
 			}
+			if encoded, ok := strings.CutPrefix(line, "EDO_K3S_TERMINAL\t"); ok && !d.discard && d.onLine != nil && d.err == nil {
+				if decoded, err := base64.StdEncoding.DecodeString(encoded); err == nil {
+					for _, text := range strings.Split(string(decoded), "\n") {
+						if d.err == nil {
+							d.err = d.onLine(text)
+						}
+					}
+				}
+			}
+			if d.onLine != nil && !strings.HasPrefix(line, "EDO_K3S_") && d.err == nil {
+				if d.discard {
+					line = "一条终端日志过长，已省略"
+				}
+				d.err = d.onLine(line)
+			}
 			d.line, d.discard = d.line[:0], false
-		} else if len(d.line) < 80 && !d.discard {
+		} else if (len(d.line) < 80 || d.onLine != nil && len(d.line) < 32*1024) && !d.discard {
 			d.line = append(d.line, b)
 		} else {
 			d.discard = true
@@ -210,6 +228,9 @@ func (d *installationDiagnostics) start(stage string) error {
 func (d *installationDiagnostics) heartbeat(now time.Time) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.err == nil && d.onFlush != nil {
+		d.err = d.onFlush()
+	}
 	if d.err == nil && d.stage != "" && now.Sub(d.updated) >= 30*time.Second && d.onStage != nil {
 		d.updated = now
 		d.err = d.onStage(d.stage, d.started, now, true)
@@ -218,8 +239,15 @@ func (d *installationDiagnostics) heartbeat(now time.Time) error {
 }
 
 func (d *installationDiagnostics) failure(err error) error {
+	// SSH 退出时也保留没有换行的最后一段输出。
+	if d.onLine != nil {
+		_, _ = d.Write([]byte("\n"))
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.err == nil && d.onFlush != nil {
+		d.err = d.onFlush()
+	}
 	if d.err != nil {
 		return d.err
 	}

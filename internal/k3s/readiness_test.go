@@ -571,7 +571,7 @@ func TestNativeProgressPersistenceFailureStopsBeforeRemoteWrite(t *testing.T) {
 type readinessFailureTransport struct{ Transport }
 
 func (f readinessFailureTransport) Run(_ context.Context, _ model.Host, _ sshclient.Bundle, _ string, out io.Writer) error {
-	_, _ = io.WriteString(out, "RAW_PRIVATE_INSTALL_TOKEN\nEDO_K3S_STAGE\tservice\n")
+	_, _ = io.WriteString(out, "K3S_TOKEN=RAW_PRIVATE_INSTALL_TOKEN\nsystemd: k3s.service failed (exit 46)\nEDO_K3S_STAGE\tservice\n")
 	return &remoteExitError{code: 46, cause: ErrRemote}
 }
 
@@ -636,7 +636,7 @@ func TestNativeWorkerCannotSucceedWithBadVersionComponentsOrInstaller(t *testing
 				return
 			}
 			if result.Status != "failed" || strings.Contains(result.ErrorMessage+result.Logs, "RAW_PRIVATE") {
-				t.Fatalf("安装问题仍成功或泄露正文: %+v", result)
+				t.Fatalf("安装问题仍成功或泄露正文，状态: %s", result.Status)
 			}
 			if mode == "component-forbidden" && componentRequests.Load() != 1 {
 				t.Fatal("403被重试", componentRequests.Load())
@@ -646,6 +646,9 @@ func TestNativeWorkerCannotSucceedWithBadVersionComponentsOrInstaller(t *testing
 				if err := json.Unmarshal(result.Hosts, &hosts); err != nil || len(hosts) != 1 || hosts[0].Status != "failed" || !strings.Contains(hosts[0].Message, "控制平面已安装") || !strings.Contains(hosts[0].Message, result.ErrorMessage) {
 					t.Fatalf("已安装的控制平面被错误显示为未开始: hosts=%s error=%s err=%v", result.Hosts, result.ErrorMessage, err)
 				}
+			}
+			if mode == "installer-failed" && !strings.Contains(result.Logs, "systemd: k3s.service failed (exit 46)") {
+				t.Fatal("缺少真实非敏感安装错误输出")
 			}
 			if mode == "installer-failed" && (clusters.created != 0 || !strings.Contains(result.ErrorMessage, "系统服务校验") || !strings.Contains(result.ErrorMessage, "46")) {
 				t.Fatal("官方安装器失败仍接入，或安全诊断丢失", result.ErrorMessage)

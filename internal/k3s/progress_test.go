@@ -143,7 +143,7 @@ func TestInstallationProgressStageClockDoesNotRegressOrAcceptRemoteTimes(t *test
 func TestInstallationLogRetainsRecentCompleteLinesWithSingleMarker(t *testing.T) {
 	logs := ""
 	for index := 0; index < 3000; index++ {
-		logs = appendInstallationLog(logs, fmt.Sprintf("%04d %s\n", index, strings.Repeat("阶段", 24)))
+		logs = appendInstallationLog(logs, fmt.Sprintf("%04d %s\n", index, strings.Repeat("阶段", 256)))
 	}
 	if len(logs) > installationLogLimit || !utf8.ValidString(logs) || !strings.HasPrefix(logs, installationLogTruncated) || strings.Count(logs, installationLogTruncated) != 1 || !strings.Contains(logs, "2999 ") {
 		t.Fatal("日志未按完整行有界保留最新记录")
@@ -188,7 +188,7 @@ func TestHostOperationPersistsStageBeforeReturningAndGetSurvivesServiceRecreatio
 		if err := json.Unmarshal(current.Hosts, &saved); err != nil {
 			return err
 		}
-		if saved[0].Stage != "installer_start" || saved[0].StageStartedAt == nil || saved[0].ProgressUpdatedAt == nil || current.Logs == "" || strings.Contains(current.Logs, "private-fixture") {
+		if saved[0].Stage != "installer_start" || saved[0].StageStartedAt == nil || saved[0].ProgressUpdatedAt == nil || !strings.Contains(current.Logs, "private-fixture-service") || strings.Contains(current.Logs, "private-fixture-token") {
 			t.Fatal("运行期间没有安全落库真实进度")
 		}
 		if saved[0].Status != "installing" {

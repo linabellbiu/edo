@@ -96,7 +96,7 @@ export function k3sElapsed(start?: string, end?: string | number) {
 }
 
 export function k3sInstallationLogView(installation?: K3sInstallation) {
-  const source=k3sInstallationLogs(installation),limit=64*1024
+  const source=k3sInstallationLogs(installation),limit=2*1024*1024
   // 日志仅按纯文本呈现，限制异常响应大小，不执行 ANSI 或 HTML 控制内容。
   let tail=source.slice(-limit)
   if(tail.length&&tail.charCodeAt(0)>=0xdc00&&tail.charCodeAt(0)<=0xdfff)tail=tail.slice(1)
