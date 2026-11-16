@@ -20,3 +20,13 @@
 边界：浏览器确认页响应为内存数据，未知及安装接口继续拒绝，不冒充真实集群创建验收。k3d v5.9.0 官方 CLI 仅支持创建时内存限制；CPU 沿用创建后的 Docker update，不增加安装器或接管服务生命周期。
 
 实现沿用官方 CLI、现有 Docker 能力与 Go/Vue 标准实现，无新增依赖。资源参数依据 [k3d v5.9.0 官方源码](https://github.com/k3d-io/k3d/blob/v5.9.0/cmd/cluster/clusterCreate.go) 和 [Docker 资源校验](https://github.com/moby/moby/blob/v27.5.1/daemon/daemon_unix.go)；字段校验和快照归项目业务代码维护。
+
+## 本地更新回执
+
+- API/Web 从已提交的 `fe0a1928f630494b8e30a5a88af3241931521d40` 分别构建 ARM64 镜像，运行镜像均带同一源码版本标签，API 实际输出 `EDO fe0a192`。
+- 本地入口 `http://127.0.0.1:18080` 的 Web `/healthz`、API `/api/v1/health/ready` 均返回 200，数据库、Redis、NATS 与构建器检查均正常。
+- 入口实际提供 `K3sProvisionDrawer-DOE_ZtGl.js`，与容器文件逐字节相同；SHA-256 为 `57515b3d4baf52cd358a6f4344634cde8b12b0411722e42c939dab659505ae21`，包含 Server/Worker 资源字段及节点资源界面。
+- 更新沿用本地已有的主 Compose 与覆盖文件，保留 `edo-local_edo-data`、`edo-local_edo-deployment-files` 及构建器证书卷。仅重建 API/Web；PostgreSQL、Redis、NATS、构建器的容器 ID 和启动时间与更新前相同。
+- 切换前无执行中任务。更新后流水线仍为 13 条失败、6 条成功；后台任务仍为 11 条取消、13 条失败、32 条成功；集群安装记录仍为 4 条失败、5 条计划、3 条成功。没有触发安装、重跑任务或改写失败记录。
+
+本地健康及资源版本核对与浏览器夹具交互验收分别记录；未将其作为真实 k3d 安装成功证据。没有推送或远程发布。
