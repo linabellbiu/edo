@@ -10,7 +10,8 @@ import KubeWorkloadExplorer from '/src/components/KubeWorkloadExplorer.vue'
 import KubeResourceDetails from '/src/components/KubeResourceDetails.vue'
 
 const preferences = usePreferencesStore()
-const dark = new URLSearchParams(location.search).get('theme') === 'dark'
+const params = new URLSearchParams(location.search)
+const dark = params.get('theme') === 'dark'
 preferences.theme = dark ? 'dark' : 'light'
 document.documentElement.dataset.theme = dark ? 'dark' : 'light'
 const type = kubeTypes.find(item => item.resource === 'deployments')
@@ -23,6 +24,13 @@ const containers = [
 const object = { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { uid: 'fixture-deployment', name: 'demo-web', namespace: 'preview', creationTimestamp: created, resourceVersion: '16176330', labels: { app: 'demo-web', 'app.kubernetes.io/managed-by': 'EDO' }, annotations: { 'deployment.kubernetes.io/revision': '3', 'example.com/description': '仅供本地视觉回归，不连接真实集群' } }, spec: { replicas: 2, revisionHistoryLimit: 10, strategy: { type: 'RollingUpdate', rollingUpdate: { maxSurge: '25%', maxUnavailable: '25%' } }, selector: { matchLabels: { app: 'demo-web' } }, template: { spec: { containers, initContainers: [{ name: 'prepare', image: 'busybox:stable', command: ['sh', '-c', 'echo ready'] }], volumes: [{ name: 'config', configMap: { name: 'demo-settings' } }], restartPolicy: 'Always' } } }, status: { replicas: 2, readyReplicas: 2, updatedReplicas: 2, availableReplicas: 2, observedGeneration: 1, conditions: [{ type: 'Available', status: 'True', reason: 'MinimumReplicasAvailable' }, { type: 'Progressing', status: 'True', reason: 'NewReplicaSetAvailable' }] } }
 const revisions = ['3', '2', '1'].map((number, index) => ({ uid: `fixture-rs-${number}`, name: `demo-web-${['85568b959f', '6576849cbf', '8fbc5bf55'][index]}`, revision: number, current: index === 0, created: new Date(Date.now() - (index + 1) * 3600_000).toISOString(), desired: index === 0 ? 2 : 0, replicas: index === 0 ? 2 : 0, ready: index === 0 ? 2 : 0, available: index === 0 ? 2 : 0, images: containers.map(item => item.image) }))
 const pods = [0, 1].map(index => ({ apiVersion: 'v1', kind: 'Pod', metadata: { uid: `fixture-pod-${index}`, name: `demo-web-85568b959f-${index ? 'd7k2q' : '8cs4p'}`, namespace: 'preview', creationTimestamp: new Date(Date.now() - 3600_000).toISOString(), ownerReferences: [{ kind: 'ReplicaSet', controller: true, uid: 'fixture-rs-3' }] }, spec: { containers, initContainers: object.spec.template.spec.initContainers, restartPolicy: 'Always', nodeName: `worker-${index + 1}` }, status: { phase: 'Running', podIP: `10.42.1.${59 + index}`, conditions: ['PodScheduled', 'Initialized', 'PodReadyToStartContainers', 'ContainersReady', 'Ready'].map(type => ({ type, status: 'True', lastTransitionTime: new Date(Date.now() - 3590_000).toISOString() })), containerStatuses: containers.map(item => ({ name: item.name, ready: true, started: true, restartCount: 0, state: { running: { startedAt: new Date(Date.now() - 3590_000).toISOString() } } })), initContainerStatuses: [{ name: 'prepare', ready: false, restartCount: 0, state: { terminated: { exitCode: 0, reason: 'Completed', finishedAt: new Date(Date.now() - 3595_000).toISOString() } } }] } }))
+if (params.get('containers') === 'single') {
+  for (const pod of pods) {
+    pod.spec.containers = pod.spec.containers.slice(0, 1); pod.spec.initContainers = []
+    pod.status.containerStatuses = pod.status.containerStatuses.slice(0, 1); pod.status.initContainerStatuses = []
+    if (params.has('pending')) pod.status.containerStatuses[0].state = { waiting: { reason: 'ContainerCreating' } }
+  }
+}
 const event = (uid, reason, message, index) => ({ metadata: { uid: `event-${uid}-${index}`, creationTimestamp: created }, involvedObject: { uid }, type: 'Normal', reason, count: 1, lastTimestamp: new Date(Date.now() - (index + 1) * 90_000).toISOString(), message })
 const events = ['Scaled down replica set demo-web-6576849cbf from 2 to 0', 'Scaled up replica set demo-web-85568b959f from 0 to 2'].map((message, index) => event(object.metadata.uid, 'ScalingReplicaSet', message, index))
 client.get = async (url, options = {}) => {

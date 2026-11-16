@@ -83,11 +83,13 @@ function revealFocused(event: FocusEvent) {
 function podState(pod: KubeObject) { return resourceStatus(pod, t) }
 function choosePod(pod: KubeObject) {
   if (props.disabled || !readable.value || !selectedWorkloadPod(visiblePods.value, pod.metadata?.uid, namespace.value)) return
+  if (podUID.value === pod.metadata.uid) return
   restorePod = false
   podUID.value = pod.metadata.uid; podChosen = true; containerName.value = ''; podTab.value = 'summary'
 }
 function chooseRevision(item: WorkloadRevision) {
   if (props.disabled || !revisions.value.some(revision => revision.uid === item.uid)) return
+  if (revisionUID.value === item.uid) return
   restoreRevision = false; restorePod = false
   revisionUID.value = item.uid; revisionChosen = true
   podUID.value = ''; podChosen = false; containerName.value = ''; podTab.value = 'summary'

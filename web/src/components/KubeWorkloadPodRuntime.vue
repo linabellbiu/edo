@@ -39,7 +39,10 @@ const events = ref<KubeObject[]>([]), eventsLoading = ref(false), eventsError = 
 const eventsExpanded = ref(false), warningCount = computed(() => events.value.filter(event => event.type === 'Warning').length)
 let eventsDisclosureTouched = false
 const missingContainer = computed(() => Boolean(props.container) && !containers.value.some(item => item.name === props.container))
-const containerOptions = computed(() => containers.value.map(item => ({ value: item.name, label: `${item.name} · ${item.containerKind === 'init' ? 'Init 容器' : item.containerKind === 'ephemeral' ? '临时容器' : '容器'}` })))
+const containerOptions = computed(() => [
+  ...(missingContainer.value ? [{ value: props.container, label: `${props.container}（已不存在）`, disabled: true }] : []),
+  ...containers.value.map(item => ({ value: item.name, label: item.containerKind === 'app' ? item.name : `${item.name} · ${item.containerKind === 'init' ? 'Init 容器' : '临时容器'}` })),
+])
 let revision = 0, disposed = false, controller: AbortController | undefined, timer: ReturnType<typeof setInterval> | undefined
 
 const conditionLabel = (type: string) => ({ Initialized: '已初始化', PodScheduled: '已调度', PodReadyToStartContainers: '可启动容器', Ready: '容器组已就绪', ContainersReady: '容器已就绪', DisruptionTarget: '正在中断' } as Record<string, string>)[type] ?? type
@@ -107,9 +110,13 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 <template>
   <div class="workload-pod-runtime" :aria-busy="eventsLoading">
     <p class="runtime-target"><strong>{{ pod.metadata.name }}</strong></p>
-    <div class="runtime-actions" aria-label="所选 Pod 容器操作"><label>容器<KubeSelect :value="container" :options="containerOptions" :disabled="disabled || !readable || !containers.length" aria-label="日志与终端目标容器" @update:value="chooseContainer(String($event))" /></label><div class="container-action-bar"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" />追踪日志</a-button><a-button v-if="can('terminal.open')" :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" />终端</a-button></div></div>
+    <div class="runtime-actions" aria-label="所选 Pod 容器操作">
+      <label v-if="containers.length > 1 || missingContainer" class="runtime-container-choice">容器<KubeSelect :value="container" :options="containerOptions" :disabled="disabled || !readable || !containers.length" aria-label="日志与终端目标容器" @update:value="chooseContainer(String($event))" /></label>
+      <div v-else class="runtime-container-name"><span>容器</span><strong>{{ containers[0]?.name || '暂无容器' }}</strong><a-tag v-if="containers[0] && containers[0].containerKind !== 'app'">{{ containers[0].containerKind === 'init' ? 'Init 容器' : '临时容器' }}</a-tag></div>
+      <div class="container-action-bar"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" />追踪日志</a-button><a-button v-if="can('terminal.open')" :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" />终端</a-button></div>
+    </div>
     <a-alert v-if="eventsError" type="warning" show-icon message="Pod 事件读取失败"><template #action><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">重试</a-button></template></a-alert>
-    <p v-if="can('terminal.open') && !allowedTerminal(container)" class="runtime-action-hint">{{ containers.find(item=>item.name===container)?.containerKind==='init' ? 'Init 容器只支持查看日志，不支持终端。' : '所选容器未运行或当前不可操作，终端暂不可用。' }}</p>
+    <p v-if="container && !missingContainer && can('terminal.open') && !allowedTerminal(container)" class="runtime-action-hint">{{ containers.find(item=>item.name===container)?.containerKind==='init' ? 'Init 容器只支持查看日志，不支持终端。' : '所选容器未运行或当前不可操作，终端暂不可用。' }}</p>
     <details class="runtime-events" :open="eventsExpanded" aria-label="所选 Pod 事件"><summary @click.prevent="toggleEvents">Pod 事件 <span>{{ eventsLoading ? '读取中' : eventsError ? '读取失败' : `${events.length} 条` }}</span><span v-if="warningCount" class="event-warning-count">{{ warningCount }} 条警告</span></summary>
       <KubeWorkloadEvents :events="events" :error="Boolean(eventsError)" :error-text="eventsError" :loading="eventsLoading" compact empty-text="该 Pod 暂无事件"><template #actions><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">刷新</a-button></template></KubeWorkloadEvents>
     </details>
@@ -157,7 +164,11 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-target { margin: 0 0 8px; font-size: 13px; overflow-wrap: anywhere; }
 .runtime-action-hint { margin: 0 0 10px; color: var(--workload-muted); font-size: 12px; }
 .runtime-actions { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px 12px; padding: 10px; margin-bottom: 10px; border: 1px solid var(--workload-border); border-radius: 3px; background: var(--workload-column); }
-.runtime-actions>label { display: grid; flex: 1; gap: 4px; min-width: 140px; color: var(--workload-muted); font-size: 12px; }
+.runtime-container-choice { display: grid; flex: 0 1 280px; gap: 4px; min-width: 0; max-width: 100%; color: var(--workload-muted); font-size: 12px; }
+.runtime-container-name { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; min-height: 28px; font-size: 12px; }
+.runtime-container-name>span { color: var(--workload-muted); }
+.runtime-container-name>strong { color: var(--workload-title); font-weight: 500; overflow-wrap: anywhere; }
+.runtime-container-name :deep(.ant-tag) { margin: 0; }
 .runtime-actions .container-action-bar { margin-top: 0; }
 .runtime-events>summary { display: flex; align-items: baseline; gap: 8px; padding: 8px 10px; color: var(--workload-title); background: var(--workload-heading); font-size: 13px; cursor: pointer; }
 .runtime-events>summary::before { content: ''; align-self: center; width: 6px; height: 6px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); }

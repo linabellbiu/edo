@@ -82,6 +82,30 @@ test('初始加载及禁用期间不选中资源，解除后自动选择首个 P
  h.stop()
 })
 
+test('再次点击当前 Pod 或历史版本保留容器选择和已展开状态，不清空操作目标',async()=>{
+ const h=harness();await h.history()
+ h.state.chooseContainer('metrics');h.state.podTab.value='diagnostics';await flush()
+ h.state.choosePod(h.props.pods[0]);await flush()
+ assert.equal(h.state.containerName.value,'metrics');assert.equal(h.state.podTab.value,'diagnostics')
+ assert.equal(h.state.actionDisabled.value,false)
+ h.state.chooseRevision(h.state.selectedRevision.value);await flush()
+ assert.equal(h.state.podUID.value,'pod-a');assert.equal(h.state.containerName.value,'metrics');assert.equal(h.state.podTab.value,'diagnostics')
+ assert.deepEqual(h.events,[]);h.stop()
+})
+
+test('容器异步加载后补齐初次选择，刷新不替换已经失效的容器目标',async()=>{
+ const item=pod('pod-a');item.spec={}
+ const h=harness({pods:[item]});await h.history()
+ assert.equal(h.state.containerName.value,'');assert.equal(h.state.actionDisabled.value,true)
+ h.props.pods[0].spec={containers:[{name:'service',image:'service:1'}]};await flush()
+ assert.equal(h.state.containerName.value,'service');assert.equal(h.state.actionDisabled.value,false)
+ h.props.pods[0].spec.containers=[{name:'replacement',image:'service:2'}];await flush()
+ assert.equal(h.state.containerName.value,'service');assert.equal(h.state.actionDisabled.value,true)
+ h.state.choosePod(h.props.pods[0]);await flush()
+ assert.equal(h.state.containerName.value,'service');h.state.openContainer();assert.deepEqual(h.events,[])
+ h.state.chooseContainer('replacement');assert.equal(h.state.actionDisabled.value,false);h.stop()
+})
+
 test('显式切换副本组重置 Pod 与容器；刷新保留用户所选版本、Pod 和诊断页',async()=>{
  const h=harness();await h.history();h.state.choosePod(h.props.pods[1]);await flush();h.state.containerName.value='metrics';h.state.podTab.value='diagnostics'
  const pending=h.state.loadHistory();await h.history(1);await pending
