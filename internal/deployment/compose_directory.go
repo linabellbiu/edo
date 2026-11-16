@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
+	"fmt"
 	"net"
 	"path"
 	"strings"
@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"edo/internal/configfile"
+	"edo/internal/diagnosticerror"
 	"edo/internal/model"
 	"edo/internal/sshdeploy"
 )
@@ -42,52 +43,80 @@ func (s *Service) ResolveComposeWorkingDirectory(ctx context.Context, target mod
 		s.logger.ErrorContext(ctx, "自动部署目录配置无效", "operation", "compose_directory_resolve", "target_id", target.ID, "err", errors.Join(err, ErrInvalidTarget))
 		return "", ErrComposeDirectoryUnavailable
 	}
-	output := &composeHomeOutput{}
+	output := &composeProbeOutput{limit: 1024}
+	stderr := &composeProbeOutput{limit: diagnosticerror.MaximumBytes}
+	var redactions []string
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	result, err := s.ssh.RunHostDeploymentScript(probeCtx, sshdeploy.Input{HostID: target.HostID, EnvironmentID: target.EnvironmentID,
-		Script: `printf '%s' "${HOME:?}"`, Timeout: 30 * time.Second, Stdout: output, Stderr: io.Discard})
+		Script: `printf '%s' "${HOME:?}"`, Timeout: 30 * time.Second, Stdout: output, Stderr: stderr,
+		OnDiagnosticRedactions: func(values ...string) { redactions = append(redactions, values...) }})
 	home, exceeded := output.snapshot()
 	directory := path.Join(home, strings.TrimPrefix(configurationPath, "~/"))
 	if err != nil || !result.Started || result.ExitCode != 0 || exceeded || !validWorkingDirectory(home) || !path.IsAbs(home) || path.Clean(home) != home || strings.ContainsFunc(home, unicode.IsControl) || !validWorkingDirectory(directory) {
-		s.logger.ErrorContext(ctx, "读取部署主机用户目录失败", "operation", "compose_directory_resolve", "target_id", target.ID, "host_id", target.HostID, "err", errors.Join(err, ErrComposeDirectoryUnavailable))
 		var networkError net.Error
+		var summary error
 		switch {
 		case errors.Is(probeCtx.Err(), context.DeadlineExceeded), errors.Is(err, context.DeadlineExceeded), errors.As(err, &networkError) && networkError.Timeout():
-			return "", ErrComposeDirectoryTimeout
+			summary = ErrComposeDirectoryTimeout
 		case errors.Is(probeCtx.Err(), context.Canceled), errors.Is(err, context.Canceled):
-			return "", ErrComposeDirectoryCanceled
+			summary = ErrComposeDirectoryCanceled
 		case errors.Is(err, sshdeploy.ErrHostUnavailable):
-			return "", ErrComposeDirectoryHostUnavailable
+			summary = ErrComposeDirectoryHostUnavailable
 		case err == nil && result.Started && result.ExitCode == 0:
-			return "", ErrComposeHomeInvalid
+			summary = ErrComposeHomeInvalid
 		default:
-			return "", ErrComposeDirectoryUnavailable
+			summary = ErrComposeDirectoryUnavailable
 		}
+		detail := fmt.Sprintf("主目录探测：Started=%t ExitCode=%d", result.Started, result.ExitCode)
+		if err != nil {
+			detail += "\n" + err.Error()
+		}
+		stderrText, stderrExceeded := stderr.snapshot()
+		if stderrExceeded {
+			// 丢弃截断的末行，避免只留下密码或私钥片段而无法完整匹配脱敏。
+			stderrText = stderrText[:strings.LastIndexByte(stderrText, '\n')+1]
+		}
+		if stderrText != "" {
+			detail += "\nstderr:\n" + stderrText
+		}
+		if stderrExceeded {
+			detail += "\nstderr 超出采集上限，末尾已截断"
+		}
+		// HOME 仅用于路径校验，即使错误输出重复该值也不能带入诊断。
+		failure := diagnosticerror.New(summary, detail, append(redactions, home)...)
+		var diagnostic interface{ Diagnostic() string }
+		var safeDetail string
+		if errors.As(failure, &diagnostic) {
+			safeDetail = diagnostic.Diagnostic()
+		}
+		s.logger.ErrorContext(ctx, "读取部署主机用户目录失败", "operation", "compose_directory_resolve", "target_id", target.ID, "host_id", target.HostID, "started", result.Started, "exit_code", result.ExitCode, "err", failure, "diagnostic", safeDetail)
+		return "", failure
 	}
 	return directory, nil
 }
 
-// 探测只需要一个路径；超出上限的主机输出丢弃，不进入日志或内存。
-type composeHomeOutput struct {
+// 标准输出与错误输出分别限量采集；超出上限的字节丢弃，不进入内存。
+type composeProbeOutput struct {
 	mu       sync.Mutex
 	content  strings.Builder
 	exceeded bool
+	limit    int
 }
 
-func (b *composeHomeOutput) Write(value []byte) (int, error) {
+func (b *composeProbeOutput) Write(value []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	n := len(value)
-	if n > 1024-b.content.Len() {
+	if n > b.limit-b.content.Len() {
 		b.exceeded = true
-		value = value[:max(0, 1024-b.content.Len())]
+		value = value[:max(0, b.limit-b.content.Len())]
 	}
 	_, _ = b.content.Write(value)
 	return n, nil
 }
 
-func (b *composeHomeOutput) snapshot() (string, bool) {
+func (b *composeProbeOutput) snapshot() (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.content.String(), b.exceeded

@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"strings"
+
+	"edo/internal/logredact"
 )
 
 type executionDiagnosticKey struct{}
@@ -26,6 +28,9 @@ func (s *Service) appendExecutionFailureDiagnostic(ctx context.Context, expected
 		}
 		remaining--
 		text := strings.TrimSpace(err.Error())
+		if diagnostic, ok := err.(interface{ Diagnostic() string }); ok {
+			text = strings.TrimSpace(diagnostic.Diagnostic())
+		}
 		if text != "" && text != message {
 			included := false
 			for _, previous := range details {
@@ -61,7 +66,7 @@ func (s *Service) appendExecutionFailureDiagnostic(ctx context.Context, expected
 			}
 		}
 	}
-	diagnostic := string(redactLogBytes([]byte(strings.Join(details, "\n")), normalizeLogRedactions(redactions)))
+	diagnostic := logredact.Text(string(redactLogBytes([]byte(strings.Join(details, "\n")), normalizeLogRedactions(redactions))))
 	identity, _ := ctx.Value(pipelineNodeLogKey{}).(pipelineNodeLog)
 	prefixBytes := 0
 	if identity.name != "" {

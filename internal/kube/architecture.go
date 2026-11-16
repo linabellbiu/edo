@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"sort"
@@ -13,7 +14,9 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 
+	"edo/internal/diagnosticerror"
 	"edo/internal/model"
 )
 
@@ -58,8 +61,13 @@ func (s *Service) NodeArchitectures(ctx context.Context, clusterID, projectID st
 	for {
 		nodes, listErr := client.CoreV1().Nodes().List(requestContext, metav1.ListOptions{Limit: 500, Continue: continuation})
 		if listErr != nil {
-			logger.WarnContext(ctx, "查询部署集群节点架构失败", "operation", "kubernetes_node_architectures_list", "cluster_id", clusterID, "project_id", projectID, "err", listErr)
-			return nil, nodeArchitectureReadError(listErr)
+			failure := nodeArchitectureDiagnostic(listErr, query.config)
+			detail := failure.Error()
+			if diagnostic, ok := failure.(interface{ Diagnostic() string }); ok {
+				detail = diagnostic.Diagnostic()
+			}
+			logger.WarnContext(ctx, "查询部署集群节点架构失败", "operation", "kubernetes_node_architectures_list", "cluster_id", clusterID, "project_id", projectID, "err", detail)
+			return nil, failure
 		}
 		for i := range nodes.Items {
 			node := &nodes.Items[i]
@@ -95,6 +103,18 @@ func (s *Service) NodeArchitectures(ctx context.Context, clusterID, projectID st
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	return result, nil
+}
+
+// 只有已经授权并发起的节点请求携带现场诊断，不把配置正文或凭据带入快照。
+func nodeArchitectureDiagnostic(cause error, cfg *rest.Config) error {
+	var values []string
+	if cfg != nil {
+		values = append(values, cfg.BearerToken, cfg.Password, string(cfg.KeyData), string(cfg.CertData))
+		if cfg.Password != "" {
+			values = append(values, cfg.Username+":"+cfg.Password)
+		}
+	}
+	return diagnosticerror.New(nodeArchitectureReadError(cause), fmt.Sprintf("Kubernetes API 读取节点失败：\n%s", cause), values...)
 }
 
 // 节点读取只依据错误类型区分现场故障，不把上游正文或连接信息交给调用方。

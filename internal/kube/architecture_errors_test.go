@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,7 +45,7 @@ func TestNodeArchitecturesClassifyActualAPIResponses(t *testing.T) {
 				t.Fatal(err)
 			}
 			architectures, err := service.NodeArchitectures(context.Background(), id, cluster.ProjectID)
-			if architectures != nil || err != scenario.want {
+			if architectures != nil || !errors.Is(err, scenario.want) {
 				t.Fatalf("API 故障类型错误: architectures=%v got=%v want=%v", architectures, err, scenario.want)
 			}
 			assertArchitectureErrorSafe(t, err)
@@ -73,11 +74,40 @@ func TestNodeArchitecturesClassifyActualNetworkFailures(t *testing.T) {
 				server.Close()
 			}
 			architectures, err := service.NodeArchitectures(context.Background(), id, cluster.ProjectID)
-			if architectures != nil || err != scenario.want {
+			if architectures != nil || !errors.Is(err, scenario.want) {
 				t.Fatalf("网络故障类型错误: architectures=%v got=%v want=%v", architectures, err, scenario.want)
 			}
 			assertArchitectureErrorSafe(t, err)
 		})
+	}
+}
+
+func TestNodeArchitecturesRetainActualDiagnosticAndRedactConfiguredCredentials(t *testing.T) {
+	const explanation = "node inventory backend rejected request"
+	server := resourceTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(metav1.Status{TypeMeta: metav1.TypeMeta{Kind: "Status", APIVersion: "v1"}, Status: "Failure", Reason: metav1.StatusReasonInternalError, Code: 500,
+			Message: explanation + "; echoed=" + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") + "; encoded=" + base64.StdEncoding.EncodeToString([]byte("test-token"))})
+	})
+	service := newKubeTestService(t, time.Second)
+	id := createKubeTestCluster(t, service, server)
+	cluster, err := service.Find(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.NodeArchitectures(context.Background(), id, cluster.ProjectID)
+	if !errors.Is(err, ErrNodeArchitecturesUnavailable) {
+		t.Fatalf("错误分类变化: %v", err)
+	}
+	assertArchitectureErrorSafe(t, err)
+	var diagnostic interface{ Diagnostic() string }
+	if !errors.As(err, &diagnostic) || !strings.Contains(diagnostic.Diagnostic(), explanation) {
+		t.Fatal("集群实际返回的诊断丢失")
+	}
+	for _, value := range []string{"test-token", base64.StdEncoding.EncodeToString([]byte("test-token"))} {
+		if strings.Contains(diagnostic.Diagnostic(), value) {
+			t.Fatal("集群凭据进入诊断")
+		}
 	}
 }
 
@@ -120,8 +150,8 @@ func assertArchitectureErrorSafe(t *testing.T, err error) {
 			t.Fatalf("对外错误泄露内部信息: %v", err)
 		}
 	}
-	if errors.Unwrap(err) != nil {
-		t.Fatalf("对外错误仍携带原始诊断: %v", err)
+	if summary := errors.Unwrap(err); summary != nil {
+		assertArchitectureErrorSafe(t, summary)
 	}
 }
 

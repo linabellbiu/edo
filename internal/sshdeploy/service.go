@@ -56,6 +56,8 @@ type Input struct {
 	ArtifactDigest   string
 	Stdout           io.Writer
 	Stderr           io.Writer
+	// 仅供内部执行诊断脱敏；在主机与凭据授权校验完成后提供本次已知秘密。
+	OnDiagnosticRedactions func(...string)
 }
 
 type Result struct {
@@ -106,6 +108,9 @@ func (s *Service) RunHostDeploymentScript(ctx context.Context, input Input) (Res
 	host, bundle, err := s.loadHost(ctx, input)
 	if err != nil {
 		return Result{ExitCode: -1}, err
+	}
+	if input.OnDiagnosticRedactions != nil {
+		input.OnDiagnosticRedactions(bundle.Password, bundle.PrivateKey, bundle.Passphrase, bundle.SudoPassword)
 	}
 	if host.Mode == model.HostModeLocal {
 		fileContext, cancelFiles := context.WithTimeout(ctx, input.Timeout)

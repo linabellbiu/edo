@@ -1,6 +1,7 @@
 package deployment
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,23 +11,96 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"edo/internal/model"
 	"edo/internal/sshdeploy"
 )
 
 type composeHomeProbeStub struct {
-	home  string
-	err   error
-	calls int
-	input sshdeploy.Input
+	home       string
+	err        error
+	calls      int
+	input      sshdeploy.Input
+	stderr     string
+	result     *sshdeploy.Result
+	redactions []string
 }
 
 func (r *composeHomeProbeStub) RunHostDeploymentScript(_ context.Context, input sshdeploy.Input) (sshdeploy.Result, error) {
 	r.calls++
 	r.input = input
+	if input.OnDiagnosticRedactions != nil {
+		input.OnDiagnosticRedactions(r.redactions...)
+	}
 	_, _ = io.WriteString(input.Stdout, r.home)
+	_, _ = io.WriteString(input.Stderr, r.stderr)
+	if r.result != nil {
+		return *r.result, r.err
+	}
 	return sshdeploy.Result{Started: true, ExitCode: 0}, r.err
+}
+
+func TestComposeDirectoryKeepsActualProbeDiagnosticsWithoutHomeOrCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		result       sshdeploy.Result
+		home, stderr string
+		cause        error
+		want         error
+	}{
+		{"not-started", sshdeploy.Result{ExitCode: -1}, "", "", fmt.Errorf("%w: dial tcp 192.0.2.10:22: connection refused password-actual", sshdeploy.ErrHostUnavailable), ErrComposeDirectoryHostUnavailable},
+		{"missing-home", sshdeploy.Result{Started: true, ExitCode: 2}, "", "sh: 1: HOME: parameter not set\npassword-actual\n", sshdeploy.ErrCommandFailed, ErrComposeDirectoryUnavailable},
+		{"timeout", sshdeploy.Result{Started: true, ExitCode: -1}, "/home/private-user", "partial terminal output\n/home/private-user\n", context.DeadlineExceeded, ErrComposeDirectoryTimeout},
+		{"invalid-home", sshdeploy.Result{Started: true, ExitCode: 0}, "configuration:\n  private: body", "", nil, ErrComposeHomeInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &composeHomeProbeStub{home: tc.home, stderr: tc.stderr, result: &tc.result, err: tc.cause, redactions: []string{"password-actual"}}
+			var logs bytes.Buffer
+			s := NewService(nil, nil, nil, runner, nil, "", slog.New(slog.NewTextHandler(&logs, nil)))
+			_, err := s.ResolveComposeWorkingDirectory(context.Background(), model.DeploymentTarget{Platform: model.DeploymentSSH, HostID: "host"}, "app")
+			var diagnostic interface{ Diagnostic() string }
+			if !errors.Is(err, tc.want) || !errors.As(err, &diagnostic) {
+				t.Fatalf("探测失败分类或诊断丢失: %v", err)
+			}
+			detail := diagnostic.Diagnostic()
+			if !strings.Contains(detail, fmt.Sprintf("Started=%t ExitCode=%d", tc.result.Started, tc.result.ExitCode)) {
+				t.Fatalf("实际执行状态丢失: %s", detail)
+			}
+			for _, secret := range []string{"password-actual", "/home/private-user", "configuration:", "private: body"} {
+				if strings.Contains(detail, secret) || strings.Contains(logs.String(), secret) || strings.Contains(err.Error(), secret) {
+					t.Fatalf("诊断或服务日志泄漏敏感数据: %q", secret)
+				}
+			}
+			if tc.stderr == "" && strings.Contains(detail, "stderr:") {
+				t.Fatal("没有真实stderr时不得补造输出")
+			}
+			if tc.name == "missing-home" && !strings.Contains(detail, "sh: 1: HOME: parameter not set") {
+				t.Fatal("缺失HOME的真实shell错误未保留")
+			}
+			if tc.name == "not-started" && !strings.Contains(detail, "connection refused") {
+				t.Fatal("实际连接错误未保留")
+			}
+			if strings.Contains(detail, "stdout:") {
+				t.Fatal("HOME标准输出不得展示")
+			}
+		})
+	}
+}
+
+func TestComposeDirectoryDiagnosticBoundsAndTruncatedSecrets(t *testing.T) {
+	secret := strings.Repeat("private-secret", 700)
+	runner := &composeHomeProbeStub{stderr: "sh: HOME not set\n" + secret, result: &sshdeploy.Result{Started: true, ExitCode: 2}, redactions: []string{secret}}
+	s := NewService(nil, nil, nil, runner, nil, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := s.ResolveComposeWorkingDirectory(context.Background(), model.DeploymentTarget{Platform: model.DeploymentSSH, HostID: "host"}, "app")
+	var diagnostic interface{ Diagnostic() string }
+	if !errors.As(err, &diagnostic) {
+		t.Fatalf("缺少实际探测诊断: %v", err)
+	}
+	detail := diagnostic.Diagnostic()
+	if len(detail) > 8*1024 || !utf8.ValidString(detail) || strings.Contains(detail, "private-secret") || !strings.Contains(detail, "sh: HOME not set") || !strings.Contains(detail, "截断") {
+		t.Fatalf("截断或脱敏失败: %q", detail)
+	}
 }
 
 func TestComposeDirectoryUsesTargetHomeWithoutWritingFiles(t *testing.T) {
