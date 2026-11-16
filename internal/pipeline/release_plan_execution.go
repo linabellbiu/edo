@@ -396,8 +396,11 @@ func (s *Service) prepareReleasePlanExecution(
 			if workflow.Revision != selection.ExpectedWorkflowRevision {
 				return nil, ErrReleasePlanExecutionWorkflowChanged
 			}
-			if issues := s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages); len(issues) != 0 {
-				return nil, ErrInvalidReleasePlanExecution
+			for _, issue := range s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages) {
+				if issue.NodeID == "" || issue.NodeID == workflow.Source.ID || issue.Code == "duplicate_node" {
+					s.logger.WarnContext(ctx, "发布计划流水线结构不可执行", "operation", "release_plan_workflow_structure", "workflow_id", workflow.ID, "issue_code", issue.Code, "err", ErrInvalidReleasePlanExecution)
+					return nil, ErrInvalidReleasePlanExecution
+				}
 			}
 			source := releasePlanManualSource(workflow, selection.SourceNodeID, selection.Ref)
 			if source == nil {

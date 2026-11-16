@@ -164,6 +164,8 @@ func stageTiming(stage model.PipelineRunGraphStage, runStatus model.PipelineRunS
 	}
 	terminal := finished == len(stage.Tasks) || nodeFinished(runStatus) && finished == found && (failed || canceled)
 	switch {
+	case !terminal && activeState != "":
+		timing.State = activeState
 	case failed:
 		timing.State = "failed"
 	case canceled:

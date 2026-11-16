@@ -77,9 +77,7 @@ func TestNewDeploymentRequiresSavedRegistryAndNeverInfersUpstream(t *testing.T) 
 		t.Fatalf("有上游仓库却未保存部署选择时未阻断: %+v", issues)
 	}
 	run, err := f.service.newResolvedWorkflowRun(ctx, f.application, f.activeWorkflow, f.activeWorkflow.Source, "manual", "refs/heads/main", strings.Repeat("a", 40), "admin", "", time.Now())
-	if run != nil || !errors.Is(err, ErrDeploymentRegistryRequired) {
-		t.Fatalf("未保存仓库仍创建运行: %+v %v", run, err)
-	}
+	assertTaskFailureCannotExecute(t, f.service, run, err, "deploy")
 	plan.ExecutionConfig.DeploymentRegistryID = savedID
 	if err := f.db.Save(&plan).Error; err != nil {
 		t.Fatal(err)

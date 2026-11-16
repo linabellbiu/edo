@@ -5,7 +5,6 @@ import (
 	"edo/internal/access"
 	"edo/internal/cicd"
 	"edo/internal/database"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -170,8 +169,10 @@ func TestConfigurationWorkflowSnapshotPinsSelectionUntilNextDeployment(t *testin
 				}
 			}
 		}
-		if badRun, err := f.service.newResolvedWorkflowRun(ctx, f.application, &badWorkflow, badWorkflow.Source, "manual", "refs/heads/main", strings.Repeat("d", 40), actor.ID, "", time.Now().UTC()); badRun != nil || !errors.Is(err, ErrInvalidWorkflow) {
-			t.Fatal("开始部署时未拒绝非相对路径，或错误未归为配置校验失败", invalid, err)
+		badRun, runErr := f.service.newResolvedWorkflowRun(ctx, f.application, &badWorkflow, badWorkflow.Source, "manual", "refs/heads/main", strings.Repeat("d", 40), actor.ID, "", time.Now().UTC())
+		badSnapshot := assertTaskFailureCannotExecute(t, f.service, badRun, runErr, "deploy")
+		if len(badSnapshot.ConfigurationBindings["deploy"]) != 0 {
+			t.Fatal("非法路径进入可执行配置绑定", invalid)
 		}
 	}
 	// 只改可编辑流程不能改写已创建运行；下次运行才采用移除引用和参数。

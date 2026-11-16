@@ -129,7 +129,6 @@ func TestKubernetesRegistryStageOverrideIsIndependentAndNeedsNoBuild(t *testing.
 	}
 	invalid[0].Tasks[0].Config.DeploymentOverride.DeploymentRegistryID = overrideTestPointer("")
 	app.Workflow.Stages = invalid
-	if next, runErr := s.newResolvedWorkflowRun(ctx, app, app.Workflow, source, "manual", "refs/heads/main", strings.Repeat("a", 40), "admin", "", time.Now()); next != nil || !errors.Is(runErr, ErrDeploymentRegistryRequired) {
-		t.Fatal("未选择镜像仓库仍可创建执行", next, runErr)
-	}
+	next, runErr := s.newResolvedWorkflowRun(ctx, app, app.Workflow, source, "manual", "refs/heads/main", strings.Repeat("a", 40), "admin", "", time.Now())
+	assertTaskFailureCannotExecute(t, s, next, runErr, "deploy")
 }

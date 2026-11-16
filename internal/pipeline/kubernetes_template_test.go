@@ -48,7 +48,7 @@ func TestKubernetesTemplateRejectsDuplicateWorkloadsWithinPipeline(t *testing.T)
 	plans := map[string]model.DeploymentPlan{"one": {ID: "one", DeploymentTargetID: "first"}, "two": {ID: "two", DeploymentTargetID: "second"}}
 	target := model.DeploymentTarget{Platform: model.DeploymentKubernetes, RuntimeID: "cluster", Namespace: "application", WorkloadName: "api"}
 	targets := map[string]model.DeploymentTarget{"first": target, "second": target}
-	if issues := checkDuplicateKubernetesTargets(stages, plans, targets); len(issues) != 1 || issues[0].Code != "duplicate_kubernetes_target" {
+	if issues := checkDuplicateKubernetesTargets(stages, plans, targets); len(issues) != 2 || issues[0].Code != "duplicate_kubernetes_target" || issues[1].Code != "duplicate_kubernetes_target" || issues[0].NodeID != "a" || issues[1].NodeID != "b" {
 		t.Fatal("未拒绝重复集群目标", issues)
 	}
 	target.Namespace = "other"

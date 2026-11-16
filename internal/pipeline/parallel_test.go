@@ -122,7 +122,7 @@ func TestParallelTasksExecuteTogetherAndWaitForStage(t *testing.T) {
 	}
 }
 
-func TestParallelFailurePreventsFollowingStageAndLateSuccess(t *testing.T) {
+func TestParallelFailureKeepsSiblingResultAndPreventsFollowingStage(t *testing.T) {
 	ctx := context.Background()
 	first, second, third := parallelShell("first"), parallelShell("second"), parallelShell("third")
 	snapshot := workflowSnapshot{SchemaVersion: 1, ExecutionVersion: 2, Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger}, Stages: []model.WorkflowStage{{ID: "checks", Tasks: []model.WorkflowNode{first, second}}, {ID: "next", Tasks: []model.WorkflowNode{third}}}}
@@ -142,9 +142,13 @@ func TestParallelFailurePreventsFollowingStageAndLateSuccess(t *testing.T) {
 	other.ExecutionJobID = nodes[1].JobID
 	other.CurrentNodeID = nodes[1].NodeID
 	other.NodeExecution = true
-	if err = s.completeNodeExecution(ctx, other, second, nil, nil); !errors.Is(err, ErrInvalidWorkflowTransition) {
-		t.Fatalf("迟到成功覆盖了失败: %v", err)
+	if err = s.completeNodeExecution(ctx, other, second, nil, nil); err != nil {
+		t.Fatalf("同阶段正常任务被失败任务阻断: %v", err)
 	}
+	if err = s.completeNodeExecution(ctx, other, second, nil, nil); !errors.Is(err, ErrInvalidWorkflowTransition) {
+		t.Fatalf("重复结果覆盖终态: %v", err)
+	}
+
 	var final model.PipelineRun
 	if err = db.First(&final, "uuid = ?", run.ID).Error; err != nil || final.Status != model.PipelineRunFailed {
 		t.Fatal("失败状态丢失")
@@ -152,6 +156,11 @@ func TestParallelFailurePreventsFollowingStageAndLateSuccess(t *testing.T) {
 	nodes, err = s.ListNodeRuns(ctx, run.ID)
 	if err != nil || len(nodes) != 2 {
 		t.Fatal("失败后仍推进了后续阶段")
+	}
+	for _, node := range nodes {
+		if node.NodeID == first.ID && node.Status != model.PipelineRunFailed || node.NodeID == second.ID && node.Status != model.PipelineRunSucceeded {
+			t.Fatalf("并行任务结果未分别保留: %+v", node)
+		}
 	}
 }
 

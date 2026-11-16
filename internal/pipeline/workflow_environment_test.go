@@ -99,12 +99,11 @@ func TestWorkflowDeploymentNodeUsesOnlyPlanAndResolvesItsTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.newResolvedWorkflowRun(
+	blocked, runErr := service.newResolvedWorkflowRun(
 		ctx, application, application.Workflow, application.Workflow.Source, "push", "refs/heads/main",
 		"1123456789012345678901234567890123456789", "system", "", now,
-	); !errors.Is(err, ErrInvalidWorkflow) {
-		t.Fatalf("方案修改破坏制品链后仍创建流水线运行: %v", err)
-	}
+	)
+	assertTaskFailureCannotExecute(t, service, blocked, runErr, resolved.ID)
 }
 
 func TestShellTaskScriptBytesRemainUnchangedInSavedAndRunSnapshots(t *testing.T) {

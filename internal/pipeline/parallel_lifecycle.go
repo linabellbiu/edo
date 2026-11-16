@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -63,13 +64,7 @@ func (s *Service) finishNodeFailure(ctx context.Context, expected executionFailu
 		if result.RowsAffected != 1 {
 			return errExecutionFailureStateChanged
 		}
-		if err := tx.Model(&parent).Updates(map[string]any{"status": model.PipelineRunFailed, "stage": "failed", "current_node_id": expected.nodeID, "execution_job_id": expected.jobID, "message": message, "updated_at": now}).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&model.PipelineRunRepository{}).Where("pipeline_run_id = ?", parent.ID).Updates(map[string]any{"status": model.PipelineRunRepositoryFailed, "updated_at": now}).Error; err != nil {
-			return err
-		}
-		return cancelPendingNodeJobs(tx, parent.ID, now)
+		return settleParallelTaskFailure(tx, &parent, model.PipelineNodeRun{NodeID: expected.nodeID, JobID: expected.jobID, Message: message}, now)
 	})
 	if errors.Is(err, errExecutionFailureStateChanged) {
 		return &buildTaskExecutionError{cause: cause, retryable: false}
@@ -83,6 +78,82 @@ func (s *Service) finishNodeFailure(ctx context.Context, expected executionFailu
 	s.notifyFailedWorkflowNode(updateCtx, expected.runID, expected.nodeID, message)
 	s.realtime.Changed(updateCtx, "pipeline_runs", expected.runID)
 	return &buildTaskExecutionError{cause: cause, retryable: false}
+}
+
+// 单个任务失败不取消并行任务；当前批次全部结束后才汇总失败，不推进下游阶段。
+// 调用方持有父运行行锁，避免失败、成功和停止之间相互覆盖。
+func settleParallelTaskFailure(tx *gorm.DB, parent *model.PipelineRun, failed model.PipelineNodeRun, now time.Time) error {
+	var active []model.PipelineNodeRun
+	if err := tx.Where("pipeline_run_id = ? AND status IN ?", parent.ID, []model.PipelineRunStatus{model.PipelineRunRunning, model.PipelineRunBlocked, model.PipelineRunAwaitingApproval}).Order("id ASC").Find(&active).Error; err != nil {
+		return err
+	}
+	if len(active) > 0 {
+		parent.CurrentNodeID, parent.ExecutionJobID = active[0].NodeID, active[0].JobID
+		parent.Status, parent.Stage = model.PipelineRunRunning, "parallel"
+		parent.Message = fmt.Sprintf("当前阶段有 %d 个任务继续执行；存在失败任务", len(active))
+	} else {
+		parent.CurrentNodeID, parent.ExecutionJobID = failed.NodeID, failed.JobID
+		parent.Status, parent.Stage, parent.Message = model.PipelineRunFailed, "failed", failed.Message
+		if err := tx.Model(&model.PipelineRunRepository{}).Where("pipeline_run_id = ?", parent.ID).Updates(map[string]any{"status": model.PipelineRunRepositoryFailed, "updated_at": now}).Error; err != nil {
+			return err
+		}
+	}
+	return saveParallelRun(tx, parent, parent, now)
+}
+
+// Worker 最终失败钩子在同一事务内收敛准确任务，不能取消其他并行任务。
+func (s *Service) handleParallelTerminalFailure(ctx context.Context, tx *gorm.DB, job model.Job, runID, nodeID, message string) (bool, error) {
+	var node model.PipelineNodeRun
+	err := tx.WithContext(ctx).Where("pipeline_run_id = ? AND node_id = ? AND job_id = ?", runID, nodeID, job.ID).First(&node).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	var parent model.PipelineRun
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&parent, "uuid = ?", runID).Error; err != nil {
+		return true, err
+	}
+	if nodeFinished(node.Status) || nodeFinished(parent.Status) {
+		return true, nil
+	}
+	now := time.Now().UTC()
+	status, stage := model.PipelineRunFailed, "failed"
+	if parent.Stage == stoppingStage {
+		status, stage, message = model.PipelineRunCanceled, "canceled", "执行已停止；执行进程已中断，请确认目标环境"
+	}
+	result := tx.Model(&model.PipelineNodeRun{}).Where("uuid = ? AND status = ?", node.ID, node.Status).Updates(map[string]any{"status": status, "stage": stage, "message": message, "finished_at": now, "updated_at": now})
+	if result.Error != nil || result.RowsAffected == 0 {
+		return true, result.Error
+	}
+	node.Status, node.Stage, node.Message = status, stage, message
+	if parent.Stage == stoppingStage {
+		if err := tx.Model(&model.Job{}).Where("uuid = ?", job.ID).Updates(map[string]any{"status": model.JobCanceled, "error_code": "canceled_by_user", "error_message": message}).Error; err != nil {
+			return true, err
+		}
+		var active int64
+		if err := tx.Model(&model.PipelineNodeRun{}).Where("pipeline_run_id = ? AND status = ?", runID, model.PipelineRunRunning).Count(&active).Error; err != nil {
+			return true, err
+		}
+		if active == 0 {
+			if err := tx.Model(&parent).Updates(map[string]any{"status": model.PipelineRunCanceled, "stage": "canceled", "message": "流水线已停止，已完成的发布操作保留", "updated_at": now}).Error; err != nil {
+				return true, err
+			}
+		}
+	} else if err := settleParallelTaskFailure(tx, &parent, node, now); err != nil {
+		return true, err
+	}
+	if job.Kind == "pipeline.deploy" {
+		if err := tx.Model(&model.DeploymentRecord{}).Where("pipeline_run_id = ? AND workflow_node_id = ? AND status IN ?", runID, nodeID, []model.DeploymentStatus{model.DeploymentQueued, model.DeploymentRunning}).Updates(map[string]any{"status": model.DeploymentFailed, "error_code": "pipeline_task_interrupted", "error_message": message, "finished_at": now, "updated_at": now}).Error; err != nil {
+			return true, err
+		}
+	}
+	reserved := tx.Model(&model.PipelineRun{}).Where("uuid = ? AND log_truncated = ? AND log_bytes <= ?", runID, false, maximumPipelineRunLogBytes-len(pipelineRunLogTruncatedMessage)-len(message)).UpdateColumn("log_bytes", gorm.Expr("log_bytes + ?", len(message)))
+	if reserved.Error != nil || reserved.RowsAffected == 0 {
+		return true, reserved.Error
+	}
+	return true, tx.Create(&model.PipelineRunLog{PipelineRunID: runID, NodeID: nodeID, Stage: stage, Level: "error", Message: message, CreatedAt: now}).Error
 }
 
 func cancelPendingNodeJobs(tx *gorm.DB, runID string, now time.Time) error {

@@ -79,6 +79,7 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
+	TaskFailures                     map[string]string                           `json:"task_failures,omitempty"`
 	DefaultTerminalTools             bool                                        `json:"default_terminal_tools,omitempty"`
 	DefaultContainerInit             bool                                        `json:"default_container_init,omitempty"`
 	PreserveComposeImageReferences   bool                                        `json:"preserve_compose_image_references,omitempty"`
@@ -1127,8 +1128,11 @@ func (s *Service) validateWorkflow(
 			}
 		}
 	}
-	if _, err := configuredArtifactSources(stages); err != nil {
-		issues = append(issues, WorkflowIssue{Code: "ambiguous_artifact_source", Message: "部署任务需要选择已完成阶段的构建制品；并行构建时请明确选择来源任务"})
+	_, sourceFailures := collectArtifactSourcesByTask(stages, true)
+	for _, node := range tasks {
+		if sourceFailures[node.ID] != nil {
+			issues = append(issues, WorkflowIssue{Code: "ambiguous_artifact_source", Message: "部署任务需要选择已完成阶段的构建制品；并行构建时请明确选择来源任务", NodeID: node.ID})
+		}
 	}
 	issues = append(issues, validateWorkflowArtifactFlow(tasks, activeBuildPlans, activeDeploymentPlans, activeTargets)...)
 	issues = append(issues, checkDuplicateKubernetesTargets(stages, activeDeploymentPlans, activeTargets)...)
@@ -1184,7 +1188,7 @@ func validateWorkflowArtifactFlow(
 	priorBuilds := map[string]bool{}
 	var artifactPlan *model.BuildPlan
 	buildTaskSeen := false
-	outputs := map[string]bool{}
+	outputs := map[string]string{}
 	for i := range tasks {
 		next := tasks[i]
 		switch next.Type {
@@ -1203,10 +1207,11 @@ func validateWorkflowArtifactFlow(
 				artifactPlan = &plan
 				if plan.Kind == model.BuildPlanDockerfile && next.Config.ImageTag != "" {
 					key := plan.ImageRegistryID + "\x00" + strings.TrimSpace(next.Config.ImageName) + "\x00" + strings.TrimSpace(next.Config.ImageTag)
-					if outputs[key] {
+					if previous := outputs[key]; previous != "" {
+						issues = append(issues, WorkflowIssue{Code: "duplicate_image_output", Message: "多个构建不能写入同一仓库、镜像名称和 Tag；共用镜像请引用同一构建任务", NodeID: previous})
 						issues = append(issues, WorkflowIssue{Code: "duplicate_image_output", Message: "多个构建不能写入同一仓库、镜像名称和 Tag；共用镜像请引用同一构建任务", NodeID: next.ID})
 					}
-					outputs[key] = true
+					outputs[key] = next.ID
 				}
 			}
 		case model.WorkflowNodeDeploy:
@@ -1520,11 +1525,15 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		return nil, ErrInvalidWorkflow
 	}
 	resolved := *workflow
-	if dependencyIssues := workflowDisabledDependencyIssues(workflow.Stages); len(dependencyIssues) > 0 {
-		s.logger.WarnContext(ctx, "流水线引用了已关闭任务", "operation", "workflow_run_disabled_dependency", "workflow_id", workflow.ID, "node_id", dependencyIssues[0].NodeID, "err", ErrInvalidWorkflow)
-		return nil, fmt.Errorf("%w：%s", ErrInvalidWorkflow, dependencyIssues[0].Message)
+	taskFailures := map[string]string{}
+	for _, issue := range workflowStructureIssues(workflow.Source, workflow.Stages) {
+		if issue.Code != "disabled_upstream_task" {
+			s.logger.WarnContext(ctx, "流水线结构无效", "operation", "workflow_run_structure", "workflow_id", workflow.ID, "issue_code", issue.Code, "err", ErrInvalidWorkflow)
+			return nil, ErrInvalidWorkflow
+		}
+		taskFailures[issue.NodeID] = issue.Message
 	}
-	resolved.Stages = enabledWorkflowStages(tagOnlyWorkflowStages(workflow.Stages))
+	resolved.Stages = enabledWorkflowStages(tagOnlyWorkflowStages(cloneWorkflowStages(workflow.Stages)))
 	if len(resolved.Stages) == 0 {
 		s.logger.WarnContext(ctx, "流水线没有已开启的任务", "operation", "workflow_run_enabled_tasks", "workflow_id", workflow.ID, "err", ErrInvalidWorkflow)
 		return nil, ErrInvalidWorkflow
@@ -1539,7 +1548,8 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				if !configfile.ValidPath(file.Path) {
 					validationErr := fmt.Errorf("%w：配置文件路径只能填写应用配置目录下的相对路径", ErrInvalidWorkflow)
 					s.logger.ErrorContext(ctx, "配置文件路径不是相对路径", "operation", "configuration_relative_path", "application_id", application.ID, "node_id", resolved.Stages[i].Tasks[j].ID, "err", validationErr)
-					return nil, validationErr
+					s.recordWorkflowTaskFailure(ctx, taskFailures, resolved.Stages[i].Tasks[j].ID, "workflow_configuration_path", "配置文件路径只能填写应用配置目录下的相对路径", validationErr)
+					break
 				}
 			}
 		}
@@ -1554,7 +1564,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	} else {
 		variableContext = projectdatabase.WithDepartmentScope(ctx, projectdatabase.DepartmentScope{ProjectID: application.ProjectID, DepartmentID: application.DepartmentID})
 	}
-	if err := s.expandDeploymentHosts(variableContext, database, &resolved); err != nil {
+	if err := s.expandDeploymentHostsForRun(variableContext, database, &resolved, taskFailures); err != nil {
 		return nil, err
 	}
 	delivery := cicd.New(database, s.secrets, s.logger)
@@ -1580,239 +1590,287 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	for i := range resolved.Stages {
 		for j := range resolved.Stages[i].Tasks {
 			current := &resolved.Stages[i].Tasks[j]
-			switch current.Type {
-			case model.WorkflowNodeBuild:
-				var plan model.BuildPlan
-				if current.Config.InlineBuild != nil {
-					plan = *current.Config.InlineBuild
-					plan.ID = inlineBuildIdentity(workflow.ID, current.ID)
-					plan.ProjectID, plan.DepartmentID = application.ProjectID, application.DepartmentID
-					current.Config.BuildPlanID = plan.ID
-					if len(current.Config.BuildOutputs) > 0 {
-						plan.ArtifactPath = ".edo-build-outputs"
-					}
-					if plan.Kind == model.BuildPlanDockerfile && plan.ImageRegistryID == "" {
-						return nil, ErrInvalidWorkflow
-					}
-					if err := s.validateBuildPlanRegistry(ctx, plan.ImageRegistryID); err != nil {
-						return nil, err
-					}
-				} else if current.Config.BuildPlanID == "" || database.WithContext(ctx).
-					First(&plan, "uuid = ? AND is_active = ?", current.Config.BuildPlanID, true).Error != nil ||
-					plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
-					return nil, ErrInvalidWorkflow
-				}
-				if plan.Kind == model.BuildPlanDockerfile {
-					plan.TargetStage = workflowBuildTarget(current.Config, plan)
-					var platformErr error
-					plan.Platform, platformErr = workflowSelectedBuildPlatform(current.Config, plan)
-					if platformErr != nil {
-						s.logger.WarnContext(ctx, "构建平台无效", "operation", "workflow_build_platform_resolve", "node_id", current.ID, "build_plan_id", plan.ID, "err", platformErr)
-						return nil, platformErr
-					}
-				}
-				if plan.Kind == model.BuildPlanDockerfile && !validBuildTarget(plan.TargetStage) {
-					s.logger.WarnContext(ctx, "构建目标阶段无效", "operation", "workflow_build_target_resolve", "node_id", current.ID, "build_plan_id", plan.ID, "err", ErrInvalidBuildTarget)
-					return nil, ErrInvalidBuildTarget
-				}
-				buildPlans[current.ID] = buildPlanSnapshot(plan)
-				entry := buildPlans[current.ID]
-				entry.Outputs = current.Config.BuildOutputs
-				buildPlans[current.ID] = entry
-				resolvedBuildPlans[plan.ID] = plan
-			case model.WorkflowNodeDeploy:
-				var plan model.DeploymentPlan
-				var target model.DeploymentTarget
-				managedWorkingDirectory := false
-				sourcePlanID := ""
-				if current.Config.InlineDeploymentPlan != nil {
-					inlinePlan, inlineTarget, resolveErr := s.resolveInlineDeploymentPlan(variableContext, application, workflow.ID, *current, database)
-					if resolveErr != nil {
-						return nil, resolveErr
-					}
-					plan, target = *inlinePlan, *inlineTarget
-					current.Config.DeploymentPlanID = plan.ID
-				} else {
-					if current.Config.DeploymentPlanID == "" || database.WithContext(ctx).
-						First(&plan, "uuid = ? AND is_active = ?", current.Config.DeploymentPlanID, true).Error != nil ||
-						plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
-						return nil, ErrInvalidWorkflow
-					}
-					plan = model.WorkflowDeploymentSnapshotBase(plan, current.Config.DeploymentOverride)
-					var originalTarget *model.DeploymentTarget
-					if plan.DeploymentTargetID != "" {
-						if database.WithContext(ctx).First(&target, "uuid = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil || target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID || !deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
-							return nil, ErrInvalidWorkflow
-						}
-						originalTarget = &target
-					}
-					effective, resolvedTarget, resolveErr := s.resolveWorkflowLibraryPlan(variableContext, application, workflow.ID, *current, plan, originalTarget, database)
-					if resolveErr != nil || resolvedTarget == nil {
-						if resolveErr != nil {
-							return nil, resolveErr
-						}
-						return nil, ErrInvalidWorkflow
-					}
-					if effective.ID != plan.ID {
-						sourcePlanID = plan.ID
-					}
-					plan, target = *effective, *resolvedTarget
-					current.Config.DeploymentPlanID = plan.ID
-				}
-				if current.Config.InlineDeploymentPlan == nil && current.Config.ExecutionHostID != "" {
-					resolvedTarget, err := s.deployments.WithTransaction(database).ResolveHostTarget(variableContext, target, current.Config.ExecutionHostID)
-					if err != nil {
-						return nil, err
-					}
-					target = *resolvedTarget
-					plan.DeploymentTargetID, plan.DeploymentTarget = target.ID, &target
-				}
-				if current.Config.ComposeSource != nil && current.Config.ComposeSource.Kind != "upstream" {
-					content, sourceErr := s.runtimeComposeDefinition(ctx, *application, *current, target.EnvironmentID, ref, commitSHA, authorityID)
-					if sourceErr != nil {
-						return nil, sourceErr
-					}
-					plan.ComposeYAML = content
-				}
-				model.ApplyDeploymentExecution(&current.Config, plan.ExecutionConfig)
-				if err := s.freezeSavedDeploymentRegistry(variableContext, database, current, plan.Kind, authorityID); err != nil {
-					return nil, err
-				}
-				if err := resolveDeploymentBuildBindings(current, resolved.Stages); err != nil {
-					return nil, err
-				}
-				if current.Config.Kubernetes != nil {
-					authScope, _ := projectdatabase.DepartmentScopeFromContext(variableContext)
-					authScope.UserID = authorityID
-					checkCtx := projectdatabase.WithDepartmentScope(variableContext, authScope)
-					if err := s.validateKubernetesTemplateConfiguration(checkCtx, database, current.Config.Kubernetes); err != nil {
-						return nil, err
-					}
-					if err := s.deployments.WithTransaction(database).KubernetesTemplateCheck(checkCtx, target, application.ID, current.Config.Kubernetes); err != nil {
-						return nil, err
-					}
-				}
-				available, environmentErr := s.deploymentEnvironmentAvailable(ctx, database, target, "pipeline_run_environment_validate")
-				if environmentErr != nil {
-					return nil, environmentErr
-				}
-				if !available {
-					return nil, ErrInvalidWorkflow
-				}
-				if len(current.Config.RuntimeServices) > 0 {
-					var capability model.HostCapability
-					if err := database.WithContext(ctx).Where("host_id = ? AND kind = ? AND status = ?", target.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).First(&capability).Error; err != nil {
-						s.logger.Warn("关联服务的 Docker 运行时不可用", "operation", "workflow_custom_runtime_freeze", "node_id", current.ID, "host_id", target.HostID, "err", err)
-						return nil, ErrInvalidWorkflow
-					}
-					target.RuntimeID = capability.RuntimeID
-				}
-				if plan.Kind == model.DeploymentPlanComposeStack && target.WorkingDirectory == "" {
-					directory, directoryErr := s.deployments.ResolveComposeWorkingDirectory(ctx, target, application.Name)
-					if directoryErr != nil {
-						return nil, fmt.Errorf("%w：%s", ErrInvalidWorkflow, directoryErr.Error())
-					}
-					target.WorkingDirectory, managedWorkingDirectory = directory, true
-				}
-				architectures, architectureErr := s.deploymentTargetArchitectures(ctx, database, target)
-				if architectureErr != nil {
-					if s.logger != nil {
-						s.logger.Error("部署目标架构不可用", "operation", "pipeline_target_architecture_resolve",
-							"application_id", application.ID, "workflow_id", workflow.ID,
-							"deployment_target_id", target.ID, "host_id", target.HostID, "runtime_id", target.RuntimeID, "err", architectureErr)
-					}
-					if target.Platform == model.DeploymentKubernetes {
-						return nil, fmt.Errorf("%w：%s", ErrInvalidWorkflow, architectureErr.Error())
-					}
-					return nil, ErrInvalidWorkflow
-				}
-				dockerConfig := plan.DockerConfig
-				if plan.Kind == model.DeploymentPlanDocker {
-					normalized, configErr := dockerengine.NormalizeContainerConfig(dockerConfig)
-					if configErr != nil {
-						return nil, ErrInvalidWorkflow
-					}
-					dockerConfig = normalized
-					workloadName, nameErr := deployment.ResolveDockerWorkloadName(
-						target.WorkloadName, application.Name, application.ID, plan.ID, target.ID,
-					)
-					if nameErr != nil {
-						return nil, ErrInvalidWorkflow
-					}
-					target.WorkloadName = workloadName
-				}
-				deploymentPlans[current.ID] = workflowDeploymentPlanSnapshot{
-					ID: plan.ID, Kind: plan.Kind, Script: plan.Script, Kubernetes: current.Config.Kubernetes, SourcePlanID: sourcePlanID,
-					ComposeYAML: plan.ComposeYAML, ServiceName: plan.ServiceName,
-					DockerConfig:   dockerConfig,
-					TimeoutSeconds: plan.TimeoutSeconds,
-				}
-				deploymentTargets[current.ID] = workflowDeploymentTargetSnapshot{
-					ID: target.ID, ProjectID: target.ProjectID, DepartmentID: target.DepartmentID, Name: target.Name, Platform: target.Platform,
-					EnvironmentID: target.EnvironmentID, HostID: target.HostID, Architecture: singleTargetArchitecture(architectures), Architectures: architectures, RuntimeID: target.RuntimeID,
-					WorkingDirectory: target.WorkingDirectory, ManagedWorkingDirectory: managedWorkingDirectory, Namespace: target.Namespace,
-					WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
-					RolloutTimeout: target.RolloutTimeout,
-				}
-				resolvedDeploymentPlans[plan.ID] = plan
-				resolvedDeploymentTargets[target.ID] = target
+			if taskFailures[current.ID] != "" {
+				continue
 			}
+			resolveErr := func() error {
+				switch current.Type {
+				case model.WorkflowNodeBuild:
+					var plan model.BuildPlan
+					if current.Config.InlineBuild != nil {
+						plan = *current.Config.InlineBuild
+						plan.ID = inlineBuildIdentity(workflow.ID, current.ID)
+						plan.ProjectID, plan.DepartmentID = application.ProjectID, application.DepartmentID
+						current.Config.BuildPlanID = plan.ID
+						if len(current.Config.BuildOutputs) > 0 {
+							plan.ArtifactPath = ".edo-build-outputs"
+						}
+						if plan.Kind == model.BuildPlanDockerfile && plan.ImageRegistryID == "" {
+							return ErrInvalidWorkflow
+						}
+						if err := s.validateBuildPlanRegistry(ctx, plan.ImageRegistryID); err != nil {
+							return err
+						}
+					} else {
+						if current.Config.BuildPlanID == "" {
+							return ErrInvalidWorkflow
+						}
+						readErr := s.readWorkflowSnapshotResource(ctx, database.WithContext(ctx).Where("uuid = ? AND is_active = ?", current.Config.BuildPlanID, true), &plan)
+						if readErr != nil {
+							if errors.Is(readErr, errWorkflowSnapshotUnavailable) {
+								return readErr
+							}
+							return ErrInvalidWorkflow
+						}
+						if plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
+							return ErrInvalidWorkflow
+						}
+					}
+					if plan.Kind == model.BuildPlanDockerfile {
+						plan.TargetStage = workflowBuildTarget(current.Config, plan)
+						var platformErr error
+						plan.Platform, platformErr = workflowSelectedBuildPlatform(current.Config, plan)
+						if platformErr != nil {
+							s.logger.WarnContext(ctx, "构建平台无效", "operation", "workflow_build_platform_resolve", "node_id", current.ID, "build_plan_id", plan.ID, "err", platformErr)
+							return platformErr
+						}
+					}
+					if plan.Kind == model.BuildPlanDockerfile && !validBuildTarget(plan.TargetStage) {
+						s.logger.WarnContext(ctx, "构建目标阶段无效", "operation", "workflow_build_target_resolve", "node_id", current.ID, "build_plan_id", plan.ID, "err", ErrInvalidBuildTarget)
+						return ErrInvalidBuildTarget
+					}
+					buildPlans[current.ID] = buildPlanSnapshot(plan)
+					entry := buildPlans[current.ID]
+					entry.Outputs = current.Config.BuildOutputs
+					buildPlans[current.ID] = entry
+					resolvedBuildPlans[plan.ID] = plan
+				case model.WorkflowNodeDeploy:
+					var plan model.DeploymentPlan
+					var target model.DeploymentTarget
+					managedWorkingDirectory := false
+					sourcePlanID := ""
+					if current.Config.InlineDeploymentPlan != nil {
+						inlinePlan, inlineTarget, resolveErr := s.resolveInlineDeploymentPlan(variableContext, application, workflow.ID, *current, database)
+						if resolveErr != nil {
+							return resolveErr
+						}
+						plan, target = *inlinePlan, *inlineTarget
+						current.Config.DeploymentPlanID = plan.ID
+					} else {
+						if current.Config.DeploymentPlanID == "" {
+							return ErrInvalidWorkflow
+						}
+						readErr := s.readWorkflowSnapshotResource(ctx, database.WithContext(ctx).Where("uuid = ? AND is_active = ?", current.Config.DeploymentPlanID, true), &plan)
+						if readErr != nil {
+							if errors.Is(readErr, errWorkflowSnapshotUnavailable) {
+								return readErr
+							}
+							return ErrInvalidWorkflow
+						}
+						if plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
+							return ErrInvalidWorkflow
+						}
+						plan = model.WorkflowDeploymentSnapshotBase(plan, current.Config.DeploymentOverride)
+						var originalTarget *model.DeploymentTarget
+						if plan.DeploymentTargetID != "" {
+							readErr := s.readWorkflowSnapshotResource(ctx, database.WithContext(ctx).Where("uuid = ? AND is_active = ?", plan.DeploymentTargetID, true), &target)
+							if readErr != nil {
+								if errors.Is(readErr, errWorkflowSnapshotUnavailable) {
+									return readErr
+								}
+								return ErrInvalidWorkflow
+							}
+							if target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID || !deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
+								return ErrInvalidWorkflow
+							}
+							originalTarget = &target
+						}
+						effective, resolvedTarget, resolveErr := s.resolveWorkflowLibraryPlan(variableContext, application, workflow.ID, *current, plan, originalTarget, database)
+						if resolveErr != nil || resolvedTarget == nil {
+							if resolveErr != nil {
+								return resolveErr
+							}
+							return ErrInvalidWorkflow
+						}
+						if effective.ID != plan.ID {
+							sourcePlanID = plan.ID
+						}
+						plan, target = *effective, *resolvedTarget
+						current.Config.DeploymentPlanID = plan.ID
+					}
+					if current.Config.InlineDeploymentPlan == nil && current.Config.ExecutionHostID != "" {
+						resolvedTarget, err := s.deployments.WithTransaction(database).ResolveHostTarget(variableContext, target, current.Config.ExecutionHostID)
+						if err != nil {
+							return err
+						}
+						target = *resolvedTarget
+						plan.DeploymentTargetID, plan.DeploymentTarget = target.ID, &target
+					}
+					if current.Config.ComposeSource != nil && current.Config.ComposeSource.Kind != "upstream" {
+						content, sourceErr := s.runtimeComposeDefinition(ctx, *application, *current, target.EnvironmentID, ref, commitSHA, authorityID)
+						if sourceErr != nil {
+							return sourceErr
+						}
+						plan.ComposeYAML = content
+					}
+					model.ApplyDeploymentExecution(&current.Config, plan.ExecutionConfig)
+					if err := s.freezeSavedDeploymentRegistry(variableContext, database, current, plan.Kind, authorityID); err != nil {
+						return err
+					}
+					if err := resolveDeploymentBuildBindings(current, resolved.Stages); err != nil {
+						return err
+					}
+					if current.Config.Kubernetes != nil {
+						authScope, _ := projectdatabase.DepartmentScopeFromContext(variableContext)
+						authScope.UserID = authorityID
+						checkCtx := projectdatabase.WithDepartmentScope(variableContext, authScope)
+						if err := s.validateKubernetesTemplateConfiguration(checkCtx, database, current.Config.Kubernetes); err != nil {
+							return err
+						}
+						if err := s.deployments.WithTransaction(database).KubernetesTemplateCheck(checkCtx, target, application.ID, current.Config.Kubernetes); err != nil {
+							return err
+						}
+					}
+					available, environmentErr := s.deploymentEnvironmentAvailable(ctx, database, target, "pipeline_run_environment_validate")
+					if environmentErr != nil {
+						return environmentErr
+					}
+					if !available {
+						return ErrInvalidWorkflow
+					}
+					if len(current.Config.RuntimeServices) > 0 {
+						var capability model.HostCapability
+						if err := database.WithContext(ctx).Where("host_id = ? AND kind = ? AND status = ?", target.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).First(&capability).Error; err != nil {
+							s.logger.Warn("关联服务的 Docker 运行时不可用", "operation", "workflow_custom_runtime_freeze", "node_id", current.ID, "host_id", target.HostID, "err", err)
+							return ErrInvalidWorkflow
+						}
+						target.RuntimeID = capability.RuntimeID
+					}
+					if plan.Kind == model.DeploymentPlanComposeStack && target.WorkingDirectory == "" {
+						directory, directoryErr := s.deployments.ResolveComposeWorkingDirectory(ctx, target, application.Name)
+						if directoryErr != nil {
+							return fmt.Errorf("%w：%s", ErrInvalidWorkflow, directoryErr.Error())
+						}
+						target.WorkingDirectory, managedWorkingDirectory = directory, true
+					}
+					architectures, architectureErr := s.deploymentTargetArchitectures(ctx, database, target)
+					if architectureErr != nil {
+						if s.logger != nil {
+							s.logger.Error("部署目标架构不可用", "operation", "pipeline_target_architecture_resolve",
+								"application_id", application.ID, "workflow_id", workflow.ID,
+								"deployment_target_id", target.ID, "host_id", target.HostID, "runtime_id", target.RuntimeID, "err", architectureErr)
+						}
+						if target.Platform == model.DeploymentKubernetes {
+							return fmt.Errorf("%w：%s", ErrInvalidWorkflow, architectureErr.Error())
+						}
+						return ErrInvalidWorkflow
+					}
+					dockerConfig := plan.DockerConfig
+					if plan.Kind == model.DeploymentPlanDocker {
+						normalized, configErr := dockerengine.NormalizeContainerConfig(dockerConfig)
+						if configErr != nil {
+							return ErrInvalidWorkflow
+						}
+						dockerConfig = normalized
+						workloadName, nameErr := deployment.ResolveDockerWorkloadName(
+							target.WorkloadName, application.Name, application.ID, plan.ID, target.ID,
+						)
+						if nameErr != nil {
+							return ErrInvalidWorkflow
+						}
+						target.WorkloadName = workloadName
+					}
+					deploymentPlans[current.ID] = workflowDeploymentPlanSnapshot{
+						ID: plan.ID, Kind: plan.Kind, Script: plan.Script, Kubernetes: current.Config.Kubernetes, SourcePlanID: sourcePlanID,
+						ComposeYAML: plan.ComposeYAML, ServiceName: plan.ServiceName,
+						DockerConfig:   dockerConfig,
+						TimeoutSeconds: plan.TimeoutSeconds,
+					}
+					deploymentTargets[current.ID] = workflowDeploymentTargetSnapshot{
+						ID: target.ID, ProjectID: target.ProjectID, DepartmentID: target.DepartmentID, Name: target.Name, Platform: target.Platform,
+						EnvironmentID: target.EnvironmentID, HostID: target.HostID, Architecture: singleTargetArchitecture(architectures), Architectures: architectures, RuntimeID: target.RuntimeID,
+						WorkingDirectory: target.WorkingDirectory, ManagedWorkingDirectory: managedWorkingDirectory, Namespace: target.Namespace,
+						WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
+						RolloutTimeout: target.RolloutTimeout,
+					}
+					resolvedDeploymentPlans[plan.ID] = plan
+					resolvedDeploymentTargets[target.ID] = target
+				}
+				return nil
+			}()
+			if resolveErr != nil {
+				if errors.Is(resolveErr, errWorkflowSnapshotUnavailable) {
+					return nil, resolveErr
+				}
+				s.recordWorkflowTaskFailure(ctx, taskFailures, current.ID, "workflow_task_resources", "任务配置或关联资源不可用，请检查此任务的配置与使用权限", resolveErr)
+			}
+
 		}
 	}
 	for _, stage := range resolved.Stages {
 		for _, task := range stage.Tasks {
-			if len(task.Config.VariableNames) == 0 && task.Type != model.WorkflowNodeDeploy {
+			if taskFailures[task.ID] != "" {
 				continue
 			}
-			usage, envID := "build", task.Config.VariableEnvironmentID
-			if task.Type == model.WorkflowNodeDeploy {
-				usage = "deploy"
-				envID = deploymentTargets[task.ID].EnvironmentID
-			}
-			if task.Type == model.WorkflowNodeDeploy && len(task.Config.ConfigurationFiles) > 0 {
-				kind := deploymentPlans[task.ID].Kind
-				if kind == model.DeploymentPlanDocker && deploymentPlans[task.ID].DockerConfig.DeploymentScript != "" && task.Config.DeploymentInputVersion == 0 {
-					s.logger.Warn("Docker 完整命令不能混用配置注入", "operation", "configuration_docker_script", "node_id", task.ID)
-					return nil, fmt.Errorf("%w：选择配置文件时请使用结构化 Docker 部署方案", ErrInvalidWorkflow)
+			bindingErr := func() error {
+				if len(task.Config.VariableNames) == 0 && task.Type != model.WorkflowNodeDeploy {
+					return nil
 				}
-				if kind != model.DeploymentPlanDocker && kind != model.DeploymentPlanCompose && kind != model.DeploymentPlanComposeStack && kind != model.DeploymentPlanScript {
-					return nil, ErrInvalidWorkflow
+				usage, envID := "build", task.Config.VariableEnvironmentID
+				if task.Type == model.WorkflowNodeDeploy {
+					usage = "deploy"
+					envID = deploymentTargets[task.ID].EnvironmentID
 				}
-				if permissionErr := s.requireDeliveryPermissionWithDatabase(variableContext, database, authorityID, "delivery_variable.execute"); permissionErr != nil {
-					return nil, permissionErr
+				if task.Type == model.WorkflowNodeDeploy && len(task.Config.ConfigurationFiles) > 0 {
+					kind := deploymentPlans[task.ID].Kind
+					if kind == model.DeploymentPlanDocker && deploymentPlans[task.ID].DockerConfig.DeploymentScript != "" && task.Config.DeploymentInputVersion == 0 {
+						s.logger.Warn("Docker 完整命令不能混用配置注入", "operation", "configuration_docker_script", "node_id", task.ID)
+						return fmt.Errorf("%w：选择配置文件时请使用结构化 Docker 部署方案", ErrInvalidWorkflow)
+					}
+					if kind != model.DeploymentPlanDocker && kind != model.DeploymentPlanCompose && kind != model.DeploymentPlanComposeStack && kind != model.DeploymentPlanScript {
+						return ErrInvalidWorkflow
+					}
+					if permissionErr := s.requireDeliveryPermissionWithDatabase(variableContext, database, authorityID, "delivery_variable.execute"); permissionErr != nil {
+						return permissionErr
+					}
+					configs, freezeErr := delivery.FreezeConfigFiles(variableContext, application.ProjectID, application.ID, envID, ref, task.Config.ConfigurationFiles)
+					if freezeErr != nil {
+						return freezeErr
+					}
+					configurationBindings[task.ID] = configs
 				}
-				configs, freezeErr := delivery.FreezeConfigFiles(variableContext, application.ProjectID, application.ID, envID, ref, task.Config.ConfigurationFiles)
-				if freezeErr != nil {
-					return nil, freezeErr
+				var binding []model.DeliveryVariableBinding
+				var bindingErr error
+				if task.Type == model.WorkflowNodeDeploy {
+					binding, bindingErr = delivery.FreezeDeploymentVariables(variableContext, application.ProjectID, application.ID, envID, ref, task.Config.VariableNames)
+				} else {
+					binding, bindingErr = delivery.FreezeVariables(variableContext, application.ProjectID, application.ID, envID, usage, ref, task.Config.VariableNames)
 				}
-				configurationBindings[task.ID] = configs
-			}
-			var binding []model.DeliveryVariableBinding
-			var bindingErr error
-			if task.Type == model.WorkflowNodeDeploy {
-				binding, bindingErr = delivery.FreezeDeploymentVariables(variableContext, application.ProjectID, application.ID, envID, ref, task.Config.VariableNames)
-			} else {
-				binding, bindingErr = delivery.FreezeVariables(variableContext, application.ProjectID, application.ID, envID, usage, ref, task.Config.VariableNames)
-			}
+				if bindingErr != nil {
+					return bindingErr
+				}
+				if len(binding) > 0 {
+					if permissionErr := s.requireDeliveryPermissionWithDatabase(variableContext, database, authorityID, "delivery_variable.execute"); permissionErr != nil {
+						return permissionErr
+					}
+				}
+				for _, variable := range binding {
+					if variable.Kind == "env_file" && deploymentPlans[task.ID].Kind != model.DeploymentPlanComposeStack && deploymentPlans[task.ID].Kind != model.DeploymentPlanCompose {
+						s.logger.Error("env 文件只能用于 Compose 部署", "operation", "workflow_env_file_target", "node_id", task.ID, "err", ErrInvalidWorkflow)
+						return ErrInvalidWorkflow
+					}
+				}
+				if len(binding) > 0 {
+					variableBindings[task.ID] = binding
+				}
+				return nil
+			}()
 			if bindingErr != nil {
-				return nil, bindingErr
-			}
-			if len(binding) > 0 {
-				if permissionErr := s.requireDeliveryPermissionWithDatabase(variableContext, database, authorityID, "delivery_variable.execute"); permissionErr != nil {
-					return nil, permissionErr
-				}
-			}
-			for _, variable := range binding {
-				if variable.Kind == "env_file" && deploymentPlans[task.ID].Kind != model.DeploymentPlanComposeStack && deploymentPlans[task.ID].Kind != model.DeploymentPlanCompose {
-					s.logger.Error("env 文件只能用于 Compose 部署", "operation", "workflow_env_file_target", "node_id", task.ID, "err", ErrInvalidWorkflow)
-					return nil, ErrInvalidWorkflow
-				}
-			}
-			if len(binding) > 0 {
-				variableBindings[task.ID] = binding
+				s.recordWorkflowTaskFailure(ctx, taskFailures, task.ID, "workflow_task_bindings", "任务变量或配置文件不可用，请检查配置及使用权限", bindingErr)
 			}
 		}
 	}
+
 	for i := range resolved.Stages {
 		for j := range resolved.Stages[i].Tasks {
 			task := &resolved.Stages[i].Tasks[j]
@@ -1825,9 +1883,9 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			}
 		}
 	}
-	sources, sourceErr := configuredArtifactSources(resolved.Stages)
-	if sourceErr != nil {
-		return nil, sourceErr
+	sources, sourceFailures := collectArtifactSourcesByTask(resolved.Stages, true)
+	for nodeID, sourceErr := range sourceFailures {
+		s.recordWorkflowTaskFailure(ctx, taskFailures, nodeID, "workflow_task_artifact_source", "上游制品来源无效，请检查此任务引用的构建任务", sourceErr)
 	}
 	for i := range resolved.Stages {
 		for j := range resolved.Stages[i].Tasks {
@@ -1837,102 +1895,113 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			}
 		}
 	}
-	// 方案是独立可编辑资源，流水线启用后其类型或镜像仓库仍可能改变。
-	// 每次创建运行快照前都重新校验完整制品链，避免先执行昂贵构建，
-	// 到部署节点才发现文件/镜像类型已不匹配。
-	if issues := append(validateUpstreamArtifactStages(resolved.Stages), validateWorkflowArtifactFlow(
+	// 制品依赖仍在创建快照时核验；异常只冻结到消费该制品的任务。
+	for _, issue := range append(validateUpstreamArtifactStages(resolved.Stages), validateWorkflowArtifactFlow(
 		workflowTasks(resolved.Stages), resolvedBuildPlans, resolvedDeploymentPlans, resolvedDeploymentTargets,
-	)...); len(issues) > 0 {
-		if s.logger != nil {
-			s.logger.Error("创建流水线运行前制品链校验失败", "operation", "pipeline_run_artifact_flow_validate",
-				"application_id", application.ID, "workflow_id", workflow.ID, "issue_code", issues[0].Code,
-				"err", ErrInvalidWorkflow)
-		}
-		return nil, ErrInvalidWorkflow
+	)...) {
+		s.recordWorkflowTaskFailure(ctx, taskFailures, issue.NodeID, "workflow_task_artifact_flow", issue.Message, ErrInvalidWorkflow)
 	}
+
 	for i := range resolved.Stages {
 		var tasks []model.WorkflowNode
 		for _, task := range resolved.Stages[i].Tasks {
-			envID := task.Config.VariableEnvironmentID
-			if task.Type == model.WorkflowNodeDeploy {
-				envID = deploymentTargets[task.ID].EnvironmentID
+			if taskFailures[task.ID] != "" {
+				tasks = append(tasks, task)
+				continue
 			}
-			if task.Config.Migration != nil {
-				if permissionErr := s.requireDeliveryPermissionWithDatabase(ctx, database, authorityID, "application_database.execute"); permissionErr != nil {
-					return nil, permissionErr
-				}
-				target, err := delivery.FindDatabase(ctx, application.ProjectID, application.ID, task.Config.Migration.DatabaseID)
-				if err != nil {
-					return nil, err
-				}
-				task.Config.Migration.Version = target.Version
-				task.Config.Migration.Fingerprint = target.Fingerprint
-				envID = target.EnvironmentID
-			}
-			if task.Type == model.WorkflowNodeDeploy || task.Config.Migration != nil {
-				policy, policyErr := delivery.Policy(ctx, application.ProjectID, envID, ref, now)
-				if policyErr != nil {
-					return nil, policyErr
-				}
-				if policy != nil {
-					policies[task.ID] = *policy
-					if policy.RequireApproval {
-						gateID := "policy-" + sha256Digest([]byte(task.ID))[:24]
-						tasks = append(tasks, model.WorkflowNode{ID: gateID, Name: "环境发布审核", Type: model.WorkflowNodeApproval})
-						policies[gateID] = *policy
-					}
+			policyErr := func() error {
+				envID := task.Config.VariableEnvironmentID
+				if task.Type == model.WorkflowNodeDeploy {
+					envID = deploymentTargets[task.ID].EnvironmentID
 				}
 				if task.Config.Migration != nil {
-					gateID := "database-" + sha256Digest([]byte(task.ID))[:24]
-					tasks = append(tasks, model.WorkflowNode{ID: gateID, Name: "数据库变更审核", Type: model.WorkflowNodeApproval})
+					if permissionErr := s.requireDeliveryPermissionWithDatabase(ctx, database, authorityID, "application_database.execute"); permissionErr != nil {
+						return permissionErr
+					}
+					target, err := delivery.FindDatabase(ctx, application.ProjectID, application.ID, task.Config.Migration.DatabaseID)
+					if err != nil {
+						return err
+					}
+					task.Config.Migration.Version = target.Version
+					task.Config.Migration.Fingerprint = target.Fingerprint
+					envID = target.EnvironmentID
 				}
+				if task.Type == model.WorkflowNodeDeploy || task.Config.Migration != nil {
+					policy, policyErr := delivery.Policy(ctx, application.ProjectID, envID, ref, now)
+					if policyErr != nil {
+						return policyErr
+					}
+					if policy != nil {
+						policies[task.ID] = *policy
+						if policy.RequireApproval {
+							gateID := "policy-" + sha256Digest([]byte(task.ID))[:24]
+							tasks = append(tasks, model.WorkflowNode{ID: gateID, Name: "环境发布审核", Type: model.WorkflowNodeApproval})
+							policies[gateID] = *policy
+						}
+					}
+					if task.Config.Migration != nil {
+						gateID := "database-" + sha256Digest([]byte(task.ID))[:24]
+						tasks = append(tasks, model.WorkflowNode{ID: gateID, Name: "数据库变更审核", Type: model.WorkflowNodeApproval})
+					}
+				}
+
+				return nil
+			}()
+			if policyErr != nil {
+				s.recordWorkflowTaskFailure(ctx, taskFailures, task.ID, "workflow_task_release_policy", "任务发布策略或数据库授权不可用，请检查配置及执行权限", policyErr)
 			}
 			tasks = append(tasks, task)
 		}
 		resolved.Stages[i].Tasks = tasks
 	}
-	if duplicates := checkDuplicateKubernetesTargets(resolved.Stages, resolvedDeploymentPlans, resolvedDeploymentTargets); len(duplicates) > 0 {
-		s.logger.WarnContext(ctx, "流水线包含重复 Kubernetes 部署目标", "operation", "kubernetes_template_duplicate", "application_id", application.ID, "err", ErrInvalidWorkflow)
-		return nil, ErrInvalidWorkflow
+	for _, issue := range checkDuplicateKubernetesTargets(resolved.Stages, resolvedDeploymentPlans, resolvedDeploymentTargets) {
+		s.recordWorkflowTaskFailure(ctx, taskFailures, issue.NodeID, "workflow_task_duplicate_target", issue.Message, ErrInvalidWorkflow)
 	}
 	run, err := newWorkflowRun(application, &resolved, node, trigger, ref, commitSHA, actorID, message, now)
 	if err != nil {
 		return nil, err
 	}
-	outputs := map[string]bool{}
+	outputs := map[string]string{}
 	for i := range resolved.Stages {
 		for j := range resolved.Stages[i].Tasks {
 			task := &resolved.Stages[i].Tasks[j]
 			plan, ok := buildPlans[task.ID]
-			if !ok || plan.Kind != model.BuildPlanDockerfile {
+			if !ok || plan.Kind != model.BuildPlanDockerfile || taskFailures[task.ID] != "" {
 				continue
 			}
 			prepared := &executionContext{run: *run, application: *application, node: *task}
 			name, nameErr := executionNodeImageName(prepared)
 			tag, tagErr := executionNodeImageTag(prepared)
 			key := plan.ImageRegistryID + "/" + name + ":" + tag
-			if nameErr != nil || tagErr != nil || outputs[key] {
+			if nameErr != nil || tagErr != nil || outputs[key] != "" {
 				if s.logger != nil {
 					s.logger.Error("流水线构建镜像名称或 Tag 无效或重复", "operation", "pipeline_image_output_validate", "application_id", application.ID, "workflow_node_id", task.ID, "err", errors.Join(nameErr, tagErr, ErrInvalidWorkflow))
 				}
-				return nil, ErrInvalidWorkflow
+				s.recordWorkflowTaskFailure(ctx, taskFailures, task.ID, "workflow_task_image_output", "镜像名称、Tag 无效或与其他构建任务重复，请检查配置", errors.Join(nameErr, tagErr, ErrInvalidWorkflow))
+				if previous := outputs[key]; previous != "" {
+					taskFailures[previous] = taskFailures[task.ID]
+				}
+				continue
 			}
 			// 默认名称与用户变量都在创建运行时解析，应用改名不改变本次构建的镜像身份。
 			task.Config.ImageName = name
-			outputs[key] = true
+			outputs[key] = task.ID
 		}
 	}
 	configurationDirectory := ""
 	hasDeploymentInputs := false
+	directoryTasks := map[string]bool{}
 	for _, stage := range resolved.Stages {
 		for _, node := range stage.Tasks {
 			if node.Config.DeploymentInputVersion == 1 {
 				hasDeploymentInputs = true
+				directoryTasks[node.ID] = true
 			}
 			parameters, _ := configfile.ParseEnvFileParameters(node.Config.DeploymentParameters, node.Config.ConfigurationFiles)
 			for _, parameter := range parameters {
 				if parameter.Configuration {
 					hasDeploymentInputs = true
+					directoryTasks[node.ID] = true
 				}
 			}
 		}
@@ -1942,25 +2011,38 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		configurationDirectory, directoryErr = configfile.ApplicationDirectory(application.Name)
 		if directoryErr != nil {
 			s.logger.ErrorContext(ctx, "生成应用配置目录失败", "operation", "application_configuration_directory", "application_id", application.ID, "err", directoryErr)
-			return nil, fmt.Errorf("%w：应用配置目录不可用，请检查应用名称", ErrInvalidWorkflow)
+			for nodeID := range directoryTasks {
+				s.recordWorkflowTaskFailure(ctx, taskFailures, nodeID, "workflow_task_configuration_directory", "应用配置目录不可用，请检查应用名称", directoryErr)
+			}
+			for nodeID := range configurationBindings {
+				taskFailures[nodeID] = "应用配置目录不可用，请检查应用名称"
+			}
 		}
 	}
 	registryInputs := map[string][]workflowRegistryInput{}
 	for _, stage := range resolved.Stages {
 		for _, node := range stage.Tasks {
+			if taskFailures[node.ID] != "" {
+				continue
+			}
 			if deploymentPlans[node.ID].Kind == model.DeploymentPlanKubernetes && model.UsesRegistryDeploymentImage(node.Config) {
 				continue // 镜像可能由前序构建生成；在部署节点开始后解析 Tag 并冻结摘要。
 			}
 			bindings, inputErr := s.freezeDeploymentRegistryInputs(variableContext, database, node, authorityID)
 			if inputErr != nil {
-				return nil, inputErr
+				s.recordWorkflowTaskFailure(ctx, taskFailures, node.ID, "workflow_task_registry_inputs", "镜像输入不可用，请检查镜像仓库、Tag 及使用权限", inputErr)
+				continue
 			}
 			if len(bindings) > 0 {
 				registryInputs[node.ID] = bindings
 			}
 		}
 	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	snapshot, err := json.Marshal(workflowSnapshot{
+		TaskFailures:                     taskFailures,
 		DefaultTerminalTools:             true,
 		DefaultContainerInit:             true,
 		PreserveComposeImageReferences:   true,

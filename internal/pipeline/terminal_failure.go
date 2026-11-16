@@ -60,6 +60,12 @@ func (s *Service) HandleTerminalTaskFailure(
 	default:
 		return nil
 	}
+	if handled, err := s.handleParallelTerminalFailure(ctx, tx, job, runID, nodeID, message); handled || err != nil {
+		if err != nil && s.logger != nil {
+			s.logger.ErrorContext(ctx, "收敛中断的并行任务失败", "operation", "pipeline_parallel_terminal_failure", "pipeline_run_id", runID, "node_id", nodeID, "job_id", job.ID, "err", err)
+		}
+		return err
+	}
 
 	var run model.PipelineRun
 	err := tx.WithContext(ctx).

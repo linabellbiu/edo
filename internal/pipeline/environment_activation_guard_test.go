@@ -90,8 +90,9 @@ func TestInactiveEnvironmentRejectsNewSnapshotWithoutChangingFrozenSnapshot(t *t
 	f.disableEnvironment(t)
 	next, err := f.service.newResolvedWorkflowRun(ctx, f.application, f.activeWorkflow, f.activeWorkflow.Source,
 		"manual", "refs/heads/main", strings.Repeat("b", 40), "admin", "", time.Now().UTC())
-	if !errors.Is(err, ErrInvalidWorkflow) || next != nil {
-		t.Errorf("新快照仍接受停用环境: next_present=%t err=%v", next != nil, err)
+	blocked := assertTaskFailureCannotExecute(t, f.service, next, err, "deploy")
+	if _, exists := blocked.DeploymentTargets["deploy"]; exists {
+		t.Fatal("停用环境进入可执行目标快照")
 	}
 	if old.WorkflowSnapshot != frozen {
 		t.Fatal("环境状态变化修改了已冻结的运行快照")

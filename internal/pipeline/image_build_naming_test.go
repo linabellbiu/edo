@@ -67,13 +67,12 @@ func TestBuiltinBuildRunFreezesOneTargetWithoutChangingStoredHistory(t *testing.
 	if err != nil || nextSnapshot.BuildPlans["image"].TargetStage != "builder" {
 		t.Fatal("新运行没有采用修改后的阶段", err)
 	}
-	// 旧的无效列表明确阻止新运行，读取和验证不改写原记录。
+	// 旧的无效列表阻止对应构建任务执行，读取和验证不改写原记录。
 	if err := db.Model(&model.BuildPlan{}).Where("uuid = ?", plan.ID).Update("target_stage", "web,api").Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.newResolvedWorkflowRun(ctx, app, saved.Workflow, source, "manual", "main", strings.Repeat("a", 40), "admin", "", time.Now().UTC()); !errors.Is(err, ErrInvalidBuildTarget) {
-		t.Fatalf("旧列表 target 未阻止新运行: %v", err)
-	}
+	blocked, runErr := s.newResolvedWorkflowRun(ctx, app, saved.Workflow, source, "manual", "main", strings.Repeat("a", 40), "admin", "", time.Now().UTC())
+	assertTaskFailureCannotExecute(t, s, blocked, runErr, "image")
 	var stored model.BuildPlan
 	if err := db.First(&stored, "uuid = ?", plan.ID).Error; err != nil || stored.TargetStage != "web,api" {
 		t.Fatalf("读取方案改写了存储: %+v %v", stored, err)

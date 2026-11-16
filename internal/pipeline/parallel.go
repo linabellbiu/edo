@@ -51,6 +51,7 @@ func executionBatches(stages []model.WorkflowStage) [][]model.WorkflowNode {
 }
 
 func (s *Service) advanceParallelRun(ctx context.Context, run *model.PipelineRun, snapshot *workflowSnapshot, actorID, targetNodeID string) (*model.PipelineRun, error) {
+	var failures []model.PipelineNodeRun
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current model.PipelineRun
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, "uuid = ?", run.ID).Error; err != nil {
@@ -105,21 +106,52 @@ func (s *Service) advanceParallelRun(ctx context.Context, run *model.PipelineRun
 		}
 		for _, batch := range executionBatches(snapshot.Stages) {
 			complete := true
+			var failed *model.PipelineNodeRun
 			for _, node := range batch {
 				state, exists := states[node.ID]
 				if !exists || !nodeFinished(state.Status) {
 					complete = false
-					break
+					continue
 				}
-				if state.Status == model.PipelineRunFailed || state.Status == model.PipelineRunCanceled {
-					return ErrInvalidWorkflowTransition
+				if failed == nil && (state.Status == model.PipelineRunFailed || state.Status == model.PipelineRunCanceled) {
+					failed = &state
 				}
 			}
 			if complete {
+				if failed != nil {
+					if err := settleParallelTaskFailure(tx, &current, *failed, now); err != nil {
+						return err
+					}
+					*run = current
+					return nil
+				}
 				continue
 			}
 			first := batch[0]
+			failNode := func(node model.WorkflowNode, message string) error {
+				state := newNodeRecord(current, node, snapshot, now)
+				state.Status, state.Stage, state.Message, state.FinishedAt = model.PipelineRunFailed, "failed", message, &now
+				if err := tx.Create(&state).Error; err != nil {
+					return err
+				}
+				states[node.ID] = state
+				failures = append(failures, state)
+				if failed == nil {
+					failed = &state
+				}
+				return nil
+			}
 			if first.Type == model.WorkflowNodeManual || first.Type == model.WorkflowNodeApproval {
+				if message := snapshot.TaskFailures[first.ID]; message != "" {
+					if err := failNode(first, message); err != nil {
+						return err
+					}
+					if err := settleParallelTaskFailure(tx, &current, *failed, now); err != nil {
+						return err
+					}
+					*run = current
+					return nil
+				}
 				state, exists := states[first.ID]
 				if exists {
 					if first.Type == model.WorkflowNodeApproval {
@@ -174,11 +206,21 @@ func (s *Service) advanceParallelRun(ctx context.Context, run *model.PipelineRun
 					}
 					continue
 				}
+				if message := snapshot.TaskFailures[node.ID]; message != "" {
+					if err := failNode(node, message); err != nil {
+						return err
+					}
+					continue
+				}
 				state = newNodeRecord(current, node, snapshot, now)
 				if node.Type == model.WorkflowNodeDeploy {
 					artifactID, err := parallelUpstreamArtifact(snapshot, node, states, current.ArtifactID)
 					if err != nil {
-						return err
+						s.logger.WarnContext(ctx, "任务上游制品不可用", "operation", "pipeline_node_artifact", "pipeline_run_id", run.ID, "node_id", node.ID, "err", err)
+						if err := failNode(node, "上游制品不可用，请检查此任务引用的构建结果"); err != nil {
+							return err
+						}
+						continue
 					}
 					state.ArtifactID = artifactID
 				}
@@ -203,6 +245,13 @@ func (s *Service) advanceParallelRun(ctx context.Context, run *model.PipelineRun
 				active = append(active, state)
 			}
 			if len(active) == 0 {
+				if failed != nil {
+					if err := settleParallelTaskFailure(tx, &current, *failed, now); err != nil {
+						return err
+					}
+					*run = current
+					return nil
+				}
 				return ErrInvalidWorkflowTransition
 			}
 			current.CurrentNodeID, current.ExecutionJobID = active[0].NodeID, active[0].JobID
@@ -211,6 +260,9 @@ func (s *Service) advanceParallelRun(ctx context.Context, run *model.PipelineRun
 			if len(active) > 1 {
 				current.Stage = "parallel"
 				current.Message = fmt.Sprintf("当前阶段有 %d 个任务正在执行", len(active))
+			}
+			if failed != nil {
+				current.Message += "；本阶段存在失败任务，其他独立任务继续执行"
 			}
 			return saveParallelRun(tx, &current, run, now)
 		}
@@ -223,6 +275,11 @@ func (s *Service) advanceParallelRun(ctx context.Context, run *model.PipelineRun
 	if err != nil {
 		s.logger.Error("推进流水线阶段失败", "operation", "pipeline_parallel_advance", "pipeline_run_id", run.ID, "err", err)
 		return nil, err
+	}
+	for _, node := range failures {
+		logCtx := withPipelineNodeLog(ctx, node.NodeID, node.Name)
+		s.appendRunLog(logCtx, run.ID, "failed", "error", node.Message)
+		s.notifyFailedWorkflowNode(logCtx, run.ID, node.NodeID, node.Message)
 	}
 	s.realtime.Changed(ctx, "pipeline_runs", run.ID)
 	return run, nil
@@ -259,8 +316,8 @@ func parallelUpstreamArtifact(snapshot *workflowSnapshot, node model.WorkflowNod
 		return "", nil
 	}
 	if node.Config.DeploymentInputVersion == 1 && (node.Config.DeploymentScript != "" || hasRegistryDeploymentInput(node.Config) || snapshot.DeploymentPlans[node.ID].Kind == model.DeploymentPlanScript) && node.Config.ArtifactNodeID == "" {
-		sources, err := artifactSources(snapshot.Stages)
-		if err != nil {
+		sources, failures := collectArtifactSourcesByTask(snapshot.Stages, false)
+		if err := failures[node.ID]; err != nil {
 			return "", err
 		}
 		if sources[node.ID] == "" {
@@ -270,8 +327,8 @@ func parallelUpstreamArtifact(snapshot *workflowSnapshot, node model.WorkflowNod
 	if node.Config.Compose != nil && snapshot.DeploymentPlans[node.ID].Kind == model.DeploymentPlanComposeStack && len(node.Config.ArtifactNodeIDs) == 0 {
 		return "", nil
 	}
-	sources, err := artifactSources(snapshot.Stages)
-	if err != nil {
+	sources, failures := collectArtifactSourcesByTask(snapshot.Stages, false)
+	if err := failures[node.ID]; err != nil {
 		return "", err
 	}
 	if source := sources[node.ID]; source != "" {
@@ -407,7 +464,18 @@ func configuredArtifactSources(stages []model.WorkflowStage) (map[string]string,
 }
 
 func collectArtifactSources(stages []model.WorkflowStage, explicitInputs bool) (map[string]string, error) {
+	sources, failures := collectArtifactSourcesByTask(stages, explicitInputs)
+	for _, node := range workflowTasks(stages) {
+		if err := failures[node.ID]; err != nil {
+			return nil, err
+		}
+	}
+	return sources, nil
+}
+
+func collectArtifactSourcesByTask(stages []model.WorkflowStage, explicitInputs bool) (map[string]string, map[string]error) {
 	sources := map[string]string{}
+	failures := map[string]error{}
 	available := map[string]bool{}
 	var latest []string
 	for _, batch := range executionBatches(stages) {
@@ -424,12 +492,14 @@ func collectArtifactSources(stages []model.WorkflowStage, explicitInputs bool) (
 			}
 			if source == "" {
 				if len(latest) != 1 {
-					return nil, ErrPipelineExecutionConfig
+					failures[node.ID] = ErrPipelineExecutionConfig
+					continue
 				}
 				source = latest[0]
 			}
 			if !available[source] {
-				return nil, ErrPipelineExecutionConfig
+				failures[node.ID] = ErrPipelineExecutionConfig
+				continue
 			}
 			sources[node.ID] = source
 		}
@@ -444,5 +514,5 @@ func collectArtifactSources(stages []model.WorkflowStage, explicitInputs bool) (
 			latest = built
 		}
 	}
-	return sources, nil
+	return sources, failures
 }

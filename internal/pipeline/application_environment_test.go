@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -41,7 +40,9 @@ func TestApplicationEnvironmentEntersDeploymentSnapshotWithoutTaskReference(t *t
 	if err = f.db.Model(&model.User{}).Where("uuid = ?", actor.ID).Update("is_superuser", false).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.service.newResolvedWorkflowRun(ctx, f.application, f.activeWorkflow, f.activeWorkflow.Source, "manual", "refs/heads/main", strings.Repeat("b", 40), actor.ID, "", time.Now().UTC()); !errors.Is(err, cicd.ErrExecutionAuthorization) {
-		t.Fatal("自动配置绕过变量执行权限", err)
+	blocked, err := f.service.newResolvedWorkflowRun(ctx, f.application, f.activeWorkflow, f.activeWorkflow.Source, "manual", "refs/heads/main", strings.Repeat("b", 40), actor.ID, "", time.Now().UTC())
+	blockedSnapshot := assertTaskFailureCannotExecute(t, f.service, blocked, err, "deploy")
+	if len(blockedSnapshot.VariableBindings["deploy"]) != 0 || strings.Contains(blocked.WorkflowSnapshot, value) {
+		t.Fatal("未授权任务冻结了变量或泄漏明文")
 	}
 }

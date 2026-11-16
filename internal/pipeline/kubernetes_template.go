@@ -38,7 +38,8 @@ func (s *Service) validateKubernetesTemplateConfiguration(ctx context.Context, d
 }
 
 func checkDuplicateKubernetesTargets(stages []model.WorkflowStage, plans map[string]model.DeploymentPlan, targets map[string]model.DeploymentTarget) []WorkflowIssue {
-	seen := map[string]bool{}
+	seen := map[string]WorkflowIssue{}
+	reported := map[string]bool{}
 	issues := []WorkflowIssue{}
 	for _, stage := range stages {
 		for _, node := range stage.Tasks {
@@ -54,10 +55,15 @@ func checkDuplicateKubernetesTargets(stages []model.WorkflowStage, plans map[str
 				continue
 			}
 			key := t.RuntimeID + "/" + t.Namespace + "/" + t.WorkloadName
-			if seen[key] {
+			if previous, exists := seen[key]; exists {
+				if !reported[previous.NodeID] {
+					issues = append(issues, previous)
+					reported[previous.NodeID] = true
+				}
 				issues = append(issues, WorkflowIssue{Code: "duplicate_kubernetes_target", Message: "流水线存在重复的 Kubernetes 集群、命名空间和 Deployment 目标，不能执行", NodeID: node.ID, StageID: stage.ID})
+				reported[node.ID] = true
 			}
-			seen[key] = true
+			seen[key] = WorkflowIssue{Code: "duplicate_kubernetes_target", Message: "流水线存在重复的 Kubernetes 集群、命名空间和 Deployment 目标，不能执行", NodeID: node.ID, StageID: stage.ID}
 		}
 	}
 	return issues
