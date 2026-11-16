@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 
@@ -76,5 +78,31 @@ func TestManagedComposeDirectoryRestoreRequiresOriginalSnapshotMarker(t *testing
 		if target.WorkingDirectory != "/srv/changed" {
 			t.Fatal("不能覆盖修改后的显式目录")
 		}
+	}
+}
+
+func TestComposeDirectoryFailureKeepsSafeCause(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+		want  error
+	}{
+		{"deadline", context.DeadlineExceeded, ErrComposeDirectoryTimeout},
+		{"canceled", context.Canceled, ErrComposeDirectoryCanceled},
+		{"host", fmt.Errorf("%w: private host password", sshdeploy.ErrHostUnavailable), ErrComposeDirectoryHostUnavailable},
+		{"network-timeout", &net.DNSError{Err: "private dns password", Name: "private.example", IsTimeout: true}, ErrComposeDirectoryTimeout},
+		{"unknown-not-guessed", errors.New("connection refused timeout forbidden password"), ErrComposeDirectoryUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &composeHomeProbeStub{home: "/home/user", err: tc.cause}
+			s := NewService(nil, nil, nil, runner, nil, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+			_, err := s.ResolveComposeWorkingDirectory(context.Background(), model.DeploymentTarget{Platform: model.DeploymentSSH, HostID: "host", EnvironmentID: "env"}, "app")
+			if !errors.Is(err, tc.want) || !errors.Is(err, ErrComposeDirectoryUnavailable) {
+				t.Fatalf("未保留稳定错误分类: %v", err)
+			}
+			if strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), "password") {
+				t.Fatal("内部错误泄漏")
+			}
+		})
 	}
 }

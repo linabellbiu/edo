@@ -2,8 +2,10 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"edo/internal/deployment"
 	"edo/internal/model"
 	"gorm.io/gorm"
 )
@@ -68,10 +70,10 @@ func (s *Service) expandDeploymentHostsForRun(ctx context.Context, db *gorm.DB, 
 			if target, ok := targets[plan.DeploymentTargetID]; ok {
 				nodeTargets[node.ID] = &target
 			} else {
-				lookupFailures[node.ID] = ErrInvalidWorkflow
+				lookupFailures[node.ID] = deployment.ErrTargetNotFound
 			}
 		} else {
-			lookupFailures[node.ID] = ErrInvalidWorkflow
+			lookupFailures[node.ID] = ErrDeploymentPlanNotFound
 		}
 		if target := nodeTargets[node.ID]; target != nil {
 			hostIDs = append(hostIDs, target.HostIDs...)
@@ -93,7 +95,13 @@ func (s *Service) expandDeploymentHostsForRun(ctx context.Context, db *gorm.DB, 
 		if failures == nil {
 			return failure
 		}
-		s.recordWorkflowTaskFailure(ctx, failures, nodeID, "workflow_task_execution_host", "执行主机不可用、未勾选或数量超过限制，请检查此任务的执行主机配置", err)
+		message := "执行主机不可用、未勾选或数量超过限制，请检查此任务的执行主机配置"
+		if errors.Is(err, ErrDeploymentPlanNotFound) {
+			message = workflowResourceFailureMessage("部署方案", err)
+		} else if errors.Is(err, deployment.ErrTargetNotFound) {
+			message = workflowResourceFailureMessage("部署目标", err)
+		}
+		s.recordWorkflowTaskFailure(ctx, failures, nodeID, "workflow_task_execution_host", message, err)
 		return nil
 	}
 	for i := range workflow.Stages {

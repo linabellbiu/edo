@@ -70,7 +70,7 @@ func TestNodeArchitecturesFailClosedWithoutFallback(t *testing.T) {
 		{name: "missing", nodes: []corev1.Node{architectureNode("incomplete", "", "linux")}, want: ErrNodeArchitecturesMissing},
 		{name: "unsupported", nodes: []corev1.Node{architectureNode("valid", "amd64", "linux"), architectureNode("unsupported", "ppc64le", "linux")}, want: ErrNodeArchitectureUnsupported},
 		{name: "unsupported-system", nodes: []corev1.Node{architectureNode("other-system", "amd64", "other")}, want: ErrNodeArchitectureUnsupported},
-		{name: "forbidden", code: http.StatusForbidden, want: ErrNodeArchitecturesUnavailable},
+		{name: "forbidden", code: http.StatusForbidden, want: ErrNodeArchitecturePermission},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			server := resourceTestServer(t, func(w http.ResponseWriter, r *http.Request) {

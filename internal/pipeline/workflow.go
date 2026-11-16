@@ -1617,9 +1617,11 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			if taskFailures[current.ID] != "" {
 				continue
 			}
+			resource := "任务配置"
 			resolveErr := func() error {
 				switch current.Type {
 				case model.WorkflowNodeBuild:
+					resource = "构建方案"
 					var plan model.BuildPlan
 					if current.Config.InlineBuild != nil {
 						plan = *current.Config.InlineBuild
@@ -1630,8 +1632,10 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 							plan.ArtifactPath = ".edo-build-outputs"
 						}
 						if plan.Kind == model.BuildPlanDockerfile && plan.ImageRegistryID == "" {
+							resource = "构建镜像仓库"
 							return ErrInvalidWorkflow
 						}
+						resource = "构建镜像仓库"
 						if err := s.validateBuildPlanRegistry(ctx, plan.ImageRegistryID); err != nil {
 							return err
 						}
@@ -1644,13 +1648,14 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 							if errors.Is(readErr, errWorkflowSnapshotUnavailable) {
 								return readErr
 							}
-							return ErrInvalidWorkflow
+							return ErrBuildPlanNotFound
 						}
 						if plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 							return ErrInvalidWorkflow
 						}
 					}
 					if plan.Kind == model.BuildPlanDockerfile {
+						resource = "构建平台"
 						plan.TargetStage = workflowBuildTarget(current.Config, plan)
 						var platformErr error
 						plan.Platform, platformErr = workflowSelectedBuildPlatform(current.Config, plan)
@@ -1660,6 +1665,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						}
 					}
 					if plan.Kind == model.BuildPlanDockerfile && !validBuildTarget(plan.TargetStage) {
+						resource = "Docker 构建阶段"
 						s.logger.WarnContext(ctx, "构建目标阶段无效", "operation", "workflow_build_target_resolve", "node_id", current.ID, "build_plan_id", plan.ID, "err", ErrInvalidBuildTarget)
 						return ErrInvalidBuildTarget
 					}
@@ -1669,6 +1675,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					buildPlans[current.ID] = entry
 					resolvedBuildPlans[plan.ID] = plan
 				case model.WorkflowNodeDeploy:
+					resource = "部署方案"
 					var plan model.DeploymentPlan
 					var target model.DeploymentTarget
 					managedWorkingDirectory := false
@@ -1689,7 +1696,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 							if errors.Is(readErr, errWorkflowSnapshotUnavailable) {
 								return readErr
 							}
-							return ErrInvalidWorkflow
+							return ErrDeploymentPlanNotFound
 						}
 						if plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 							return ErrInvalidWorkflow
@@ -1697,18 +1704,20 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						plan = model.WorkflowDeploymentSnapshotBase(plan, current.Config.DeploymentOverride)
 						var originalTarget *model.DeploymentTarget
 						if plan.DeploymentTargetID != "" {
+							resource = "部署目标"
 							readErr := s.readWorkflowSnapshotResource(ctx, database.WithContext(ctx).Where("uuid = ? AND is_active = ?", plan.DeploymentTargetID, true), &target)
 							if readErr != nil {
 								if errors.Is(readErr, errWorkflowSnapshotUnavailable) {
 									return readErr
 								}
-								return ErrInvalidWorkflow
+								return deployment.ErrTargetNotFound
 							}
 							if target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID || !deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 								return ErrInvalidWorkflow
 							}
 							originalTarget = &target
 						}
+						resource = "部署方案配置"
 						effective, resolvedTarget, resolveErr := s.resolveWorkflowLibraryPlan(variableContext, application, workflow.ID, *current, plan, originalTarget, database)
 						if resolveErr != nil || resolvedTarget == nil {
 							if resolveErr != nil {
@@ -1723,6 +1732,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						current.Config.DeploymentPlanID = plan.ID
 					}
 					if current.Config.InlineDeploymentPlan == nil && current.Config.ExecutionHostID != "" {
+						resource = "执行主机"
 						resolvedTarget, err := s.deployments.WithTransaction(database).ResolveHostTarget(variableContext, target, current.Config.ExecutionHostID)
 						if err != nil {
 							return err
@@ -1731,6 +1741,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						plan.DeploymentTargetID, plan.DeploymentTarget = target.ID, &target
 					}
 					if current.Config.ComposeSource != nil && current.Config.ComposeSource.Kind != "upstream" {
+						resource = "Compose 文件来源"
 						content, sourceErr := s.runtimeComposeDefinition(ctx, *application, *current, target.EnvironmentID, ref, commitSHA, authorityID)
 						if sourceErr != nil {
 							return sourceErr
@@ -1738,13 +1749,16 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						plan.ComposeYAML = content
 					}
 					model.ApplyDeploymentExecution(&current.Config, plan.ExecutionConfig)
+					resource = "部署镜像仓库"
 					if err := s.freezeSavedDeploymentRegistry(variableContext, database, current, plan.Kind, authorityID); err != nil {
 						return err
 					}
+					resource = "上游构建关联"
 					if err := resolveDeploymentBuildBindings(current, resolved.Stages); err != nil {
 						return err
 					}
 					if current.Config.Kubernetes != nil {
+						resource = "Kubernetes 部署配置"
 						authScope, _ := projectdatabase.DepartmentScopeFromContext(variableContext)
 						authScope.UserID = authorityID
 						checkCtx := projectdatabase.WithDepartmentScope(variableContext, authScope)
@@ -1754,6 +1768,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						// 现场重名及资源权限由本任务实际执行的 DeployTemplate 在写入前复核，
 						// 不在创建整条流水线时重复探测下游集群。
 					}
+					resource = "部署环境"
 					available, environmentErr := s.deploymentEnvironmentAvailable(ctx, database, target, "pipeline_run_environment_validate")
 					if environmentErr != nil {
 						return environmentErr
@@ -1762,6 +1777,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						return ErrInvalidWorkflow
 					}
 					if len(current.Config.RuntimeServices) > 0 {
+						resource = "执行主机 Docker 能力"
 						var capability model.HostCapability
 						if err := database.WithContext(ctx).Where("host_id = ? AND kind = ? AND status = ?", target.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).First(&capability).Error; err != nil {
 							s.logger.Warn("关联服务的 Docker 运行时不可用", "operation", "workflow_custom_runtime_freeze", "node_id", current.ID, "host_id", target.HostID, "err", err)
@@ -1770,31 +1786,32 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						target.RuntimeID = capability.RuntimeID
 					}
 					if plan.Kind == model.DeploymentPlanComposeStack && target.WorkingDirectory == "" {
+						resource = "Compose 部署目录"
 						directory, directoryErr := s.deployments.ResolveComposeWorkingDirectory(ctx, target, application.Name)
 						if directoryErr != nil {
-							return fmt.Errorf("%w：%s", ErrInvalidWorkflow, directoryErr.Error())
+							return directoryErr
 						}
 						target.WorkingDirectory, managedWorkingDirectory = directory, true
 					}
-					architectures, architectureErr := s.deploymentTargetArchitectures(ctx, database, target)
+					resource = "部署节点架构"
+					architectures, architectureErr := s.deploymentTargetArchitectures(variableContext, database, target)
 					if architectureErr != nil {
 						if s.logger != nil {
 							s.logger.Error("部署目标架构不可用", "operation", "pipeline_target_architecture_resolve",
 								"application_id", application.ID, "workflow_id", workflow.ID,
 								"deployment_target_id", target.ID, "host_id", target.HostID, "runtime_id", target.RuntimeID, "err", architectureErr)
 						}
-						if target.Platform == model.DeploymentKubernetes {
-							return fmt.Errorf("%w：%s", ErrInvalidWorkflow, architectureErr.Error())
-						}
-						return ErrInvalidWorkflow
+						return architectureErr
 					}
 					dockerConfig := plan.DockerConfig
 					if plan.Kind == model.DeploymentPlanDocker {
+						resource = "Docker 容器配置"
 						normalized, configErr := dockerengine.NormalizeContainerConfig(dockerConfig)
 						if configErr != nil {
 							return ErrInvalidWorkflow
 						}
 						dockerConfig = normalized
+						resource = "Docker 容器名称"
 						workloadName, nameErr := deployment.ResolveDockerWorkloadName(
 							target.WorkloadName, application.Name, application.ID, plan.ID, target.ID,
 						)
@@ -1825,7 +1842,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				if errors.Is(resolveErr, errWorkflowSnapshotUnavailable) {
 					return nil, resolveErr
 				}
-				s.recordWorkflowTaskFailure(ctx, taskFailures, current.ID, "workflow_task_resources", "任务配置或关联资源不可用，请检查此任务的配置与使用权限", resolveErr)
+				s.recordWorkflowTaskFailure(ctx, taskFailures, current.ID, "workflow_task_resources", workflowResourceFailureMessage(resource, resolveErr), resolveErr)
 			}
 
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"path"
 	"strings"
 	"sync"
@@ -17,6 +18,19 @@ import (
 )
 
 var ErrComposeDirectoryUnavailable = errors.New("无法确定应用部署位置，请检查目标主机连接和用户主目录")
+
+// 目录读取保留具体故障类型，对外仅返回稳定提示。
+type composeDirectoryFailure struct{ message string }
+
+func (e *composeDirectoryFailure) Error() string { return e.message }
+func (e *composeDirectoryFailure) Unwrap() error { return ErrComposeDirectoryUnavailable }
+
+var (
+	ErrComposeDirectoryTimeout         = &composeDirectoryFailure{"读取部署主机用户主目录超时，请检查该主机的连接是否可达"}
+	ErrComposeDirectoryHostUnavailable = &composeDirectoryFailure{"部署主机不可用，无法读取部署目录，请检查主机状态和连接"}
+	ErrComposeDirectoryCanceled        = &composeDirectoryFailure{"部署目录读取已取消"}
+	ErrComposeHomeInvalid              = &composeDirectoryFailure{"部署主机返回的用户主目录无效，请检查该账号的主目录配置"}
+)
 
 // ResolveComposeWorkingDirectory 只读取得执行用户主目录，新方案不要求填写部署目录。
 func (s *Service) ResolveComposeWorkingDirectory(ctx context.Context, target model.DeploymentTarget, applicationName string) (string, error) {
@@ -37,7 +51,19 @@ func (s *Service) ResolveComposeWorkingDirectory(ctx context.Context, target mod
 	directory := path.Join(home, strings.TrimPrefix(configurationPath, "~/"))
 	if err != nil || !result.Started || result.ExitCode != 0 || exceeded || !validWorkingDirectory(home) || !path.IsAbs(home) || path.Clean(home) != home || strings.ContainsFunc(home, unicode.IsControl) || !validWorkingDirectory(directory) {
 		s.logger.ErrorContext(ctx, "读取部署主机用户目录失败", "operation", "compose_directory_resolve", "target_id", target.ID, "host_id", target.HostID, "err", errors.Join(err, ErrComposeDirectoryUnavailable))
-		return "", ErrComposeDirectoryUnavailable
+		var networkError net.Error
+		switch {
+		case errors.Is(probeCtx.Err(), context.DeadlineExceeded), errors.Is(err, context.DeadlineExceeded), errors.As(err, &networkError) && networkError.Timeout():
+			return "", ErrComposeDirectoryTimeout
+		case errors.Is(probeCtx.Err(), context.Canceled), errors.Is(err, context.Canceled):
+			return "", ErrComposeDirectoryCanceled
+		case errors.Is(err, sshdeploy.ErrHostUnavailable):
+			return "", ErrComposeDirectoryHostUnavailable
+		case err == nil && result.Started && result.ExitCode == 0:
+			return "", ErrComposeHomeInvalid
+		default:
+			return "", ErrComposeDirectoryUnavailable
+		}
 	}
 	return directory, nil
 }
