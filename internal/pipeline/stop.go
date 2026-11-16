@@ -21,6 +21,15 @@ type runExecutionControl struct{ cancel context.CancelFunc }
 
 // 停止请求先持久化，执行器退出并完成清理后才显示已停止。
 func (s *Service) StopRun(ctx context.Context, runID, actorID string) (*model.PipelineRun, error) {
+	run, err := s.stopRun(ctx, runID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	// 状态更新和取消登记完成后释放调度锁，展示字段读取不能阻塞其他运行。
+	return s.FindRun(ctx, run.ID)
+}
+
+func (s *Service) stopRun(ctx context.Context, runID, actorID string) (*model.PipelineRun, error) {
 	s.pipelineAdvanceMu.Lock()
 	defer s.pipelineAdvanceMu.Unlock()
 	var parallelCount int64
@@ -98,7 +107,7 @@ func (s *Service) StopRun(ctx context.Context, runID, actorID string) (*model.Pi
 		control.cancel()
 	}
 	s.realtime.Changed(ctx, "pipeline_runs", run.ID)
-	return s.FindRun(ctx, run.ID)
+	return &run, nil
 }
 
 func (s *Service) ExecuteBuildTask(ctx context.Context, payload BuildTaskPayload, jobID string) error {

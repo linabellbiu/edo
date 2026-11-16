@@ -170,7 +170,7 @@ func (s *Service) GetWorkflow(ctx context.Context, applicationID string) (*Workf
 	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflow.Stages); err != nil {
 		return nil, err
 	}
-	issues := s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages)
+	issues := s.validateWorkflowWithMode(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages, workflowValidationConfiguration)
 	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
@@ -221,7 +221,7 @@ func (s *Service) GetApplicationWorkflow(ctx context.Context, applicationID, wor
 	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflow.Stages); err != nil {
 		return nil, err
 	}
-	issues := s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages)
+	issues := s.validateWorkflowWithMode(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages, workflowValidationConfiguration)
 	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
@@ -403,7 +403,11 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflowSaveStages(input)); err != nil {
 		return nil, err
 	}
-	issues := s.validateWorkflow(ctx, application, input.SchemaVersion, input.Source, input.Stages)
+	mode := workflowValidationConfiguration
+	if input.Activate {
+		mode = workflowValidationTargets
+	}
+	issues := s.validateWorkflowWithMode(ctx, application, input.SchemaVersion, input.Source, input.Stages, mode)
 	saveIssues := workflowTaskSaveIssues(input, issues)
 	if hasWorkflowIssue(saveIssues, "deployment_override_permission_denied") {
 		return &WorkflowResult{Valid: false, Issues: saveIssues}, ErrKubernetesTemplatePermission
@@ -794,12 +798,32 @@ func sanitizeWorkflowNode(node *model.WorkflowNode, deploymentKinds ...model.Dep
 	return nil
 }
 
+type workflowValidationMode uint8
+
+const (
+	workflowValidationConfiguration workflowValidationMode = iota
+	workflowValidationTargets
+)
+
 func (s *Service) validateWorkflow(
 	ctx context.Context,
 	application *model.Application,
 	schemaVersion uint16,
 	source model.WorkflowNode,
 	stages []model.WorkflowStage,
+) []WorkflowIssue {
+	return s.validateWorkflowWithMode(ctx, application, schemaVersion, source, stages, workflowValidationTargets)
+}
+
+// 读取及保存配置保留结构、关联和权限校验；目标现场仅在显式校验、启用及实际执行时读取。
+// 单个集群不可达不能阻止用户查看其他任务或修正本任务的配置。
+func (s *Service) validateWorkflowWithMode(
+	ctx context.Context,
+	application *model.Application,
+	schemaVersion uint16,
+	source model.WorkflowNode,
+	stages []model.WorkflowStage,
+	mode workflowValidationMode,
 ) []WorkflowIssue {
 	issues := workflowStructureIssues(source, stages)
 	stages = enabledWorkflowStages(tagOnlyWorkflowStages(stages))
@@ -1109,7 +1133,7 @@ func (s *Service) validateWorkflow(
 				} else if !deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 					issues = append(issues, WorkflowIssue{Code: "deployment_plan_target_mismatch", Message: fmt.Sprintf("部署任务“%s”的执行方式与目标不匹配", node.Name), NodeID: node.ID, StageID: stage.ID})
 				} else {
-					if application != nil && plan.ExecutionConfig != nil && plan.ExecutionConfig.Kubernetes != nil {
+					if mode == workflowValidationTargets && application != nil && plan.ExecutionConfig != nil && plan.ExecutionConfig.Kubernetes != nil {
 						if err := s.deployments.KubernetesTemplateCheck(ctx, target, application.ID, plan.ExecutionConfig.Kubernetes); err != nil {
 							issues = append(issues, WorkflowIssue{Code: "kubernetes_template_target_invalid", Message: err.Error(), NodeID: node.ID, StageID: stage.ID})
 						}
@@ -1727,9 +1751,8 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						if err := s.validateKubernetesTemplateConfiguration(checkCtx, database, current.Config.Kubernetes); err != nil {
 							return err
 						}
-						if err := s.deployments.WithTransaction(database).KubernetesTemplateCheck(checkCtx, target, application.ID, current.Config.Kubernetes); err != nil {
-							return err
-						}
+						// 现场重名及资源权限由本任务实际执行的 DeployTemplate 在写入前复核，
+						// 不在创建整条流水线时重复探测下游集群。
 					}
 					available, environmentErr := s.deploymentEnvironmentAvailable(ctx, database, target, "pipeline_run_environment_validate")
 					if environmentErr != nil {

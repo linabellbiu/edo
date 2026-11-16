@@ -179,27 +179,36 @@ func (s *Service) freezeDeploymentRegistryInputs(ctx context.Context, db *gorm.D
 		if err := db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND is_active = ?", input.RegistryID, scope.ProjectID, true).First(&registry).Error; err != nil {
 			return nil, s.deploymentInputError(node.ID, "deployment_registry_load", err)
 		}
-		client, prefix, err := s.deploymentRegistryClient(registry)
+		frozen, err := s.freezeDeploymentRegistryInput(ctx, node.ID, index, input, registry)
 		if err != nil {
-			return nil, s.deploymentInputError(node.ID, "deployment_registry_client", err)
+			return nil, err
 		}
-		ref, err := registryreference.New(strings.TrimSuffix(prefix, "/") + "/" + input.Image + ":" + input.Tag)
-		if err != nil {
-			return nil, s.deploymentInputError(node.ID, "deployment_registry_reference", err)
-		}
-		request, cancel := context.WithTimeout(ctx, 20*time.Second)
-		manifest, err := client.ManifestHead(request, ref, regclient.WithManifestRequireDigest())
-		cancel()
-		if err != nil {
-			return nil, s.deploymentInputError(node.ID, "deployment_registry_digest", err)
-		}
-		ref.Tag, ref.Digest = "", manifest.GetDescriptor().Digest.String()
-		if !strings.HasPrefix(ref.Digest, "sha256:") {
-			return nil, s.deploymentInputError(node.ID, "deployment_registry_digest", ErrDeploymentInputs)
-		}
-		result = append(result, workflowRegistryInput{Index: index, RegistryID: registry.ID, ImageRef: ref.CommonName(), Tag: input.Tag})
+		result = append(result, frozen)
 	}
 	return result, nil
+}
+
+// 调用方先核对权限和仓库身份；远端摘要读取不应占用数据库事务。
+func (s *Service) freezeDeploymentRegistryInput(ctx context.Context, nodeID string, index int, input model.DeploymentInput, registry model.ImageRegistry) (workflowRegistryInput, error) {
+	client, prefix, err := s.deploymentRegistryClient(registry)
+	if err != nil {
+		return workflowRegistryInput{}, s.deploymentInputError(nodeID, "deployment_registry_client", err)
+	}
+	ref, err := registryreference.New(strings.TrimSuffix(prefix, "/") + "/" + input.Image + ":" + input.Tag)
+	if err != nil {
+		return workflowRegistryInput{}, s.deploymentInputError(nodeID, "deployment_registry_reference", err)
+	}
+	request, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	manifest, err := client.ManifestHead(request, ref, regclient.WithManifestRequireDigest())
+	if err != nil {
+		return workflowRegistryInput{}, s.deploymentInputError(nodeID, "deployment_registry_digest", err)
+	}
+	ref.Tag, ref.Digest = "", manifest.GetDescriptor().Digest.String()
+	if !strings.HasPrefix(ref.Digest, "sha256:") {
+		return workflowRegistryInput{}, s.deploymentInputError(nodeID, "deployment_registry_digest", ErrDeploymentInputs)
+	}
+	return workflowRegistryInput{Index: index, RegistryID: registry.ID, ImageRef: ref.CommonName(), Tag: input.Tag}, nil
 }
 
 func (s *Service) deploymentInputError(nodeID, operation string, err error) error {

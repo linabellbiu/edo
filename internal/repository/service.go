@@ -602,6 +602,11 @@ func (s *Service) acquireCheckout(ctx context.Context, id, ref, commitSHA, execu
 }
 
 func (s *Service) acquireCheckoutLock(ctx context.Context, key string) (func(), error) {
+	return s.checkoutLock(ctx, key, true)
+}
+
+// checkoutLock 复用同一路径的锁；辅助展示读取只尝试获取，繁忙时不等待执行任务。
+func (s *Service) checkoutLock(ctx context.Context, key string, wait bool) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -614,18 +619,31 @@ func (s *Service) acquireCheckoutLock(ctx context.Context, key string) (func(), 
 	// 等待者也持有引用，避免持有者释放后为同一个路径创建第二把锁。
 	lock.references++
 	s.checkoutLocksMu.Unlock()
+	if !wait {
+		select {
+		case lock.semaphore <- struct{}{}:
+			return s.checkoutLockRelease(key, lock), nil
+		default:
+			s.releaseCheckoutLockReference(key, lock)
+			return nil, nil
+		}
+	}
 	select {
 	case lock.semaphore <- struct{}{}:
-		var once sync.Once
-		return func() {
-			once.Do(func() {
-				<-lock.semaphore
-				s.releaseCheckoutLockReference(key, lock)
-			})
-		}, nil
+		return s.checkoutLockRelease(key, lock), nil
 	case <-ctx.Done():
 		s.releaseCheckoutLockReference(key, lock)
 		return nil, ctx.Err()
+	}
+}
+
+func (s *Service) checkoutLockRelease(key string, lock *checkoutLock) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			<-lock.semaphore
+			s.releaseCheckoutLockReference(key, lock)
+		})
 	}
 }
 
@@ -676,9 +694,12 @@ func (s *Service) CachedCommitAuthor(ctx context.Context, id, commitSHA string) 
 		if err != nil {
 			return "", err
 		}
-		directory, release, err := s.acquireMetadataCache(ctx, repository.CloneURL)
+		directory, release, err := s.metadataCache(ctx, repository.CloneURL, false)
 		if err != nil {
 			return "", err
+		}
+		if release == nil {
+			return "", nil
 		}
 		defer release()
 		return client.CachedCommitAuthorAt(ctx, directory, commitSHA)
@@ -785,8 +806,19 @@ func (s *Service) ResolveTagCommit(ctx context.Context, id, ref, objectSHA strin
 }
 
 func (s *Service) acquireMetadataCache(ctx context.Context, cloneURL string) (string, func(), error) {
+	return s.metadataCache(ctx, cloneURL, true)
+}
+
+func (s *Service) metadataCache(ctx context.Context, cloneURL string, wait bool) (string, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	// 先完成范围、启用状态与凭据检查，再使用缓存；清理与固定目录读取不能并发。
-	s.maintenance.RLock()
+	if wait {
+		s.maintenance.RLock()
+	} else if !s.maintenance.TryRLock() {
+		return "", nil, nil
+	}
 	directories := s.Directories()
 	digest := sha256.Sum256([]byte(strings.TrimSpace(cloneURL)))
 	key := hex.EncodeToString(digest[:])
@@ -799,8 +831,8 @@ func (s *Service) acquireMetadataCache(ctx context.Context, cloneURL string) (st
 	releaseRepository := func() {}
 	if directory != "" {
 		var err error
-		releaseRepository, err = s.acquireCheckoutLock(ctx, "repository:"+directory)
-		if err != nil {
+		releaseRepository, err = s.checkoutLock(ctx, "repository:"+directory, wait)
+		if err != nil || releaseRepository == nil {
 			s.maintenance.RUnlock()
 			return "", nil, err
 		}

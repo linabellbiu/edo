@@ -18,12 +18,13 @@ import (
 )
 
 type kubernetesRegistryFixture struct {
-	s        *Service
-	ctx      context.Context
-	prepared *executionContext
-	registry *model.ImageRegistry
-	heads    atomic.Int32
-	revision atomic.Int32
+	s              *Service
+	ctx            context.Context
+	prepared       *executionContext
+	registry       *model.ImageRegistry
+	heads          atomic.Int32
+	revision       atomic.Int32
+	beforeManifest func(*http.Request)
 }
 
 func newKubernetesRegistryFixture(t *testing.T, tag string) *kubernetesRegistryFixture {
@@ -38,6 +39,9 @@ func newKubernetesRegistryFixture(t *testing.T, tag string) *kubernetesRegistryF
 		}
 		if strings.HasPrefix(r.URL.Path, "/v2/team/api/manifests/") {
 			f.heads.Add(1)
+			if f.beforeManifest != nil {
+				f.beforeManifest(r)
+			}
 			digit := "a"
 			if f.revision.Load() > 0 {
 				digit = "b"

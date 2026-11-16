@@ -230,7 +230,7 @@ func (s *Service) stopParallelRun(ctx context.Context, runID, actorID string) (*
 	}
 	s.appendRunLog(ctx, runID, run.Stage, "warning", run.Message)
 	s.realtime.Changed(ctx, "pipeline_runs", runID)
-	return s.FindRun(ctx, runID)
+	return &run, nil
 }
 
 func (s *Service) finishStoppedNode(ctx context.Context, runID, jobID string) (bool, error) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"reflect"
 	"strings"
 
 	"edo/internal/artifact"
@@ -37,97 +38,164 @@ func (s *Service) loadKubernetesRegistryImage(ctx context.Context, prepared *exe
 	if scope.ProjectID == "" {
 		ctx = database.WithDepartmentScope(ctx, database.DepartmentScope{UserID: prepared.snapshot.AuthorityID, ProjectID: prepared.run.ProjectID, DepartmentID: prepared.run.DepartmentID})
 	}
-	var resolvedSnapshot *workflowSnapshot
-	var resolvedNode model.WorkflowNode
-	var resolvedRegistry model.ImageRegistry
-	var encodedSnapshot string
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var run model.PipelineRun
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("uuid = ? AND project_id = ? AND department_id = ? AND application_id = ?", prepared.run.ID, prepared.run.ProjectID, prepared.run.DepartmentID, prepared.run.ApplicationID).First(&run).Error; err != nil {
-			return err
+	initial, err := s.readKubernetesRegistryState(ctx, s.db, prepared, false)
+	if err != nil {
+		return s.kubernetesRegistryFailure(ctx, "kubernetes_registry_prepare", nodeID, err)
+	}
+	candidate := initial.node
+	frozen := initial.snapshot.RegistryInputs[nodeID]
+	if len(frozen) == 0 {
+		input := candidate.Config.DeploymentInputs[0]
+		if !initial.snapshot.DeferredKubernetesRegistryImages || initial.snapshot.ImageTagIncludesName || input.Tag != prepared.node.Config.DeploymentInputs[0].Tag {
+			return s.kubernetesRegistryFailure(ctx, "kubernetes_registry_deferred", nodeID, ErrPipelineExecutionConfig)
 		}
-		if run.Status != model.PipelineRunRunning {
-			return ErrPipelineExecutionConfig
+		local := *prepared
+		local.run, local.node, local.snapshot = initial.run, initial.node, *initial.snapshot
+		tag, err := s.resolveKubernetesRegistryTag(ctx, &local, input.Tag)
+		if err != nil {
+			return s.kubernetesRegistryFailure(ctx, "kubernetes_registry_tag", nodeID, err)
 		}
-		snapshot, err := parseWorkflowSnapshot(&run)
+		candidate.Config.DeploymentInputs = append([]model.DeploymentInput(nil), candidate.Config.DeploymentInputs...)
+		candidate.Config.DeploymentInputs[0].Tag = tag
+		// 网络等待只属于当前任务，不持有父运行的行锁或事务连接。
+		image, err := s.freezeDeploymentRegistryInput(ctx, nodeID, 0, candidate.Config.DeploymentInputs[0], initial.registry)
+		if err != nil {
+			return s.kubernetesRegistryFailure(ctx, "kubernetes_registry_resolve", nodeID, err)
+		}
+		frozen = []workflowRegistryInput{image}
+	}
+	if _, err := kubernetesRegistryArtifact(candidate, frozen, initial.registry); err != nil {
+		return s.kubernetesRegistryFailure(ctx, "kubernetes_registry_image", nodeID, err)
+	}
+
+	var resolved *kubernetesRegistryState
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		current, err := s.readKubernetesRegistryState(ctx, tx, prepared, true)
 		if err != nil {
 			return err
 		}
-		current, found := workflowFindNode(snapshot.Source, snapshot.Stages, nodeID)
-		plan, target := snapshot.DeploymentPlans[nodeID], snapshot.DeploymentTargets[nodeID]
-		if !found || current.Type != model.WorkflowNodeDeploy || !model.UsesRegistryDeploymentImage(current.Config) || len(current.Config.DeploymentInputs) != 1 || plan.ID != prepared.deploymentPlan.ID || plan.Kind != model.DeploymentPlanKubernetes || target.ID != prepared.target.ID || target.RuntimeID != prepared.target.RuntimeID || target.Namespace != prepared.target.Namespace || target.WorkloadName != prepared.target.WorkloadName || target.ContainerName != prepared.target.ContainerName || snapshot.AuthorityID != prepared.snapshot.AuthorityID {
-			return ErrPipelineExecutionConfig
-		}
-		input, original := current.Config.DeploymentInputs[0], prepared.node.Config.DeploymentInputs[0]
-		if input.RegistryID == "" || input.RegistryID != current.Config.DeploymentRegistryID || input.RegistryID != original.RegistryID || input.Image != original.Image {
-			return ErrPipelineExecutionConfig
-		}
-		// 事务内只共享所需依赖，不复制服务的互斥锁和运行中状态。
-		txService := &Service{db: tx, secrets: s.secrets, logger: s.logger, deliveryAccess: s.deliveryAccess}
-		if err := txService.requirePipelineExecutionPermission(ctx, run, *snapshot); err != nil {
-			return err
-		}
-		if err := txService.requireDeliveryPermission(ctx, snapshot.AuthorityID, "image_registry.execute"); err != nil {
-			return err
-		}
-		if err := tx.WithContext(ctx).Where("uuid = ? AND project_id = ? AND is_active = ?", input.RegistryID, run.ProjectID, true).First(&resolvedRegistry).Error; err != nil {
-			return err
-		}
-		frozen := snapshot.RegistryInputs[nodeID]
-		encodedSnapshot = run.WorkflowSnapshot
-		if len(frozen) == 0 {
-			if !snapshot.DeferredKubernetesRegistryImages || snapshot.ImageTagIncludesName || input.Tag != original.Tag {
+		stored := current.snapshot.RegistryInputs[nodeID]
+		if len(stored) == 0 {
+			// 仅允许其他节点更新自己的快照；当前来源、授权和仓库必须仍与远端查询一致。
+			if !sameKubernetesRegistrySource(initial, current, nodeID) {
 				return ErrPipelineExecutionConfig
 			}
-			local := *prepared
-			local.run, local.node, local.snapshot = run, current, *snapshot
-			tag, err := txService.resolveKubernetesRegistryTag(ctx, &local, input.Tag)
+			encoded, err := freezeKubernetesRegistrySnapshot(current.run.WorkflowSnapshot, nodeID, candidate.Config.DeploymentInputs, frozen)
 			if err != nil {
 				return err
 			}
-			current.Config.DeploymentInputs = append([]model.DeploymentInput(nil), current.Config.DeploymentInputs...)
-			current.Config.DeploymentInputs[0].Tag = tag
-			frozen, err = txService.freezeDeploymentRegistryInputs(ctx, tx, current, snapshot.AuthorityID)
-			if err != nil {
-				return err
-			}
-			if _, err = kubernetesRegistryArtifact(current, frozen, resolvedRegistry); err != nil {
-				return err
-			}
-			encodedSnapshot, err = freezeKubernetesRegistrySnapshot(run.WorkflowSnapshot, nodeID, current.Config.DeploymentInputs, frozen)
-			if err != nil {
-				return err
-			}
-			result := tx.Model(&model.PipelineRun{}).Where("uuid = ? AND workflow_snapshot = ?", run.ID, run.WorkflowSnapshot).Update("workflow_snapshot", encodedSnapshot)
+			result := tx.Model(&model.PipelineRun{}).
+				Where("uuid = ? AND workflow_snapshot = ? AND status = ? AND stage <> ?", current.run.ID, current.run.WorkflowSnapshot, model.PipelineRunRunning, stoppingStage).
+				Update("workflow_snapshot", encoded)
 			if result.Error != nil {
 				return result.Error
 			}
 			if result.RowsAffected != 1 {
 				return ErrPipelineExecutionConfig
 			}
-			run.WorkflowSnapshot = encodedSnapshot
-			snapshot, err = parseWorkflowSnapshot(&run)
+			current.run.WorkflowSnapshot = encoded
+			current.snapshot, err = parseWorkflowSnapshot(&current.run)
 			if err != nil {
 				return err
 			}
+			current.node, stored = candidate, frozen
 		}
-		if _, err = kubernetesRegistryArtifact(current, frozen, resolvedRegistry); err != nil {
+		// 同节点重投已有固定摘要时复用先完成的冻结，不能用迟到的 Tag 查询覆盖。
+		if _, err := kubernetesRegistryArtifact(current.node, stored, current.registry); err != nil {
 			return err
 		}
-		resolvedSnapshot, resolvedNode = snapshot, current
+		resolved = current
 		return nil
 	})
 	if err != nil {
 		return s.kubernetesRegistryFailure(ctx, "kubernetes_registry_freeze", nodeID, err)
 	}
-	image, err := kubernetesRegistryArtifact(resolvedNode, resolvedSnapshot.RegistryInputs[nodeID], resolvedRegistry)
+	image, err := kubernetesRegistryArtifact(resolved.node, resolved.snapshot.RegistryInputs[nodeID], resolved.registry)
 	if err != nil {
 		return s.kubernetesRegistryFailure(ctx, "kubernetes_registry_image", nodeID, err)
 	}
-	prepared.node, prepared.snapshot, prepared.registry, prepared.artifact = resolvedNode, *resolvedSnapshot, resolvedRegistry, image
-	prepared.run.WorkflowSnapshot = encodedSnapshot
+	prepared.node, prepared.snapshot, prepared.registry, prepared.artifact = resolved.node, *resolved.snapshot, resolved.registry, image
+	prepared.run.WorkflowSnapshot = resolved.run.WorkflowSnapshot
 	prepared.run.ArtifactID = ""
 	return nil
+}
+
+type kubernetesRegistryState struct {
+	run      model.PipelineRun
+	snapshot *workflowSnapshot
+	node     model.WorkflowNode
+	registry model.ImageRegistry
+}
+
+func (s *Service) readKubernetesRegistryState(ctx context.Context, db *gorm.DB, prepared *executionContext, lock bool) (*kubernetesRegistryState, error) {
+	state := &kubernetesRegistryState{}
+	query := db.WithContext(ctx)
+	if lock {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.Where("uuid = ? AND project_id = ? AND department_id = ? AND application_id = ?", prepared.run.ID, prepared.run.ProjectID, prepared.run.DepartmentID, prepared.run.ApplicationID).First(&state.run).Error; err != nil {
+		return nil, err
+	}
+	if state.run.Status != model.PipelineRunRunning || state.run.Stage == stoppingStage {
+		return nil, ErrPipelineExecutionConfig
+	}
+	nodeID := prepared.node.ID
+	if prepared.run.NodeExecution {
+		var node model.PipelineNodeRun
+		query := db.WithContext(ctx)
+		if lock {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := query.Where("pipeline_run_id = ? AND node_id = ? AND job_id = ? AND status = ?", state.run.ID, nodeID, prepared.run.ExecutionJobID, model.PipelineRunRunning).First(&node).Error; err != nil {
+			s.logger.WarnContext(ctx, "核对 Kubernetes 镜像冻结执行任务失败", "operation", "kubernetes_registry_node_state", "pipeline_run_id", state.run.ID, "node_id", nodeID, "job_id", prepared.run.ExecutionJobID, "err", err)
+			return nil, ErrPipelineExecutionConfig
+		}
+	} else if state.run.ExecutionJobID != prepared.run.ExecutionJobID || state.run.CurrentNodeID != nodeID {
+		return nil, ErrPipelineExecutionConfig
+	}
+	var err error
+	state.snapshot, err = parseWorkflowSnapshot(&state.run)
+	if err != nil {
+		return nil, err
+	}
+	current, found := workflowFindNode(state.snapshot.Source, state.snapshot.Stages, nodeID)
+	plan, target := state.snapshot.DeploymentPlans[nodeID], state.snapshot.DeploymentTargets[nodeID]
+	if !found || current.Type != model.WorkflowNodeDeploy || !model.UsesRegistryDeploymentImage(current.Config) || len(current.Config.DeploymentInputs) != 1 || plan.ID != prepared.deploymentPlan.ID || plan.Kind != model.DeploymentPlanKubernetes || target.ID != prepared.target.ID || target.Platform != prepared.target.Platform || target.RuntimeID != prepared.target.RuntimeID || target.Namespace != prepared.target.Namespace || target.WorkloadName != prepared.target.WorkloadName || target.ContainerName != prepared.target.ContainerName || state.snapshot.AuthorityID != prepared.snapshot.AuthorityID {
+		return nil, ErrPipelineExecutionConfig
+	}
+	input, original := current.Config.DeploymentInputs[0], prepared.node.Config.DeploymentInputs[0]
+	if input.RegistryID == "" || input.RegistryID != current.Config.DeploymentRegistryID || input.RegistryID != original.RegistryID || input.Image != original.Image {
+		return nil, ErrPipelineExecutionConfig
+	}
+	// 事务内只共享所需依赖，不复制服务的互斥锁和运行中状态。
+	service := &Service{db: db, secrets: s.secrets, logger: s.logger, deliveryAccess: s.deliveryAccess}
+	if err := service.requirePipelineExecutionPermission(ctx, state.run, *state.snapshot); err != nil {
+		return nil, err
+	}
+	if err := service.requireDeliveryPermission(ctx, state.snapshot.AuthorityID, "image_registry.execute"); err != nil {
+		return nil, err
+	}
+	if len(state.snapshot.VariableBindings[nodeID]) > 0 {
+		if err := service.requireDeliveryPermission(ctx, state.snapshot.AuthorityID, "delivery_variable.execute"); err != nil {
+			return nil, err
+		}
+	}
+	if err := db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND is_active = ?", input.RegistryID, state.run.ProjectID, true).First(&state.registry).Error; err != nil {
+		return nil, err
+	}
+	state.node = current
+	return state, nil
+}
+
+func sameKubernetesRegistrySource(before, after *kubernetesRegistryState, nodeID string) bool {
+	return reflect.DeepEqual(before.node, after.node) && reflect.DeepEqual(before.registry, after.registry) &&
+		reflect.DeepEqual(before.snapshot.DeploymentPlans[nodeID], after.snapshot.DeploymentPlans[nodeID]) &&
+		reflect.DeepEqual(before.snapshot.DeploymentTargets[nodeID], after.snapshot.DeploymentTargets[nodeID]) &&
+		reflect.DeepEqual(before.snapshot.VariableBindings[nodeID], after.snapshot.VariableBindings[nodeID]) &&
+		before.snapshot.DeferredKubernetesRegistryImages == after.snapshot.DeferredKubernetesRegistryImages &&
+		before.snapshot.ImageTagIncludesName == after.snapshot.ImageTagIncludesName &&
+		before.run.Ref == after.run.Ref && before.run.CommitSHA == after.run.CommitSHA &&
+		before.run.Trigger == after.run.Trigger && before.run.RetryOfID == after.run.RetryOfID
 }
 
 func (s *Service) resolveKubernetesRegistryTag(ctx context.Context, prepared *executionContext, template string) (string, error) {

@@ -110,7 +110,7 @@ func (s *Service) GetWorkflowTemplate(ctx context.Context, id string) (*Workflow
 	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, template.Stages); err != nil {
 		return nil, err
 	}
-	issues := s.validateWorkflowTemplate(ctx, template.SchemaVersion, template.Source, template.Stages)
+	issues := s.validateWorkflowWithMode(ctx, nil, template.SchemaVersion, template.Source, template.Stages, workflowValidationConfiguration)
 	return &WorkflowTemplateResult{WorkflowTemplate: &template, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
@@ -190,7 +190,11 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflowSaveStages(input.WorkflowInput)); err != nil {
 		return nil, err
 	}
-	issues := s.validateWorkflowTemplate(ctx, input.SchemaVersion, input.Source, input.Stages)
+	mode := workflowValidationConfiguration
+	if input.Activate {
+		mode = workflowValidationTargets
+	}
+	issues := s.validateWorkflowWithMode(ctx, nil, input.SchemaVersion, input.Source, input.Stages, mode)
 	saveIssues := workflowTaskSaveIssues(input.WorkflowInput, issues)
 	if hasWorkflowIssue(saveIssues, "deployment_override_permission_denied") {
 		return &WorkflowTemplateResult{Valid: false, Issues: saveIssues}, ErrKubernetesTemplatePermission
