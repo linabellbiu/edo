@@ -54,7 +54,10 @@ func (r *localK3dRuntime) nodes(ctx context.Context, input Input, id string) ([]
 	return nodes, nil
 }
 func (r *localK3dRuntime) create(ctx context.Context, input Input, id string, out io.Writer) error {
-	if len(k3dCreateArguments(input, id)) == 0 {
+	// 官方内存参数会挂载 CLI 本地生成的 meminfo；Docker 服务端可能不共享该文件系统。
+	// 本地连接统一在官方创建返回后通过 Docker update 设置并核验限额，不依赖主机路径共享。
+	args := k3dCreateArguments(input, id, false)
+	if len(args) == 0 {
 		return ErrInvalidInput
 	}
 	if err := r.available(ctx, input, ""); err != nil {
@@ -70,7 +73,7 @@ func (r *localK3dRuntime) create(ctx context.Context, input Input, id string, ou
 			return &ValidationError{Message: "本次 k3d 镜像卷名称已被占用，请重新生成安装计划"}
 		}
 	}
-	if err := r.execute(ctx, r.tool.path, k3dCreateArguments(input, id), out); err != nil {
+	if err := r.execute(ctx, r.tool.path, args, out); err != nil {
 		return err
 	}
 	volumeInfo, _, err := r.read(ctx, "docker", "volume", "inspect", "--format", `{{.Name}} {{index .Labels "k3d.cluster"}}`, volume)

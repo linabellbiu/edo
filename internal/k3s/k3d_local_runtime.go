@@ -259,13 +259,17 @@ func (s *Service) LocalK3dInfo(ctx context.Context, actorID string) (LocalK3dInf
 	}
 	return s.localK3d.describe(ctx)
 }
-func k3dCreateArguments(input Input, id string) []string {
+func k3dCreateArguments(input Input, id string, withMemoryMounts bool) []string {
 	if input.K3d == nil || k3dResourceName(id) == "" || validateK3dResources(input.K3d) != nil {
 		return nil
 	}
-	server, worker := k3dResources(input.K3d)
 	endpoint, _ := url.Parse(input.Endpoint)
-	return []string{"cluster", "create", k3dResourceName(id), "--servers", "1", "--agents", strconv.Itoa(k3dAgents(input.K3d)), "--api-port", net.JoinHostPort(input.K3d.BindAddress, strconv.Itoa(input.K3d.APIPort)), "--image", k3dImage(input.K3d), "--servers-memory", k3dMemoryArgument(server.MemoryMiB), "--agents-memory", k3dMemoryArgument(worker.MemoryMiB), "--verbose", "--no-lb", "--no-rollback", "--wait=false", "--timeout", "5m", "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false", "--runtime-label", "edo.dev/installation=" + id + "@all", "--k3s-node-label", "edo.dev/installation=" + id + "@all", "--k3s-arg", "--tls-san=" + endpoint.Hostname() + "@server:0"}
+	args := []string{"cluster", "create", k3dResourceName(id), "--servers", "1", "--agents", strconv.Itoa(k3dAgents(input.K3d)), "--api-port", net.JoinHostPort(input.K3d.BindAddress, strconv.Itoa(input.K3d.APIPort)), "--image", k3dImage(input.K3d)}
+	if withMemoryMounts {
+		server, worker := k3dResources(input.K3d)
+		args = append(args, "--servers-memory", k3dMemoryArgument(server.MemoryMiB), "--agents-memory", k3dMemoryArgument(worker.MemoryMiB))
+	}
+	return append(args, "--verbose", "--no-lb", "--no-rollback", "--wait=false", "--timeout", "5m", "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false", "--runtime-label", "edo.dev/installation="+id+"@all", "--k3s-node-label", "edo.dev/installation="+id+"@all", "--k3s-arg", "--tls-san="+endpoint.Hostname()+"@server:0")
 }
 
 func (r *localK3dRuntime) preflight(ctx context.Context, input Input, hosts []Host) (*PreflightReport, error) {

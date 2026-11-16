@@ -142,7 +142,7 @@ printf 'EDO_K3S_IDENTITY_BEGIN\n'
 }
 
 func k3dCreateCommand(input Input, installationID string) string {
-	args := k3dCreateArguments(input, installationID)
+	args := k3dCreateArguments(input, installationID, true)
 	if len(args) == 0 {
 		return ""
 	}

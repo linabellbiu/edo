@@ -33,9 +33,11 @@ type localCLIFixture struct {
 	revision, daemon, foreign, ports, id string
 	architecture                         string
 	created, wrongOwner, wrongResources  bool
+	separateFilesystems, failUpdate      bool
 	calls                                [][]string
 	config                               string
 	server, worker                       K3dNodeResources
+	limits                               map[string]K3dNodeResources
 }
 
 func (f *localCLIFixture) LocalCLIEnvironment(context.Context) ([]string, string, func(), error) {
@@ -74,6 +76,15 @@ func (f *localCLIFixture) run(ctx context.Context, binary string, args, env []st
 		f.mu.Unlock()
 		return nil
 	case len(args) > 2 && args[0] == "cluster" && args[1] == "create":
+		if f.separateFilesystems {
+			for _, arg := range args {
+				if arg == "--servers-memory" || arg == "--agents-memory" {
+					f.mu.Unlock()
+					_, _ = io.WriteString(diagnostic, "error mounting CLI meminfo to /proc/meminfo: not a directory\n")
+					return errors.New("Docker 服务端无法读取 CLI 本地文件")
+				}
+			}
+		}
 		f.created = true
 		name := args[2]
 		for i, arg := range args {
@@ -93,18 +104,19 @@ func (f *localCLIFixture) run(ctx context.Context, binary string, args, env []st
 		if f.wrongOwner {
 			owner = "other-installation"
 		}
-		server, worker := f.server, f.worker
+		limits := make(map[string]K3dNodeResources, len(f.limits))
+		for id, resource := range f.limits {
+			limits[id] = resource
+		}
 		wrong := f.wrongResources
 		f.mu.Unlock()
 		for i, name := range args[3:] {
-			resource := worker
-			if i == 0 {
-				resource = server
-			}
+			containerID := strings.Repeat(fmt.Sprint(i+1), 64)
+			resource := limits[containerID]
 			if wrong {
 				resource.CPUMillis++
 			}
-			node := localK3dContainer{ID: strings.Repeat(fmt.Sprint(i+1), 64), Name: "/" + name, Labels: map[string]string{"edo.dev/installation": owner, "k3d.cluster": k3dResourceName(id)}, CPU: resource.CPUMillis * 1000000, Memory: resource.MemoryMiB * 1024 * 1024, Swap: resource.MemoryMiB * 1024 * 1024}
+			node := localK3dContainer{ID: containerID, Name: "/" + name, Labels: map[string]string{"edo.dev/installation": owner, "k3d.cluster": k3dResourceName(id)}, CPU: resource.CPUMillis * 1000000, Memory: resource.MemoryMiB * 1024 * 1024, Swap: resource.MemoryMiB * 1024 * 1024}
 			data, _ := json.Marshal(node)
 			if err := write(string(data) + "\n"); err != nil {
 				return err
@@ -112,6 +124,24 @@ func (f *localCLIFixture) run(ctx context.Context, binary string, args, env []st
 		}
 		return nil
 	case len(args) > 0 && args[0] == "update":
+		if f.failUpdate {
+			f.mu.Unlock()
+			return errors.New("模拟 Docker 资源设置失败")
+		}
+		id := args[len(args)-1]
+		resource := f.worker
+		if id == strings.Repeat("1", 64) {
+			resource = f.server
+		}
+		expected := []string{"update", "--cpus", k3dCPUArgument(resource.CPUMillis), "--memory", k3dMemoryArgument(resource.MemoryMiB), "--memory-swap", k3dMemoryArgument(resource.MemoryMiB), id}
+		if !f.created || strings.Join(args, " ") != strings.Join(expected, " ") {
+			f.mu.Unlock()
+			return fmt.Errorf("资源设置不符合配置快照: %s", joined)
+		}
+		if f.limits == nil {
+			f.limits = make(map[string]K3dNodeResources)
+		}
+		f.limits[id] = resource
 		f.mu.Unlock()
 		return write(args[len(args)-1] + "\n")
 	case len(args) > 0 && args[0] == "logs":
@@ -139,7 +169,7 @@ func localK3dFixture(t *testing.T) (fixture, *localCLIFixture, Input) {
 	if err := f.db.WithContext(f.ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "host_id"}, {Name: "kind"}}, DoUpdates: clause.AssignmentColumns([]string{"status"})}).Create(&model.HostCapability{HostID: host.ID, Kind: model.HostCapabilityDocker, Status: model.HostCapabilityReady}).Error; err != nil {
 		t.Fatal(err)
 	}
-	cli := &localCLIFixture{revision: "runtime-revision", daemon: "daemon-id", config: f.transport.kubeconfig, server: K3dNodeResources{1750, 2048}, worker: K3dNodeResources{500, 1024}}
+	cli := &localCLIFixture{revision: "runtime-revision", daemon: "daemon-id", config: f.transport.kubeconfig, server: K3dNodeResources{1750, 2048}, worker: K3dNodeResources{500, 1024}, separateFilesystems: true}
 	runtime := newLocalK3dRuntime(cli)
 	runtime.runCommand = cli.run
 	path := filepath.Join(t.TempDir(), "k3d")
@@ -284,6 +314,70 @@ func TestLocalK3dConnectionChangeInvalidatesPlanAndExistingClusterBlocks(t *test
 		t.Fatal("已有本地集群仍允许重复安装", err)
 	}
 }
+
+func TestLocalK3dSeparateFilesystemsKeepActualNodeLimits(t *testing.T) {
+	for _, agents := range []int{0, 2} {
+		t.Run(fmt.Sprint(agents), func(t *testing.T) {
+			f, cli, input := localK3dFixture(t)
+			input.K3d.Agents = &agents
+			_, _, _, _, _, err := f.service.normalizeK3d(f.ctx, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := "1ec72535-b388-4165-82d8-10cafb3f8793"
+			if err := f.service.localK3d.create(f.ctx, input, id, io.Discard); err != nil {
+				t.Fatal("独立 Docker 文件系统导致创建失败", err)
+			}
+			nodes, err := f.service.localK3d.nodes(f.ctx, input, id)
+			if err != nil || len(nodes) != 1+agents || len(cli.limits) != 1+agents {
+				t.Fatal("没有逐一设置并核验实际资源", nodes, err)
+			}
+			for i, node := range nodes {
+				resource := cli.worker
+				if i == 0 {
+					resource = cli.server
+				}
+				if node.CPU != resource.CPUMillis*1000000 || node.Memory != resource.MemoryMiB*1024*1024 || node.Swap != node.Memory {
+					t.Fatal("本地节点实际限额未保留", node)
+				}
+			}
+			remote := k3dCreateCommand(input, id)
+			if !strings.Contains(remote, "--servers-memory "+k3dMemoryArgument(cli.server.MemoryMiB)) || !strings.Contains(remote, "--agents-memory "+k3dMemoryArgument(cli.worker.MemoryMiB)) {
+				t.Fatal("修改本地连接时删除了 SSH 模式的创建时内存限制", remote)
+			}
+		})
+	}
+}
+
+func TestLocalK3dResourceUpdateFailureNeverImportsOrCleansUp(t *testing.T) {
+	f, cli, input := localK3dFixture(t)
+	clusters := fakeClusterClient(t, f)
+	f.service.kubernetes = clusters
+	cli.failUpdate = true
+	plan, err := f.service.Preview(f.ctx, f.actor.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.service.Execute(f.ctx, f.actor.ID, plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	record, err := f.service.claim(f.ctx)
+	if err != nil || record == nil {
+		t.Fatal(err)
+	}
+	f.service.runInstallation(f.ctx, *record)
+	result, err := f.service.Get(f.ctx, plan.ID)
+	if err != nil || result.Status != "failed" || !cli.created || clusters.created != 0 {
+		t.Fatal("资源设置失败仍接入或报告成功", result, err)
+	}
+	for _, args := range cli.calls {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, " delete") || strings.Contains(joined, " rm") || strings.Contains(joined, "kubeconfig get") {
+			t.Fatal("资源设置失败后继续接入或自动清理", joined)
+		}
+	}
+}
+
 func TestLocalK3dWrongOwnerNeverUpdatesContainerAndResourceMismatchFails(t *testing.T) {
 	for _, wrongOwner := range []bool{true, false} {
 		t.Run(fmt.Sprint(wrongOwner), func(t *testing.T) {
