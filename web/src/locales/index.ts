@@ -186,7 +186,7 @@ export const messages = {
     },
     pipelineStop: {title:'停止这次流水线运行？',hint:'将中断当前任务并停止后续节点，保留已有日志和制品。已经提交的部署操作可能已生效，不会自动回滚；停止流水线不等于停止已部署的应用。',confirm:'停止流水线',cancel:'返回',stopping:'停止中',stopped:'已停止',accepted:'已请求停止，正在等待当前任务退出'},
     pipelineRunGraph: {
-      ariaLabel: '流水线只读执行拓扑', title: '执行拓扑', nodeCount: '任务：{count}；仅展示当前任务状态', empty: '暂无可展示的执行任务',
+      ariaLabel: '流水线只读执行拓扑', title: '执行拓扑', nodeCount: '执行项：{count}', empty: '暂无可展示的执行任务',
       node: { trigger: '代码触发', build: '构建制品', shell: 'Shell 脚本', manual: '人工放行', approval: '发布审核', deploy: '部署' },
       state: {
         succeeded: '执行完成', failed: '执行失败', skipped: '条件不匹配，后续已跳过', canceled: '已取消', blocked: '等待计划调度', awaitingApproval: '等待审核', awaitingManual: '等待放行',
@@ -428,7 +428,7 @@ export const messages = {
     },
     pipelineStop: {title:'Stop this pipeline run?',hint:'Interrupt the current task and prevent subsequent tasks. Existing logs and artifacts are retained. Submitted deployments may already have taken effect and will not be rolled back. This does not stop the deployed application.',confirm:'Stop pipeline',cancel:'Back',stopping:'Stopping',stopped:'Stopped',accepted:'Stop requested; waiting for the current task to exit'},
     pipelineRunGraph: {
-      ariaLabel: 'Read-only pipeline execution graph', title: 'Execution graph', nodeCount: 'Tasks: {count}; only the current task is highlighted', empty: 'No execution tasks to display',
+      ariaLabel: 'Read-only pipeline execution graph', title: 'Execution graph', nodeCount: 'Executions: {count}', empty: 'No execution tasks to display',
       node: { trigger: 'Code trigger', build: 'Build artifact', shell: 'Shell script', manual: 'Manual gate', approval: 'Approval', deploy: 'Deploy' },
       state: {
         succeeded: 'Completed', failed: 'Failed', skipped: 'Condition not matched; downstream tasks skipped', canceled: 'Canceled', blocked: 'Waiting for plan scheduling', awaitingApproval: 'Awaiting approval', awaitingManual: 'Awaiting release',

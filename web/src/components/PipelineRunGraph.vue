@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Tooltip } from 'ant-design-vue'
 import { Check, ChevronRight, CircleDot, Clock3, GitBranch, Hand, Package, Rocket, ShieldCheck, TerminalSquare, X } from 'lucide-vue-next'
 
 import type { PipelineExecutionGraph, PipelineExecutionStage, PipelineRunGraphNode, WorkflowNodeType } from '@/types/pipeline'
@@ -50,6 +51,7 @@ const nodes = computed(() => {
   for (const stage of props.graph?.stages || []) result.push(...(stage.tasks || []))
   return result
 })
+const executionCount = computed(() => props.graph?.stages.reduce((count, stage) => count + stage.tasks.length, 0) || 0)
 
 function nodeState(node:PipelineRunGraphNode){
  const task=props.tasks?.find(item=>item.node_id===node.id)
@@ -62,6 +64,17 @@ function stageBatches(stage:PipelineExecutionStage){
  return stage.batches.map(ids=>ids.flatMap(id=>{const node=stage.tasks.find(node=>node.id===id);return node?[node]:[]}))
 }
 function nodeClasses(node:PipelineRunGraphNode){const state=nodeState(node);return [{current:!!state},state?.key||'idle']}
+function nodeDisplayName(node: PipelineRunGraphNode) {
+  return node.execution_task_name || node.name
+}
+function nodeDescription(node: PipelineRunGraphNode) {
+  return node.execution_host_name
+    ? `${nodeDisplayName(node)} · 执行主机：${node.execution_host_name}`
+    : node.name
+}
+function openTaskLogs(node: PipelineRunGraphNode) {
+  emit('task-logs', { ...node, name: nodeDescription(node) })
+}
 
 watch(() => [props.currentNodeId, nodes.value.length], async () => {
   await nextTick()
@@ -80,7 +93,7 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
     <header>
       <div>
         <strong>{{ t('pipelineRunGraph.title') }}</strong>
-        <span v-if="nodes.length">{{ t('pipelineRunGraph.nodeCount', { count: nodes.length }) }}</span>
+        <span v-if="nodes.length">{{ t('pipelineRunGraph.nodeCount', { count: executionCount }) }}</span>
       </div>
       <span v-if="nodes.length" class="current-summary" :class="currentState.key">
         <i v-if="currentState.key === 'running'" class="summary-breathing-light" aria-hidden="true" />
@@ -110,14 +123,14 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
             <div class="run-task-chain">
               <template v-for="(batch, batchIndex) in stageBatches(pipelineStage)" :key="batchIndex">
                 <ChevronRight v-if="batchIndex" class="task-arrow" :size="17" />
-                <div class="run-batch"><small v-if="batch.length>1" class="parallel-label">并行任务</small>
+                <div class="run-batch"><small v-if="batch.length>1" class="parallel-label">并行执行</small>
                 <template v-for="node in batch" :key="node.id">
+                <Tooltip :title="nodeDescription(node)" :trigger="['hover', 'focus']">
                 <button
                   type="button"
                   class="run-node task-log-button"
-                  :aria-label="`查看任务日志：${node.name}`"
-                  :title="node.name"
-                  @click="emit('task-logs', node)"
+                  :aria-label="`查看任务日志：${nodeDescription(node)}`"
+                  @click="openTaskLogs(node)"
                   :class="nodeClasses(node)"
                   :style="{ '--node-color': nodeMeta[node.type]?.color || '#718096' }"
                   :aria-current="node.id === currentNodeId ? 'step' : undefined"
@@ -125,13 +138,15 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
                   <span class="node-icon"><component :is="nodeMeta[node.type]?.icon || CircleDot" :size="17" /></span>
                   <span class="node-copy">
                     <small>{{ nodeMeta[node.type]?.label }}<template v-if="node.environment">，环境：{{ node.environment }}</template></small>
-                    <strong>{{ node.name }}</strong>
+                    <strong :class="{ 'frozen-name': !node.execution_task_name }">{{ nodeDisplayName(node) }}</strong>
+                    <span v-if="node.execution_host_name" class="execution-host">主机：{{ node.execution_host_name }}</span>
                   </span>
                   <span v-if="nodeState(node)" class="node-state" :title="nodeState(node)?.label">
                     <i v-if="nodeState(node)?.key === 'running'" class="node-breathing-light" aria-hidden="true" />
                     <component v-else :is="nodeState(node)?.icon" :size="13" />
                   </span>
                 </button>
+                </Tooltip>
                 </template></div>
               </template>
             </div>
@@ -154,9 +169,11 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
 .run-node{--state-color:var(--edo-primary);display:grid;width:194px;height:68px;align-items:center;grid-template-columns:36px minmax(0,1fr) 20px;gap:9px;padding:9px 10px;border:1px solid color-mix(in srgb,var(--edo-border) 90%,transparent);border-radius:10px;color:var(--edo-text);background:var(--edo-surface);box-shadow:0 1px 2px rgb(28 36 55 / 4%),0 6px 17px rgb(28 36 55 / 6%)}.run-node.source{width:184px}.node-icon{display:grid;width:36px;height:36px;place-items:center;border:1px solid color-mix(in srgb,var(--node-color) 13%,transparent);border-radius:9px;color:var(--node-color);background:color-mix(in srgb,var(--node-color) 12%,var(--edo-surface))}.node-copy{min-width:0}.node-copy small,.node-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.node-copy small{color:var(--edo-muted);font-size:10px}.node-copy strong{margin-top:3px;font-size:12.5px}.node-state{display:grid;width:20px;height:20px;place-items:center;border:1px solid color-mix(in srgb,var(--state-color) 16%,transparent);border-radius:50%;color:var(--state-color);background:color-mix(in srgb,var(--state-color) 12%,var(--edo-surface))}.node-breathing-light{width:7px;height:7px;border-radius:50%;background:currentColor;animation:state-light-breathe 1.9s ease-in-out infinite}
 .run-node.current{border-color:color-mix(in srgb,var(--state-color) 84%,var(--edo-border));box-shadow:0 0 0 3px color-mix(in srgb,var(--state-color) 7%,transparent),0 10px 24px rgb(30 45 75 / 11%)}.run-node.current.running{--state-color:#4f7df3;animation:running-border-breathe 2.2s ease-in-out infinite;will-change:border-color,box-shadow}.run-node.current.waiting{--state-color:#d99a2b}.run-node.current.succeeded{--state-color:#28aa70}.run-node.current.failed{--state-color:#e65361}.run-node.current.canceled,.run-node.current.pending{--state-color:#8e96a3}
 .task-log-button{font:inherit;text-align:left;cursor:pointer}.task-log-button:hover{background:var(--edo-primary-soft)}.task-log-button:focus-visible{outline:2px solid var(--edo-primary);outline-offset:4px}
+.task-log-button{height:auto;min-height:78px}.node-copy .frozen-name{white-space:normal;overflow-wrap:anywhere;line-height:1.5}.execution-host{display:block;margin-top:3px;overflow:hidden;color:var(--edo-muted);font-size:12px;line-height:1.5;text-overflow:ellipsis;white-space:nowrap}
 .graph-empty{display:flex;min-height:128px;align-items:center;justify-content:center;gap:8px;color:var(--edo-muted);font-size:12px}
 .is-compact>header{min-height:42px;padding:6px 10px}.is-compact .topology-viewport{padding:10px}.is-compact .run-stage{padding:7px 8px 9px}.is-compact .run-stage>header{margin-bottom:6px}
 .is-compact .run-node{width:172px;height:56px;grid-template-columns:28px minmax(0,1fr) 18px;gap:7px;padding:7px 8px;border-radius:8px}.is-compact .run-node.source{width:162px}.is-compact .node-icon{width:28px;height:28px;border-radius:7px}.is-compact .node-copy strong{font-size:12px}.is-compact .stage-arrow{margin:0 6px}.is-compact .graph-empty{min-height:90px}
+.is-compact .task-log-button{width:210px;height:auto;min-height:70px}
 @keyframes state-light-breathe{0%,100%{opacity:.58;transform:scale(.78);box-shadow:0 0 0 2px color-mix(in srgb,currentColor 9%,transparent)}50%{opacity:1;transform:scale(1);box-shadow:0 0 0 5px color-mix(in srgb,currentColor 15%,transparent),0 0 11px color-mix(in srgb,currentColor 36%,transparent)}}
 @keyframes running-border-breathe{0%,100%{border-color:color-mix(in srgb,var(--state-color) 58%,var(--edo-border));box-shadow:0 0 0 2px color-mix(in srgb,var(--state-color) 4%,transparent),0 8px 20px rgb(30 45 75 / 8%)}50%{border-color:var(--state-color);box-shadow:0 0 0 4px color-mix(in srgb,var(--state-color) 14%,transparent),0 0 20px color-mix(in srgb,var(--state-color) 13%,transparent),0 11px 26px rgb(30 45 75 / 12%)}}
 @media(max-width:640px){.run-graph>header{align-items:flex-start;flex-direction:column}.current-summary{align-self:flex-start}.topology-viewport{padding:12px}}

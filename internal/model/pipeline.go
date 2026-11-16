@@ -292,11 +292,14 @@ type PipelineStageTiming struct {
 }
 
 type PipelineRunGraphNode struct {
-	ID            string           `json:"id"`
-	Type          WorkflowNodeType `json:"type"`
-	Name          string           `json:"name"`
-	Environment   string           `json:"environment,omitempty"`
-	EnvironmentID string           `json:"environment_id,omitempty"`
+	ID                string           `json:"id"`
+	Type              WorkflowNodeType `json:"type"`
+	Name              string           `json:"name"`
+	Environment       string           `json:"environment,omitempty"`
+	EnvironmentID     string           `json:"environment_id,omitempty"`
+	ExecutionTaskName string           `json:"execution_task_name,omitempty"`
+	ExecutionHostName string           `json:"execution_host_name,omitempty"`
+	ExecutionHostID   string           `json:"execution_host_id,omitempty"`
 }
 
 // PipelineRunSelectedArtifact 只表示本次运行明确选择的历史或手工上传制品。

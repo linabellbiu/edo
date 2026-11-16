@@ -183,6 +183,9 @@ export interface PipelineRunGraphNode {
   id: string
   type: WorkflowNodeType
   name: string
+  execution_task_name?: string
+  execution_host_name?: string
+  execution_host_id?: string
   environment?: string
 }
 

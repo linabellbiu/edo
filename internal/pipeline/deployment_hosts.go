@@ -148,6 +148,8 @@ func (s *Service) expandDeploymentHostsForRun(ctx context.Context, db *gorm.DB, 
 				}
 				copy.Name = string(name)
 				copy.Config.ExecutionHostID = hostID
+				copy.Config.ExecutionTaskName = node.Name
+				copy.Config.ExecutionHostName = suffix
 				if copy.Config.InlineDeploymentPlan != nil && copy.Config.InlineDeploymentPlan.DeploymentTarget != nil {
 					copy.Config.InlineDeploymentPlan.DeploymentTarget.HostIDs = []string{hostID}
 					copy.Config.InlineDeploymentPlan.DeploymentTarget.HostID = hostID

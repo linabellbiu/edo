@@ -2,7 +2,7 @@ import 'ant-design-vue/dist/reset.css'
 import '/src/styles/vben.css'
 import '/src/styles/resource-list.css'
 import { createApp, h } from 'vue'
-import { ConfigProvider } from 'ant-design-vue'
+import { ConfigProvider, theme } from 'ant-design-vue'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import client from '/src/api/client'
@@ -11,6 +11,8 @@ import { useAuthStore } from '/src/stores/auth'
 import DevOpsView from '/src/views/DevOpsView.vue'
 
 const started = Date.now() - 65000
+const options = new URLSearchParams(location.search)
+const multiHost = options.has('hosts'), legacy = options.has('legacy'), dark = options.get('theme') === 'dark'
 const build = {
   id: 'build',
   name: '并行构建',
@@ -24,6 +26,18 @@ const deploy = {
   id: 'deploy',
   name: 'Compose 部署',
   tasks: [{ id: 'compose', name: '更新应用', type: 'deploy' }],
+}
+if (multiHost) {
+  deploy.name = '两项部署配置 · 三个执行项'
+  deploy.tasks = [
+    ...['ci穿透', '内网'].map((host, index) => ({
+      id: `compose-host-${index + 1}`, type: 'deploy', name: `docker-compose 部署 · ${host}`,
+      execution_host_id: `host-${index + 1}`,
+      ...(!legacy && { execution_task_name: 'docker-compose 部署', execution_host_name: host }),
+    })),
+    { id: 'kubernetes', type: 'deploy', name: 'Kubernetes 部署' },
+  ]
+  deploy.batches = [deploy.tasks.map(task => task.id)]
 }
 const initial = {
   id: 'completed',
@@ -89,7 +103,7 @@ client.defaults.adapter = async (config) => {
   const path = config.url
   let data
   if (path === '/pipeline-runs') data = { pipeline_runs: records(), total: 2 }
-  else if (path.endsWith('/tasks')) data = { tasks: ['one','two','compose'].map((id,index)=>({id:`task-${id}`,node_id:id,name:['镜像一','镜像二','更新应用'][index],status:'succeeded',stage:'completed',message:'任务已完成'})) }
+  else if (path.endsWith('/tasks')) data = { tasks: [...build.tasks, ...deploy.tasks].map(task => ({id:`task-${task.id}`,node_id:task.id,name:task.name,status:task.id==='compose-host-2'?'failed':'succeeded',stage:task.id==='compose-host-2'?'failed':'completed',message:task.id==='compose-host-2'?'隔离模拟失败':'任务已完成'})) }
   else if (path.includes('/logs?')) {
     const nodeID = new URL(path, location.origin).searchParams.get('node_id')
     data = {logs: [{id: 1,node_id:nodeID,stage:nodeID==='compose'?'deploy':'build',level:'output',message:`独立任务输出：${nodeID || '整个运行'}`,created_at:new Date().toISOString()}],status:'succeeded',next_after_id:1}
@@ -113,7 +127,7 @@ window.WebSocket = class extends EventTarget {
 
 }
 localStorage.setItem('edo.project', 'timing-preview')
-document.documentElement.dataset.theme = 'light'
+document.documentElement.dataset.theme = dark ? 'dark' : 'light'
 const pinia = createPinia(),
   auth = useAuthStore(pinia)
 auth.user = {
@@ -137,7 +151,7 @@ const router = createRouter({
 await router.push({ path: '/release-plans', query: { view: 'runs',run:'completed' } })
 createApp({
   render: () =>
-    h(ConfigProvider, null, {
+    h(ConfigProvider, { theme: { algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
       default: () => [
         h(
           'p',

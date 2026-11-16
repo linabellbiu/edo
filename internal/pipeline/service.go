@@ -1212,7 +1212,12 @@ func (s *Service) enrichPipelineRuns(ctx context.Context, runs []model.PipelineR
 			for _, stage := range snapshot.Stages {
 				graphStage := model.PipelineRunGraphStage{ID: stage.ID, Name: stage.Name, Tasks: make([]model.PipelineRunGraphNode, 0, len(stage.Tasks))}
 				for _, node := range stage.Tasks {
-					graphNode := model.PipelineRunGraphNode{ID: node.ID, Type: node.Type, Name: node.Name}
+					graphNode := model.PipelineRunGraphNode{
+						ID: node.ID, Type: node.Type, Name: node.Name,
+						ExecutionTaskName: node.Config.ExecutionTaskName,
+						ExecutionHostName: node.Config.ExecutionHostName,
+						ExecutionHostID:   node.Config.ExecutionHostID,
+					}
 					if target, ok := snapshot.DeploymentTargets[node.ID]; ok {
 						graphNode.EnvironmentID = target.EnvironmentID
 					}

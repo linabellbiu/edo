@@ -32,7 +32,9 @@ type WorkflowNodeConfig struct {
 	DeploymentOverride     *WorkflowDeploymentOverride   `json:"deployment_override,omitempty"`
 	Kubernetes             *KubernetesDeploymentSettings `json:"kubernetes,omitempty"`
 	DeploymentRegistryID   string                        `json:"deployment_registry_id,omitempty"`
-	ExecutionHostID        string                        `json:"execution_host_id,omitempty"` // 仅由运行快照生成，不接受用户指定。
+	ExecutionHostID        string                        `json:"execution_host_id,omitempty"`   // 仅由运行快照生成，不接受用户指定。
+	ExecutionTaskName      string                        `json:"execution_task_name,omitempty"` // 展开主机前的任务名称，仅由运行快照生成。
+	ExecutionHostName      string                        `json:"execution_host_name,omitempty"` // 本次执行主机的冻结名称，不读取当前主机名称。
 	ComposeSource          *WorkflowComposeSource        `json:"compose_source,omitempty"`
 	InlineBuild            *BuildPlan                    `json:"inline_build,omitempty"`
 	BuildOutputs           []WorkflowBuildOutput         `json:"build_outputs,omitempty"`

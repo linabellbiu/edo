@@ -597,6 +597,8 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 
 func sanitizeWorkflowNode(node *model.WorkflowNode, deploymentKinds ...model.DeploymentPlanKind) error {
 	node.Config.ExecutionHostID = ""
+	node.Config.ExecutionTaskName = ""
+	node.Config.ExecutionHostName = ""
 	node.Config.BuildPlatform = strings.TrimSpace(node.Config.BuildPlatform)
 	if node.Config.BuildPlatform != "" {
 		_, err := normalizeSelectedBuildPlatform(node.Config.BuildPlatform)
