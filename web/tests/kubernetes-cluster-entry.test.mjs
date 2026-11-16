@@ -5,36 +5,34 @@ import { compileScript, parse } from '@vue/compiler-sfc'
 import { baseParse } from '@vue/compiler-dom'
 import ts from 'typescript'
 import * as vue from 'vue'
-import { loadFrontend } from './acceptanceHarness.mjs'
+import { componentHarness, loadFrontend } from './acceptanceHarness.mjs'
 
 const source = readFileSync(new URL('../src/views/KubernetesView.vue', import.meta.url), 'utf8')
 const template = parse(source).descriptor.template.content
+const inventorySource = readFileSync(new URL('../src/components/ClusterInventory.vue', import.meta.url), 'utf8')
+const inventoryTemplate = parse(inventorySource).descriptor.template.content
 const entries = []
 function inspect(node, parents = []) {
-  if (node.type === 1 && node.tag === 'a-button' && node.props.some(prop => prop.type === 7 && prop.name === 'on' && prop.arg?.content === 'click' && prop.exp?.content === 'clusterDrawer=true')) entries.push({node, parents})
+  if (node.type === 1 && node.tag === 'a-button' && node.children.some(child => child.type === 2 && child.content.trim() === '接入集群')) entries.push({node, parents})
   for (const child of node.children ?? []) inspect(child, [...parents, node])
 }
-inspect(baseParse(template))
+inspect(baseParse(inventoryTemplate))
 
-test('接入集群入口位于总览内容区，不在公共工具栏中', () => {
-  const toolbar = template.match(/<PageToolbar\b[\s\S]*?<\/PageToolbar>/)?.[0]
-  if(toolbar)assert.doesNotMatch(toolbar, /k8s\.addCluster|clusterDrawer/)
-  const panel = template.match(/<section[^>]*class="resource-panel">[\s\S]*?<\/section>/)?.[0]
-  assert.ok(panel)
-  assert.match(panel, /@click="clusterDrawer=true"/)
+test('接入集群只在集群列表工具栏保留一个入口，总览不再挂载接入抽屉', () => {
   assert.equal(entries.length, 1)
+  assert.ok(entries[0].parents.some(node => node.type === 1 && node.tag === 'header' && node.props.some(prop => prop.type === 6 && prop.name === 'class' && prop.value?.content === 'cluster-toolbar')))
+  assert.doesNotMatch(source, /KubernetesClusterDrawer|clusterDrawer|接入集群/)
+  assert.match(inventoryTemplate, /<KubernetesClusterDrawer[^>]*v-model:open="createOpen"[^>]*:can-test="auth\.canAny\(\['cluster.execute'\]\)"[^>]*@created="clusterCreated"/)
+  assert.match(inventoryTemplate, /<KubernetesClusterDrawer[^>]*v-model:open="editOpen"[^>]*:cluster="editingCluster"[^>]*@saved="clusterSaved"/)
 })
 
-test('只有总览且具备创建权限时才显示接入集群入口', () => {
+test('接入入口依据创建权限显示，不要求预先添加主机或具备安装权限', () => {
   const entry = entries[0]
   assert.ok(entry)
   const condition = [...entry.parents, entry.node].flatMap(node => (node.props ?? []).filter(prop => prop.type === 7 && prop.name === 'if').map(prop => `(${prop.exp?.content})`)).join(' && ')
-  assert.ok(condition)
-  const visible = new Function('group', 'can', `return ${condition}`)
-  for (const group of ['overview', 'nodes', 'workloads', 'config', 'storage', 'network']) {
-    for (const allowed of [true, false]) {
-      assert.equal(visible(group, permission => permission === 'cluster.create' && allowed), group === 'overview' && allowed)
-    }
+  const visible = new Function('auth', `return ${condition}`)
+  for (const permissions of [[], ['cluster.read'], ['cluster.execute'], ['cluster.create'], ['cluster.create', 'cluster.execute']]) {
+    assert.equal(visible({canAny: codes => codes.some(code => permissions.includes(code))}), permissions.includes('cluster.create'))
   }
 })
 
@@ -57,13 +55,13 @@ const text = n => n.text + n.children.map(text).join('')
 const descendants = n => [n, ...n.children.flatMap(descendants)]
 function mount(t, component, props = {}) {
   const root = node('root'), app = renderer.createApp(component, props)
-  for (const name of ['a-button', 'a-input', 'a-select', 'a-empty', 'a-space', 'a-checkbox', 'a-radio-group', 'a-radio-button', 'a-alert', 'a-tag', 'a-menu-item']) {
+  for (const name of ['a-button', 'a-input', 'a-select', 'a-empty', 'a-space', 'a-checkbox', 'a-radio-group', 'a-radio-button', 'a-alert', 'a-tag', 'a-menu-item', 'a-tooltip', 'a-popover']) {
     app.component(name, { inheritAttrs: false, setup: (_p, { attrs, slots }) => () => vue.h(name === 'a-button' ? 'button' : 'div', attrs, slots.default?.()) })
   }
-  app.component('a-table', { props: ['dataSource'], setup: (p, { slots }) => () => vue.h('div', p.dataSource.length ? p.dataSource.map(record=>slots.bodyCell?.({column:{key:'name'},record})) : slots.emptyText?.()) })
+  app.component('a-table', { props: ['dataSource', 'columns'], setup: (p, { slots }) => () => vue.h('div', p.dataSource.length ? p.dataSource.flatMap(record=>p.columns.map(column=>slots.bodyCell?.({column,record}))) : slots.emptyText?.()) })
   for (const name of ['RefreshCw', 'Plus']) app.component(name, () => vue.h('svg'))
   app.mount(root); t.after(() => app.unmount())
-  return { buttons: () => descendants(root).filter(n => n.tag === 'button') }
+  return { buttons: () => descendants(root).filter(n => n.tag === 'button'), nodes: () => descendants(root), text: () => text(root) }
 }
 const canCreate = ['cluster.create', 'cluster.execute', 'cluster.update', 'cluster.read']
 test('详情抽屉保留自定义标题，普通标题仍按属性显示', t => {
@@ -93,11 +91,11 @@ function inventory(permissions, navigations = []) {
   })
 }
 
-test('真实集群列表有数据或为空时都不提供接入入口，保留刷新与创建集群', async t => {
+test('真实集群列表有数据或为空时都有唯一接入入口，保留刷新与创建集群', async t => {
   for (const clusters of [[], [{ id: 'cluster-a', name: '测试集群', hosts: [] }]]) {
     await t.test(clusters.length ? '已有集群' : '空列表', t => {
       const events = [], h = mount(t, inventory(new Set(canCreate)), { clusters, hosts: [], loading: false, onRefresh: () => events.push('refresh'), onProvision: () => events.push('provision') })
-      assert.equal(h.buttons().some(button => text(button) === '接入集群'), false)
+      assert.equal(h.buttons().filter(button => text(button) === '接入集群').length, 1)
       const refresh = h.buttons().find(button => text(button) === '刷新'), provision = h.buttons().find(button => text(button) === '创建集群')
       assert.ok(refresh); assert.ok(provision)
       assert.equal(h.buttons().filter(button => text(button) === '创建集群').length, 1)
@@ -107,19 +105,34 @@ test('真实集群列表有数据或为空时都不提供接入入口，保留�
   }
 })
 
-test('集群名称进入准确总览；无资源权限或停用时保留详情入口', t => {
-  for(const [readResources,active] of [[true,true],[false,true],[true,false]]){
+test('集群名称只在启用且有资源权限时进入准确总览，其余情况不跳转详情', t => {
+  for(const [readResources,active] of [[true,true],[false,true],[true,false],[false,false]]){
     const navigations=[],permissions=new Set(['cluster.read',...(readResources?['kubernetes.node.read']:[])])
     const cluster={id:'cluster-target',name:'目标集群',is_active:active,hosts:[]}
     const h=mount(t,inventory(permissions,navigations),{clusters:[cluster],hosts:[],loading:false})
-    const name=h.buttons().find(button=>text(button)==='目标集群');assert.ok(name);name.props.onClick()
-    assert.deepEqual(navigations.at(-1),readResources&&active
-      ?{kind:'push',route:{path:'/kubernetes',query:{cluster:'cluster-target',view:'overview'}}}
-      :{kind:'replace',route:{path:'/hosts',query:{view:'clusters',cluster:'cluster-target'}}})
+    const name=h.buttons().find(button=>text(button)==='目标集群')
+    if(readResources&&active){
+      assert.ok(name)
+      assert.equal(name.props['aria-label'],'目标集群 · 集群总览')
+      name.props.onClick()
+    }else{
+      assert.equal(name,undefined)
+      const readonly=h.nodes().find(n=>n.tag==='strong'&&text(n)==='目标集群')
+      assert.ok(readonly)
+      assert.match(readonly.props.class,/readonly-name/)
+      assert.equal(String(readonly.props.tabindex),'0')
+      assert.equal(readonly.props.onClick,undefined)
+      assert.equal(readonly.parent.props.title,'目标集群')
+      assert.deepEqual(readonly.parent.props.trigger,['hover','focus','click'])
+    }
+    assert.deepEqual(navigations,readResources&&active
+      ?[{kind:'push',route:{path:'/kubernetes',query:{cluster:'cluster-target',view:'overview'}}}]
+      :[])
+    assert.equal(h.buttons().some(button=>text(button)==='详情'), false)
   }
 })
 
-test('真实集群列表没有创建权限时不显示安装入口', t => {
+test('真实集群列表没有创建权限时不显示安装或接入入口', t => {
   const h = mount(t, inventory(new Set(['cluster.read'])), { clusters: [], hosts: [], loading: false })
   assert.deepEqual(h.buttons().map(text), ['刷新'])
 })
@@ -127,18 +140,77 @@ test('真实集群列表没有创建权限时不显示安装入口', t => {
 const heading = baseParse(template).children.flatMap(function visit(n) { return n.type === 1 && n.props.some(p => p.type === 6 && p.name === 'class' && p.value?.content === 'resource-panel-heading') ? [n] : (n.children ?? []).flatMap(visit) })[0]
 const OverviewHeading = compile(`<script setup lang="ts">
 import {ref,toRefs} from 'vue'
-const props=defineProps<{state:any}>(),{group,can,clusterDrawer}=toRefs(props.state)
+const props=defineProps<{state:any}>(),{group,can}=toRefs(props.state)
 const types=[],activeType=undefined,contextDisabled=false,nodeView='list',loading=false,overviewLoading=false,topologyLoading=false,cluster='',clusterInfo=undefined,autoRefresh=ref(false),clusterRbacOpen=ref(false),joinOpen=ref(false)
 const auth={canAny:()=>false},t=(key:string)=>key,refreshAll=()=>{},openProvision=()=>{},setNodeView=()=>{},selectResource=()=>{},resourceTabKey=()=>{},edit=()=>{}
 </script><template>${heading.loc.source}</template>`)
 
-test('真实总览内容的接入入口随页面和创建权限变化，点击只打开接入抽屉', async t => {
-  const state = vue.reactive({ group: 'overview', can: permission => permission === 'cluster.create', clusterDrawer: false }), h = mount(t, OverviewHeading, { state })
-  const entry = () => h.buttons().filter(button => text(button) === '接入集群')
-  assert.equal(entry().length, 1); entry()[0].props.onClick(); assert.equal(state.clusterDrawer, true)
-  state.can = () => false; await vue.nextTick(); assert.equal(entry().length, 0)
-  state.can = permission => permission === 'cluster.create'
-  for (const group of ['nodes', 'workloads', 'config', 'storage', 'network']) {
-    state.group = group; await vue.nextTick(); assert.equal(entry().length, 0)
+test('真实总览及其他资源页面均没有接入入口', async t => {
+  const state = vue.reactive({ group: 'overview', can: () => true }), h = mount(t, OverviewHeading, { state })
+  for (const group of ['overview', 'nodes', 'workloads', 'config', 'storage', 'network']) {
+    state.group = group; await vue.nextTick()
+    assert.equal(h.buttons().some(button => text(button) === '接入集群'), false)
   }
+})
+
+test('集群列表直接呈现连接信息及主机关联，不再保留详情抽屉或详情动作', t => {
+  assert.doesNotMatch(inventorySource, /ResourceDetailDrawer|function openDetails|function closeDetails|@click="openDetails\(/)
+  assert.doesNotMatch(inventoryTemplate, />详情<|集群详情/)
+  const cluster={id:'standalone',name:'独立集群',api_server:'https://cluster.example:6443',default_namespace:'default',is_active:true,hosts:[]}
+  const h=mount(t,inventory(new Set(canCreate)),{clusters:[cluster],hosts:[],loading:false})
+  assert.match(h.text(), /独立集群/)
+  assert.match(h.text(), /https:\/\/cluster\.example:6443/)
+  assert.match(h.text(), /未关联主机/)
+  assert.equal(h.buttons().some(button=>text(button)==='详情'), false)
+})
+
+test('接入表单独立于编辑抽屉，接入成功刷新列表且不导航到详情', async t => {
+  const permissions=['cluster.create','cluster.execute']
+  const h=componentHarness('../src/components/ClusterInventory.vue', {
+    codes:permissions, props:vue.reactive({clusters:[],hosts:[],loading:false}),
+    modules:{
+      '@/utils/resourceList':loadFrontend('../src/utils/resourceList.ts',{vue,'vue-i18n':{useI18n:()=>({t:key=>key})}}),
+      '@/utils/infrastructureRelations':loadFrontend('../src/utils/infrastructureRelations.ts'),
+    },
+  })
+  t.after(h.stop)
+  assert.equal(h.state.createOpen.value,false)
+  assert.equal(h.state.editOpen.value,false)
+  const entry=entries[0].node.props.find(prop=>prop.type===7&&prop.name==='on'&&prop.arg?.content==='click')?.exp?.content
+  if(entry==='createOpen=true')h.state.createOpen.value=true
+  else { assert.equal(entry,'openCreate');h.state.openCreate() }
+  assert.equal(h.state.createOpen.value,true)
+  assert.equal(h.state.editOpen.value,false)
+  h.state.clusterCreated({id:'new-independent',name:'独立接入'})
+  await vue.nextTick()
+  assert.deepEqual(h.events.map(event=>event.name),['refresh'])
+  assert.deepEqual(h.replacements,[])
+})
+
+test('零主机接入仍先测试当前草稿，通过后创建且不提交主机关联', async t => {
+  const cluster={id:'new-independent',name:'直接接入',api_server:'https://isolated.example:6443',default_namespace:'default',is_active:true}
+  const h=componentHarness('../src/components/KubernetesClusterDrawer.vue',{
+    codes:['cluster.create','cluster.execute'],
+    props:vue.reactive({open:true,canTest:true,canAssociate:false,hosts:[],clusters:[]}),
+    globals:{localStorage:{getItem:()=>''}},
+    api:{post:async(path)=>path==='/kubernetes/clusters/test'?{data:{api_server:cluster.api_server,version:'v1.35.5'}}:{data:{cluster}}},
+  })
+  t.after(h.stop)
+  Object.assign(h.state.form,{name:cluster.name,kubeconfig:'隔离验收专用配置'})
+  await h.state.submit()
+  assert.equal(h.requests.length,0)
+  await h.state.testConnection()
+  assert.equal(h.state.connectionTested.value,true)
+  await h.state.submit()
+  assert.deepEqual(h.requests.map(({method,path})=>({method,path})),[
+    {method:'post',path:'/kubernetes/clusters/test'},
+    {method:'post',path:'/kubernetes/clusters'},
+  ])
+  for(const request of h.requests){
+    assert.deepEqual(request.body,{name:cluster.name,mode:'kubeconfig',default_namespace:'default',kubeconfig:'隔离验收专用配置'})
+    assert.equal('host_ids' in request.body,false)
+  }
+  assert.deepEqual(h.events.map(event=>event.name),['created','update:open'])
+  assert.equal(h.events[0].args[0].id,cluster.id)
+  assert.equal(h.events[1].args[0],false)
 })

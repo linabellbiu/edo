@@ -133,20 +133,36 @@ test('更换文件的迟到读取不能覆盖新目标，切回保留模式清�
   }finally{h.dispose();globalThis.FileReader=previousReader}
 })
 
-test('集群编辑动作只接受当前列表对象，保存后清除旧连接状态并刷新而不关闭详情',()=>{
+test('集群列表编辑核对当前对象，准确保存后只清理目标连接状态并刷新',async()=>{
   const props=vue.reactive({clusters:[target()],hosts:[],loading:false}),resourceList=loadFrontend('../src/utils/resourceList.ts',{vue,'vue-i18n':{useI18n:()=>({t:key=>key})}})
   const h=componentHarness('../src/components/ClusterInventory.vue',{props,codes:['cluster.update'],modules:{'@/utils/resourceList':resourceList,'@/utils/infrastructureRelations':loadFrontend('../src/utils/infrastructureRelations.ts')}})
-  h.state.editCluster(target('missing'));assert.equal(h.state.editOpen.value,false)
-  h.state.editCluster(target());assert.equal(h.state.editOpen.value,true);assert.equal(h.state.editingCluster.value.id,'cluster-a')
-  h.state.detailOpen.value=true;h.state.connection['cluster-a']={ok:true};h.state.clusterSaved(target())
-  assert.equal('cluster-a' in h.state.connection,false);assert.equal(h.events.at(-1).name,'refresh');assert.equal(h.state.detailOpen.value,true)
-  h.auth.permissions.delete('cluster.update');h.state.editOpen.value=false;h.state.editCluster(target());assert.equal(h.state.editOpen.value,false);h.stop()
+  try{
+    h.state.editCluster(target('missing'));assert.equal(h.state.editOpen.value,false)
+    h.state.editCluster({...target(),name:'迟到点击携带的旧名称'})
+    assert.equal(h.state.editOpen.value,true);assert.equal(h.state.editingCluster.value,props.clusters[0]);assert.equal(h.state.editingCluster.value.name,'集群-cluster-a')
+    h.state.connection['cluster-a']={ok:true};h.state.connection['cluster-b']={ok:true}
+    h.state.clusterSaved(target('cluster-b'))
+    assert.equal(h.events.length,0);assert.equal(h.state.connection['cluster-a'].ok,true);assert.equal(h.state.connection['cluster-b'].ok,true)
+    h.state.clusterSaved(target())
+    assert.equal('cluster-a' in h.state.connection,false);assert.equal(h.state.connection['cluster-b'].ok,true)
+    assert.deepEqual(h.events.map(event=>event.name),['refresh']);assert.equal(h.state.editOpen.value,true)
+    props.clusters=[{...target(),name:'服务端更新后的名称'}];await vue.nextTick()
+    assert.equal(h.state.editingCluster.value,props.clusters[0]);assert.equal(h.state.editingCluster.value.name,'服务端更新后的名称')
+    props.clusters=[];await vue.nextTick()
+    assert.equal(h.state.editOpen.value,false);assert.equal(h.state.editingCluster.value,undefined)
+    props.clusters=[target()];props.error='列表读取失败';await vue.nextTick()
+    h.state.editCluster(target());assert.equal(h.state.editOpen.value,false)
+    props.error=undefined;h.auth.permissions.delete('cluster.update');h.state.editCluster(target());assert.equal(h.state.editOpen.value,false)
+  }finally{h.stop()}
 })
 
-test('真实集群列表与详情同时提供update权限的编辑入口，复用同一编辑抽屉',()=>{
+test('真实集群列表直接提供唯一编辑入口，权限与连接测试边界继续交给原编辑抽屉',()=>{
   const source=readFileSync(new URL('../src/components/ClusterInventory.vue',import.meta.url),'utf8'),{descriptor}=parse(source)
   assert.equal(compileTemplate({id:'cluster-edit-entry',source:descriptor.template.content}).errors.length,0)
-  for(const context of ['more','actions'])assert.match(descriptor.template.content,new RegExp(`<template[^>]*#${context}[^>]*>[^]*?@click="editCluster\\((?:record|selected)\\)"`))
-  assert.match(descriptor.template.content,/v-if="auth\.canAny\(\['cluster.update'\]\)"[^>]*@click="editCluster\(/)
+  assert.equal((descriptor.template.content.match(/@click="editCluster\(record\)"/g)??[]).length,1)
+  assert.match(descriptor.template.content,/<a-button\b[^>]*v-if="auth\.canAny\(\['cluster.update'\]\)"[^>]*@click="editCluster\(record\)"/)
+  const more=descriptor.template.content.match(/<template\s+#more>[\s\S]*?<\/template>/)?.[0]??''
+  assert.doesNotMatch(more,/editCluster\(/)
+  assert.doesNotMatch(descriptor.template.content,/ResourceDetailDrawer|@click="openDetails\(/)
   assert.match(descriptor.template.content,/<KubernetesClusterDrawer[^>]*v-model:open="editOpen"[^>]*:cluster="editingCluster"[^>]*:can-test="auth\.canAny\(\['cluster.execute'\]\)"[^>]*@saved="clusterSaved"/)
 })

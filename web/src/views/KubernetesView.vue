@@ -27,7 +27,6 @@ import KubeNodeTopology from '@/components/KubeNodeTopology.vue'
 import { getClusterNodeTopology } from '@/api/kubernetesTopology'
 import type { NodeTopologyData } from '@/utils/kubernetesTopology'
 import KubeNodeMonitor from '@/components/KubeNodeMonitor.vue'
-import KubernetesClusterDrawer from '@/components/KubernetesClusterDrawer.vue'
 import K3sProvisionDrawer from '@/components/K3sProvisionDrawer.vue'
 import type { K3sInstallation } from '@/api/k3s'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
@@ -85,7 +84,6 @@ const types = computed(() => kubeTypes.filter(item=>item.group===group.value && 
 const activeType = computed(() => types.value.find(item=>item.resource===route.query.resource) ?? types.value[0])
 const namespaceScoped = computed(() => group.value==='overview'||Boolean(activeType.value?.namespaced))
 const showResourceToolbar = computed(()=>fromOverview.value
-  ||group.value==='overview'&&can('cluster.create')
   ||group.value==='nodes'&&can('kubernetes.node.create')
   ||group.value!=='overview'&&Boolean(activeType.value?.create&&can(`${activeType.value.permission}.create`)))
 const clusters = ref<KubeCluster[]>([]), cluster = ref(''), namespaces = ref<string[]>([]), selectedNamespaces = ref<string[]>(namespaceSelection(route.query.namespace)), namespaceLoading=ref(false), namespaceError=ref('')
@@ -119,7 +117,7 @@ const workloadDetail=computed(()=>detailType.value?.group==='workloads')
 const workloadExplorer=computed(()=>workloadDetail.value&&detail.value?.kind!=='Pod')
 const needsRelatedPods=computed(()=>hasRelatedPods.value&&(detailTab.value==='pods'||workloadExplorer.value&&detailTab.value==='basic'))
 const detailPresented=computed(()=>detailOpen.value&&!editorOpen.value&&!yamlOpen.value&&!stream.value.open)
-const secretValues = ref<Record<string,string>>(), editorOpen = ref(false), editorLoading=ref(false), editorContext = ref<{cluster:string;namespace:string;type:KubeType;object?:KubeObject}>(), clusterDrawer = ref(false)
+const secretValues = ref<Record<string,string>>(), editorOpen = ref(false), editorLoading=ref(false), editorContext = ref<{cluster:string;namespace:string;type:KubeType;object?:KubeObject}>()
 const stream = ref({open:false,terminal:false,path:'',title:''}), scaleOpen=ref(false), scaleValue=ref(1), scaleTarget=ref<{object:KubeObject;type:KubeType;cluster:string}>(), selectedContainer=ref<Record<string,string>>({})
 let clusterRevision=0,clusterController:AbortController|undefined,namespaceRevision=0,namespaceController:AbortController|undefined,lastNamespaceRefresh=0
 let revision=0, detailRevision=0, controller:AbortController|undefined,detailController:AbortController|undefined, timer:ReturnType<typeof setInterval>|undefined, mounted=true
@@ -559,8 +557,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         <h3 v-else>{{ t(group==='overview'?'k8s.overview':activeType?`k8s.type_${activeType.resource}`:'k8s.resources') }}</h3>
       <a-radio-group v-if="group==='nodes'&&activeType?.resource==='nodes'" :value="nodeView" :disabled="contextDisabled" :aria-label="t('k8sTopology.nodeView')" size="small" button-style="solid" @change="setNodeView($event.target.value)"><a-radio-button value="list">{{ t('k8sTopology.list') }}</a-radio-button><a-radio-button value="topology">{{ t('k8sTopology.mapView') }}</a-radio-button></a-radio-group>
       <div class="resource-heading-refresh"><a-checkbox v-model:checked="autoRefresh">{{ t('k8s.autoRefresh') }}</a-checkbox><a-button :loading="loading||overviewLoading||topologyLoading" @click="refreshAll"><RefreshCw :size="14" />{{ t('k8s.refresh') }}</a-button></div>
-        <template v-if="group==='overview'&&can('cluster.create')"><a-button @click="clusterDrawer=true">接入集群</a-button></template>
-        <template v-else-if="group==='nodes'&&can('kubernetes.node.create')"><a-button :disabled="!cluster||!clusterInfo?.is_active" @click="joinOpen=true">生成加入命令</a-button><a-button v-if="can('cluster.execute')&&can('cluster.update')&&auth.canAny(['cluster.read','deployment.read'])" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="openProvision('join')"><Plus :size="14" />{{ t('k8s.addNode') }}</a-button></template>
+        <template v-if="group==='nodes'&&can('kubernetes.node.create')"><a-button :disabled="!cluster||!clusterInfo?.is_active" @click="joinOpen=true">生成加入命令</a-button><a-button v-if="can('cluster.execute')&&can('cluster.update')&&auth.canAny(['cluster.read','deployment.read'])" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="openProvision('join')"><Plus :size="14" />{{ t('k8s.addNode') }}</a-button></template>
         <a-button v-else-if="group!=='overview'&&activeType?.create&&can(`${activeType.permission}.create`)" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="edit()"><Plus :size="14" />{{ t('k8s.create') }}{{ t(`k8s.type_${activeType.resource}`) }}</a-button>
       </div>
       <template v-if="group==='overview'"><a-empty v-if="cluster&&!selectedNamespaces.length" :description="t('k8s.selectNamespaces')" class="workspace-empty"/><KubeOverview :data="overview" :loading="overviewLoading" :error="overviewError" @select="selectResource" /><a-empty v-if="!cluster&&!overviewLoading" :description="t('k8s.noCluster')" class="workspace-empty" /></template>
@@ -638,7 +635,6 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
     </ResourceDetailDrawer>
     <KubeResourceEditor v-if="editorContext" ref="editorRef" :return-to-details="detailOpen" v-model:open="editorOpen" :cluster="editorContext.cluster" :namespace="editorContext.namespace" :type="editorContext.type" :object="editorContext.object" @saved="saved" />
     <KubeYamlDrawer v-if="yamlContext" ref="yamlRef" v-model:open="yamlOpen" :cluster="yamlContext.cluster" :type="yamlContext.type" :object="yamlContext.object" :allowed="can(`${yamlContext.type.permission}.update`)" @saved="saved" />
-    <KubernetesClusterDrawer v-model:open="clusterDrawer" :can-test="can('cluster.execute')" @created="async item=>{await loadClusters();cluster=item.id}" />
     <KubeNodeJoinDrawer v-model:open="joinOpen" :cluster="cluster" :endpoint="clusterInfo?.api_server??''" />
     <K3sProvisionDrawer v-model:open="provisionOpen" :action="provisionAction" :cluster="provisionAction==='join'?cluster:''" :endpoint="provisionAction==='join'?clusterInfo?.api_server??'':''" @completed="provisionCompleted" />
     <a-modal :open="Boolean(nodeRemoval)" :title="t('k8s.removeNode')" :confirm-loading="Boolean(busy)" :ok-text="nodeRemovalResult?.status==='succeeded'?'关闭':t('k8s.removeNode')" :cancel-text="t('k8s.cancel')" :cancel-button-props="{style:nodeRemovalResult?.status==='succeeded'?{display:'none'}:undefined}" :ok-button-props="{danger:nodeRemovalResult?.status!=='succeeded',disabled:nodeRemovalResult?.status!=='succeeded'&&(!can('kubernetes.node.delete')||!agentStopped||nodeName!==nodeRemoval?.object.metadata.name)}" :closable="!busy" :mask-closable="!busy" @cancel="!busy&&(nodeRemoval=undefined)" @ok="removeNode"><a-alert type="warning" show-icon :message="t('k8s.removeNodeHint')" /><p class="node-removal-context">{{ clusterInfo?.name }} / {{ nodeRemoval?.object.metadata.name }}</p><a-alert v-if="nodeRemovalResult" class="node-removal-result" :type="nodeRemovalResult.status==='succeeded'?'success':nodeRemovalResult.status==='failed'?'error':'info'" show-icon :message="nodeRemovalResult.message" role="status" /><template v-if="nodeRemovalResult?.status!=='succeeded'"><p>{{ t('k8s.removeBlocked') }}</p><a-checkbox v-model:checked="agentStopped" :disabled="Boolean(busy)">{{ t('k8s.agentStopped') }}</a-checkbox><a-form-item :label="t('k8s.typeNodeName')" class="node-removal-name"><a-input v-model:value="nodeName" :placeholder="nodeRemoval?.object.metadata.name" :disabled="Boolean(busy)" /></a-form-item></template></a-modal>

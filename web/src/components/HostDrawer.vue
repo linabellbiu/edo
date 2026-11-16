@@ -37,7 +37,6 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
-  'create-cluster': []
   saved: []
   'update:open': [value: boolean]
 }>()
@@ -414,7 +413,6 @@ onBeforeUnmount(clearCredentials)
                 placeholder="选择已有集群"
                 :options="clusters.filter(item => item.is_active).map(item => ({ value: item.id, label: item.name }))"
               />
-              <a-button style="width:34px;padding:0" aria-label="创建 Kubernetes 集群" title="创建 Kubernetes 集群" @click="emit('create-cluster')">＋</a-button>
             </div>
             <div class="field-hint">测试时核对主机与集群节点信息，不匹配无法关联。</div>
           </a-form-item>

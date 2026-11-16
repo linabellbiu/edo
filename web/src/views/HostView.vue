@@ -1028,7 +1028,7 @@ onBeforeUnmount(() => {
       </template>
     </a-drawer>
 
-    <HostDrawer v-model:open="drawerOpen" :host="editingHost" :clusters="clusters" :can-test="auth.canAny(['cluster.execute'])" @create-cluster="clusterCreateOpen = true" @saved="hostSaved" />
+    <HostDrawer v-model:open="drawerOpen" :host="editingHost" :clusters="clusters" :can-test="auth.canAny(['cluster.execute'])" @saved="hostSaved" />
     <KubernetesClusterDrawer v-model:open="clusterCreateOpen" :hosts="hosts" :clusters="clusters" :can-associate="auth.canAny(['cluster.update']) && canReadHosts && !hostLoadError && !clusterLoadError" :can-test="auth.canAny(['cluster.execute'])" @created="clusterCreated" />
     <K3sProvisionDrawer v-model:open="clusterProvisionOpen" :hosts="hosts" @completed="clusterProvisionCompleted" />
     <K3sUninstallDrawer v-model:open="k3sUninstallOpen" :host="k3sUninstallHost" @completed="refresh" />
