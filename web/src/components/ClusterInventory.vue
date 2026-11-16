@@ -13,6 +13,8 @@ import KubeHostRoleBadge from '@/components/KubeHostRoleBadge.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
+import ClusterConnectionScope from '@/components/ClusterConnectionScope.vue'
+import ClusterConnectionBadge from '@/components/ClusterConnectionBadge.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useResourceList } from '@/utils/resourceList'
 import { hostsForCluster } from '@/utils/infrastructureRelations'
@@ -31,7 +33,8 @@ const editOpen = ref(false)
 const editingCluster = ref<InfrastructureCluster>()
 const rbacCluster=ref(''),rbacOpen=ref(false)
 function openRbac(cluster:InfrastructureCluster){if(!auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update']))return;rbacCluster.value=cluster.id;rbacOpen.value=true}
-const checking = ref('')
+const checking = reactive(new Set<string>())
+const connectionRevision = ref(0)
 const updating = ref('')
 let mounted = true
 const connection = reactive<Record<string, { ok: boolean; version?: string; error?: string }>>({})
@@ -51,12 +54,18 @@ const { selected, detailOpen, pagination, changePage, openDetails: reveal } = us
   () => filtered.value,
   () => typeof route.query.cluster === 'string' ? route.query.cluster : '',
 )
+const connectionClusters = computed(() => {
+  const { current, pageSize } = pagination.value
+  const visible = filtered.value.slice((current - 1) * pageSize, current * pageSize)
+  if (detailOpen.value && selected.value && !visible.some(cluster => cluster.id === selected.value?.id)) visible.push(selected.value)
+  return visible
+})
 const columns = [
   { title: '集群名称', key: 'name', width: 220 },
   { title: 'API 地址', dataIndex: 'api_server', key: 'api_server', width: 270 },
   { title: '关联主机', key: 'hosts', width: 250 },
   { title: '默认命名空间', dataIndex: 'default_namespace', key: 'namespace', width: 150 },
-  { title: '状态', key: 'status', width: 130 },
+  { title: '连接状态', key: 'status', width: 190 },
   { title: '操作', key: 'actions', width: 160, fixed: 'right' as const },
 ]
 
@@ -108,8 +117,8 @@ function unknownAssociationLabel() {
   return props.hostError ? '主机关联读取失败' : !canReadHosts.value ? '无主机查看权限' : '暂无法查看关联'
 }
 async function ping(cluster: InfrastructureCluster) {
-  if (checking.value || !cluster.is_active || !auth.canAny(['cluster.execute'])) return
-  checking.value = cluster.id
+  if (checking.has(cluster.id) || !cluster.is_active || !auth.canAny(['cluster.execute'])) return
+  checking.add(cluster.id)
   try {
     const { data } = await client.post<{ version: string }>(`/kubernetes/clusters/${encodeURIComponent(cluster.id)}/ping`)
     if (!mounted) return
@@ -121,7 +130,8 @@ async function ping(cluster: InfrastructureCluster) {
     connection[cluster.id] = { ok: false, error: detail }
     message.error(detail)
   } finally {
-    checking.value = ''
+    checking.delete(cluster.id)
+    connectionRevision.value++
   }
 }
 async function toggle(cluster: InfrastructureCluster) {
@@ -152,6 +162,7 @@ onBeforeUnmount(() => { mounted = false })
 </script>
 
 <template>
+  <ClusterConnectionScope :clusters="connectionClusters" :revision="connectionRevision" :enabled="!error" v-slot="{ statuses, error: connectionError, pending: connectionPending, refresh: refreshConnections }">
   <div class="cluster-inventory vben-card">
     <header class="cluster-toolbar">
       <div class="cluster-count"><strong>全部集群</strong><small>{{ filtered.length }} 个集群</small></div>
@@ -159,25 +170,26 @@ onBeforeUnmount(() => { mounted = false })
         <a-input v-model:value="query" allow-clear placeholder="搜索集群、API 地址或主机" aria-label="搜索集群"><template #prefix><Search :size="15" /></template></a-input>
         <a-select v-model:value="association" :disabled="!canFilterAssociations" aria-label="按主机关联筛选" :options="[{ label: '全部集群', value: 'all' }, { label: '已关联主机', value: 'linked' }, { label: '未关联主机', value: 'standalone' }]" />
       </div>
-      <div class="cluster-toolbar-actions"><a-button :loading="loading" @click="emit('refresh')"><RefreshCw :size="15" />刷新</a-button><a-button v-if="canCreateK3s" type="primary" @click="emit('provision')"><Plus :size="15" />创建集群</a-button></div>
+      <div class="cluster-toolbar-actions"><a-button :loading="loading" @click="emit('refresh');refreshConnections()"><RefreshCw :size="15" />刷新</a-button><a-button v-if="canCreateK3s" type="primary" @click="emit('provision')"><Plus :size="15" />创建集群</a-button></div>
     </header>
     <a-alert v-if="error" class="cluster-load-error" type="error" show-icon message="集群列表加载失败" :description="error"><template #action><a-button size="small" @click="emit('refresh')">重试</a-button></template></a-alert>
+    <div v-if="connectionError" class="connection-load-error" role="status"><span>连接状态读取失败：{{ connectionError }}</span><a-button size="small" type="link" :loading="connectionPending" @click="refreshConnections()">重试</a-button></div>
     <a-table :columns="columns" :data-source="filtered" :loading="loading" :pagination="pagination" :scroll="{ x: 1220 }" class="resource-list-table" row-key="id" size="middle" @change="changePage">
       <template #bodyCell="{ column, record }: { column: { key: string }, record: InfrastructureCluster }">
         <template v-if="column.key === 'name'"><button type="button" class="cluster-name" :aria-label="`${record.name} · ${canManageResources&&record.is_active?'集群总览':'集群详情'}`" @click="openCluster(record)"><span class="cluster-icon"><RuntimeBrandIcon kind="kubernetes" /></span><strong>{{ record.name }}</strong></button></template>
         <template v-else-if="column.key === 'api_server'"><code class="api-address">{{ record.api_server }}</code></template>
         <template v-else-if="column.key === 'hosts'"><span v-if="!associationKnown(record)" class="muted">{{ unknownAssociationLabel() }}</span><div v-else-if="hostsForCluster(record, hosts).length" class="linked-hosts"><button v-for="host in hostsForCluster(record, hosts)" :key="host.id" type="button" class="host-link" :disabled="!canOpenHost(host)" @click="openHost(host)"><Server :size="13" />{{ host.name }}<KubeHostRoleBadge :cluster="record.id" :host="host.id" /></button></div><span v-else class="muted">未关联主机</span></template>
-        <template v-else-if="column.key === 'status'"><a-tag v-if="!record.is_active">已停用</a-tag><span v-else-if="connection[record.id]" class="connection-state" :class="{ failed: !connection[record.id]?.ok }" :title="connection[record.id]?.error"><i />{{ connection[record.id]?.ok ? '连接正常' : '连接失败' }}</span><a-tag v-else color="success">已启用</a-tag></template>
-        <template v-else-if="column.key === 'actions'"><ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.execute','kubernetes.rbac.read','kubernetes.rbac.update'])"><a-button size="small" @click="openDetails(record)">详情</a-button><template #more><a-menu-item v-if="auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update'])" :disabled="!record.is_active" @click="openRbac(record)">集群授权</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.update'])" @click="editCluster(record)"><Pencil :size="13" />编辑集群</a-menu-item><a-menu-item v-if="canEditAssociations" :disabled="!associationKnown(record)" @click="associate(record)">关联主机</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.execute'])" :disabled="!record.is_active || Boolean(checking)" @click="ping(record)">测试连接</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.update'])" :disabled="Boolean(updating)" @click="toggle(record)">{{ record.is_active ? '停用集群' : '启用集群' }}</a-menu-item></template></ResourceRowActions></template>
+        <template v-else-if="column.key === 'status'"><div class="cluster-status"><ClusterConnectionBadge :cluster="record" :connection="statuses[record.id]" /><span v-if="record.is_active && ['unreachable','restricted'].includes(statuses[record.id]?.status)" class="connection-reason">{{ statuses[record.id]?.message }}</span></div></template>
+        <template v-else-if="column.key === 'actions'"><ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.execute','kubernetes.rbac.read','kubernetes.rbac.update'])"><a-button size="small" @click="openDetails(record)">详情</a-button><template #more><a-menu-item v-if="auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update'])" :disabled="!record.is_active" @click="openRbac(record)">集群授权</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.update'])" @click="editCluster(record)"><Pencil :size="13" />编辑集群</a-menu-item><a-menu-item v-if="canEditAssociations" :disabled="!associationKnown(record)" @click="associate(record)">关联主机</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.execute'])" :disabled="!record.is_active || checking.has(record.id)" @click="ping(record)">测试连接</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.update'])" :disabled="Boolean(updating)" @click="toggle(record)">{{ record.is_active ? '停用集群' : '启用集群' }}</a-menu-item></template></ResourceRowActions></template>
       </template>
       <template #emptyText><a-empty :description="error ? '集群列表加载失败' : query || association !== 'all' ? '没有匹配的集群' : '暂无 Kubernetes 集群'"></a-empty></template>
     </a-table>
 
     <ResourceDetailDrawer :open="detailOpen" @close="closeDetails" @update:open="detailOpen = $event">
-      <template #title><div v-if="selected" class="cluster-detail-title"><span class="cluster-icon"><RuntimeBrandIcon kind="kubernetes" /></span>{{ selected.name }}<a-tag :color="selected.is_active ? 'success' : undefined">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag></div></template>
-      <template v-if="selected" #actions><a-space><a-button v-if="canManageResources" type="primary" :disabled="!selected.is_active" @click="manage(selected)">查看总览<ArrowUpRight :size="14" /></a-button><a-button v-if="auth.canAny(['cluster.update'])" @click="editCluster(selected)"><Pencil :size="14" />编辑</a-button><a-button v-if="auth.canAny(['cluster.execute'])" :loading="checking === selected.id" :disabled="!selected.is_active" @click="ping(selected)">测试连接</a-button></a-space></template>
+      <template #title><div v-if="selected" class="cluster-detail-title"><span class="cluster-icon"><RuntimeBrandIcon kind="kubernetes" /></span>{{ selected.name }}<a-tag>{{ selected.is_active ? '已启用' : '已停用' }}</a-tag><ClusterConnectionBadge v-if="selected.is_active" :cluster="selected" :connection="statuses[selected.id]" /></div></template>
+      <template v-if="selected" #actions><a-space><a-button v-if="canManageResources" type="primary" :disabled="!selected.is_active" @click="manage(selected)">查看总览<ArrowUpRight :size="14" /></a-button><a-button v-if="auth.canAny(['cluster.update'])" @click="editCluster(selected)"><Pencil :size="14" />编辑</a-button><a-button v-if="auth.canAny(['cluster.execute'])" :loading="checking.has(selected.id)" :disabled="!selected.is_active" @click="ping(selected)">测试连接</a-button></a-space></template>
       <template v-if="selected">
-        <section class="resource-detail-section"><h4>集群信息</h4><dl class="resource-facts"><div class="resource-facts-wide"><dt>API 地址</dt><dd><code>{{ selected.api_server }}</code></dd></div><div><dt>默认命名空间</dt><dd>{{ selected.default_namespace }}</dd></div><div><dt>接入方式</dt><dd>kubeconfig</dd></div><div><dt>更新时间</dt><dd>{{ formatDateTime(selected.updated_at, 'zh-CN') }}</dd></div><div v-if="connection[selected.id]?.version"><dt>Kubernetes</dt><dd>{{ connection[selected.id]?.version }}</dd></div></dl></section>
+        <section class="resource-detail-section"><h4>集群信息</h4><dl class="resource-facts"><div class="resource-facts-wide"><dt>API 地址</dt><dd><code>{{ selected.api_server }}</code></dd></div><div><dt>默认命名空间</dt><dd>{{ selected.default_namespace }}</dd></div><div><dt>接入方式</dt><dd>kubeconfig</dd></div><div v-if="selected.is_active && statuses[selected.id]?.message" class="resource-facts-wide"><dt>连接状态</dt><dd>{{ statuses[selected.id]?.message }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDateTime(selected.updated_at, 'zh-CN') }}</dd></div><div v-if="connection[selected.id]?.version"><dt>Kubernetes</dt><dd>{{ connection[selected.id]?.version }}</dd></div></dl></section>
         <section class="resource-detail-section"><header><h4>关联主机 <span v-if="associationKnown(selected)" class="muted">{{ hostsForCluster(selected, hosts).length }}</span></h4><a-button v-if="canEditAssociations && associationKnown(selected)" size="small" @click="associate(selected)"><Link2 :size="14" />关联主机</a-button></header><p v-if="!associationKnown(selected)" class="muted">{{ unknownAssociationLabel() }}</p><div v-else-if="hostsForCluster(selected, hosts).length" class="detail-hosts"><button v-for="host in hostsForCluster(selected, hosts)" :key="host.id" type="button" :disabled="!canOpenHost(host)" @click="openHost(host)"><Server :size="17" /><span><strong>{{ host.name }}</strong><small>{{ host.address }}</small><KubeHostRoleBadge :cluster="selected.id" :host="host.id" /></span><a-tag v-if="!host.is_active">已停用</a-tag><ArrowUpRight v-if="canOpenHost(host)" :size="15" /></button></div><div v-else class="standalone-state"><span class="standalone-icon"><RuntimeBrandIcon kind="kubernetes" /></span><strong>未关联主机</strong><p>通过 kubeconfig 访问集群，可直接管理资源。</p></div></section>
       </template>
     </ResourceDetailDrawer>
@@ -185,9 +197,11 @@ onBeforeUnmount(() => { mounted = false })
     <KubernetesClusterDrawer v-model:open="editOpen" :cluster="editingCluster" :can-test="auth.canAny(['cluster.execute'])" @saved="clusterSaved" />
     <ClusterRbacDrawer v-model:open="rbacOpen" :cluster="rbacCluster" />
   </div>
+  </ClusterConnectionScope>
 </template>
 
 <style scoped>
+.connection-load-error{display:flex;align-items:center;gap:8px;padding:8px 16px;color:var(--edo-danger,#d74747);font-size:12px}.cluster-status{display:flex;flex-direction:column;justify-content:center;gap:4px;height:42px;max-width:174px}.connection-reason{color:var(--edo-muted);font-size:12px;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .host-link:disabled{color:var(--edo-text);cursor:default}.host-link:disabled:hover{text-decoration:none}.detail-hosts>button:disabled{cursor:default}.detail-hosts>button:disabled:hover{color:var(--edo-text)}
-.cluster-inventory{min-width:0}.cluster-toolbar{display:flex;align-items:center;gap:22px;padding:14px 16px;border-bottom:1px solid var(--edo-border)}.cluster-count{flex:none;min-width:88px}.cluster-count strong,.cluster-count small{display:block}.cluster-count small{margin-top:3px;color:var(--edo-muted);font-size:12px}.cluster-filters{display:flex;flex:1;gap:10px}.cluster-filters>.ant-input-affix-wrapper{max-width:340px}.cluster-filters>.ant-select{min-width:145px}.cluster-toolbar-actions{display:flex;gap:8px}.cluster-name{display:flex;align-items:center;gap:10px;padding:0;border:0;background:transparent;color:var(--edo-text);cursor:pointer;text-align:left}.cluster-name:hover strong{color:var(--edo-primary)}.cluster-icon{display:grid;place-items:center;width:28px;height:28px;flex:none;border-radius:5px;color:#326ce5;background:color-mix(in srgb,#326ce5 8%,var(--edo-surface))}.cluster-icon :deep(svg){width:20px;height:20px}.api-address{font-size:12px;color:var(--edo-muted);overflow-wrap:anywhere}.linked-hosts{display:flex;flex-wrap:wrap;gap:5px 12px}.host-link{display:inline-flex;align-items:center;gap:5px;padding:0;border:0;background:transparent;color:var(--edo-primary);font-size:12px;cursor:pointer}.host-link:hover{text-decoration:underline}.muted{color:var(--edo-muted);font-weight:400}.cluster-detail-title{display:flex;align-items:center;gap:10px}.cluster-load-error{margin:14px}.connection-state{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#1d9459}.connection-state i{width:6px;height:6px;border-radius:50%;background:currentColor}.connection-state.failed{color:#d74747}.detail-hosts{display:grid;gap:0}.detail-hosts>button{display:flex;align-items:center;gap:12px;width:100%;padding:14px 0;border:0;border-bottom:1px solid var(--edo-border);color:var(--edo-text);background:transparent;text-align:left;cursor:pointer}.detail-hosts>button:hover{color:var(--edo-primary)}.detail-hosts>button>span{flex:1;min-width:0}.detail-hosts strong,.detail-hosts small{display:block}.detail-hosts small{margin-top:3px;color:var(--edo-muted);font-size:12px}.standalone-state{display:flex;align-items:center;flex-direction:column;padding:30px 16px;gap:8px}.standalone-icon{width:36px;height:36px;color:#326ce5}.standalone-icon :deep(svg){width:36px;height:36px}.standalone-state strong{font-size:14px}.standalone-state p{margin:0 0 8px;color:var(--edo-muted);font-size:12px}@media(max-width:1150px){.cluster-toolbar{flex-wrap:wrap;gap:12px}.cluster-filters{order:3;flex-basis:100%}.cluster-filters>.ant-input-affix-wrapper{max-width:none}.cluster-toolbar-actions{margin-left:auto}}@media(max-width:560px){.cluster-filters{flex-direction:column}.cluster-toolbar-actions .ant-btn{padding-inline:9px}.resource-facts{grid-template-columns:1fr}}
+.cluster-inventory{min-width:0}.cluster-toolbar{display:flex;align-items:center;gap:22px;padding:14px 16px;border-bottom:1px solid var(--edo-border)}.cluster-count{flex:none;min-width:88px}.cluster-count strong,.cluster-count small{display:block}.cluster-count small{margin-top:3px;color:var(--edo-muted);font-size:12px}.cluster-filters{display:flex;flex:1;gap:10px}.cluster-filters>.ant-input-affix-wrapper{max-width:340px}.cluster-filters>.ant-select{min-width:145px}.cluster-toolbar-actions{display:flex;gap:8px}.cluster-name{display:flex;align-items:center;gap:10px;padding:0;border:0;background:transparent;color:var(--edo-text);cursor:pointer;text-align:left}.cluster-name:hover strong{color:var(--edo-primary)}.cluster-icon{display:grid;place-items:center;width:28px;height:28px;flex:none;border-radius:5px;color:#326ce5;background:color-mix(in srgb,#326ce5 8%,var(--edo-surface))}.cluster-icon :deep(svg){width:20px;height:20px}.api-address{font-size:12px;color:var(--edo-muted);overflow-wrap:anywhere}.linked-hosts{display:flex;flex-wrap:wrap;gap:5px 12px}.host-link{display:inline-flex;align-items:center;gap:5px;padding:0;border:0;background:transparent;color:var(--edo-primary);font-size:12px;cursor:pointer}.host-link:hover{text-decoration:underline}.muted{color:var(--edo-muted);font-weight:400}.cluster-detail-title{display:flex;align-items:center;gap:10px}.cluster-load-error{margin:14px}.detail-hosts{display:grid;gap:0}.detail-hosts>button{display:flex;align-items:center;gap:12px;width:100%;padding:14px 0;border:0;border-bottom:1px solid var(--edo-border);color:var(--edo-text);background:transparent;text-align:left;cursor:pointer}.detail-hosts>button:hover{color:var(--edo-primary)}.detail-hosts>button>span{flex:1;min-width:0}.detail-hosts strong,.detail-hosts small{display:block}.detail-hosts small{margin-top:3px;color:var(--edo-muted);font-size:12px}.standalone-state{display:flex;align-items:center;flex-direction:column;padding:30px 16px;gap:8px}.standalone-icon{width:36px;height:36px;color:#326ce5}.standalone-icon :deep(svg){width:36px;height:36px}.standalone-state strong{font-size:14px}.standalone-state p{margin:0 0 8px;color:var(--edo-muted);font-size:12px}@media(max-width:1150px){.cluster-toolbar{flex-wrap:wrap;gap:12px}.cluster-filters{order:3;flex-basis:100%}.cluster-filters>.ant-input-affix-wrapper{max-width:none}.cluster-toolbar-actions{margin-left:auto}}@media(max-width:560px){.cluster-filters{flex-direction:column}.cluster-toolbar-actions .ant-btn{padding-inline:9px}.resource-facts{grid-template-columns:1fr}}
 </style>

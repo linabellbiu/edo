@@ -82,6 +82,9 @@ test('详情抽屉保留自定义标题，普通标题仍按属性显示', t => 
 })
 function inventory(permissions, navigations = []) {
   return compile(readFileSync(new URL('../src/components/ClusterInventory.vue', import.meta.url), 'utf8'), {
+    '@/components/ClusterConnectionScope.vue': { __esModule: true, default: compile(readFileSync(new URL('../src/components/ClusterConnectionScope.vue', import.meta.url), 'utf8'), {
+      '@/utils/clusterConnection': { useClusterConnections: () => ({ statuses: vue.ref({}), error: vue.ref(''), pending: vue.ref(false), refresh() {} }) },
+    }) },
     'lucide-vue-next': Object.fromEntries(['ArrowUpRight', 'Link2', 'Pencil', 'Plus', 'RefreshCw', 'Search', 'Server'].map(name => [name, () => vue.h('svg')])),
     'vue-router': { useRoute: () => ({ query: {} }), useRouter: () => ({ replace(route) { navigations.push({kind:'replace',route}) }, push(route) { navigations.push({kind:'push',route}) } }) },
     '@/stores/auth': { useAuthStore: () => ({ canAny: codes => codes.some(code => permissions.has(code)) }) },

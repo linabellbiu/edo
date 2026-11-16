@@ -17,6 +17,7 @@ import {deploymentHostUnavailableReason} from '@/utils/deploymentHostAvailabilit
 import { savedDeploymentRegistry } from '@/utils/deploymentExecution'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
+import KubernetesClusterSelect from '@/components/KubernetesClusterSelect.vue'
 import { readKubeYaml } from '@/utils/kubernetesYaml'
 import DeliveryDefaultsDrawer from '@/components/DeliveryDefaultsDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
@@ -1185,14 +1186,9 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
             <div class="form-grid">
               <a-form-item v-if="!form.reusable && platform === 'kubernetes'" class="span-2" label="Kubernetes 集群" required>
                 <div :class="{ 'resource-select': auth.canAny(['cluster.create']) }">
-                  <a-select :value="form.runtime_id" show-search option-filter-prop="label" :disabled="!canReadRuntimes" :options="kubernetesRuntimeOptions" :placeholder="targetT('deploymentTarget.clusterPlaceholder')" @change="changeKubernetesRuntime">
-                    <template #option="{ value, label }">
-                      <span class="managed-resource-option">
-                        <span class="runtime-option-copy"><strong>{{ label }}</strong></span>
-                        <a class="managed-resource-option-view" :href="resourceViewHref('/hosts', { view: 'resources', node: `kubernetes:${String(value)}` })" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
-                      </span>
-                    </template>
-                  </a-select>
+                  <KubernetesClusterSelect :value="form.runtime_id" :disabled="!canReadRuntimes" :clusters="clusters" :options="kubernetesRuntimeOptions" :placeholder="targetT('deploymentTarget.clusterPlaceholder')" @change="changeKubernetesRuntime">
+                    <template #option-action="{ value }"><a class="managed-resource-option-view" :href="resourceViewHref('/hosts', { view: 'clusters', cluster: String(value) })" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a></template>
+                  </KubernetesClusterSelect>
                   <a-button
                     v-if="auth.canAny(['cluster.create'])"
                     :aria-label="t('kubernetesCluster.action.add')"

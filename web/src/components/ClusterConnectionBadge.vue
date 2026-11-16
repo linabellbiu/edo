@@ -1,0 +1,16 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { clusterConnectionLabel, type ClusterConnection, type ConnectionCluster } from '@/utils/clusterConnection'
+const props = defineProps<{ cluster: ConnectionCluster; connection?: ClusterConnection }>()
+const label = computed(() => clusterConnectionLabel(props.cluster, props.connection))
+const state = computed(() => props.cluster.is_active ? props.connection?.status || 'unknown' : 'unknown')
+const detail = computed(() => props.connection?.reason === 'missing' ? '原集群不可用，请重新选择' : !props.cluster.is_active ? '集群已停用' : props.connection?.message || '尚未取得集群连接状态')
+</script>
+<template>
+  <a-tooltip :title="detail" :trigger="['hover','focus','click']">
+    <span class="cluster-connection-badge" :class="state" tabindex="0" :aria-label="`${label}：${detail}`"><i />{{ label }}</span>
+  </a-tooltip>
+</template>
+<style scoped>
+.cluster-connection-badge{display:inline-flex;align-items:center;gap:6px;color:var(--edo-muted);font-size:12px;white-space:nowrap}.cluster-connection-badge i{width:6px;height:6px;border-radius:50%;background:currentColor}.cluster-connection-badge.connected{color:var(--edo-success,#23845a)}.cluster-connection-badge.unreachable,.cluster-connection-badge.restricted{color:var(--edo-danger,#d74747)}.cluster-connection-badge.checking i{background:transparent;border:1px solid currentColor;border-right-color:transparent;width:10px;height:10px;animation:connection-spin 1s linear infinite}.cluster-connection-badge:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px;border-radius:2px}@keyframes connection-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.cluster-connection-badge.checking i{animation:none}}
+</style>

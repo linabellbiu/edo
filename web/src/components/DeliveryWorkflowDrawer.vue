@@ -8,6 +8,7 @@ import {deliveryKinds,getDeliveryDefaults,oneDeliveryTask,type DeliveryKind,type
 import {listHosts,listEnvironments,environmentIDsOf,type InfrastructureHost,type InfrastructureEnvironment} from '@/api/infrastructure'
 import type {WorkflowResponse} from '@/types/pipeline'
 import ComposeDeliveryFields from '@/components/ComposeDeliveryFields.vue'
+import KubernetesClusterSelect from '@/components/KubernetesClusterSelect.vue'
 import {newComposeDeliveryForm} from '@/utils/composeDelivery'
 import {useAuthStore} from '@/stores/auth'
 const props=defineProps<{open:boolean;applicationId?:string;initialKind?:DeliveryKind;initialCluster?:string;initialNamespace?:string;initialWorkload?:string;initialContainer?:string}>()
@@ -98,7 +99,7 @@ watch(()=>props.open,value=>{if(value)composeForm.value=newComposeDeliveryForm()
 <ComposeDeliveryFields v-if="existingCompose" ref="composeFields" v-model="composeForm" :builds="builds" :disabled="saving||!ready"/>
 <h3 class="edo-drawer-section-heading">{{ t('drawerSection.target') }}</h3>
 <a-form-item :label="t('delivery.environment')" required><a-select :aria-label="t('delivery.environment')" v-model:value="form.environment" :options="environments.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))" @change="()=>{form.host='';form.cluster=''}"/></a-form-item>
-<a-form-item v-if="form.kind==='kubernetes'" :label="t('delivery.cluster')" required><a-select :aria-label="t('delivery.cluster')" v-model:value="form.cluster" :options="clusterOptions"/></a-form-item>
+<a-form-item v-if="form.kind==='kubernetes'" :label="t('delivery.cluster')" required><KubernetesClusterSelect :aria-label="t('delivery.cluster')" v-model:value="form.cluster" :clusters="clusters" :options="clusterOptions"/></a-form-item>
 <a-form-item v-else :label="t('delivery.host')" required><a-select :aria-label="t('delivery.host')" v-model:value="form.host" :options="hostOptions"/></a-form-item>
 <template v-if="form.kind==='kubernetes'">
 <a-form-item :label="t('delivery.namespace')" required><a-input :aria-label="t('delivery.namespace')" v-model:value="form.namespace"/></a-form-item><a-form-item :label="t('delivery.workload')" required><a-input :aria-label="t('delivery.workload')" v-model:value="form.workload"/></a-form-item><a-form-item class="wide" :label="t('delivery.container')" required><a-input :aria-label="t('delivery.container')" v-model:value="form.container"/></a-form-item>

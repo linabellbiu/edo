@@ -71,6 +71,7 @@ async function harness(initialPermissions = ['deployment_plan.read', 'deployment
     '@/components/DeploymentFieldHelp.vue': { __esModule: true, default: pass('span') },
     '@/components/DeploymentExecutionFields.vue': { __esModule: true, default: pass('div') },
     '@/components/KubernetesDeploymentTemplateFields.vue': { __esModule: true, default: pass('div') },
+    '@/components/KubernetesClusterSelect.vue': { __esModule: true, default: pass('div') },
     '@/utils/kubernetesDeployment': load(readFileSync(new URL('../src/utils/kubernetesDeployment.ts', import.meta.url), 'utf8'), {'@/utils/kubernetesCommonOptions':load(readFileSync(new URL('../src/utils/kubernetesCommonOptions.ts', import.meta.url), 'utf8'), {})}),
     '@/components/DeploymentScriptEditor.vue': { __esModule: true, default: pass('div') },
     '@/components/YamlCodeEditor.vue': { __esModule: true, default: pass('div') },
