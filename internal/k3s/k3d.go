@@ -171,7 +171,7 @@ func (s *Service) runK3dPreflight(ctx context.Context, input Input, hosts []Host
 	if len(hosts) != 1 || input.K3d == nil {
 		return nil, ErrInvalidInput
 	}
-	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 65*time.Second)
 	defer cancel()
 	report := &PreflightReport{CheckedAt: time.Now().UTC(), Checks: []PreflightCheck{}, Hosts: []HostPreflight{}}
 	host, bundle, err := s.loadHost(ctx, hosts[0].ID)
@@ -188,7 +188,7 @@ func (s *Service) runK3dPreflight(ctx context.Context, input Input, hosts []Host
 	if err != nil {
 		slog.ErrorContext(ctx, "读取 k3d 主机预检失败", "operation", "k3d_preflight_read", "host_id", hosts[0].ID, "err", err)
 	}
-	checked := parseHostPreflight(hosts[0], output, err, k3dPreflightDefinitions)
+	checked := parseK3dPreflight(hosts[0], output, err)
 	privilege = completedPrivilege(privilege, checked.Checks, err)
 	checked.Privilege = &privilege
 	report.Hosts = append(report.Hosts, checked)

@@ -21,7 +21,7 @@ var k3dPreflightDefinitions = []preflightCheckDefinition{
 	{"cpu", "累计 CPU", "CPU 核数满足全部容器节点限制", "CPU 不足，请减少节点数量或降低 Server、Worker 的 CPU 配置", ""},
 	{"memory", "累计内存", "可用内存满足全部节点及宿主预留", "可用内存不足，请减少节点数量或降低节点内存，另需为宿主预留 512 MiB", ""},
 	{"disk", "Docker 数据盘", "Docker 数据盘空间充足", "Docker 数据目录不可读或可用空间不足，需至少 10 GiB 加每个 Worker 2 GiB", ""},
-	{"download", "k3d 工具", "官方固定版本工具可用或下载源可达", "固定版本工具校验失败或无法访问官方 HTTPS 下载源", ""},
+	{"download", "k3d 工具", "官方固定版本工具可用或下载源可达", "k3d 工具暂不可用，请重新检测并查看具体原因", ""},
 	{"component_images", "K3s 组件镜像", "", "", "此检测不拉取镜像，尚未验证 Docker 实际镜像源、K3s 标签、平台及系统组件镜像可用性"},
 	{"installation_lock", "主机安装锁", "没有其他 EDO 安装锁", "存在其他任务或残留安装锁，请核对主机实际状态", ""},
 	{"hostname", "主机名称", "主机名称有效", "无法读取有效主机名称", ""},
@@ -43,10 +43,53 @@ const k3dToolSelection = `case "$(uname -m)" in
 esac
 edo_k3d="/var/lib/edo/k3d/v5.9.0/k3d-linux-$edo_arch"
 edo_tool_valid() {
+  edo_tool_reason=invalid_file
   [ -f "$edo_k3d" ] && [ ! -L "$edo_k3d" ] && [ -x "$edo_k3d" ] || return 1
+  edo_tool_reason=checksum
   printf '%s  %s\n' "$edo_hash" "$edo_k3d" | sha256sum -c - >/dev/null 2>&1 || return 1
-  [ "$(timeout 3 env -i PATH="$edo_path" HOME=/var/lib/edo/k3d DOCKER_HOST=unix:///var/run/docker.sock "$edo_k3d" version 2>/dev/null | awk 'NR==1 {print $3}')" = v5.9.0 ]
+  edo_tool_reason=version
+  [ "$(timeout 3 env -i PATH="$edo_path" HOME=/var/lib/edo/k3d DOCKER_HOST=unix:///var/run/docker.sock "$edo_k3d" version 2>/dev/null | awk 'NR==1 {print $3}')" = v5.9.0 ] || return 1
+  edo_tool_reason=ready
 }
+`
+
+// HEAD 探测不下载文件；仅对暂态连接错误重试，沿用官方 HTTPS 资产与校验和。
+const k3dToolPreflight = `edo_tool_exit=0
+edo_tool_http=000
+if [ -e "$edo_k3d" ] || [ -L "$edo_k3d" ]; then
+  if edo_tool_valid; then edo_check download passed; else edo_check download failed; fi
+else
+  edo_tool_reason=unavailable
+  for edo_tool_attempt in 1 2; do
+    if edo_tool_http=$(timeout 16 curl --fail --silent --head --location --proto '=https' --proto-redir '=https' --max-redirs 5 --tlsv1.2 --connect-timeout 5 --max-time 15 --output /dev/null --write-out '%{http_code}' "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-$edo_arch" 2>/dev/null); then
+      edo_tool_exit=0
+      edo_tool_reason=ready
+      break
+    else
+      edo_tool_exit=$?
+    fi
+    case "$edo_tool_exit" in 6|7|28|124) ;; *) break ;; esac
+  done
+  case "$edo_tool_exit" in
+    0) edo_check download passed ;;
+    6) edo_tool_reason=dns; edo_check download failed ;;
+    7) edo_tool_reason=connect; edo_check download failed ;;
+    28|124) edo_tool_reason=timeout; edo_check download failed ;;
+    35|51|60|77) edo_tool_reason=tls; edo_check download failed ;;
+    22)
+      case "$edo_tool_http" in
+        401|403) edo_tool_reason=denied ;;
+        404) edo_tool_reason=not_found ;;
+        429) edo_tool_reason=rate_limit ;;
+        *) edo_tool_reason=http ;;
+      esac
+      edo_check download failed ;;
+    47) edo_tool_reason=redirect; edo_check download failed ;;
+    *) edo_check download failed ;;
+  esac
+fi
+case "$edo_tool_http" in [0-9][0-9][0-9]) ;; *) edo_tool_http=000 ;; esac
+printf 'EDO_K3S_K3D_TOOL\t%s\t%s\t%s\n' "$edo_tool_reason" "$edo_tool_exit" "$edo_tool_http"
 `
 
 func k3dPreflightScript(input Input) string {
@@ -81,10 +124,7 @@ if [ "$edo_engine_status" = 0 ] && [ -S /var/run/docker.sock ] && printf '%s\n' 
 	script += "edo_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null)\nedo_cpu_status=$?\nif [ \"$edo_cpu_status\" = 0 ] && [ \"$edo_cpu\" -ge " + strconv.FormatInt(requiredCPUs, 10) + " ] 2>/dev/null; then edo_check cpu passed; else edo_check cpu failed; fi\n"
 	script += "edo_available=$(awk '$1==\"MemAvailable:\"{print $2;found=1;exit} END{if(!found)print 0}' /proc/meminfo 2>/dev/null || printf 0)\nif [ \"$edo_available\" -ge " + strconv.FormatInt(requiredMemoryKiB, 10) + " ] 2>/dev/null; then edo_check memory passed; else edo_check memory failed; fi\n"
 	script += "edo_root=$(timeout 5 env -i PATH=\"$edo_path\" HOME=/var/lib/edo/k3d \"$edo_docker_binary\" --host=unix:///var/run/docker.sock info --format '{{.DockerRootDir}}' 2>/dev/null)\nedo_root_status=$?\nedo_free=0\nedo_disk_status=1\nif [ \"$edo_root_status\" = 0 ] && [ -d \"$edo_root\" ]; then\n  edo_disk_output=$(timeout 3 df -Pk \"$edo_root\" 2>/dev/null)\n  edo_disk_status=$?\n  if [ \"$edo_disk_status\" = 0 ]; then edo_free=$(printf '%s\\n' \"$edo_disk_output\" | awk 'NR==2{print $4}'); fi\nfi\nif [ \"$edo_root_status\" = 0 ] && [ \"$edo_disk_status\" = 0 ] && [ -d \"$edo_root\" ] && [ \"${edo_free:-0}\" -ge " + strconv.Itoa((10+agents*2)*1024*1024) + " ] 2>/dev/null; then edo_check disk passed; else edo_check disk failed; fi\n"
-	script += `if [ -e "$edo_k3d" ] || [ -L "$edo_k3d" ]; then
-  if edo_tool_valid; then edo_check download passed; else edo_check download failed; fi
-elif timeout 5 curl --fail --silent --head --location --proto '=https' --proto-redir '=https' --max-redirs 5 --tlsv1.2 --connect-timeout 2 --max-time 4 "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-$edo_arch" >/dev/null 2>&1; then edo_check download passed; else edo_check download failed; fi
-`
+	script += k3dToolPreflight
 	if owned {
 		script += "edo_check installation_lock passed\n"
 	} else {
