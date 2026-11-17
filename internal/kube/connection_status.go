@@ -343,6 +343,38 @@ func (s *Service) cachedConnectionStatus(ctx context.Context, cluster *model.Kub
 	return entry.value
 }
 
+// recordConnectionSuccess 用一次真实成功的探测回填连接状态缓存。
+// 后台主机运行状态探测会频繁调用 Ping，不能借此清空缓存。
+func (s *Service) recordConnectionSuccess(connection *clusterQueries) {
+	cache := s.connections
+	if cache == nil || connection == nil || connection.internal || connection.authorization == nil || !connection.authorization.identityBound() {
+		return
+	}
+	now := time.Now().UTC()
+	expires := now.Add(connectionStatusTTL)
+	key := fmt.Sprintf("%s/%x", connection.authorization.CacheKey, connection.connectionVersion)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	entry := cache.entries[key]
+	if entry == nil {
+		cache.trim(now)
+		if len(cache.entries) >= maxConnectionStatusEntries {
+			return
+		}
+		entry = &connectionStatusEntry{lastUsed: now}
+		cache.entries[key] = entry
+	} else if entry.checking {
+		if entry.cancel != nil {
+			entry.cancel()
+		}
+		cache.checks.release(entry.lease)
+	}
+	entry.sequence++
+	entry.checking, entry.stalled, entry.cancel, entry.lease, entry.startedAt = false, false, nil, nil, time.Time{}
+	entry.lastUsed = now
+	entry.value = ConnectionStatus{ClusterID: connection.clusterID, Status: "connected", Reason: "connected", Message: "连接正常", CheckedAt: &now, ExpiresAt: &expires}
+}
+
 // 调用者已持锁；只终止本次检查并回收其名额，迟到结果因 sequence 变化被丢弃。
 func (c *connectionStatusCache) abandonCheck(entry *connectionStatusEntry, now time.Time) {
 	if entry.cancel != nil {

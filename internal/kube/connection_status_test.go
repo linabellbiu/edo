@@ -524,3 +524,35 @@ func TestConnectionStatusesReapStalledCheckAndRetry(t *testing.T) {
 		t.Fatalf("检查名额泄漏: %d", cache.checks.activeCount())
 	}
 }
+
+func TestPingRefreshesConnectionStatusWithoutClearingCache(t *testing.T) {
+	f := newRBACFixture(t)
+	var requests atomic.Int32
+	server := connectionStatusTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"gitVersion":"v1.35.5+k3s1"}`)
+	})
+	setConnectionStatusServer(t, f, server)
+	awaitConnectionStatus(t, f.service, f.adminCtx, f.cluster.ID, "connected")
+	version, err := f.service.Ping(f.adminCtx, f.cluster.ID)
+	if err != nil || version != "v1.35.5+k3s1" {
+		t.Fatalf("探测集群失败: %s %v", version, err)
+	}
+	before := requests.Load()
+	values, err := f.service.ConnectionStatuses(f.adminCtx, []string{f.cluster.ID}, false)
+	if err != nil || values[0].Status != "connected" {
+		t.Fatalf("Ping 后连接状态被清空: %+v %v", values, err)
+	}
+	if requests.Load() != before {
+		t.Fatalf("Ping 之后状态读取又触发了重复探测: %d -> %d", before, requests.Load())
+	}
+	for range 3 {
+		if _, err := f.service.Ping(f.adminCtx, f.cluster.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	values, err = f.service.ConnectionStatuses(f.adminCtx, []string{f.cluster.ID}, false)
+	if err != nil || values[0].Status != "connected" {
+		t.Fatalf("重复探测后不再是已连接: %+v %v", values, err)
+	}
+}

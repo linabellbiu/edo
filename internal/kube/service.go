@@ -357,12 +357,13 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 }
 
 func (s *Service) Ping(ctx context.Context, id string) (string, error) {
-	defer s.invalidateConnectionStatuses(id)
-	clientset, err := s.Clientset(ctx, id)
+	// 成功探测直接回填连接状态缓存；不能清空缓存，否则主机运行状态等后台每秒探测
+	// 会让集群列表一直停留在“检测中”。
+	connection, err := s.clusterQueries(ctx, id)
 	if err != nil {
 		return "", err
 	}
-	body, err := clientset.Discovery().RESTClient().Get().AbsPath("/version").Do(ctx).Raw()
+	body, err := connection.typed.Discovery().RESTClient().Get().AbsPath("/version").Do(ctx).Raw()
 	if err != nil {
 		return "", fmt.Errorf("Kubernetes API 健康检查失败: %w", err)
 	}
@@ -370,6 +371,7 @@ func (s *Service) Ping(ctx context.Context, id string) (string, error) {
 	if err := json.Unmarshal(body, &info); err != nil {
 		return "", fmt.Errorf("解析 Kubernetes API 版本失败: %w", err)
 	}
+	s.recordConnectionSuccess(connection)
 	return info.GitVersion, nil
 }
 
