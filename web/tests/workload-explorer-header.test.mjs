@@ -46,15 +46,13 @@ test('头部刷新按钮紧凑透明，不铺白卡片也不撑高标题', () =>
   assert.match(hover, /background:\s*transparent/, '悬停只变色，不出现任何色块，避免看起来像掉落的白卡片')
 })
 
-test('刷新中的图标原地旋转，不因 antd loading 图标把刷新图标挤到按钮下方', () => {
+test('刷新中的图标原地旋转，不因组件库加载图标把刷新图标挤到按钮下方', () => {
   const button = block('.explorer-column>header :deep(.ant-btn) {')
   assert.match(button, /display:\s*inline-flex/, '按钮里的加载图标和刷新图标必须是同一行的 flex 子元素，grid 会把它们排成两行并溢出按钮')
   assert.match(button, /align-items:\s*center/)
   assert.match(button, /justify-content:\s*center/)
-  assert.equal((source.match(/:loading="(?:historyLoading|podsLoading)"/g) || []).length, 0, 'antd 的 loading 会在按钮内额外插入 .ant-btn-loading-icon 子元素，把刷新图标压到按钮下沿')
-  assert.equal((source.match(/:class="\{ 'is-spinning': (?:historyLoading|podsLoading) \}"/g) || []).length, 2, '两个头部刷新图标都要在加载时原地旋转')
-  const spin = block('.explorer-column>header :deep(svg.is-spinning)')
-  assert.ok(spin, '缺少加载中的旋转样式')
-  assert.match(spin, /animation:/)
-  assert.match(style, /@keyframes workload-header-spin/)
+  assert.equal((source.match(/:loading="(?:historyLoading|podsLoading)"/g) || []).length, 0, '组件库的 loading 会在按钮内额外插入 .ant-btn-loading-icon 子元素，把刷新图标压到按钮下沿')
+  assert.equal((source.match(/:class="\{ 'is-busy': (?:historyLoading|podsLoading) \}"/g) || []).length, 2, '两个头部刷新按钮都要在加载时带 is-busy 原地旋转')
+  const buttons = readFileSync(new URL('../src/styles/buttons.css', import.meta.url), 'utf8')
+  assert.match(buttons, /\.ant-btn\.ant-btn\.is-busy > svg\s*\{\s*animation:/, '共用的 is-busy 旋转规则要在全局按钮样式里定义')
 })

@@ -9,7 +9,7 @@ const { t } = useI18n()
   <div class="resource-row-actions">
     <slot />
     <a-dropdown v-if="more && $slots.more" :trigger="['click']" placement="bottomRight">
-      <a-button size="small" class="resource-more-button" :aria-label="t('resourceList.more')" :loading="loading"><Ellipsis :size="16" /></a-button>
+      <a-button size="small" class="resource-more-button" :class="{ 'is-busy': loading }" :aria-busy="loading" :aria-label="t('resourceList.more')"><Ellipsis :size="16" /></a-button>
       <template #overlay><a-menu><slot name="more" /></a-menu></template>
     </a-dropdown>
   </div>

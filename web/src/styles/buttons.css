@@ -27,3 +27,14 @@
 .ant-btn.ant-btn:not(.ant-btn-icon-only) .ant-btn-loading-icon > .anticon {
   margin-inline-end: 0;
 }
+
+
+/* 图标按钮刷新或提交时让图标原地旋转：组件库的 loading 会在按钮内插入一个 spinner 子元素，
+   固定尺寸的图标按钮会被撑破或被挤动。 */
+.ant-btn.ant-btn.is-busy > svg { animation: edo-btn-spin .9s linear infinite; }
+
+@keyframes edo-btn-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ant-btn.ant-btn.is-busy > svg { animation: none; opacity: .65; }
+}
