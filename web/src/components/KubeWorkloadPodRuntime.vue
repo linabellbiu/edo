@@ -172,13 +172,13 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-events>summary:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
 .runtime-events { padding-bottom: 10px; }
 .runtime-pod-card { overflow: hidden; border: 0; border-radius: 12px; background: var(--workload-column); }
-.runtime-pod-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 10px 12px; background: var(--workload-header); color: var(--workload-on-header); font-size: 12px; }
-.pod-age { flex: none; color: var(--workload-on-header); font-size: 12px; opacity: .9; text-decoration: underline dashed; text-underline-offset: 4px; white-space: nowrap; }
+.runtime-pod-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 10px 12px; background: var(--workload-bar); color: var(--workload-on-bar); font-size: 12px; }
+.pod-age { flex: none; color: var(--workload-on-bar); font-size: 12px; opacity: .85; text-decoration: underline dashed; text-underline-offset: 4px; white-space: nowrap; }
 .pod-title-main { display: flex; align-items: baseline; flex: 1; gap: 10px; min-width: 0; }
 .pod-title-main>strong { min-width: 0; font-weight: 600; white-space: normal; overflow-wrap: anywhere; font-family: var(--edo-font-mono, ui-monospace, monospace); }
 .pod-detail-link { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 2px 7px; border: 0; border-radius: 8px; background: var(--workload-column); color: var(--workload-link); font: inherit; white-space: nowrap; cursor: pointer; }
 .pod-detail-link:hover:not(:disabled) { background: var(--workload-hover); }
-.pod-detail-link:focus-visible { outline-color: var(--workload-on-header); }
+.pod-detail-link:focus-visible { outline-color: var(--workload-on-bar); }
 .runtime-pod-facts { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,.7fr); gap: 12px; margin: 0; padding: 16px 12px; }
 .runtime-pod-facts>div { min-width: 0; }
 .runtime-pod-facts dt { margin-bottom: 4px; color: var(--workload-muted); font-size: 12px; }

@@ -56,7 +56,7 @@ const rows = computed(() => props.events.map((event, index) => ({
 .event-table-scroll { height: auto; max-height: 260px; overflow: auto; scrollbar-gutter: stable; }
 .event-table-scroll:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: -2px; }
 .event-table { width: 100%; min-width: 480px; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; line-height: 1.5; }
-.event-table th { position: sticky; top: 0; z-index: 1; padding: 6px 10px; border: 0; background: var(--workload-header); color: var(--workload-on-header); font-size: 12px; font-weight: 650; letter-spacing: .01em; text-align: left; }
+.event-table th { position: sticky; top: 0; z-index: 1; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--workload-border); background: var(--workload-header); color: var(--workload-on-header); font-size: 12px; font-weight: 600; letter-spacing: .01em; text-align: left; }
 /* 表头圆角由卡片裁切统一处理，避免内外两层圆角出现白边。 */
 .event-table th:nth-child(1) { width: 24%; }
 .event-table th:nth-child(2) { width: 27%; }
