@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Pencil, RefreshCw, Scaling } from 'lucide-vue-next'
 import SessionPopoutLink from './SessionPopoutLink.vue'
 import ResourceRowActions from './ResourceRowActions.vue'
 import type { KubeObject, KubeType } from '@/api/kubernetes'
@@ -24,9 +25,9 @@ const more=computed(()=>editable.value&&!editShortcut.value||linkable.value||rem
     <a-button v-if="type.group==='workloads'&&!inDrawer" class="kube-action kube-action-info" size="small" :disabled="disabled" @click="emit('details')">{{ t('resourceList.details') }}</a-button>
     <a-button v-if="controller&&!inDrawer" class="kube-action kube-action-success" size="small" :disabled="disabled" @click="emit('pods')">{{ t('k8s.podConsole') }}</a-button>
     <a-button v-if="type.resource==='pods'&&!hideContainerActions" class="kube-action kube-action-info" size="small" :disabled="disabled||logsPath===''" @click="emit('logs')">{{ t('k8s.logs') }}</a-button><SessionPopoutLink v-if="type.resource==='pods'&&!hideContainerActions&&logsPath" kind="container-log" :path="logsPath" :title="object.metadata.name" :disabled="disabled" />
-    <a-button v-if="directRuntime&&['deployments','statefulsets'].includes(type.resource)" class="kube-action kube-action-warning" size="small" :disabled="disabled" @click="emit('scale')">{{ t('k8s.scale') }}</a-button>
-    <a-button v-if="directRuntime" class="kube-action kube-action-warning" size="small" :disabled="disabled" @click="emit('action','restart')">{{ t('k8s.restart') }}</a-button>
-    <a-button v-if="editShortcut" class="kube-action kube-action-warning" size="small" :disabled="disabled" @click="emit('edit')">{{ t('k8s.edit') }}</a-button>
+    <a-button v-if="directRuntime&&['deployments','statefulsets'].includes(type.resource)" class="kube-action kube-action-warning kube-action-scale" size="small" :disabled="disabled" @click="emit('scale')"><Scaling :size="14" aria-hidden="true" />{{ t('k8s.scale') }}</a-button>
+    <a-button v-if="directRuntime" class="kube-action kube-action-warning kube-action-run" size="small" :disabled="disabled" @click="emit('action','restart')"><RefreshCw :size="14" aria-hidden="true" />{{ t('k8s.restart') }}</a-button>
+    <a-button v-if="editShortcut" class="kube-action kube-action-warning kube-action-edit" size="small" :disabled="disabled" @click="emit('edit')"><Pencil :size="14" aria-hidden="true" />{{ t('k8s.edit') }}</a-button>
     <a-button v-if="yamlShortcut" class="kube-action kube-action-info" size="small" :disabled="disabled" @click="emit('yaml')">YAML</a-button>
     <template #more>
       <a-menu-item class="kube-menu-item kube-menu-warning" v-if="type.group==='workloads'&&editable&&!editShortcut" :disabled="disabled" @click="emit('edit')">{{ t('k8s.edit') }}</a-menu-item>
