@@ -82,6 +82,23 @@ test('按钮样式不会纵向堆叠子元素', () => {
   }
 })
 
+test('固定宽度的图标按钮裁剪溢出内容，不让图标越出按钮', () => {
+  const offenders = []
+  for (const file of [...styleFiles(), ...vueFiles()]) {
+    const source = readFileSync(file, 'utf8')
+    const css = file.endsWith('.vue') ? parse(source, { filename: file }).descriptor.styles.map(block => block.content).join('\n') : source
+    for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = match[1].trim()
+      if (!/\.ant-btn/.test(selector)) continue
+      const width = /(?:^|;|\s)width:\s*(\d+)px/.exec(match[2])
+      if (!width || Number(width[1]) > 32) continue
+      if (/overflow:\s*hidden/.test(match[2])) continue
+      offenders.push(`${file.replace(webRoot, '')} 的 ${selector.slice(-60)}`)
+    }
+  }
+  assert.deepEqual(offenders, [], '固定宽度的图标按钮要声明 overflow:hidden，否则多出来的图标或加载元素会越出按钮边界')
+})
+
 test('纯图标按钮用共用的 is-busy 原地旋转图标', () => {
   const buttons = readFileSync(join(srcRoot, 'styles/buttons.css'), 'utf8')
   assert.match(buttons, /\.ant-btn\.ant-btn\.is-busy > svg/, '缺少 is-busy 旋转规则')

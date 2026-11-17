@@ -230,7 +230,7 @@ onMounted(load)
 .directory-node-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .directory-node-count{flex:none;min-width:14px;text-align:right;color:var(--edo-muted);font-size:12px;font-variant-numeric:tabular-nums}
 .directory-node-actions{display:flex;flex:none;gap:0}
-.directory-node-actions :deep(.ant-btn){display:inline-flex;align-items:center;justify-content:center;width:23px;min-width:23px;height:26px;margin:0;padding:0;color:var(--edo-muted)}
+.directory-node-actions :deep(.ant-btn){display:inline-flex;box-sizing:border-box;flex:0 0 auto;align-items:center;justify-content:center;width:23px;min-width:23px;height:26px;margin:0;padding:0;overflow:hidden;color:var(--edo-muted)}
 .directory-node-actions :deep(.ant-btn:hover){color:var(--edo-primary);background:var(--edo-surface)}
 .directory-tree-empty{padding:12px 10px;color:var(--edo-muted);font-size:12px}
 .directory-main{min-width:0}
