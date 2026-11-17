@@ -166,7 +166,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 
 <template>
   <section ref="root" class="workload-explorer" :class="{ 'is-deployment': deployment }" aria-label="工作负载运行状态" @focusin="revealFocused">
-    <aside v-if="deployment" class="explorer-column revision-column">
+    <aside v-if="deployment" class="explorer-column revision-column" tabindex="0" aria-label="历史版本">
       <header><h4>历史版本</h4><span class="history-limit">最多 {{ object.spec?.revisionHistoryLimit ?? '—' }} 个</span><a-button size="small" type="text" :loading="historyLoading" :disabled="disabled || !readable" aria-label="刷新历史版本" @click="loadHistory"><RefreshCw :size="13" /></a-button></header>
       <a-alert v-if="historyError" class="column-alert" type="error" show-icon :message="historyError"><template #action><a-button size="small" :disabled="disabled" @click="loadHistory">重试</a-button></template></a-alert>
       <a-alert v-else-if="historyState==='partial' || historyState==='pods_unavailable'" class="column-alert" type="warning" show-icon :message="historyState==='partial'?'历史版本数据尚未完整加载':'暂时无法读取历史版本关联的 Pod，请核对关联 Pod 列表'" />
@@ -185,7 +185,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
       <p v-if="revisionChosen && revisionUID && !selectedRevision" class="column-note" role="status">所选历史版本已不存在，请重新选择。</p>
     </aside>
 
-    <section class="explorer-column pod-column">
+    <section class="explorer-column pod-column" tabindex="0" aria-label="对应容器组">
       <header><h4>对应容器组 <span class="heading-count">{{ podsError||podsLoading?'—':`${visiblePods.length}${podsPartial?'+':''}` }}</span></h4><a-button size="small" type="text" :disabled="disabled || !readable" :loading="podsLoading" aria-label="刷新关联 Pod" @click="emit('retryPods')"><RefreshCw :size="13" /></a-button></header>
       <p v-if="selectedRevision" class="selected-revision">副本集 <strong :title="selectedRevision.name">{{ selectedRevision.name }}</strong></p>
       <a-alert v-if="podsError" class="column-alert" type="error" show-icon :message="podsError"><template #action><a-button size="small" :disabled="disabled" @click="emit('retryPods')">重试</a-button></template></a-alert>
@@ -202,7 +202,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
       </a-spin>
     </section>
 
-    <section class="explorer-column pod-detail-column" aria-label="所选 Pod 事件与运行状态">
+    <section class="explorer-column pod-detail-column" tabindex="0" aria-label="所选 Pod 事件与运行状态">
       <a-alert v-if="podMissing" class="column-alert" type="warning" show-icon message="所选 Pod 已删除或不在当前副本组中，请重新选择 Pod。" />
       <KubeWorkloadPodRuntime v-if="selectedPod && readable" :key="`${cluster}/${selectedPod.metadata.uid}`" :cluster="cluster" :pod="selectedPod" :container="containerName" :auto-refresh="autoRefresh" :refresh-token="refreshToken" :can="can" :can-follow="canFollow" :disabled="Boolean(disabled)||Boolean(podsError)||deployment&&Boolean(historyError)" @container="chooseRuntimeContainer" @logs="target=>openRuntimeContainer(target)" @terminal="target=>openRuntimeContainer(target,true)" @follow="followRuntimeReference" />
       <a-empty v-else-if="!podMissing" :description="readable ? '选择 Pod 查看运行状态' : '没有查看工作负载的权限'" :image-style="{ height: '40px' }" />

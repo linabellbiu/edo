@@ -117,3 +117,47 @@
   background: var(--workload-progress-bg);
   border-color: var(--workload-progress-border);
 }
+
+/* 详情占满可用高度，长内容由所属模块滚动，不再撑高整个抽屉。 */
+.kube-workload-drawer .ant-drawer-header { flex: none; min-height: 48px; padding: 8px 12px; }
+.kube-workload-drawer .ant-drawer-header-title { min-width: 0; }
+.kube-workload-drawer .ant-drawer-title { min-width: 0; }
+.kube-workload-drawer.resource-detail-drawer .resource-detail-content { display: flex; flex-direction: column; gap: 8px; overflow: hidden; padding: 8px 12px 12px; }
+.kube-workload-drawer .resource-detail-content > .ant-alert { flex: none; }
+.kube-workload-drawer .resource-detail-content > .ant-spin-nested-loading { flex: 1; min-height: 0; overflow: hidden; }
+.kube-workload-drawer .resource-detail-content > .ant-spin-nested-loading > .ant-spin-container { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.kube-workload-drawer .detail-tabs { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.kube-workload-drawer .detail-tabs > .ant-tabs-nav { position: static; flex: none; margin: 0 0 8px; padding: 0 8px; }
+.kube-workload-drawer .detail-tabs > .ant-tabs-nav .ant-tabs-tab { padding: 8px 0; }
+.kube-workload-drawer .detail-tabs > .ant-tabs-content-holder { flex: 1; min-height: 0; overflow: hidden; }
+.kube-workload-drawer .detail-tabs > .ant-tabs-content-holder > .ant-tabs-content { height: 100%; }
+.kube-workload-drawer .detail-tabs .ant-tabs-tabpane { height: 100%; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.kube-workload-drawer .detail-tabs .ant-tabs-tabpane.workload-overview-pane { display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.kube-workload-drawer .workload-overview-pane .workload-summary { flex: 0 0 clamp(124px, 19dvh, 164px); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; min-height: 0; margin: 0; }
+.kube-workload-drawer .workload-summary > .workload-identity { min-height: 0; height: 100%; overflow: auto; overscroll-behavior: contain; padding: 10px 12px; }
+.kube-workload-drawer .workload-summary .identity-facts { padding-bottom: 6px; gap: 4px 16px; }
+.kube-workload-drawer .workload-summary .metadata-controls { min-height: 0; margin-top: 0; }
+.kube-workload-drawer .workload-summary .workload-strategy { margin-top: 0; padding-top: 0; }
+.kube-workload-drawer .workload-summary > .workload-events { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.kube-workload-drawer .workload-summary > .workload-events > .ant-spin-nested-loading { flex: 1; min-height: 0; overflow: hidden; }
+.kube-workload-drawer .workload-summary > .workload-events > .ant-spin-nested-loading > .ant-spin-container { height: 100%; }
+.kube-workload-drawer .workload-summary .event-table-scroll { height: 100%; max-height: none; }
+.kube-workload-drawer .workload-overview-pane > .workload-explorer { flex: 1; height: auto; min-height: 0; padding: 10px; gap: 12px; }
+.kube-workload-drawer.resource-detail-drawer .detail-tabs .workload-explorer .explorer-column { min-height: 0; max-height: none; overflow-y: auto; }
+.kube-workload-drawer .workload-overview-pane > .pod-detail-runtime { flex: 1; min-height: 0; overflow: auto; border: 0; }
+.kube-workload-drawer :is(.explorer-column, .workload-identity, .event-table-scroll, .pod-detail-runtime, .ant-tabs-tabpane) { scrollbar-width: thin; scrollbar-color: var(--workload-border) transparent; }
+.kube-workload-drawer :is(.explorer-column, .workload-identity):focus-visible { outline: 2px solid var(--workload-focus); outline-offset: -2px; }
+@media (min-width: 1101px) {
+  .kube-workload-drawer.resource-detail-drawer .workload-explorer.is-deployment { grid-template-columns: minmax(180px, .9fr) minmax(200px, .9fr) minmax(0, 2.2fr); }
+}
+@media (max-width: 1100px) {
+  .kube-workload-drawer.resource-detail-drawer .workload-explorer.is-deployment { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(90px, .38fr) minmax(0, 1fr); }
+  .kube-workload-drawer .workload-explorer.is-deployment .pod-detail-column { grid-column: 1 / -1; }
+}
+@media (max-width: 680px) {
+  .kube-workload-drawer.resource-detail-drawer .resource-detail-content { padding: 6px 8px 8px; }
+  .kube-workload-drawer .workload-overview-pane .workload-summary { flex-basis: clamp(120px, 23dvh, 180px); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 8px; }
+  .kube-workload-drawer .workload-summary > .workload-identity { padding: 8px; }
+  .kube-workload-drawer .workload-overview-pane > .workload-explorer { gap: 8px; padding: 8px; }
+  .kube-workload-drawer .workload-explorer:not(.is-deployment) { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(90px, .38fr) minmax(0, 1fr); }
+}

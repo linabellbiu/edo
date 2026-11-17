@@ -8,6 +8,7 @@ import ResourceDetailDrawer from '/src/components/ResourceDetailDrawer.vue'
 import KubeWorkloadSummary from '/src/components/KubeWorkloadSummary.vue'
 import KubeWorkloadExplorer from '/src/components/KubeWorkloadExplorer.vue'
 import KubeResourceDetails from '/src/components/KubeResourceDetails.vue'
+import KubeDetailTabs from '/src/components/KubeDetailTabs.vue'
 
 const preferences = usePreferencesStore()
 const params = new URLSearchParams(location.search)
@@ -49,12 +50,12 @@ function interaction(label, ...values) { notice.value = `${label}：${values.map
 <template>
   <a-config-provider :theme="{ algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#5269ff', borderRadius: 4, fontSize: 13 } }">
     <main class="fixture-backdrop"><h2>EDO 工作负载视觉回归</h2><p>仅测试数据，不连接集群，不执行任何业务操作。</p></main>
-    <ResourceDetailDrawer class="kube-detail-drawer kube-workload-drawer fixture-drawer" open width="min(1640px, 96vw)" title="demo-web · 本地 UI 测试数据">
+    <ResourceDetailDrawer class="kube-detail-drawer kube-workload-drawer fixture-drawer" compact-header open width="min(1640px, 96vw)" title="demo-web · 本地 UI 测试数据">
       <template #actions><span class="fixture-banner">视觉夹具 · 非真实集群</span><a-tag>Deployment</a-tag><span>preview</span><a-tag color="success">2 / 2</a-tag><a-button size="small" @click="refresh++">刷新采样</a-button><a-button size="small" disabled>调整副本</a-button><a-button size="small" disabled>滚动重启</a-button><a-button size="small" disabled>编辑</a-button></template>
-      <a-tabs v-model:active-key="tab" class="detail-tabs">
-        <a-tab-pane key="basic" tab="运行概览"><KubeWorkloadSummary :object="object" :type="type" :events="events" :events-error="false" /><KubeWorkloadExplorer cluster="fixture-cluster" :object="object" :type="type" :selection="selection" :pods="pods" :pods-loading="false" pods-error="" :pods-partial="false" :events="events" :events-error="false" :auto-refresh="false" :refresh-token="refresh" :can="can" :can-follow="()=>true" @selection="selection=$event" @follow="reference=>interaction('关联资源',reference)" @logs="(...values)=>interaction('只读日志目标',...values)" @terminal="(...values)=>interaction('终端目标（不连接）',...values)" /></a-tab-pane>
+      <a-spin :spinning="false"><KubeDetailTabs v-model:active-key="tab" class="detail-tabs">
+        <a-tab-pane key="basic" class="workload-overview-pane" tab="运行概览"><KubeWorkloadSummary :object="object" :type="type" :events="events" :events-error="false" /><KubeWorkloadExplorer cluster="fixture-cluster" :object="object" :type="type" :selection="selection" :pods="pods" :pods-loading="false" pods-error="" :pods-partial="false" :events="events" :events-error="false" :auto-refresh="false" :refresh-token="refresh" :can="can" :can-follow="()=>true" @selection="selection=$event" @follow="reference=>interaction('关联资源',reference)" @logs="(...values)=>interaction('只读日志目标',...values)" @terminal="(...values)=>interaction('终端目标（不连接）',...values)" /></a-tab-pane>
         <a-tab-pane key="template" tab="容器组模板"><a-radio-group v-model:value="section" class="fixture-template-nav"><a-radio-button value="containers">容器</a-radio-button><a-radio-button value="storage">存储卷</a-radio-button><a-radio-button value="scheduling">调度</a-radio-button></a-radio-group><KubeResourceDetails :object="object" :type="type" :section="section" :container-key="templateContainer" :can-follow="()=>true" @container-key="value=>templateContainer=value" @follow="reference=>interaction('模板关联资源',reference)" /></a-tab-pane>
-      </a-tabs>
+      </KubeDetailTabs></a-spin>
       <output class="fixture-result">{{ notice || selected }}</output>
     </ResourceDetailDrawer>
   </a-config-provider>
