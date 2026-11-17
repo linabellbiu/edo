@@ -549,7 +549,9 @@ function legacyExecutionHandoff(plan:DeploymentPlan):DeploymentExecutionConfig|u
 }
 const executionPermission = computed(()=>props.inline ? 'workflow.update' : editingID.value ? 'deployment_plan.update' : 'deployment_plan.create')
 const executionPlan = computed<WorkflowDeploymentPlan>(()=>({name:form.name,kind:form.kind,timeout_seconds:form.timeout_seconds,compose_yaml:form.compose_yaml,script:form.script,deployment_target:{platform:platform.value,environment_id:form.environment_id,working_directory:form.working_directory}}))
-function updateExecution(value:DeploymentExecutionConfig) { if(!canUseForm())return;form.execution_config=value;if(form.kind==='kubernetes'&&!form.container_name){const image=value.deployment_inputs?.find(input=>input.kind==='registry')?.image;if(image)form.container_name=kubernetesResourceName(image.split('/').at(-1)||'')} }
+// 容器名称不再单独填写：使用部署镜像产物名称，未配置镜像时回退到 Deployment 名称。
+function containerFromExecution(value?:DeploymentExecutionConfig){const image=value?.deployment_inputs?.find(input=>input.kind==='registry')?.image||'';return image?kubernetesResourceName((image.split('/').at(-1)||'').split(/[:@]/)[0]||''):''}
+function updateExecution(value:DeploymentExecutionConfig) { if(!canUseForm())return;form.execution_config=value;if(form.kind==='kubernetes')form.container_name=containerFromExecution(value)||kubernetesResourceName(form.workload_name||'') }
 function edit(plan: DeploymentPlan) {
   reset()
   for (const kind of kindOptions) delete deploymentDrafts[kind.value]
@@ -577,7 +579,8 @@ function edit(plan: DeploymentPlan) {
     runtime_id: target?.runtime_id || '',
     namespace: target?.namespace || 'default',
     workload_name: plan.kind === 'compose' ? '' : target?.workload_name || plan.service_name || '',
-    container_name: target?.container_name || '',
+    // 容器名称跟随镜像产物；没有配置镜像时保留原值，避免打开方案就改写目标。
+    container_name: containerFromExecution(plan.execution_config || legacyExecutionHandoff(plan)) || target?.container_name || '',
     docker_port_mappings: dockerPorts.length ? dockerPorts : [emptyDockerPort()],
     docker_environment_variables: Object.entries(dockerConfig?.environment_variables || {}).map(([name, value]) => ({ name, value })),
     docker_volume_mounts: (dockerConfig?.volume_mounts || []).map(item => ({
@@ -884,7 +887,7 @@ function validate() {
   if (form.kind === 'compose' && !form.service_name.trim()) return '请输入 Docker Compose 目标服务名称'
   if (form.kind === 'compose' && !form.compose_yaml.trim()) return '请输入内联 Docker Compose YAML'
   if (form.kind === 'kubernetes' && (!form.runtime_id || !targetCapabilityMatches(form.kind, '', form.runtime_id))) return targetT('deploymentTarget.clusterPlaceholder')
-  if (form.kind === 'kubernetes' && (!form.namespace.trim() || !form.workload_name.trim() || !form.container_name.trim())) return '请输入命名空间、Deployment 名称和容器名称'
+  if (form.kind === 'kubernetes' && (!form.namespace.trim() || !form.workload_name.trim())) return '请输入命名空间和 Deployment 名称'
   return ''
 }
 
@@ -986,7 +989,8 @@ async function save() {
       runtime_id: platform.value === 'ssh' ? '' : form.runtime_id,
       namespace: platform.value === 'kubernetes' ? form.namespace.trim() : '',
       workload_name: platform.value === 'ssh' || form.kind === 'compose' ? '' : form.workload_name.trim(),
-      container_name: platform.value === 'kubernetes' ? form.container_name.trim() : '',
+      // 容器名称始终等于镜像产物名称；没有镜像时使用 Deployment 名称，保证目标仍可准确指向容器。
+      container_name: platform.value === 'kubernetes' ? (containerFromExecution(form.execution_config) || kubernetesResourceName(form.workload_name.trim()) || form.container_name.trim()) : '',
       rollout_timeout: form.timeout_seconds,
     }
     const payload = {
@@ -1208,7 +1212,6 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               <template v-if="!form.reusable && platform === 'kubernetes'">
                 <a-form-item label="命名空间" required><a-input v-model:value="form.namespace" placeholder="default" /></a-form-item>
                 <a-form-item label="Deployment 名称" required><a-input v-model:value="form.workload_name" placeholder="例如：backend-web" /></a-form-item>
-                <a-form-item class="span-2" label="容器名称" required><a-input v-model:value="form.container_name" placeholder="Deployment Pod 模板中的容器名" /></a-form-item>
               </template>
             </div>
             <div v-if="!form.reusable && (platform === 'kubernetes' ? !canReadRuntimes : !canReadHosts)" class="permission-note">需要主机与集群查看权限才能读取当前主机组的执行能力。</div>

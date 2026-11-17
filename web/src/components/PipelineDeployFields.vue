@@ -56,14 +56,17 @@ const buildArtifactOptions=computed(()=>{
  return options
 })
 const registryImage=computed(()=>(execution.value.deployment_inputs?.find(input=>input.kind==='registry')?.image||'').trim())
-watch(registryImage,(value,previous)=>{
- if(props.disabled||plan.value?.kind!=='kubernetes'||!value)return
- const current=plan.value?.deployment_target?.container_name||''
- const next=kubernetesResourceName(value.split('/').at(-1)||'')
- const previousName=kubernetesResourceName(((previous||'').split('/').at(-1)||''))
- if(!next||next===current)return
- // 用户自己改过容器名时保持原值，只跟随镜像默认派生值。
- if(!current||current===previousName)target({container_name:next})
+// 容器名称不再单独填写：始终使用镜像产物名称，没有镜像时回退到上游构建产物或应用名。
+const desiredContainerName=computed(()=>{
+ if(plan.value?.kind!=='kubernetes')return ''
+ const image=registryImage.value
+ if(image)return kubernetesResourceName((image.split('/').at(-1)||'').split(/[:@]/)[0]||'')
+ const build=imageBuildNodes.value.find(node=>node.id===selectedImageBuildID.value)||(imageBuildNodes.value.length===1?imageBuildNodes.value[0]:undefined)
+ if(!execution.value.deployment_registry_id){
+  const fallback=kubernetesContainerDefault(props.applicationName||'',build)
+  if(fallback)return fallback
+ }
+ return props.applicationName?kubernetesResourceName(props.applicationName):''
 })
 const clusterOptions=computed(()=>{
  const options=clusters.value.filter(cluster=>cluster.is_active).map(cluster=>({value:cluster.id,label:cluster.name,disabled:false}))
@@ -99,16 +102,16 @@ function change(patch:Partial<WorkflowNodeConfig>){if(!props.disabled)emit('chan
 function update(patch:Partial<WorkflowDeploymentPlan>){if(plan.value)change({inline_deployment_plan:{...plan.value,...patch,name:props.node.name}})}
 function updateExecution(patch:Partial<DeploymentExecutionConfig>){update({execution_config:{...execution.value,...patch}})}
 function target(patch:Record<string,unknown>){if(plan.value?.deployment_target)update({deployment_target:{...plan.value.deployment_target,...patch}})}
-watch(()=>JSON.stringify([props.node.id,props.applicationName,execution.value.artifact_node_id,execution.value.artifact_build_plan_id,execution.value.deployment_inputs,props.buildNodes,plan.value?.kind]),()=>{
- if(props.disabled||plan.value?.kind!=='kubernetes'||!props.applicationName)return
+watch(()=>JSON.stringify([props.node.id,props.applicationName,execution.value.artifact_node_id,execution.value.artifact_build_plan_id,execution.value.deployment_registry_id,execution.value.deployment_inputs,props.buildNodes,plan.value?.kind,plan.value?.deployment_target?.namespace,plan.value?.deployment_target?.workload_name,plan.value?.deployment_target?.container_name]),()=>{
+ if(props.disabled||plan.value?.kind!=='kubernetes')return
  const current=plan.value.deployment_target;if(!current)return
- const build=imageBuildNodes.value.find(node=>node.id===selectedImageBuildID.value)||(imageBuildNodes.value.length===1?imageBuildNodes.value[0]:undefined)
  const patch:Record<string,unknown>={}
- if(!current.namespace)patch.namespace=kubernetesResourceName(props.applicationName)
- if(!current.workload_name)patch.workload_name=kubernetesResourceName(props.applicationName)
- const image=execution.value.deployment_inputs?.find(input=>input.kind==='registry')?.image
- if(!current.container_name && image)patch.container_name=kubernetesResourceName(image.split('/').at(-1)||'')
- else if(!current.container_name && build&&!execution.value.deployment_registry_id)patch.container_name=kubernetesContainerDefault(props.applicationName,build)
+ if(props.applicationName){
+  if(!current.namespace)patch.namespace=kubernetesResourceName(props.applicationName)
+  if(!current.workload_name)patch.workload_name=kubernetesResourceName(props.applicationName)
+ }
+ const container=desiredContainerName.value
+ if(container&&container!==(current.container_name||''))patch.container_name=container
  if(Object.keys(patch).length)target(patch)
 },{immediate:true})
 function source(kind:string){services.value=[];serviceError.value='';change({compose_source:kind==='editor'?undefined:{kind:kind as 'repository',path:kind==='repository'?'':undefined}})}
@@ -190,7 +193,7 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
    <template v-else><a-form-item label="上游构建产物" required><a-auto-complete :value="node.config.compose_source?.artifact_reference || (node.config.compose_source?.artifact_name?'${'+node.config.compose_source.artifact_name+'}':'')" :disabled="disabled" :options="buildArtifactOptions" placeholder="选择上游构建产物，例如 ${BUILD_ARTIFACT}" @update:value="change({compose_source:{kind:'upstream',artifact_reference:String($event),path:node.config.compose_source?.path||'compose.yaml'}})"/></a-form-item><a-form-item label="产物内文件路径" required><a-input :value="node.config.compose_source?.path" :disabled="disabled" placeholder="deploy/compose.yaml" @update:value="change({compose_source:{...node.config.compose_source!,path:String($event)}})"/></a-form-item></template>
    <a-alert v-if="serviceError" :type="sourceKind==='upstream'?'info':'warning'" show-icon :message="serviceError"/>
   </template>
-  <template v-else-if="plan.kind==='kubernetes'"><DeploymentConfigurationFields report-validation @validation-change="executionFieldIssues=$event" :config="execution" :deploymentPlan="plan" :applicationID="applicationID" :applicationName="applicationName" :build-images="buildImages" :disabled="disabled" edit-permission="workflow.update" :registry-target="registryHost" hide-script @change="updateExecution($event)"/><a-form-item label="集群" required><KubernetesClusterSelect :value="plan.deployment_target?.runtime_id" :disabled="disabled||!auth.canAny(['cluster.read'])" :clusters="clusters" :options="clusterOptions" @update:value="target({runtime_id:$event,environment_id:'',host_ids:undefined,host_id:undefined})"/></a-form-item><a-form-item label="命名空间" required><a-input :value="plan.deployment_target?.namespace" :disabled="disabled" @update:value="target({namespace:String($event)})"/></a-form-item><a-form-item label="Deployment" required><a-input :value="plan.deployment_target?.workload_name" :disabled="disabled" @update:value="target({workload_name:String($event)})"/></a-form-item><a-form-item label="容器名称" required><a-input :value="plan.deployment_target?.container_name" :disabled="disabled" @update:value="target({container_name:String($event)})"/></a-form-item><KubernetesDeploymentTemplateFields @invalid="kubernetesFieldError=$event;emit('invalid',$event)" :model-value="execution.kubernetes" :disabled="disabled" :k3d="selectedClusterK3d" @update:model-value="updateExecution({kubernetes:$event})"/></template>
+  <template v-else-if="plan.kind==='kubernetes'"><DeploymentConfigurationFields report-validation @validation-change="executionFieldIssues=$event" :config="execution" :deploymentPlan="plan" :applicationID="applicationID" :applicationName="applicationName" :build-images="buildImages" :disabled="disabled" edit-permission="workflow.update" :registry-target="registryHost" hide-script @change="updateExecution($event)"/><a-form-item label="集群" required><KubernetesClusterSelect :value="plan.deployment_target?.runtime_id" :disabled="disabled||!auth.canAny(['cluster.read'])" :clusters="clusters" :options="clusterOptions" @update:value="target({runtime_id:$event,environment_id:'',host_ids:undefined,host_id:undefined})"/></a-form-item><a-form-item label="命名空间" required><a-input :value="plan.deployment_target?.namespace" :disabled="disabled" @update:value="target({namespace:String($event)})"/></a-form-item><a-form-item label="Deployment" required><a-input :value="plan.deployment_target?.workload_name" :disabled="disabled" @update:value="target({workload_name:String($event)})"/></a-form-item><KubernetesDeploymentTemplateFields @invalid="kubernetesFieldError=$event;emit('invalid',$event)" :model-value="execution.kubernetes" :disabled="disabled" :k3d="selectedClusterK3d" @update:model-value="updateExecution({kubernetes:$event})"/></template>
   <template v-else>
    <a-form-item required><DeploymentScriptEditor :model-value="plan.script||''" kind="script" :disabled="disabled" edit-permission="workflow.update" @update:model-value="update({script:$event})"/></a-form-item>
    <a-form-item label="工作目录"><a-input :value="plan.deployment_target?.working_directory" :disabled="disabled" placeholder="例如 /srv/my_app" @update:value="target({working_directory:String($event)})"/></a-form-item>

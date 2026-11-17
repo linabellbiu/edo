@@ -50,7 +50,7 @@ test('已停用或不可读的原集群保留禁用名称，无权限不查询�
  h.props.node.config.inline_deployment_plan.kind='script';await settle()
  assert.deepEqual(h.lookups,['groups','hosts'])
 })
-test('显式仓库镜像决定容器补空值，不从前序构建推断部署仓库',async t=>{
+test('显式仓库镜像决定容器名称，不从前序构建推断部署仓库',async t=>{
  const h=harness();t.after(h.stop);await settle()
  h.props.applicationName='order-api'
  h.props.node.config.inline_deployment_plan.execution_config={deployment_registry_id:'selected',deployment_input_version:1,deployment_inputs:[{kind:'registry',registry_id:'selected',image:'services/payment-api',tag:'v2'}]}
@@ -59,7 +59,7 @@ test('显式仓库镜像决定容器补空值，不从前序构建推断部署�
  assert.equal(plan.deployment_target.container_name,'payment-api');assert.equal(plan.execution_config.deployment_registry_id,'selected')
  assert.equal(plan.execution_config.artifact_node_id,undefined)
 })
-test('命名空间与Deployment默认应用名，容器名来自选定镜像；不覆盖手动输入',async t=>{
+test('命名空间与Deployment默认应用名，容器名称始终等于镜像产物名称',async t=>{
  const h=harness();t.after(h.stop);await settle()
  h.props.applicationName='order_api'
  h.props.buildNodes=[{id:'image',name:'构建',type:'build',config:{image_name:'services/order_backend',inline_build:{kind:'dockerfile',image_registry_id:'registry'}}}]
@@ -68,7 +68,9 @@ test('命名空间与Deployment默认应用名，容器名来自选定镜像；�
  assert.equal(target.namespace,'order-api');assert.equal(target.workload_name,'order-api');assert.equal(target.container_name,'order-backend')
  h.props.node.config.inline_deployment_plan.deployment_target={...target,namespace:'manual',container_name:'manual-api'}
  h.props.buildNodes[0].config.image_name='changed';await settle()
- assert.equal(h.props.node.config.inline_deployment_plan.deployment_target.namespace,'manual');assert.equal(h.props.node.config.inline_deployment_plan.deployment_target.container_name,'manual-api')
+ const latest=mutationEvents(h).at(-1).args[0].inline_deployment_plan.deployment_target
+ assert.equal(latest.namespace,'manual','手动填写的命名空间仍保留')
+ assert.equal(latest.container_name,'changed','容器名称跟随镜像产物，不再保留单独填写的值')
 })
 test('标准模板使用约定资源，默认端口全部关闭；无RBAC不能通过事件修改网络',async t=>{
  const {loadFrontend}=await import('./acceptanceHarness.mjs')
@@ -79,14 +81,15 @@ test('标准模板使用约定资源，默认端口全部关闭；无RBAC不能�
  assert.equal(h.state.resourceDisabled.value,true);assert.equal(h.state.networkDisabled.value,true)
  h.state.port(0,{enabled:true});assert.deepEqual(mutationEvents(h),[])
 })
-test('显式镜像修改不覆盖用户手填的容器名称',async t=>{
+test('显式镜像修改后容器名称同步为镜像产物名称',async t=>{
  const h=harness();t.after(h.stop);await settle()
  h.props.applicationName='orders'
  h.props.node.config.inline_deployment_plan.deployment_target.container_name='manual-api'
  h.props.node.config.inline_deployment_plan.execution_config={deployment_registry_id:'selected',deployment_input_version:1,deployment_inputs:[{kind:'registry',registry_id:'selected',image:'api',tag:'v1'}]}
  await settle()
- assert.equal(h.props.node.config.inline_deployment_plan.deployment_target.container_name,'manual-api')
- assert.ok(mutationEvents(h).every(event=>event.args[0].inline_deployment_plan.deployment_target.container_name==='manual-api'))
+ const latest=mutationEvents(h).at(-1).args[0].inline_deployment_plan.deployment_target
+ assert.equal(latest.container_name,'api')
+ assert.ok(mutationEvents(h).every(event=>event.args[0].inline_deployment_plan.deployment_target.container_name==='api'))
 })
 
 test('端口可按用户配置增删，清空后重建，网络撤权时事件均被阻止',async t=>{
@@ -185,4 +188,42 @@ test('ClusterIP暂存节点端口不生效，NodePort与LoadBalancer均校验节
  }
  cfg.ports=[{name:'web',enabled:false,port:80,target_port:8080,node_port:30080},{name:'metrics',enabled:false,port:9090,target_port:9090,node_port:30080}]
  assert.match(utils.kubernetesDeploymentPortError(cfg),/节点端口重复/)
+})
+test('部署表单只保留镜像产物：「镜像」改名为镜像产物，容器名称输入框移除',async()=>{
+ const {readFileSync}=await import('node:fs'),{parse}=await import('@vue/compiler-sfc'),{baseParse}=await import('@vue/compiler-dom')
+ const fields=readFileSync(new URL('../src/components/DeploymentConfigurationFields.vue',import.meta.url),'utf8')
+ const pipeline=readFileSync(new URL('../src/components/PipelineDeployFields.vue',import.meta.url),'utf8')
+ const plans=readFileSync(new URL('../src/views/DeploymentPlanView.vue',import.meta.url),'utf8')
+ const labels=source=>{
+  const found=[]
+  const walk=node=>{
+   if(node.type===1&&node.tag==='a-form-item'){
+    const label=node.props?.find(prop=>prop.type===6&&prop.name==='label')
+    if(label)found.push(String(label.value?.content||''))
+   }
+   for(const child of node.children??[])walk(child)
+   for(const branch of node.branches??[])walk(branch)
+  }
+  const template=parse(source).descriptor.template
+  for(const child of baseParse(template.content).children)walk(child)
+  return found
+ }
+ // 「部署镜像」字段的 label 必须是镜像产物；其他来源列表中的“镜像”行不属于 Kubernetes 部署镜像产物。
+ const fieldLabel=(source,aria)=>{
+  let result=''
+  const walk=node=>{
+   if(node.type!==1)return
+   const hasField=(node.children??[]).some(child=>child.type===1&&child.props?.some(prop=>prop.type===6&&prop.name==='aria-label'&&prop.value?.content===aria))
+   if(hasField&&node.tag==='a-form-item'){const label=node.props?.find(prop=>prop.type===6&&prop.name==='label');result=String(label?.value?.content||'');return}
+   for(const child of node.children??[])walk(child)
+  }
+  const template=parse(source).descriptor.template
+  for(const child of baseParse(template.content).children)walk(child)
+  return result
+ }
+ assert.equal(fieldLabel(fields,'部署镜像'),'镜像产物')
+ for(const source of [pipeline,plans]) assert.equal(labels(source).includes('容器名称'),false,'Kubernetes 部署表单不再单独填写容器名称')
+ assert.equal(labels(plans).includes('容器名称（可选）'),true,'Docker 容器名称属于另一部署方式，保持不变')
+ assert.match(pipeline,/const desiredContainerName=computed/)
+ assert.match(pipeline,/patch\.container_name=container/)
 })
