@@ -87,6 +87,8 @@
 .kube-detail-drawer .ant-drawer-body{display:flex;flex-direction:column;overflow:hidden}
 .kube-detail-drawer .resource-detail-toolbar{position:static;flex-shrink:0;padding:10px 16px}
 .kube-detail-drawer .resource-detail-content{display:block;overflow:auto;min-height:0;flex:1;padding:12px 16px 20px}
+.kube-workload-drawer .resource-detail-content{scrollbar-width:none}
+.kube-workload-drawer .resource-detail-content::-webkit-scrollbar{display:none}
 .kube-detail-drawer .resource-detail-section{padding:14px}
 .kube-workspace .list-filter-field{display:flex;align-items:center;gap:8px;min-width:0}
 .kube-workspace .list-filter-field>span:not(.kube-select){flex-shrink:0;font-size:13px;color:var(--kube-muted);white-space:nowrap}

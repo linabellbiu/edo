@@ -49,7 +49,7 @@ function interaction(label, ...values) { notice.value = `${label}：${values.map
 <template>
   <a-config-provider :theme="{ algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#5269ff', borderRadius: 4, fontSize: 13 } }">
     <main class="fixture-backdrop"><h2>EDO 工作负载视觉回归</h2><p>仅测试数据，不连接集群，不执行任何业务操作。</p></main>
-    <ResourceDetailDrawer class="kube-detail-drawer fixture-drawer" open width="min(1640px, 96vw)" title="demo-web · 本地 UI 测试数据">
+    <ResourceDetailDrawer class="kube-detail-drawer kube-workload-drawer fixture-drawer" open width="min(1640px, 96vw)" title="demo-web · 本地 UI 测试数据">
       <template #actions><span class="fixture-banner">视觉夹具 · 非真实集群</span><a-tag>Deployment</a-tag><span>preview</span><a-tag color="success">2 / 2</a-tag><a-button size="small" @click="refresh++">刷新采样</a-button><a-button size="small" disabled>调整副本</a-button><a-button size="small" disabled>滚动重启</a-button><a-button size="small" disabled>编辑</a-button></template>
       <a-tabs v-model:active-key="tab" class="detail-tabs">
         <a-tab-pane key="basic" tab="运行概览"><KubeWorkloadSummary :object="object" :type="type" :events="events" :events-error="false" /><KubeWorkloadExplorer cluster="fixture-cluster" :object="object" :type="type" :selection="selection" :pods="pods" :pods-loading="false" pods-error="" :pods-partial="false" :events="events" :events-error="false" :auto-refresh="false" :refresh-token="refresh" :can="can" :can-follow="()=>true" @selection="selection=$event" @follow="reference=>interaction('关联资源',reference)" @logs="(...values)=>interaction('只读日志目标',...values)" @terminal="(...values)=>interaction('终端目标（不连接）',...values)" /></a-tab-pane>
