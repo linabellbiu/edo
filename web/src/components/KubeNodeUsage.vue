@@ -20,7 +20,7 @@ function hint(meter:NodeResourceUsage){
   if(meter.state==='ok')return t(meter.key==='cpu'?'k8s.cpuUsageHint':meter.key==='memory'?'k8s.memoryUsageHint':'k8s.nodePodsHint')
   return t(meter.state==='loading'?'k8s.loading':meter.state==='no_permission'?'k8s.nodePodsNoPermission':meter.state==='missing_capacity'?'k8s.capacityMissing':meter.key==='pods'?'k8s.nodePodsUnavailable':'k8s.metricsUnavailable')
 }
-const tone=(meter:NodeResourceUsage)=>meter.percent===undefined?'unknown':meter.percent>=90?'danger':meter.percent>=75?'warning':meter.key
+const tone=(meter:NodeResourceUsage)=>meter.percent===undefined?'unknown':meter.percent>=90?'danger':meter.percent>=75?'warning':'normal'
 const description=computed(()=>meters.value.map(meter=>`${name(meter.key)} ${percent(meter)} [${numbers(meter)}] ${hint(meter)}`).join('; '))
 </script>
 
@@ -29,21 +29,25 @@ const description=computed(()=>meters.value.map(meter=>`${name(meter.key)} ${per
     <template #title><div class="usage-tooltip"><div v-for="meter in meters" :key="meter.key"><strong>{{ name(meter.key) }} {{ percent(meter) }} [{{ numbers(meter,true) }}]</strong><span>{{ hint(meter) }}</span></div><small v-if="overview">{{ t('k8s.statisticsAt') }} {{ formatDateTime(overview.collected_at) }}</small></div></template>
     <div class="node-usage" tabindex="0" :aria-label="description">
       <div v-for="meter in meters" :key="meter.key" class="usage-meter" :class="`tone-${tone(meter)}`" :role="meter.percent===undefined?undefined:'meter'" :aria-label="name(meter.key)" :aria-valuemin="meter.percent===undefined?undefined:0" :aria-valuemax="meter.percent===undefined?undefined:Math.max(100,meter.percent)" :aria-valuenow="meter.percent" :aria-valuetext="`${percent(meter)} [${numbers(meter)}]`">
+        <span class="meter-name">{{ name(meter.key) }}</span>
         <span class="meter-track" aria-hidden="true"><span class="meter-fill" :style="{width:`${meter.width}%`}" /></span>
-        <span class="meter-name">{{ name(meter.key) }}</span><span class="meter-percent">{{ percent(meter) }}</span><span class="meter-values">[{{ numbers(meter) }}]</span>
+        <span class="meter-percent">{{ percent(meter) }}</span><span class="meter-values">[{{ numbers(meter) }}]</span>
       </div>
     </div>
   </a-tooltip>
 </template>
 
 <style scoped>
-.node-usage{width:286px;display:grid;gap:3px;font-variant-numeric:tabular-nums;border-radius:4px;outline-offset:3px}
+.node-usage{width:296px;display:grid;gap:2px;font-variant-numeric:tabular-nums;border-radius:6px;outline-offset:3px}
 .node-usage:focus-visible{outline:2px solid var(--kube-focus)}
-.usage-meter{--meter-color:var(--kube-meter-cpu);position:relative;isolation:isolate;display:grid;grid-template-columns:43px 54px minmax(0,1fr);height:24px;border-radius:3px;overflow:hidden;background:var(--kube-surface-soft);color:var(--kube-text);font-size:12px;line-height:24px;white-space:nowrap}
-.meter-track{position:absolute;inset:0 0 0 43px;z-index:-1;pointer-events:none}
-.meter-fill{position:absolute;inset:0 auto 0 0;height:100%;background:color-mix(in srgb,var(--meter-color) 18%,var(--kube-surface));z-index:-1;pointer-events:none}
-.meter-name{font-weight:600;text-align:center;background:var(--meter-color);color:var(--kube-meter-label)}
-.meter-percent{text-align:right;padding-right:7px;font-weight:600}.meter-values{padding:0 8px 0 3px;text-align:right;overflow:hidden;text-overflow:ellipsis}
-.tone-memory{--meter-color:var(--kube-meter-memory)}.tone-pods{--meter-color:var(--kube-meter-pods)}.tone-warning{--meter-color:var(--kube-meter-warning)}.tone-danger{--meter-color:var(--kube-meter-danger)}.tone-unknown{--meter-color:var(--kube-meter-unknown)}
+.usage-meter{--meter-color:var(--kube-meter-fill);display:grid;grid-template-columns:30px 70px 48px minmax(0,1fr);align-items:center;gap:8px;height:24px;color:var(--kube-text);font-size:12px;line-height:24px;white-space:nowrap}
+.meter-name{color:var(--kube-muted);font-weight:500}
+.meter-track{position:relative;height:6px;overflow:hidden;border-radius:3px;background:var(--kube-meter-track)}
+.meter-fill{position:absolute;inset:0 auto 0 0;border-radius:3px;background:var(--meter-color)}
+.meter-percent{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.meter-values{padding-left:2px;overflow:hidden;text-align:right;color:var(--kube-muted);text-overflow:ellipsis}
+.tone-warning{--meter-color:var(--kube-meter-warning)}.tone-warning .meter-percent{color:var(--kube-warning)}
+.tone-danger{--meter-color:var(--kube-meter-danger)}.tone-danger .meter-percent{color:var(--kube-danger)}
+.tone-unknown .meter-fill{display:none}
 .usage-tooltip{display:grid;gap:8px;max-width:420px;font-size:12px;line-height:1.6;font-variant-numeric:tabular-nums}.usage-tooltip>div{display:grid;gap:2px}.usage-tooltip strong{font-weight:600}.usage-tooltip span,.usage-tooltip small{opacity:.9}.usage-tooltip small{border-top:1px solid currentColor;padding-top:6px;font-size:12px}
 </style>

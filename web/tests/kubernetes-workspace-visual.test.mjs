@@ -97,7 +97,8 @@ test('Kubernetes 局部令牌不覆盖全站，浅深主题都具备独立可读
    assert.ok(contrast(colors['--kube-focus'],colors[`--kube-${surface}`])>=3,`${theme}/focus/${surface}`)
   }
   for(const tone of ['success','warning','danger'])assert.ok(contrast(colors[`--kube-${tone}`],colors[`--kube-${tone}-bg`])>=4.5,`${theme}/${tone}`)
-  for(const meter of ['cpu','memory','pods','warning','danger','unknown'])assert.ok(contrast(colors['--kube-meter-label'],colors[`--kube-meter-${meter}`])>=4.5,`${theme}/meter/${meter}`)
+  for(const meter of ['fill','warning','danger'])assert.ok(contrast(colors[`--kube-meter-${meter}`],colors['--kube-surface'])>=3,`${theme}/meter/${meter}`)
+  assert.ok(contrast(colors['--kube-meter-fill'],colors['--kube-meter-track'])>=3,`${theme}/meter/track`)
   assert.notEqual(colors['--kube-hover'],colors['--kube-selected'])
   assert.notEqual(colors['--kube-selected'],colors['--kube-success-bg'])
   assert.notEqual(colors['--kube-warning-bg'],colors['--kube-danger-bg'])
