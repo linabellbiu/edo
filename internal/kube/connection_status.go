@@ -284,6 +284,7 @@ func (s *Service) cachedConnectionStatus(ctx context.Context, cluster *model.Kub
 		entry.lastUsed = now
 		if entry.checking && !entry.startedAt.IsZero() && now.Sub(entry.startedAt) > connectionCheckStaleAfter {
 			// 检查卡住：取消、回收名额并作废旧结果，下面按最新配置重新检查。
+			slog.WarnContext(ctx, "集群连接检查超时未完成，已回收并重试", "operation", "kubernetes_connection_check_stalled", "cluster_id", cluster.ID, "elapsed_ms", now.Sub(entry.startedAt).Milliseconds(), "active_checks", cache.checks.activeCount())
 			cache.abandonCheck(entry, now)
 		}
 		refreshAllowed := refresh && entry.value.CheckedAt != nil && now.Sub(*entry.value.CheckedAt) >= 2*time.Second
