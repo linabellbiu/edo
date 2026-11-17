@@ -28,10 +28,11 @@ const description=computed(()=>meters.value.map(meter=>`${name(meter.key)} ${per
   <a-tooltip :mouse-enter-delay="0.1" :trigger="['hover','focus']" placement="top">
     <template #title><div class="usage-tooltip"><div v-for="meter in meters" :key="meter.key"><strong>{{ name(meter.key) }} {{ percent(meter) }} [{{ numbers(meter,true) }}]</strong><span>{{ hint(meter) }}</span></div><small v-if="overview">{{ t('k8s.statisticsAt') }} {{ formatDateTime(overview.collected_at) }}</small></div></template>
     <div class="node-usage" tabindex="0" :aria-label="description">
-      <div v-for="meter in meters" :key="meter.key" class="usage-meter" :class="`tone-${tone(meter)}`" :role="meter.percent===undefined?undefined:'meter'" :aria-label="name(meter.key)" :aria-valuemin="meter.percent===undefined?undefined:0" :aria-valuemax="meter.percent===undefined?undefined:Math.max(100,meter.percent)" :aria-valuenow="meter.percent" :aria-valuetext="`${percent(meter)} [${numbers(meter)}]`">
+      <div v-for="meter in meters" :key="meter.key" class="usage-meter" :class="`tone-${tone(meter)}`" :role="meter.percent===undefined?undefined:'meter'" :aria-label="name(meter.key)" :aria-valuemin="meter.percent===undefined?undefined:0" :aria-valuemax="meter.percent===undefined?undefined:Math.max(100,meter.percent)" :aria-valuenow="meter.percent" :aria-valuetext="`${percent(meter)}，${numbers(meter)}`">
         <span class="meter-name">{{ name(meter.key) }}</span>
         <span class="meter-track" aria-hidden="true"><span class="meter-fill" :style="{width:`${meter.width}%`}" /></span>
-        <span class="meter-percent">{{ percent(meter) }}</span><span class="meter-values">[{{ numbers(meter) }}]</span>
+        <span class="meter-percent">{{ percent(meter) }}</span>
+        <span class="meter-values"><b>{{ amount(meter.used, meter.key) }}</b><span class="meter-total">/ {{ amount(meter.total, meter.key) }}</span></span>
       </div>
     </div>
   </a-tooltip>
@@ -45,7 +46,9 @@ const description=computed(()=>meters.value.map(meter=>`${name(meter.key)} ${per
 .meter-track{position:relative;height:6px;overflow:hidden;border-radius:3px;background:var(--kube-meter-track)}
 .meter-fill{position:absolute;inset:0 auto 0 0;border-radius:3px;background:var(--meter-color)}
 .meter-percent{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
-.meter-values{padding-left:2px;overflow:hidden;text-align:right;color:var(--kube-muted);text-overflow:ellipsis}
+.meter-values{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:6px;min-width:0;color:var(--kube-muted)}
+.meter-values>b{overflow:hidden;color:var(--kube-text);font-weight:500;text-align:right;text-overflow:ellipsis}
+.meter-total{white-space:nowrap}
 .tone-warning{--meter-color:var(--kube-meter-warning)}.tone-warning .meter-percent{color:var(--kube-warning)}
 .tone-danger{--meter-color:var(--kube-meter-danger)}.tone-danger .meter-percent{color:var(--kube-danger)}
 .tone-unknown .meter-fill{display:none}
