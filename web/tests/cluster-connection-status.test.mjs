@@ -101,3 +101,27 @@ test('大目录只探测搜索前100项和当前目标，搜索与异步状态�
   assert.equal(props.value, 'cluster-599')
   assert.deepEqual(h.events, [])
 })
+
+test('检测中超过窗口后显示检测超时并降低轮询频率，手动刷新重新检测', async t => {
+  const realNow = Date.now
+  let clock = realNow()
+  Date.now = () => clock
+  t.after(() => { Date.now = realNow })
+  const checkingSlow = () => ({ cluster_id: 'slow', status: 'checking', reason: 'checking', message: '正在检查连接' })
+  const h = harness(t, () => Promise.resolve({ data: { statuses: [status('fast', 'connected', '连接正常'), checkingSlow()] } }))
+  await settle()
+  assert.equal(h.state.statuses.value.slow.status, 'checking')
+  assert.equal([...h.timers.values()][0].delay, 2000)
+  clock += 8000
+  const scheduled = [...h.timers.values()].at(-1)
+  scheduled.callback()
+  await settle()
+  assert.equal(h.state.statuses.value.slow.status, 'unknown')
+  assert.equal(h.state.statuses.value.slow.reason, 'stalled')
+  assert.equal(h.state.statuses.value.slow.message, '连接检测超时，请重试')
+  assert.equal(h.api.clusterConnectionLabel({ id: 'slow', name: 'slow', is_active: true }, h.state.statuses.value.slow), '检测超时')
+  assert.equal([...h.timers.values()].at(-1).delay, 10000)
+  await h.state.refresh()
+  assert.equal(h.state.statuses.value.slow.status, 'checking')
+  assert.equal(h.state.statuses.value.slow.reason, 'checking')
+})

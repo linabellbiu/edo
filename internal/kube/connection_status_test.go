@@ -255,15 +255,16 @@ func TestConnectionStatusExpirationAndBoundedChecks(t *testing.T) {
 	}
 	awaitConnectionStatus(t, f.service, f.adminCtx, f.cluster.ID, "connected")
 	f.service.invalidateConnectionStatuses(f.cluster.ID)
+	held := make([]*connectionCheckLease, 0, maxConnectionChecks)
 	for range maxConnectionChecks {
-		cache.slots <- struct{}{}
+		held = append(held, cache.checks.acquire())
 	}
 	values, err = f.service.ConnectionStatuses(f.adminCtx, nil, false)
 	if err != nil || values[0].Reason != "queued" {
 		t.Fatalf("并发满后没有立即排队返回: %+v %v", values, err)
 	}
-	for range maxConnectionChecks {
-		<-cache.slots
+	for _, lease := range held {
+		cache.checks.release(lease)
 	}
 	awaitConnectionStatus(t, f.service, f.adminCtx, f.cluster.ID, "connected")
 }
@@ -327,7 +328,7 @@ func TestConnectionStatusesQueueStartsBeforeExpiredResults(t *testing.T) {
 	}
 	firstOnce.Do(func() { close(firstRelease) })
 	deadline = time.Now().Add(time.Second)
-	for len(f.service.connections.slots) != 0 && time.Now().Before(deadline) {
+	for f.service.connections.checks.activeCount() != 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	cache := f.service.connections
@@ -340,14 +341,15 @@ func TestConnectionStatusesQueueStartsBeforeExpiredResults(t *testing.T) {
 	}
 	cache.mu.Unlock()
 	// 首批过期后也先进入等待状态；不能因此与尚未执行的尾部重新按名称抢槽。
+	held := make([]*connectionCheckLease, 0, maxConnectionChecks)
 	for range maxConnectionChecks {
-		cache.slots <- struct{}{}
+		held = append(held, cache.checks.acquire())
 	}
 	if _, err := f.service.ConnectionStatuses(f.adminCtx, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	for range maxConnectionChecks {
-		<-cache.slots
+	for _, lease := range held {
+		cache.checks.release(lease)
 	}
 	if _, err := f.service.ConnectionStatuses(f.adminCtx, nil, false); err != nil {
 		t.Fatal(err)
@@ -434,5 +436,91 @@ func TestConnectionStatusesManualRefreshRechecksWithoutDuplicateRequests(t *test
 	awaitConnectionStatus(t, f.service, f.adminCtx, f.cluster.ID, "connected")
 	if f.peer.requests.Load() != before+1 {
 		t.Fatal("刷新应产生一次真实请求")
+	}
+}
+
+func TestConnectionCheckGateReclaimsWedgedLease(t *testing.T) {
+	gate := newConnectionCheckGate(2)
+	first, second := gate.acquire(), gate.acquire()
+	if first == nil || second == nil || gate.acquire() != nil {
+		t.Fatal("检查名额上限失守")
+	}
+	gate.release(first)
+	gate.release(first)
+	if gate.activeCount() != 1 {
+		t.Fatalf("重复释放改变了占用数: %d", gate.activeCount())
+	}
+	third := gate.acquire()
+	if third == nil || gate.activeCount() != 2 {
+		t.Fatal("释放后的名额不能再用")
+	}
+	gate.release(second)
+	gate.release(third)
+	if gate.activeCount() != 0 {
+		t.Fatalf("名额没有全部归还: %d", gate.activeCount())
+	}
+}
+
+func TestConnectionStatusesReapStalledCheckAndRetry(t *testing.T) {
+	f := newRBACFixture(t)
+	var requests atomic.Int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	server := connectionStatusTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		_, _ = io.WriteString(w, `{"gitVersion":"v1.35.5+k3s1"}`)
+	})
+	setConnectionStatusServer(t, f, server)
+	values, err := f.service.ConnectionStatuses(f.adminCtx, []string{f.cluster.ID}, false)
+	if err != nil || values[0].Status != "checking" {
+		t.Fatalf("首次检查没有立即返回检测中: %+v %v", values, err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for requests.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	// 模拟后台检查卡住：开始时间超出窗口后仍没有回写结果。
+	cache := f.service.connections
+	cache.mu.Lock()
+	var entry *connectionStatusEntry
+	for _, candidate := range cache.entries {
+		entry = candidate
+	}
+	if entry == nil || !entry.checking {
+		cache.mu.Unlock()
+		t.Fatal("缺少进行中的检查条目")
+	}
+	entry.startedAt = time.Now().UTC().Add(-connectionCheckStaleAfter - time.Second)
+	cache.mu.Unlock()
+	values, err = f.service.ConnectionStatuses(f.adminCtx, []string{f.cluster.ID}, false)
+	if err != nil || values[0].Reason != "stalled" {
+		t.Fatalf("卡住的检查没有被回收: %+v %v", values, err)
+	}
+	if value := awaitConnectionStatus(t, f.service, f.adminCtx, f.cluster.ID, "connected"); value.Message != "连接正常" {
+		t.Fatalf("重试后状态不正确: %+v", value)
+	}
+	if requests.Load() < 2 {
+		t.Fatalf("回收后没有重新检查: %d", requests.Load())
+	}
+	releaseOnce.Do(func() { close(release) })
+	time.Sleep(50 * time.Millisecond)
+	cache.mu.Lock()
+	var after *connectionStatusEntry
+	for _, candidate := range cache.entries {
+		after = candidate
+	}
+	cache.mu.Unlock()
+	if after == nil || after.value.Status != "connected" {
+		t.Fatalf("迟到的旧结果覆盖了重试结果: %+v", after)
+	}
+	if cache.checks.activeCount() != 0 {
+		t.Fatalf("检查名额泄漏: %d", cache.checks.activeCount())
 	}
 }

@@ -38,7 +38,7 @@ function change(value: string) { emit('update:value', value); emit('change', val
     </a-select>
     <div class="cluster-connection-feedback" :class="{ failed: error || selectedConnection && ['unreachable','restricted'].includes(selectedConnection.status) }" role="status">
       <template v-if="error"><a-tooltip :title="`连接状态读取失败：${error}`" :trigger="['hover','focus','click']"><span tabindex="0">连接状态读取失败：{{ error }}</span></a-tooltip><button type="button" :disabled="pending" @click="refresh()">重试</button></template>
-      <template v-else-if="selected && selectedConnection && ['unreachable','restricted','checking'].includes(selectedConnection.status)"><a-tooltip :title="selectedConnection.message" :trigger="['hover','focus','click']"><span tabindex="0">{{ selectedConnection.message }}</span></a-tooltip><button v-if="selectedConnection.status!=='checking'" type="button" :disabled="pending" aria-label="刷新集群连接状态" @click="refresh()"><RefreshCw :size="13" /></button></template>
+      <template v-else-if="selected && selectedConnection && (['unreachable','restricted','checking'].includes(selectedConnection.status) || selectedConnection.reason === 'stalled')"><a-tooltip :title="selectedConnection.message" :trigger="['hover','focus','click']"><span tabindex="0">{{ selectedConnection.message }}</span></a-tooltip><button v-if="selectedConnection.status!=='checking'" type="button" :disabled="pending" aria-label="刷新集群连接状态" @click="refresh()"><RefreshCw :size="13" /></button></template>
     </div>
   </div>
 </template>

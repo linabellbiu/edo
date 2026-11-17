@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -22,8 +23,11 @@ import (
 )
 
 const (
-	connectionStatusTTL        = 30 * time.Second
-	connectionCheckTimeout     = 5 * time.Second
+	connectionStatusTTL    = 30 * time.Second
+	connectionCheckTimeout = 5 * time.Second
+	// 后台检查超过窗口仍未回写即视为卡住：撤销本次检查、回收名额并允许立即重试，
+	// 避免缓存条目永久停留在“检测中”让页面一直转圈。
+	connectionCheckStaleAfter  = connectionCheckTimeout + 2*time.Second
 	maxConnectionChecks        = 4
 	maxConnectionStatusEntries = 512
 )
@@ -41,20 +45,65 @@ type ConnectionStatus struct {
 }
 
 type connectionStatusEntry struct {
-	value    ConnectionStatus
-	checking bool
-	lastUsed time.Time
-	cancel   context.CancelFunc
+	value     ConnectionStatus
+	checking  bool
+	stalled   bool
+	startedAt time.Time
+	sequence  uint64
+	lease     *connectionCheckLease
+	lastUsed  time.Time
+	cancel    context.CancelFunc
+}
+
+// connectionCheckLease 是一次后台检查占用的名额；释放可重复调用且只生效一次，
+// 卡住的检查被回收后，其迟到返回不会再次扣减名额。
+type connectionCheckLease struct{ released atomic.Bool }
+
+type connectionCheckGate struct {
+	mu     sync.Mutex
+	active int
+	limit  int
+}
+
+func newConnectionCheckGate(limit int) *connectionCheckGate {
+	return &connectionCheckGate{limit: limit}
+}
+
+func (g *connectionCheckGate) acquire() *connectionCheckLease {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.active >= g.limit {
+		return nil
+	}
+	g.active++
+	return &connectionCheckLease{}
+}
+
+func (g *connectionCheckGate) release(lease *connectionCheckLease) {
+	if lease == nil || !lease.released.CompareAndSwap(false, true) {
+		return
+	}
+	g.mu.Lock()
+	if g.active > 0 {
+		g.active--
+	}
+	g.mu.Unlock()
+}
+
+func (g *connectionCheckGate) activeCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.active
 }
 
 type connectionStatusCache struct {
 	mu      sync.Mutex
 	entries map[string]*connectionStatusEntry
-	slots   chan struct{}
+	checks  *connectionCheckGate
 }
 
 func newConnectionStatusCache() *connectionStatusCache {
-	return &connectionStatusCache{entries: map[string]*connectionStatusEntry{}, slots: make(chan struct{}, maxConnectionChecks)}
+	return &connectionStatusCache{entries: map[string]*connectionStatusEntry{}, checks: newConnectionCheckGate(maxConnectionChecks)}
 }
 
 type connectionAuthorization struct {
@@ -233,6 +282,10 @@ func (s *Service) cachedConnectionStatus(ctx context.Context, cluster *model.Kub
 	entry := cache.entries[key]
 	if entry != nil {
 		entry.lastUsed = now
+		if entry.checking && !entry.startedAt.IsZero() && now.Sub(entry.startedAt) > connectionCheckStaleAfter {
+			// 检查卡住：取消、回收名额并作废旧结果，下面按最新配置重新检查。
+			cache.abandonCheck(entry, now)
+		}
 		refreshAllowed := refresh && entry.value.CheckedAt != nil && now.Sub(*entry.value.CheckedAt) >= 2*time.Second
 		if entry.checking || !refreshAllowed && entry.value.ExpiresAt != nil && now.Before(*entry.value.ExpiresAt) {
 			return entry.value
@@ -246,11 +299,12 @@ func (s *Service) cachedConnectionStatus(ctx context.Context, cluster *model.Kub
 		entry = &connectionStatusEntry{lastUsed: now}
 		cache.entries[key] = entry
 	}
-	entry.value = ConnectionStatus{ClusterID: cluster.ID, Status: "checking", Reason: "queued", Message: "等待检查连接", CheckedAt: entry.value.CheckedAt}
 	// 已占满时由下一次批量读取重试，不创建等待队列或无限 goroutine。
-	select {
-	case cache.slots <- struct{}{}:
-	default:
+	lease := cache.checks.acquire()
+	if lease == nil {
+		if !entry.stalled {
+			entry.value = ConnectionStatus{ClusterID: cluster.ID, Status: "checking", Reason: "queued", Message: "等待检查连接", CheckedAt: entry.value.CheckedAt}
+		}
 		return entry.value
 	}
 	parent := context.WithoutCancel(ctx)
@@ -262,24 +316,42 @@ func (s *Service) cachedConnectionStatus(ctx context.Context, cluster *model.Kub
 		s.queries.mu.Unlock()
 	}
 	checkContext, cancel := context.WithTimeout(parent, connectionCheckTimeout)
-	entry.cancel, entry.checking = cancel, true
-	entry.value.Reason, entry.value.Message = "checking", "正在检查连接"
+	entry.sequence++
+	sequence := entry.sequence
+	// 卡住后的重试保留“检测超时”结论，避免页面在重试期间继续转圈。
+	if !entry.stalled {
+		entry.value = ConnectionStatus{ClusterID: cluster.ID, Status: "checking", Reason: "checking", Message: "正在检查连接", CheckedAt: entry.value.CheckedAt}
+	}
+	entry.cancel, entry.checking, entry.startedAt, entry.lease = cancel, true, now, lease
 	clusterSnapshot := *cluster
 	authorizationSnapshot := cloneClusterAuthorization(authorization)
 	go func() {
 		defer cancel()
-		defer func() { <-cache.slots }()
+		defer cache.checks.release(lease)
 		value := s.checkConnection(checkContext, &clusterSnapshot, authorizationSnapshot)
 		checked := time.Now().UTC()
 		expires := checked.Add(connectionStatusTTL)
 		value.CheckedAt, value.ExpiresAt = &checked, &expires
 		cache.mu.Lock()
 		defer cache.mu.Unlock()
-		if cache.entries[key] == entry {
-			entry.value, entry.checking, entry.cancel = value, false, nil
+		// 被回收或被替换的旧检查不能覆盖新结果。
+		if cache.entries[key] == entry && entry.sequence == sequence {
+			entry.value, entry.checking, entry.stalled, entry.cancel, entry.lease, entry.startedAt = value, false, false, nil, nil, time.Time{}
 		}
 	}()
 	return entry.value
+}
+
+// 调用者已持锁；只终止本次检查并回收其名额，迟到结果因 sequence 变化被丢弃。
+func (c *connectionStatusCache) abandonCheck(entry *connectionStatusEntry, now time.Time) {
+	if entry.cancel != nil {
+		entry.cancel()
+	}
+	c.checks.release(entry.lease)
+	entry.sequence++
+	entry.checking, entry.stalled, entry.cancel, entry.lease, entry.startedAt = false, true, nil, nil, time.Time{}
+	entry.value = ConnectionStatus{ClusterID: entry.value.ClusterID, Status: "unknown", Reason: "stalled", Message: "连接检测超时，请重试", CheckedAt: entry.value.CheckedAt}
+	entry.lastUsed = now
 }
 
 // 调用者已持锁；只清理完成的结果，不取消其他操作者仍在进行的检查。
