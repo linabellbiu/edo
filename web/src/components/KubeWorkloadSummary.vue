@@ -54,18 +54,18 @@ const settings=computed(()=>{
 </template>
 
 <style scoped>
-.workload-summary { display: grid; grid-template-columns: minmax(0,3fr) minmax(0,2fr); align-items: start; gap: 12px; margin-bottom: 12px; }
-.workload-identity { min-width: 0; padding: 10px 12px; border: 1px solid var(--workload-border); border-radius: 4px; background: var(--workload-column); color: var(--workload-text); }
-.identity-facts { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 18px; margin: 0; padding: 0 0 9px; border-bottom: 1px solid var(--workload-border); }
+.workload-summary { display: grid; grid-template-columns: minmax(0,3fr) minmax(0,2fr); align-items: start; gap: 16px; margin-bottom: 16px; }
+.workload-identity { min-width: 0; padding: 14px 16px; border: 0; border-radius: 6px; background: var(--workload-column); color: var(--workload-text); }
+.identity-facts { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 18px; margin: 0; padding: 0 0 12px; }
 .identity-facts>div { display: flex; align-items: baseline; gap: 7px; max-width: 100%; min-width: 0; }
 dt { margin: 0; color: var(--workload-muted); font-size: 12px; white-space: nowrap; }
 dd { margin: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .identity-facts dd { max-width: 360px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.workload-metadata { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; margin-top: 9px; }
+.workload-metadata { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; margin-top: 4px; }
 .metadata-group { display: grid; grid-template-columns: 30px minmax(0,1fr); align-items: start; gap: 7px; min-width: 0; }
 .metadata-label,.metadata-empty { color: var(--workload-muted); font-size: 12px; line-height: 22px; }
 .metadata-chips { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 4px; min-width: 0; max-height: 46px; overflow: hidden; }
-.metadata-chip { display: block; max-width: 100%; padding: 1px 5px; overflow: hidden; border: 1px solid var(--workload-idle-border); border-radius: 2px; background: var(--workload-stripe); color: var(--workload-text); font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.metadata-chip { display: block; max-width: 100%; padding: 2px 6px; overflow: hidden; border: 0; border-radius: 3px; background: var(--workload-stripe); color: var(--workload-text); font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .identity-compact .metadata-chips { max-height: 22px; }
 .expanded .metadata-chips,.identity-compact .expanded .metadata-chips { max-height: none; overflow: visible; }
 .expanded .metadata-chip { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -73,7 +73,7 @@ dd { margin: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .metadata-controls button { min-height: 24px; padding: 0; border: 0; background: none; color: var(--workload-link); font: inherit; font-size: 12px; line-height: 20px; cursor: pointer; }
 .metadata-controls button:hover { text-decoration: underline; text-underline-offset: 3px; }
 .metadata-controls button:focus-visible,.workload-strategy summary:focus-visible,.condition:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
-.workload-strategy { margin-top: 5px; padding-top: 6px; border-top: 1px solid var(--workload-border); font-size: 12px; }
+.workload-strategy { margin-top: 6px; padding-top: 4px; font-size: 12px; }
 .workload-strategy summary { min-height: 24px; width: fit-content; color: var(--workload-link); cursor: pointer; }
 .workload-counts { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; }
 .workload-counts>div { display: flex; align-items: center; gap: 7px; color: var(--workload-muted); font-size: 12px; }

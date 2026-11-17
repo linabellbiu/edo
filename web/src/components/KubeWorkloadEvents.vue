@@ -46,23 +46,22 @@ const rows = computed(() => props.events.map((event, index) => ({
 </template>
 
 <style scoped>
-.workload-events { min-width: 0; overflow: hidden; border: 1px solid var(--workload-border); border-radius: 4px; background: var(--workload-column); color: var(--workload-text); }
+.workload-events { min-width: 0; overflow: hidden; border: 0; border-radius: 6px; background: var(--workload-column); color: var(--workload-text); }
 .events-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 5px 10px; background: var(--workload-column); }
 .events-heading h4 { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--workload-title); font-size: 13px; font-weight: 650; line-height: 22px; }
 .events-count { color: var(--workload-muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .events-actions { display: flex; align-items: center; gap: 6px; }
 .events-actions :deep(.ant-btn) { height: 25px; padding-inline: 4px; color: var(--workload-link); font-size: 12px; }
 .events-error { margin: 0 8px 8px; font-size: 12px; }
-.event-table-scroll { height: auto; max-height: 260px; overflow: auto; border-top: 1px solid var(--workload-border); scrollbar-gutter: stable; }
+.event-table-scroll { height: auto; max-height: 260px; overflow: auto; scrollbar-gutter: stable; }
 .event-table-scroll:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: -2px; }
 .event-table { width: 100%; min-width: 480px; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; line-height: 1.5; }
-.event-table th { position: sticky; top: 0; z-index: 1; padding: 6px 10px; border-right: 1px solid var(--workload-border); border-bottom: 1px solid var(--workload-border); background: var(--workload-heading); color: var(--workload-title); font-size: 12px; font-weight: 600; text-align: left; }
+.event-table th { position: sticky; top: 0; z-index: 1; padding: 6px 10px; border: 0; background: var(--workload-heading); color: var(--workload-title); font-size: 12px; font-weight: 600; text-align: left; }
 .event-table th:nth-child(1) { width: 24%; }
 .event-table th:nth-child(2) { width: 27%; }
 .event-table th:nth-child(3) { width: 12%; text-align: center; }
 .event-table th:nth-child(4) { width: 37%; }
-.event-table th:last-child,.event-table td:last-child { border-right: 0; }
-.event-table td { padding: 6px 10px; border-right: 1px solid var(--workload-border); border-bottom: 1px solid var(--workload-border); background: var(--workload-column); vertical-align: top; overflow-wrap: anywhere; }
+.event-table td { padding: 6px 10px; border-bottom: 1px solid var(--workload-stripe); background: var(--workload-column); vertical-align: top; overflow-wrap: anywhere; }
 .event-table tr:last-child td { border-bottom: 0; }
 .event-table tr:nth-child(even) td { background: var(--workload-stripe); }
 .event-reason { display: flex; align-items: baseline; gap: 5px; min-width: 0; font-size: 12px; font-family: var(--edo-font-mono, ui-monospace, monospace); }
@@ -72,7 +71,7 @@ const rows = computed(() => props.events.map((event, index) => ({
 .event-count { font-variant-numeric: tabular-nums; text-align: center; }
 .event-message { white-space: pre-wrap; }
 .event-table td.events-empty { height: 72px; color: var(--workload-muted); text-align: center; vertical-align: middle; }
-.events-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; padding: 5px 10px; border-top: 1px solid var(--workload-border); color: var(--workload-muted); font-size: 12px; }
+.events-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; padding: 5px 10px; background: var(--workload-stripe); color: var(--workload-muted); font-size: 12px; }
 .compact .events-heading { min-height: 30px; padding-block: 3px; }
 .compact .event-table-scroll { height: auto; max-height: 184px; }
 .compact .event-table td { padding-block: 5px; }

@@ -1,22 +1,22 @@
-/* 工作负载以中性分区、紧凑信息行和浅蓝选中建立层次；绿色只表达真实健康状态。 */
+/* 工作负载参考 Kuboard，以填充色、留白和标题分区；状态标签独立表达真实健康状态。 */
 :root {
   --workload-accent: #4673c4;
   --workload-accent-hover: #3865b5;
   --workload-on-accent: #fff;
-  --workload-selected: #edf3fc;
-  --workload-on-selected: #315fae;
+  --workload-selected: #426b9f;
+  --workload-on-selected: #fff;
   --workload-selected-border: #8aa7d0;
-  --workload-idle: #fff;
+  --workload-idle: #e9f6f3;
   --workload-idle-border: #d3dbe6;
-  --workload-hover: #f3f6fa;
+  --workload-hover: #d3eee7;
   --workload-on-hover: #27364b;
   --workload-hover-border: #aebed1;
   --workload-column: #fff;
-  --workload-heading: #e6ecf3;
+  --workload-heading: #eef1f5;
   --workload-title: #1d2d44;
   --workload-border: #ccd5e1;
   --workload-divider: #c4cfdd;
-  --workload-stripe: #f8f9fb;
+  --workload-stripe: #f4f6f9;
   --workload-text: #27364b;
   --workload-muted: #58677b;
   --workload-link: #315fae;
@@ -47,12 +47,12 @@
   --workload-accent: #5077b6;
   --workload-accent-hover: #6087c6;
   --workload-on-accent: #fff;
-  --workload-selected: #263d5d;
-  --workload-on-selected: #c6dbff;
+  --workload-selected: #385b86;
+  --workload-on-selected: #fff;
   --workload-selected-border: #6887b0;
-  --workload-idle: #1b2532;
+  --workload-idle: #203632;
   --workload-idle-border: #344253;
-  --workload-hover: #263448;
+  --workload-hover: #29453f;
   --workload-on-hover: #e1e8f2;
   --workload-hover-border: #61748d;
   --workload-column: #1b2532;
@@ -88,6 +88,9 @@
 }
 
 /* 状态色只跟随真实 tone，不因版本或 Pod 被选中、悬停而变成健康。 */
+:is(.workload-explorer, .workload-pod-runtime) .ant-tag {
+  border-width: 0;
+}
 :is(.workload-explorer, .workload-pod-runtime) .ant-tag-success,
 :is(.workload-explorer, .workload-pod-runtime) .ant-tag-green {
   color: var(--workload-ready-text);

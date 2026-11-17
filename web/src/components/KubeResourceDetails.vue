@@ -130,9 +130,9 @@ const rawResources=(container:KubeObject,field:string)=>Object.entries(container
   <section v-if="(!section||section==='all')&&object.status?.conditions?.length" class="resource-detail-section"><h4>{{ t('k8s.conditions') }}</h4><div class="detail-table-scroll" tabindex="0" role="region" :aria-label="t('k8s.conditions')"><table class="kube-detail-table"><thead><tr><th scope="col">{{ t('k8s.conditionType') }}</th><th scope="col">{{ t('k8s.status') }}</th><th scope="col">{{ t('k8s.reason') }}</th><th scope="col">{{ t('k8s.message') }}</th><th scope="col">{{ t('k8s.nodeHeartbeat') }}</th><th scope="col">{{ t('k8s.nodeTransition') }}</th></tr></thead><tbody><tr v-for="condition in object.status.conditions" :key="condition.type"><td>{{ condition.type }}</td><td><a-tag :color="object.kind==='Node'?nodeConditionState(condition):'default'">{{ condition.status }}</a-tag></td><td>{{ condition.reason||'—' }}</td><td>{{ condition.message||'—' }}</td><td>{{ formatDateTime(condition.lastHeartbeatTime) }}</td><td>{{ formatDateTime(condition.lastTransitionTime) }}</td></tr></tbody></table></div></section>
 </template>
 <style scoped>
-.kube-container-config{padding:0;overflow:hidden}
-.kube-container-layout{display:grid;grid-template-columns:190px minmax(0,1fr);min-width:0;border:1px solid var(--kube-border);border-radius:6px;background:var(--kube-surface)}
-.kube-container-list{min-width:0;border-right:1px solid var(--kube-border);background:var(--kube-surface-soft);padding:12px 0}
+.kube-container-config{padding:0;overflow:hidden;border:0;box-shadow:none}
+.kube-container-layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:12px;min-width:0;border:0;border-radius:6px;background:var(--kube-surface)}
+.kube-container-list{min-width:0;border-radius:5px;background:var(--kube-surface-soft);padding:12px 0}
 .kube-container-group+.kube-container-group{margin-top:16px}
 .kube-container-group h4{display:flex;align-items:center;justify-content:space-between;padding:0 12px;font-size:12px;color:var(--kube-muted);margin-bottom:6px}
 .kube-container-group h4 span{font-weight:400;font-variant-numeric:tabular-nums}
@@ -143,11 +143,12 @@ const rawResources=(container:KubeObject,field:string)=>Object.entries(container
 .kube-container-choice.is-selected{background:var(--kube-selected);color:var(--kube-link)}
 .kube-container-choice:focus-visible{outline:2px solid var(--kube-focus);outline-offset:-2px}
 .kube-container-content{min-width:0;padding:16px}
-.kube-container-heading{display:flex;align-items:center;gap:10px;padding-bottom:10px;border-bottom:1px solid var(--kube-border)}
+.kube-container-heading{display:flex;align-items:center;gap:10px;padding-bottom:10px}
 .kube-container-heading h4{margin:0;font-size:14px;overflow-wrap:anywhere}
 .kube-container-heading :deep(.ant-tag){margin:0;flex-shrink:0}
 .kube-container-summary>h4{margin-top:20px}
 .kube-container-summary>.kube-detail-facts{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:8px}
+.kube-container-summary>.kube-detail-facts>div{border-bottom:0}
 .container-image{grid-column:1/-1}.container-image code{font-size:12px}
 .kube-container-content :deep(.ant-alert){margin-bottom:0}
 .resource-detail-section{color:var(--kube-text)}
@@ -175,6 +176,6 @@ dd{font-size:13px;margin:0;line-height:1.6;overflow-wrap:anywhere;font-variant-n
 .kube-scheduling-rule>summary{min-height:28px;padding-block:4px;font-size:13px;cursor:pointer;color:var(--kube-link)}
 .kube-scheduling-rule>summary:focus-visible{outline:2px solid var(--kube-focus);outline-offset:2px}
 @media(max-width:800px){.kube-detail-facts,.reference-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:760px){.kube-container-layout{grid-template-columns:minmax(0,1fr)}.kube-container-list{border-right:0;border-bottom:1px solid var(--kube-border);max-height:260px;overflow-y:auto}.kube-container-group{display:flex;flex-wrap:wrap;gap:4px 8px;padding:0 12px}.kube-container-group h4{flex-basis:100%;padding:0 4px}.kube-container-choice{width:auto;max-width:100%;border-left:0;border-bottom:2px solid transparent;padding:10px 12px;border-radius:4px}.kube-container-choice.is-selected{border-bottom-color:var(--kube-link)}.kube-container-content{padding:12px}.kube-container-summary>.kube-detail-facts{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:760px){.kube-container-layout{grid-template-columns:minmax(0,1fr)}.kube-container-list{max-height:260px;overflow-y:auto}.kube-container-group{display:flex;flex-wrap:wrap;gap:4px 8px;padding:0 12px}.kube-container-group h4{flex-basis:100%;padding:0 4px}.kube-container-choice{width:auto;max-width:100%;border-left:0;border-bottom:2px solid transparent;padding:10px 12px;border-radius:4px}.kube-container-choice.is-selected{border-bottom-color:var(--kube-link)}.kube-container-content{padding:12px}.kube-container-summary>.kube-detail-facts{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:480px){.kube-detail-facts,.reference-list{grid-template-columns:1fr}}
 </style>
