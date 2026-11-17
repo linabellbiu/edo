@@ -28,11 +28,16 @@ function routeHarness(codes=[],{superuser=false,anonymous=false,unavailable=fals
   return {auth,navigation,records,guard:async path=>guard(target(path)),after,options}
 }
 
-test('全部受保护路由没有授权时回到项目入口，仅个人设置和项目目录可进入',async()=>{
+test('全部受保护路由没有授权时回到项目入口，仅个人设置和项目目录可进入，日志/终端新标签页自行鉴权',async()=>{
   const h=routeHarness()
+  // /sessions/view 是新标签页的日志与终端入口，一个页面承载多种目标动作（流水线日志、Pod 日志与终端、
+  // 主机终端、系统日志），无法用单一路由权限表达；页面按 sessionPermissions 对目标动作和项目范围独立
+  // 鉴权，不允许时直接展示“没有查看此日志或打开终端的权限”。匿名访问仍然只能回到登录页。
+  const selfAuthorized=new Set(['/sessions/view'])
   const routes=h.records.filter(record=>record.name&&record.path!=='/login')
   assert.ok(routes.length>=20)
-  for(const route of routes) assert.equal(await h.guard(route.path),['/settings','/projects'].includes(route.path)?true:'/projects',route.path)
+  for(const route of routes) assert.equal(await h.guard(route.path),['/settings','/projects'].includes(route.path)||selfAuthorized.has(route.path)?true:'/projects',route.path)
+  assert.equal(await routeHarness([],{anonymous:true}).guard('/sessions/view'),'/login?redirect='+encodeURIComponent('/sessions/view'))
 })
 
 test('每条普通路由仅接受声明的有效权限，读权限不被其他资源权限或通配字符串替代',async()=>{
