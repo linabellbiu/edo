@@ -14,6 +14,7 @@ import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
 import ClusterConnectionScope from '@/components/ClusterConnectionScope.vue'
 import ClusterConnectionBadge from '@/components/ClusterConnectionBadge.vue'
+import K3dManualUninstallModal from '@/components/K3dManualUninstallModal.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useResourceList } from '@/utils/resourceList'
 import { hostsForCluster } from '@/utils/infrastructureRelations'
@@ -31,6 +32,12 @@ const createOpen = ref(false)
 const editOpen = ref(false)
 const editingCluster = ref<InfrastructureCluster>()
 const rbacCluster=ref(''),rbacOpen=ref(false)
+const manualUninstallOpen = ref(false), manualUninstallCluster = ref<InfrastructureCluster>()
+const canReadUninstallGuide = computed(() => auth.canAny(['cluster.read']) && auth.canAny(['kubernetes.k3s.uninstall']))
+function openManualUninstall(cluster: InfrastructureCluster) {
+  if (!canReadUninstallGuide.value || props.error) return
+  manualUninstallCluster.value = cluster; manualUninstallOpen.value = true
+}
 function openRbac(cluster:InfrastructureCluster){if(!auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update']))return;rbacCluster.value=cluster.id;rbacOpen.value=true}
 const checking = reactive(new Set<string>())
 const connectionRevision = ref(0)
@@ -137,6 +144,12 @@ watch(() => props.clusters, clusters => {
   if (current) editingCluster.value = current
   else { editOpen.value = false; editingCluster.value = undefined }
 })
+watch(() => props.clusters, clusters => {
+  if (!manualUninstallOpen.value || !manualUninstallCluster.value) return
+  const current = clusters.find(item => item.id === manualUninstallCluster.value?.id)
+  if (current) manualUninstallCluster.value = current
+  else { manualUninstallOpen.value = false; manualUninstallCluster.value = undefined }
+})
 watch(() => auth.canAny(['cluster.update']) && !props.error, allowed => { if (!allowed) editOpen.value = false })
 watch(() => auth.canAny(['cluster.create']) && !props.error, allowed => { if (!allowed) createOpen.value = false })
 onBeforeUnmount(() => { mounted = false })
@@ -200,13 +213,14 @@ onBeforeUnmount(() => { mounted = false })
           </template>
           <template v-else-if="column.key === 'updated_at'"><time class="cluster-updated" :datetime="record.updated_at">{{ record.updated_at ? formatDateTime(record.updated_at, 'zh-CN') : '—' }}</time></template>
           <template v-else-if="column.key === 'actions'">
-            <ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.execute','kubernetes.rbac.read','kubernetes.rbac.update'])">
+            <ResourceRowActions :more="canReadUninstallGuide || auth.canAny(['cluster.update', 'cluster.execute','kubernetes.rbac.read','kubernetes.rbac.update'])">
               <a-button v-if="auth.canAny(['cluster.update'])" size="small" :disabled="Boolean(error)" @click="editCluster(record)">编辑</a-button>
               <template #more>
                 <a-menu-item v-if="auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update'])" :disabled="!record.is_active" @click="openRbac(record)">集群授权</a-menu-item>
                 <a-menu-item v-if="canEditAssociations" :disabled="!associationKnown(record)" @click="associate(record)">关联主机</a-menu-item>
                 <a-menu-item v-if="auth.canAny(['cluster.execute'])" :disabled="!record.is_active || checking.has(record.id)" @click="ping(record)">测试连接</a-menu-item>
                 <a-menu-item v-if="auth.canAny(['cluster.update'])" :disabled="Boolean(updating)" @click="toggle(record)">{{ record.is_active ? '停用集群' : '启用集群' }}</a-menu-item>
+                <a-menu-item v-if="canReadUninstallGuide" :disabled="Boolean(error)" @click="openManualUninstall(record)">k3d 手动卸载指引</a-menu-item>
               </template>
             </ResourceRowActions>
           </template>
@@ -217,6 +231,7 @@ onBeforeUnmount(() => { mounted = false })
       <KubernetesClusterDrawer v-model:open="createOpen" :can-test="auth.canAny(['cluster.execute'])" @created="clusterCreated" />
       <KubernetesClusterDrawer v-model:open="editOpen" :cluster="editingCluster" :can-test="auth.canAny(['cluster.execute'])" @saved="clusterSaved" />
       <ClusterRbacDrawer v-model:open="rbacOpen" :cluster="rbacCluster" />
+      <K3dManualUninstallModal v-model:open="manualUninstallOpen" :cluster="manualUninstallCluster" />
     </div>
   </ClusterConnectionScope>
 </template>

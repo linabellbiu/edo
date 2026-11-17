@@ -198,6 +198,19 @@ export async function getLastFailedK3sInstallation(clusterID:string,action:'crea
 export async function listK3sUninstallTargets(hostID: string, signal?: AbortSignal) {
   return (await client.get<{targets:K3sUninstallTarget[]}>('/kubernetes/k3s/uninstall-targets',{params:{host_id:hostID},signal})).data.targets
 }
+export interface K3dManualUninstallGuide {
+  cluster_id: string
+  cluster_name: string
+  resource_name: string
+  host: K3sPlanHost
+  local: boolean
+  docker_id?: string
+  command: string
+  list_command: string
+}
+export async function getK3dManualUninstallGuide(clusterID: string, signal?: AbortSignal) {
+  return (await client.get<K3dManualUninstallGuide>('/kubernetes/k3s/manual-uninstall-guide', { params: { cluster_id: clusterID }, signal })).data
+}
 export async function previewK3sUninstallPlan(hostID: string, signal?: AbortSignal) {
   return (await client.post<K3sPlan>('/kubernetes/k3s/uninstall/plans',{host_id:hostID},{signal,timeout:180_000})).data
 }

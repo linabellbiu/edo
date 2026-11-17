@@ -67,6 +67,7 @@ func TestK3sUninstallHTTPRequiresIndependentPermission(t *testing.T) {
 		body         any
 	}{
 		{http.MethodGet, "/api/v1/kubernetes/k3s/uninstall-targets?host_id=httpapi-deployment-host", nil},
+		{http.MethodGet, "/api/v1/kubernetes/k3s/manual-uninstall-guide?cluster_id=missing-cluster", nil},
 		{http.MethodPost, "/api/v1/kubernetes/k3s/uninstall/plans", map[string]string{"installation_id": "missing-installation", "host_id": "httpapi-deployment-host"}},
 		{http.MethodPost, "/api/v1/kubernetes/k3s/uninstallations", map[string]string{"plan_id": "missing-plan", "confirmation": "我已确认卸载"}},
 	}

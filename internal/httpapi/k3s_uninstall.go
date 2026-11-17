@@ -17,8 +17,29 @@ func registerK3sUninstallRoutes(protected *gin.RouterGroup, deps Dependencies) {
 	canUninstall := requirePermission(deps.Access, deps.Logger, access.PermissionK3sUninstall)
 	canRead := requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead)
 	protected.GET("/kubernetes/k3s/uninstall-targets", canUninstall, canRead, h.uninstallTargets)
+	protected.GET("/kubernetes/k3s/manual-uninstall-guide", canUninstall, canRead, h.manualUninstallGuide)
 	protected.POST("/kubernetes/k3s/uninstall/plans", canUninstall, canRead, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.uninstall.plan", "k3s_installation"), h.previewUninstall)
 	protected.POST("/kubernetes/k3s/uninstallations", canUninstall, canRead, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.uninstall.execute", "k3s_installation"), h.executeUninstall)
+}
+
+func (h k3sHandler) manualUninstallGuide(c *gin.Context) {
+	if !h.uninstallAvailable(c) {
+		return
+	}
+	actor, _ := currentUser(c)
+	guide, err := h.service.ManualUninstall(c.Request.Context(), actor.ID, c.Query("cluster_id"))
+	if err != nil {
+		if errors.Is(err, k3s.ErrManualUninstallUnavailable) {
+			if h.logger != nil {
+				h.logger.Warn("无法生成 k3d 手动卸载指引", "operation", "k3d_manual_uninstall", "cluster_id", c.Query("cluster_id"), "actor_id", actor.ID, "err", err)
+			}
+			writeError(c, http.StatusConflict, "k3d_manual_uninstall_unavailable", k3s.ErrManualUninstallUnavailable.Error())
+			return
+		}
+		h.uninstallError(c, "k3d_manual_uninstall", err)
+		return
+	}
+	c.JSON(http.StatusOK, guide)
 }
 
 func (h k3sHandler) uninstallAvailable(c *gin.Context) bool {
