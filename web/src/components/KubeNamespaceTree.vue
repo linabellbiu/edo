@@ -69,7 +69,7 @@ function refreshNamespaces() {
 </template>
 
 <style scoped>
-.kube-namespace-tree{display:flex;flex-direction:column;gap:10px;min-width:0;align-self:start;padding:12px;border:1px solid var(--kube-border);border-radius:6px;background:var(--kube-surface);color:var(--kube-text);position:sticky;top:104px;max-height:calc(100dvh - 132px)}
+.kube-namespace-tree{display:flex;flex-direction:column;gap:10px;min-width:0;align-self:start;padding:12px;border:1px solid var(--kube-border);border-radius:12px;background:var(--kube-surface);color:var(--kube-text);position:sticky;top:104px;max-height:calc(100dvh - 132px)}
 h3{margin:0;font-size:13px;font-weight:600;color:var(--kube-text)}
 .scope-heading{display:flex;align-items:center;gap:8px;min-height:28px;padding-bottom:8px;border-bottom:1px solid var(--kube-border)}
 .scope-options{display:flex;flex-direction:column;gap:10px;min-height:0;flex:1}.scope-toggle{display:none}
@@ -94,7 +94,7 @@ h3{margin:0;font-size:13px;font-weight:600;color:var(--kube-text)}
 .namespace-cluster-name:disabled,.namespace-expander:disabled,.scope-toggle:disabled,.namespace-refresh:disabled{cursor:not-allowed;color:var(--kube-muted);opacity:.55}
 .namespace-cluster-name:focus-visible,.namespace-expander:focus-visible,.scope-toggle:focus-visible,.namespace-refresh:focus-visible{outline:2px solid var(--kube-focus);outline-offset:1px}
 .namespace-children{padding-left:24px;padding-top:4px}
-.namespace-tree-item{display:flex;align-items:center;min-height:34px;padding:4px 6px;border-radius:4px;color:var(--kube-muted);font-size:13px}
+.namespace-tree-item{display:flex;align-items:center;min-height:34px;padding:4px 8px;border-radius:8px;color:var(--kube-muted);font-size:13px}
 .namespace-tree-item :deep(.ant-checkbox-wrapper)>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .namespace-tree-item:not(.selected):not(.is-disabled):hover{background:var(--kube-hover)}
 .namespace-tree-item.selected{color:var(--kube-link);background:var(--kube-selected)}

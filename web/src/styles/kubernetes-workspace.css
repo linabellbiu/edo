@@ -1,5 +1,7 @@
 /* Kubernetes 局部令牌，不覆盖应用外壳和其他业务的 Ant 主题。 */
 :root {
+  --kube-radius-card: 12px;
+  --kube-radius-control: 8px;
   --kube-surface: #ffffff;
   --kube-surface-soft: #f7f9fc;
   --kube-heading: #eef2f6;
@@ -35,6 +37,8 @@
 }
 
 :root[data-theme='dark'] {
+  --kube-radius-card: 12px;
+  --kube-radius-control: 8px;
   --kube-surface: #1b2532;
   --kube-surface-soft: #202d3c;
   --kube-heading: #253242;
@@ -75,9 +79,13 @@
 }
 .kube-workspace .resource-panel > .resource-panel-heading {
   min-height: 52px;
-  background: var(--kube-surface-soft);
+  background: var(--kube-surface);
   border-bottom: 1px solid var(--kube-border);
 }
+.kube-workspace .ant-btn { border-radius: var(--kube-radius-control); }
+.kube-workspace .ant-input-affix-wrapper,
+.kube-workspace .ant-input { border-radius: var(--kube-radius-control); }
+.kube-workspace .ant-tag { border-radius: 6px; }
 .kube-workspace .resource-panel .resource-type-tabs button {
   min-height: 36px;
   color: var(--kube-muted);

@@ -86,7 +86,7 @@ onBeforeUnmount(()=>{disposed=true;resize?.disconnect();charts.forEach(chart=>ch
 <style scoped>
 .cluster-overview{padding:14px;display:grid;gap:14px;color:var(--kube-text)}
 .cluster-charts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-.chart-panel{min-width:0;border:1px solid var(--kube-border);border-radius:6px;padding:12px;background:var(--kube-surface)}
+.chart-panel{min-width:0;border:1px solid var(--kube-border);border-radius:12px;padding:12px;background:var(--kube-surface)}
 h4{font-size:13px;font-weight:600;line-height:1.5;margin:0;display:flex;align-items:center;gap:8px}
 h4 svg{color:var(--kube-link);flex-shrink:0}h4>span{margin-left:auto;font-size:12px;font-weight:400;color:var(--kube-muted)}
 .chart-content{display:flex;align-items:center;gap:16px;min-height:130px}
@@ -95,7 +95,7 @@ dl{margin:0;display:grid;gap:4px;min-width:0}dt{font-size:12px;color:var(--kube-
 .phase-list{display:grid;gap:6px;font-size:12px;flex:1;min-width:0}.phase-list span{display:flex;align-items:center;gap:6px;line-height:1.5}.phase-list i{width:7px;height:7px;flex-shrink:0;border-radius:50%}.phase-list b{margin-left:auto;font-variant-numeric:tabular-nums}
 .overview-footer{display:flex;justify-content:space-between;font-size:12px;color:var(--kube-muted);gap:8px 12px;flex-wrap:wrap}.overview-footer>span{display:flex;gap:6px;align-items:center}
 .overview-resource-groups{display:grid;gap:12px;align-items:start}.overview-column{display:flex;flex-direction:column;gap:12px;min-width:0}
-.overview-category{border:1px solid var(--kube-border);border-radius:6px;overflow:hidden;flex-shrink:0}
+.overview-category{border:1px solid var(--kube-border);border-radius:12px;overflow:hidden;flex-shrink:0}
 .overview-category h4{padding:9px 12px;background:var(--kube-heading);border-bottom:1px solid var(--kube-border)}
 .overview-resource-row{display:flex;align-items:center;gap:8px;width:100%;min-height:46px;padding:8px 12px;border:0;border-bottom:1px solid var(--kube-border);background:var(--kube-surface);color:var(--kube-text);cursor:pointer;text-align:left;font-size:13px;line-height:1.5}
 .overview-resource-row:last-child{border-bottom:0}.overview-resource-row:not(:disabled):hover{background:var(--kube-hover)}.overview-resource-row:focus-visible{background:var(--kube-hover);outline:2px solid var(--kube-focus);outline-offset:-2px}.overview-resource-row:disabled{cursor:not-allowed;opacity:.55}

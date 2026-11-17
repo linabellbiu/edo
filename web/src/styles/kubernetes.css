@@ -1,7 +1,7 @@
 @import './kubernetes-workspace.css';
 @import './kubernetes-workload.css';
 
-.cluster-context-bar{display:flex;min-height:60px;align-items:center;justify-content:space-between;gap:14px;margin-bottom:16px;padding:10px 14px;border:1px solid var(--kube-border);border-radius:7px;background:var(--kube-surface)}
+.cluster-context-bar{display:flex;min-height:56px;align-items:center;justify-content:space-between;gap:14px;margin-bottom:12px;padding:9px 14px;border:1px solid var(--kube-border);border-radius:12px;background:var(--kube-surface)}
 .cluster-context-identity,.cluster-context-hosts{display:flex;min-width:0;align-items:center;gap:8px}.cluster-context-identity{flex:1}.cluster-context-name{min-width:0}.cluster-context-name strong,.cluster-context-name>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cluster-context-name strong{font-size:14px;font-weight:600;color:var(--kube-text)}.cluster-context-name>span{margin-top:2px;font-size:12px;color:var(--kube-muted);font-family:var(--edo-font-mono,monospace)}.cluster-context-hosts{flex-wrap:wrap;justify-content:flex-end;max-width:50%}.context-label,.context-separator,.independent-cluster{color:var(--kube-muted);font-size:12px}.context-separator{flex-shrink:0}.cluster-context-bar .ant-btn{display:inline-flex;align-items:center;gap:6px}.cluster-list-link{flex-shrink:0}.independent-cluster{padding:4px 9px;border:1px solid var(--kube-border);border-radius:4px;background:var(--kube-surface-soft)}
 @media(max-width:760px){.cluster-context-bar{align-items:flex-start;flex-direction:column;gap:8px;padding:10px}.cluster-context-identity{width:100%}.cluster-context-hosts{max-width:none;justify-content:flex-start}.cluster-context-name>span{max-width:calc(100vw - 230px)}}
 
@@ -73,6 +73,8 @@
 .kube-resource-actions .resource-more-button.ant-btn:not(:disabled):hover { color: var(--kube-link); background: var(--kube-selected); border-color: var(--kube-link); }
 .kube-action-success.ant-btn:not(:disabled) { color: var(--kube-success); border-color: var(--kube-success-border); background: var(--kube-success-bg); }
 .kube-action-success.ant-btn:not(:disabled):hover { color: var(--kube-success); border-color: var(--kube-success); background: var(--kube-success-bg); }
+.kube-action-edit.ant-btn:not(:disabled) { color: var(--kube-link); border-color: var(--kube-control-border); background: var(--kube-surface); }
+.kube-action-edit.ant-btn:not(:disabled):hover { color: var(--kube-link); border-color: var(--kube-link); background: var(--kube-selected); }
 .kube-action-warning.ant-btn:not(:disabled) { color: var(--kube-warning); border-color: var(--kube-warning-border); background: var(--kube-warning-bg); }
 .kube-action-warning.ant-btn:not(:disabled):hover { color: var(--kube-warning); border-color: var(--kube-warning); background: var(--kube-warning-bg); }
 .kube-action.ant-btn:focus-visible,
