@@ -1,5 +1,10 @@
 /* 抽屉沿用部署阶段的紧凑标题、浅中性分区和固定底部操作区。 */
 .ant-drawer .ant-drawer-content { color: var(--edo-text); background: var(--edo-surface); }
+/* 抽屉按方向投出原生应用式阴影，随滑动一起移动，不改变内边距与圆角。 */
+.ant-drawer-right > .ant-drawer-content-wrapper { box-shadow: -22px 0 56px var(--edo-drawer-shadow-far), -4px 0 14px var(--edo-drawer-shadow-near); }
+.ant-drawer-left > .ant-drawer-content-wrapper { box-shadow: 22px 0 56px var(--edo-drawer-shadow-far), 4px 0 14px var(--edo-drawer-shadow-near); }
+.ant-drawer-top > .ant-drawer-content-wrapper { box-shadow: 0 22px 56px var(--edo-drawer-shadow-far), 0 4px 14px var(--edo-drawer-shadow-near); }
+.ant-drawer-bottom > .ant-drawer-content-wrapper { box-shadow: 0 -22px 56px var(--edo-drawer-shadow-far), 0 -4px 14px var(--edo-drawer-shadow-near); }
 .ant-drawer .ant-drawer-header { min-height: 56px; padding: 12px 16px; border-color: var(--edo-border); background: var(--edo-surface); }
 .ant-drawer .ant-drawer-title { color: var(--edo-text); font-size: 15px; line-height: 24px; font-weight: 600; }
 .ant-drawer .ant-drawer-body { padding: 16px; }

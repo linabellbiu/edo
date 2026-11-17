@@ -22,6 +22,9 @@
   --edo-nav-selected-bg: color-mix(in srgb, var(--edo-text) 7%, var(--edo-surface));
   --edo-header: rgb(255 255 255 / 94%);
   --edo-shadow: 0 1px 2px rgb(0 0 0 / 3%), 0 4px 16px rgb(0 0 0 / 3%);
+  /* 抽屉投影参照原生窗口：大面积柔和扩散 + 贴边浅影，不使用单一边框替代层次。 */
+  --edo-drawer-shadow-far: rgb(15 23 42 / 18%);
+  --edo-drawer-shadow-near: rgb(15 23 42 / 8%);
 }
 
 :root[data-theme="dark"] {
@@ -40,6 +43,8 @@
   --edo-nav-selected-bg: color-mix(in srgb, var(--edo-text) 10%, var(--edo-surface));
   --edo-header: rgb(23 24 29 / 94%);
   --edo-shadow: 0 8px 24px rgb(0 0 0 / 22%);
+  --edo-drawer-shadow-far: rgb(0 0 0 / 52%);
+  --edo-drawer-shadow-near: rgb(0 0 0 / 28%);
 }
 
 * { box-sizing: border-box; }
