@@ -80,6 +80,10 @@ test('详情抽屉保留自定义标题，普通标题仍按属性显示', t => 
 })
 function inventory(permissions, navigations = []) {
   return compile(readFileSync(new URL('../src/components/ClusterInventory.vue', import.meta.url), 'utf8'), {
+    '@/components/ResourceRowActions.vue': compile(readFileSync(new URL('../src/components/ResourceRowActions.vue', import.meta.url), 'utf8'), {
+      'vue-i18n': { useI18n: () => ({ t: key => key }) },
+      'lucide-vue-next': { Ellipsis: () => vue.h('svg') },
+    }),
     '@/components/ClusterConnectionScope.vue': { __esModule: true, default: compile(readFileSync(new URL('../src/components/ClusterConnectionScope.vue', import.meta.url), 'utf8'), {
       '@/utils/clusterConnection': { useClusterConnections: () => ({ statuses: vue.ref({}), error: vue.ref(''), pending: vue.ref(false), refresh() {} }) },
     }) },
@@ -105,8 +109,9 @@ test('真实集群列表有数据或为空时都有唯一接入入口，保留�
   }
 })
 
-test('集群名称始终原地只读，启用与权限变化均不导航且完整名称可聚焦查看', t => {
-  assert.doesNotMatch(inventorySource,/useRouter|function openCluster|canManageResources/)
+test('集群名称始终原地只读，查看集群只能由明确按钮发起', t => {
+  assert.doesNotMatch(inventorySource,/function openCluster|@click="openCluster\(|ResourceDetailDrawer/)
+  assert.match(inventorySource,/function viewCluster[\s\S]{0,240}router\.push\(\{ path: '\/kubernetes', query: \{ cluster: cluster\.id, view: 'overview' \} \}\)/)
   const fullName='目标集群-用于验证长名称始终原地查看完整信息'
   for(const [readResources,active] of [[true,true],[false,true],[true,false],[false,false]]){
     const navigations=[],permissions=new Set(['cluster.read',...(readResources?['kubernetes.node.read']:[])])
@@ -120,8 +125,15 @@ test('集群名称始终原地只读，启用与权限变化均不导航且完�
     assert.equal(name.props.onClick,undefined)
     assert.equal(name.parent.props.title,fullName)
     assert.deepEqual(name.parent.props.trigger,['hover','focus','click'])
-    assert.deepEqual(navigations,[])
     assert.equal(h.buttons().some(button=>text(button)==='详情'),false)
+    const view=h.buttons().find(button=>text(button)==='查看集群')
+    if(readResources)assert.ok(view)
+    else assert.equal(view,undefined)
+    assert.deepEqual(navigations,[])
+    if(view){
+      view.props.onClick()
+      assert.deepEqual(navigations,[{kind:'push',route:{path:'/kubernetes',query:{cluster:'cluster-target',view:'overview'}}}])
+    }
   }
 })
 

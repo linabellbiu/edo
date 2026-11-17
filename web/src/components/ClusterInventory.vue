@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { Link2, Plus, RefreshCw, Search, Server } from 'lucide-vue-next'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
 import type { InfrastructureCluster, InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
@@ -24,6 +24,7 @@ const props = defineProps<{ clusters: InfrastructureCluster[]; hosts: Infrastruc
 const emit = defineEmits<{ refresh: []; provision: [] }>()
 const auth = useAuthStore()
 const route = useRoute()
+const router = useRouter()
 const query = ref('')
 const association = ref('all')
 const associationOpen = ref(false)
@@ -48,6 +49,8 @@ const canReadHosts = computed(() => auth.canAny(['cluster.read', 'deployment.rea
 const canEditAssociations = computed(() => auth.canAny(['cluster.update']) && canReadHosts.value && !props.hostError && !props.error)
 const canFilterAssociations = computed(() => canReadHosts.value && !props.hostError && props.clusters.every(cluster => Array.isArray(cluster.hosts)))
 const canCreateK3s = computed(() => auth.canAny(['cluster.create']) && auth.canAny(['cluster.execute']) && auth.canAny(['cluster.update']) && canReadHosts.value)
+// 查看集群进入 Kubernetes 工作区，权限与导航菜单中的集群总览一致。
+const canViewCluster = computed(() => auth.canAny(['kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read']))
 const filtered = computed(() => props.clusters.filter(cluster => {
   const linked = hostsForCluster(cluster, props.hosts)
   if (association.value !== 'all' && !associationKnown(cluster)) return false
@@ -68,9 +71,8 @@ const columns = [
   { title: '集群名称', key: 'name', width: 210 },
   { title: 'API 地址', dataIndex: 'api_server', key: 'api_server', width: 280 },
   { title: '关联主机', key: 'hosts', width: 250 },
-  { title: '默认命名空间', key: 'namespace', width: 150 },
   { title: '最近更新', key: 'updated_at', width: 170 },
-  { title: '操作', key: 'actions', width: 112, fixed: 'right' as const },
+  { title: '操作', key: 'actions', width: 200, fixed: 'right' as const },
 ]
 
 function openCreate() {
@@ -84,6 +86,10 @@ function associate(cluster: InfrastructureCluster) {
   if (!canEditAssociations.value || !associationKnown(cluster)) return
   associationCluster.value = cluster
   associationOpen.value = true
+}
+function viewCluster(cluster: InfrastructureCluster) {
+  if (!canViewCluster.value) return
+  void router.push({ path: '/kubernetes', query: { cluster: cluster.id, view: 'overview' } })
 }
 function editCluster(cluster: InfrastructureCluster) {
   if (!auth.canAny(['cluster.update']) || props.error) return
@@ -172,7 +178,7 @@ onBeforeUnmount(() => { mounted = false })
       </header>
       <a-alert v-if="error" class="cluster-load-error" type="error" show-icon message="集群列表加载失败" :description="error"><template #action><a-button size="small" @click="emit('refresh')">重试</a-button></template></a-alert>
       <div v-if="connectionError" class="connection-load-error" role="status"><span>连接状态读取失败：{{ connectionError }}</span><a-button size="small" type="link" :loading="connectionPending" @click="refreshConnections()">重试</a-button></div>
-      <a-table :columns="columns" :data-source="filtered" :loading="loading" :pagination="pagination" :scroll="{ x: 1172 }" :row-class-name="(record: InfrastructureCluster) => route.query.cluster === record.id ? 'resource-selected' : ''" table-layout="fixed" class="cluster-table resource-list-table" row-key="id" size="middle" @change="changePage">
+      <a-table :columns="columns" :data-source="filtered" :loading="loading" :pagination="pagination" :scroll="{ x: 1110 }" :row-class-name="(record: InfrastructureCluster) => route.query.cluster === record.id ? 'resource-selected' : ''" table-layout="fixed" class="cluster-table resource-list-table" row-key="id" size="middle" @change="changePage">
         <template #bodyCell="{ column, record }: { column: { key: string }, record: InfrastructureCluster }">
           <template v-if="column.key === 'name'">
             <div class="cluster-identity">
@@ -208,12 +214,10 @@ onBeforeUnmount(() => { mounted = false })
             </div>
             <span v-else class="muted">未关联主机</span>
           </template>
-          <template v-else-if="column.key === 'namespace'">
-            <a-tooltip :title="record.default_namespace" :trigger="['hover','focus','click']"><span class="namespace-label" tabindex="0">{{ record.default_namespace }}</span></a-tooltip>
-          </template>
           <template v-else-if="column.key === 'updated_at'"><time class="cluster-updated" :datetime="record.updated_at">{{ record.updated_at ? formatDateTime(record.updated_at, 'zh-CN') : '—' }}</time></template>
           <template v-else-if="column.key === 'actions'">
             <ResourceRowActions :more="canReadUninstallGuide || auth.canAny(['cluster.update', 'cluster.execute','kubernetes.rbac.read','kubernetes.rbac.update'])">
+              <a-button v-if="canViewCluster" size="small" @click="viewCluster(record)">查看集群</a-button>
               <a-button v-if="auth.canAny(['cluster.update'])" size="small" :disabled="Boolean(error)" @click="editCluster(record)">编辑</a-button>
               <template #more>
                 <a-menu-item v-if="auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update'])" :disabled="!record.is_active" @click="openRbac(record)">集群授权</a-menu-item>
@@ -251,13 +255,12 @@ onBeforeUnmount(() => { mounted = false })
 .cluster-icon{display:grid;place-items:center;width:28px;height:28px;flex:none;color:#326ce5}.cluster-icon :deep(svg){width:20px;height:20px}
 .cluster-meta{display:flex;min-width:0;gap:8px;margin-top:2px;overflow:hidden;color:var(--edo-muted);font-size:12px;line-height:18px;white-space:nowrap}
 .api-address{display:block;max-width:100%;overflow:hidden;color:var(--edo-text);font-family:var(--font-mono,monospace);font-size:12px;line-height:20px;text-overflow:ellipsis;white-space:nowrap;cursor:text}
-.namespace-label{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:text}
 .host-summary-trigger{display:flex;min-width:0;max-width:100%;align-items:center;gap:5px;padding:0;border:0;background:transparent;color:var(--edo-text);font:inherit;text-align:left;cursor:help}.host-summary-trigger>svg{flex-shrink:0;color:var(--edo-muted)}
 .host-name-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-summary-trigger small,.host-count{flex-shrink:0;color:var(--edo-muted);font-size:12px}.host-summary-trigger :deep(.host-node-roles){flex-shrink:0;flex-wrap:nowrap;margin:0}.host-summary-trigger :deep(.ant-tag){margin:0;font-size:11px;line-height:16px}
 .linked-host-address{display:block;max-width:100%;overflow:hidden;margin-top:2px;color:var(--edo-muted);font-size:12px;line-height:18px;text-overflow:ellipsis;white-space:nowrap;cursor:text}
 .cluster-host-popover{display:grid;gap:0;max-width:min(480px,80vw);max-height:280px;overflow:auto}.cluster-host-info{display:flex;align-items:center;gap:10px;min-width:0;padding:8px 0;border-bottom:1px solid var(--edo-border);color:var(--edo-text)}.cluster-host-info:last-child{border-bottom:0}.cluster-host-info>span{min-width:0;flex:1}.cluster-host-info strong,.cluster-host-info code{display:block;overflow-wrap:anywhere}.cluster-host-info code,.cluster-host-info small{color:var(--edo-muted);font-size:12px}
 .cluster-updated{color:var(--edo-muted);font-size:12px;white-space:nowrap}.muted{color:var(--edo-muted)}
-.cluster-name:focus-visible,.api-address:focus-visible,.namespace-label:focus-visible,.linked-host-address:focus-visible,.host-summary-trigger:focus-visible,.cluster-host-popover:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px;border-radius:3px}
+.cluster-name:focus-visible,.api-address:focus-visible,.linked-host-address:focus-visible,.host-summary-trigger:focus-visible,.cluster-host-popover:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px;border-radius:3px}
 @media(max-width:1200px){.cluster-toolbar{flex-wrap:wrap;gap:10px}.cluster-filters{order:3;flex-basis:100%}.cluster-filters>.ant-input-affix-wrapper{max-width:none}.cluster-toolbar-actions{margin-left:auto}}
 @media(max-width:560px){.cluster-toolbar{padding:10px}.cluster-filters{flex-direction:column}.cluster-toolbar-actions{flex-wrap:wrap}.cluster-toolbar-actions .ant-btn{padding-inline:9px}}
 </style>
