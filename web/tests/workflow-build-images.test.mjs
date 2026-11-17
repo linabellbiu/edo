@@ -41,3 +41,15 @@ test('容器名称默认跟随镜像名称，非法字符被规范化', () => {
   assert.equal(utils.kubernetesContainerDefault('demo_app', { config: { image_name: 'demo-api' } }), 'demo-api')
   assert.equal(utils.kubernetesContainerDefault('demo_app', { config: { image_name: '${EDO_GIT_TAG}' } }), '')
 })
+
+test('自定义构建产物名称来自命名输出，去重并过滤非法名称', () => {
+  const nodes = [
+    { id: 'pack', name: '打包', config: { build_outputs: [{ name: 'APP_PACKAGE' }, { name: 'APP_CONFIG' }] } },
+    { id: 'extra', name: '补充打包', config: { build_outputs: [{ name: 'APP_PACKAGE' }, { name: '1BAD' }, { name: '  ' }] } },
+    { id: 'image', name: '镜像构建', config: {} },
+  ]
+  assert.deepEqual(utils.workflowBuildArtifactNames(nodes).map(item => [item.node_id, item.name]), [
+    ['pack', 'APP_PACKAGE'],
+    ['pack', 'APP_CONFIG'],
+  ])
+})

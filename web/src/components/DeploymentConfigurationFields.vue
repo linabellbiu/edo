@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import type { DeploymentInput, WorkflowNode, WorkflowNodeConfig } from '@/types/pipeline'
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 import { validConfigurationPath } from '@/utils/deploymentCommandPreview'
+import { workflowBuildArtifactNames } from '@/utils/kubernetesDeployment'
 import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 const props = defineProps<{ reportValidation?:boolean; config: WorkflowNodeConfig; deploymentPlan?: Pick<DeploymentCommandPlan,'kind'>; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; registryOnly?:boolean; registryTarget?:HTMLElement; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}>; buildImages?: Array<{node_id:string;node_name:string;image_name:string}> }>()
@@ -74,6 +75,15 @@ const kubeImageOptions = computed(()=>{
  if(current&&!seen.has(current))options.push({value:current,label:current+' · 已保存'})
  return options
 })
+// 自定义构建的命名产物：部署任务只能引用这些变量名。
+const upstreamArtifacts = computed(()=>workflowBuildArtifactNames((props.buildNodes||[]) as Array<{id:string;name:string;config:{build_outputs?:Array<{name?:string}>}}>))
+const upstreamArtifactOptions = computed(()=>{
+ const options=upstreamArtifacts.value.map(item=>({value:'${'+item.name+'}',label:item.node_name?item.name+' · '+item.node_name:item.name}))
+ const current=(props.config.deployment_inputs||[]).map(input=>input.artifact_reference||(input.artifact_name?'${'+input.artifact_name+'}':'')).filter(Boolean)
+ for(const value of current){if(value.includes('${')&&!options.some(item=>item.value===value))options.push({value,label:value+' · 已保存'})}
+ return options
+})
+function upstreamNotFromBuild(value:string){return Boolean(value)&&upstreamArtifacts.value.length>0&&!upstreamArtifacts.value.some(item=>'${'+item.name+'}'===value||item.name===value)}
 const kubeImageNotFromBuild = computed(()=>{
  const current=(primaryRegistryInput.value?.image||'').trim()
  if(!current||current.includes('${')||!upstreamImageNames.value.length)return false
@@ -176,7 +186,7 @@ watch(()=>[props.reportValidation,validationIssues.value] as const,([report,issu
    </template>
    <template v-else>
     <a-form-item v-if="input.kind==='configuration'" label="配置" :validate-status="input.configuration_id&&!configurations.some(item=>item.id===input.configuration_id)&&!loading?'error':undefined" :help="!canRead?'没有查看配置的权限':input.configuration_id&&!configurations.some(item=>item.id===input.configuration_id)&&!loading?'原配置不可用，请检查适用范围或使用权限':undefined"><a-select :value="input.configuration_id||undefined" :loading="loading" :disabled="!canEdit||!canRead||loadedIdentity!==identity()" :options="configurationOptions(index)" placeholder="选择配置文件" :aria-label="`配置文件 ${index+1}`" @update:value="chooseConfiguration(index,String($event))" /></a-form-item>
-    <a-form-item v-else label="上游构建产出环境变量" required :validate-status="invalidUpstreamReference(upstreamReference(input))?'error':undefined" :help="invalidUpstreamReference(upstreamReference(input))?'请使用变量引用，例如 ${BUILD_ARTIFACT}':undefined"><template #label><span>上游构建产出环境变量<DeploymentFieldHelp text="填写前序构建中暂存构建物的变量；运行后下载对应文件。" label="上游构建产物说明" /></span></template><a-input :value="upstreamReference(input)" :disabled="!canEdit" placeholder="例如 ${BUILD_ARTIFACT}" :aria-label="`上游构建产出环境变量 ${index+1}`" @update:value="chooseUpstream(index,String($event||''))"/></a-form-item>
+    <a-form-item v-else label="上游构建产物" required :validate-status="invalidUpstreamReference(upstreamReference(input))?'error':upstreamNotFromBuild(upstreamReference(input))?'warning':undefined" :help="invalidUpstreamReference(upstreamReference(input))?'请使用变量引用，例如 ${BUILD_ARTIFACT}':upstreamNotFromBuild(upstreamReference(input))?`请从前序构建的命名产物中选择：${upstreamArtifacts.map(item=>item.name).join('、')}`:undefined"><template #label><span>上游构建产物<DeploymentFieldHelp text="前序自定义构建里配置的暂存构建物名称；运行后按变量下载对应文件。" label="上游构建产物说明" /></span></template><a-auto-complete :value="upstreamReference(input)" :disabled="!canEdit" :options="upstreamArtifactOptions" placeholder="选择上游构建产物，例如 ${BUILD_ARTIFACT}" :aria-label="`上游构建产物 ${index+1}`" @update:value="chooseUpstream(index,String($event||''))"/></a-form-item>
     <a-form-item label="配置文件路径" :validate-status="input.path&&!validConfigurationPath(input.path)?'error':undefined" :help="input.path&&!validConfigurationPath(input.path)?'只填写相对路径，不能使用绝对路径、~/、.. 或保留目录 .edo':undefined"><a-input :value="input.path" :disabled="!canEdit" addon-before="${EDO_APP_CONFIG_PATH}/" placeholder="例如 settings/app.yaml 或 output.tar.gz" :aria-label="`配置文件路径 ${index+1}`" @update:value="update(index,{path:String($event||'')})" /></a-form-item>
    </template>
      </div>

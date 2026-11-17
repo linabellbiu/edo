@@ -97,3 +97,23 @@ export function workflowBuildImageNames(
   }
   return result
 }
+
+export interface WorkflowBuildArtifactName { node_id: string; node_name: string; name: string }
+
+// workflowBuildArtifactNames 静态列出自定义构建的命名产物：暂存构建物的名称是部署时使用的变量来源。
+// 名称按变量名规则校验，非法或重复的名称不提供选择，由后端静态检查阻断启用。
+export function workflowBuildArtifactNames(
+  nodes: Array<{ id: string; name: string; config: { build_outputs?: Array<{ name?: string }> } }>,
+): WorkflowBuildArtifactName[] {
+  const result: WorkflowBuildArtifactName[] = []
+  const seen = new Set<string>()
+  for (const node of nodes) {
+    for (const output of node.config.build_outputs||[]) {
+      const name = (output.name||'').trim()
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(name) || seen.has(name)) continue
+      seen.add(name)
+      result.push({ node_id: node.id, node_name: node.name, name })
+    }
+  }
+  return result
+}
