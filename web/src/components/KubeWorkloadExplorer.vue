@@ -250,12 +250,12 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 }
 .workload-explorer.is-deployment { grid-template-columns: minmax(190px, .9fr) minmax(210px, .9fr) minmax(0, 2.2fr); }
 .explorer-column { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding-top: 48px; background: var(--workload-column); }
-.explorer-column>header { display: flex; position: sticky; top: 0; z-index: 1; align-items: center; justify-content: space-between; gap: 6px; min-height: 36px; padding: 5px 10px; background: var(--workload-heading); color: var(--workload-title); }
+.explorer-column>header { display: flex; position: sticky; top: 0; z-index: 1; box-sizing: border-box; align-items: center; justify-content: space-between; gap: 6px; min-height: 36px; padding: 5px 10px; border-bottom: 1px solid var(--workload-border); background: var(--workload-heading); color: var(--workload-title); }
 .explorer-column h4 { margin: 0; font-size: 13px; font-weight: 650; line-height: 22px; }
 .heading-count { margin-left: 4px; color: var(--workload-muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .history-limit { margin-left: auto; padding: 1px 7px; border: 1px solid var(--workload-border); border-radius: 8px; background: var(--workload-column); color: var(--workload-muted); font-size: 12px; line-height: 18px; white-space: nowrap; }
-.explorer-column>header :deep(.ant-btn) { display: grid; width: 26px; height: 26px; place-items: center; padding: 0; color: var(--workload-muted); }
-.explorer-column>header :deep(.ant-btn:not(:disabled):hover) { color: var(--workload-link); background: var(--workload-column); }
+.explorer-column>header :deep(.ant-btn) { display: grid; flex: 0 0 auto; align-self: center; width: 24px; height: 24px; margin: 0; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; box-shadow: none; color: var(--workload-muted); line-height: 1; }
+.explorer-column>header :deep(.ant-btn:not(:disabled):hover) { color: var(--workload-link); background: color-mix(in srgb, var(--workload-bar) 55%, transparent); }
 .revision-list { position: relative; padding: 8px 8px 12px 22px; }
 .revision-list::before { position: absolute; top: 23px; bottom: 30px; left: 9px; width: 1px; background: var(--workload-border); content: ''; }
 .revision-entry { position: relative; margin: 0 0 12px; }
