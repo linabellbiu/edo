@@ -60,7 +60,7 @@ onBeforeUnmount(() => { mounted = false })
 </script>
 
 <template>
-  <a-drawer :open="open" title="关联主机" width="min(560px, 100vw)" :mask-closable="!saving" @close="close">
+  <a-drawer :open="open" title="关联主机" width="min(560px, 100vw)" :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="close">
     <div class="association-heading"><strong>{{ cluster?.name }}</strong><span>已选 {{ selectedIDs.length }} 台主机</span></div>
     <p class="association-hint">保存时核对主机与集群节点信息，不匹配无法关联。没有主机时可留空。</p>
     <a-alert v-if="saveError" type="error" show-icon :message="saveError" class="association-error" />

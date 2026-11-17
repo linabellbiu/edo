@@ -66,7 +66,7 @@ watch(() => props.records, records => {
 </script>
 
 <template>
-  <a-modal :open="open" :title="t('rollback.title')" :width="760" :mask-closable="!submitting" :closable="!submitting" @cancel="emit('update:open', false)">
+  <a-modal :open="open" :title="t('rollback.title')" :width="760" :mask-closable="!submitting" :closable="!submitting" :keyboard="!submitting" @cancel="emit('update:open', false)">
     <a-spin :spinning="loading">
       <div class="rollback-content">
         <a-alert v-if="error" type="error" show-icon :message="error"/>

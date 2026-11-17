@@ -2664,6 +2664,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
  :confirm-loading="releasePlanMutationID === releasePlanAddApplicationPlanID"
  :closable="releasePlanMutationID !== releasePlanAddApplicationPlanID"
  :mask-closable="releasePlanMutationID !== releasePlanAddApplicationPlanID"
+ :keyboard="releasePlanMutationID !== releasePlanAddApplicationPlanID"
  :ok-button-props="{ disabled: !releasePlanAddApplicationIDs.length || !releasePlanAddApplicationOptions.length }"
  :cancel-button-props="{ disabled: releasePlanMutationID === releasePlanAddApplicationPlanID }"
  @ok="addReleaseGroupApplications"

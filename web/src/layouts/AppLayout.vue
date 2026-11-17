@@ -444,7 +444,7 @@ onBeforeUnmount(() => {
     </main>
 
     <FloatingAssistant v-if="auth.authorizationReady" />
-    <a-modal v-model:open="searchOpen" :footer="null" :closable="false" width="620px" wrap-class-name="command-modal">
+    <a-modal v-model:open="searchOpen" :footer="null" :closable="false" keyboard width="620px" wrap-class-name="command-modal">
       <div class="command-search"><Search /><input v-model="searchText" :placeholder="`${t('common.search')}...`" /></div>
       <div class="command-results">
         <button v-for="item in searchableItems" :key="item.path" type="button" @click="searchOpen = false; navigate(item.path)">

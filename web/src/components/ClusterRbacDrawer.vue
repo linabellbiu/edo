@@ -141,7 +141,7 @@ onBeforeUnmount(()=>{alive=false;cancel();listRevision++;listRequest?.abort();wi
 </script>
 
 <template>
-  <a-drawer :open="open" title="集群授权" width="min(1040px,96vw)" :closable="!busy" :mask-closable="!busy" @close="close">
+  <a-drawer :open="open" title="集群授权" width="min(1040px,96vw)" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" @close="close">
     <div class="cluster-rbac">
       <p class="rbac-intro">按项目角色配置集群和命名空间的访问范围。</p>
       <a-alert v-if="!canRead" type="warning" show-icon message="需要集群授权查看或管理权限" />

@@ -31,7 +31,7 @@ async function copy(){try{await navigator.clipboard.writeText(join.value?.comman
 </script>
 
 <template>
-  <a-drawer :open="open" :title="t('k8s.addNode')" width="min(760px,94vw)" :closable="!busy" :mask-closable="!busy" @close="emit('update:open',false)">
+  <a-drawer :open="open" :title="t('k8s.addNode')" width="min(760px,94vw)" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" @close="emit('update:open',false)">
     <div class="join-content"><a-alert type="warning" show-icon :message="t('k8s.joinWarning')" /><a-alert v-if="error" type="error" show-icon :message="error" />
       <a-form v-if="!join" layout="vertical" :disabled="busy"><a-form-item :label="t('k8s.joinProvider')"><a-select v-model:value="provider" :options="[{value:'k3s',label:'K3s'},{value:'kubeadm',label:'kubeadm'}]" /></a-form-item><a-form-item :label="t('k8s.joinEndpoint')" :help="t('k8s.joinEndpointHint')"><a-input v-model:value="endpoint" placeholder="https://cluster.example.com:6443" /></a-form-item><a-form-item :label="t('k8s.joinTTL')"><a-input-number v-model:value="minutes" :min="5" :max="60" :precision="0" /></a-form-item><p>{{ t('k8s.joinPrerequisite') }}</p></a-form>
       <template v-else><a-alert type="info" :message="t('k8s.joinSensitive')" /><p>{{ t('k8s.joinExpires') }}: {{ formatDateTime(join.expires_at) }}</p><pre class="join-command">{{ join.command }}</pre><a-button @click="copy">{{ t('k8s.copy') }}</a-button></template>

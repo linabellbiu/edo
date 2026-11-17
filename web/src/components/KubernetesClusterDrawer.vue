@@ -248,7 +248,9 @@ async function submit() {
     :open="open"
     :title="t(editing ? 'kubernetesCluster.drawer.edit' : 'kubernetesCluster.drawer.title')"
     width="min(620px, 100vw)"
+    :closable="!busy"
     :mask-closable="!busy"
+    :keyboard="!busy"
     @close="close"
   >
     <a-form ref="formRef" :model="form" layout="vertical" :disabled="busy || !canModify">

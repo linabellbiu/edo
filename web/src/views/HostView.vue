@@ -1034,7 +1034,7 @@ onBeforeUnmount(() => {
     <K3sProvisionDrawer v-model:open="clusterProvisionOpen" :hosts="hosts" @completed="clusterProvisionCompleted" />
     <K3sUninstallDrawer v-model:open="k3sUninstallOpen" :host="k3sUninstallHost" @completed="refresh" />
 
-    <a-drawer :open="relationOpen" :title="relationHost && clusterForHost(relationHost, clusters) ? '更改关联集群' : '关联集群'" width="min(520px, 100vw)" :mask-closable="!relationSaving" @close="!relationSaving && (relationOpen = false)">
+    <a-drawer :open="relationOpen" :title="relationHost && clusterForHost(relationHost, clusters) ? '更改关联集群' : '关联集群'" width="min(520px, 100vw)" :closable="!relationSaving" :mask-closable="!relationSaving" :keyboard="!relationSaving" @close="!relationSaving && (relationOpen = false)">
       <div v-if="relationHost" class="host-association-summary"><Server :size="20" /><div><strong>{{ relationHost.name }}</strong><small>{{ relationHost.address }}</small></div></div>
       <a-form layout="vertical"><a-form-item label="Kubernetes 集群"><a-select v-model:value="relationClusterID" :disabled="relationSaving" :options="[{ value: '', label: '不关联集群' }, ...clusters.map(cluster => ({ value: cluster.id, label: `${cluster.name}${cluster.is_active ? '' : '（已停用）'}` }))]" /></a-form-item></a-form>
       <p class="field-hint">保存时核对主机与集群节点信息，不匹配无法关联。解除关联不改变集群节点和资源。</p>

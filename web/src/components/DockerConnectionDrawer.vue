@@ -147,7 +147,9 @@ function close() {
     :open="open"
     :title="t('dockerConnection.title')"
     width="600"
+    :closable="!testing && !submitting"
     :mask-closable="!testing && !submitting"
+    :keyboard="!testing && !submitting"
     @close="close"
   >
     <a-form ref="formRef" :model="form" layout="vertical" :disabled="testing || submitting">

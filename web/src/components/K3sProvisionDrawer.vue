@@ -406,7 +406,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
 </script>
 
 <template>
-  <a-drawer :open="open" :title="title" width="min(1060px,96vw)" :closable="!busy||checking" :mask-closable="!busy||checking" @close="close">
+  <a-drawer :open="open" :title="title" width="min(1060px,96vw)" :closable="!busy||checking" :mask-closable="!busy||checking" :keyboard="!busy||checking" @close="close">
     <div class="provision-content">
       <a-steps :current="currentStep" size="small" :items="displayMode==='k3d'?[{title:'安装配置'},{title:'安装前检测'},{title:'确认计划'},{title:'执行结果'}]:[{title:'安装配置'},{title:'确认安装'},{title:'安装进度'}]" />
       <a-alert v-if="!installation&&!visiblePreflight&&!checking&&displayMode==='k3d'" type="info" show-icon :message="t('k8s.k3dInstallTitle')" :description="t('k8s.k3dInstallHint')" />

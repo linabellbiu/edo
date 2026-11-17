@@ -236,6 +236,7 @@ onBeforeUnmount(destroySortables)
     width="min(820px, 100vw)"
     :mask-closable="!saving"
     :closable="!saving"
+    :keyboard="!saving"
     class="release-plan-editor"
     @close="emit('update:open', false)"
   >

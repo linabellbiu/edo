@@ -340,7 +340,9 @@ onBeforeUnmount(clearCredentials)
     :open="open"
     :title="isLocal ? '编辑本地主机' : editing ? '编辑主机' : '添加主机'"
     width="min(640px, 100vw)"
+    :closable="!testing && !submitting"
     :mask-closable="!testing && !submitting"
+    :keyboard="!testing && !submitting"
     @close="close"
   >
     <a-form ref="formRef" :model="form" layout="vertical" :disabled="testing || submitting || readingPrivateKey">
