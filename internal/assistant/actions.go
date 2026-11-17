@@ -174,7 +174,7 @@ func (s *Service) propose(ctx context.Context, user *model.User, conversationID,
 		if s.deps.Pipeline == nil {
 			return ActionView{}, s.failure(ctx, "assistant_retry_unavailable", ErrUnavailable, ErrUnavailable)
 		}
-		expected.Retry, err = s.deps.Pipeline.PreviewRetryRun(ctx, run.ID, user.ID, "")
+		expected.Retry, err = s.deps.Pipeline.PreviewRetryRun(ctx, run.ID, user.ID, false)
 		if err != nil {
 			return ActionView{}, s.failure(ctx, "assistant_retry_preview", err, ErrActionState, "run_id", run.ID)
 		}
@@ -336,7 +336,7 @@ func (s *Service) ConfirmAction(ctx context.Context, user *model.User, id string
 	var output *model.PipelineRun
 	if err == nil {
 		if row.Kind == "pipeline_retry" {
-			output, err = s.deps.Pipeline.RetryRunSelectionExpected(ctx, run.ID, user.ID, "", expected.Retry)
+			output, err = s.deps.Pipeline.RetryRunExpected(ctx, run.ID, user.ID, false, expected.Retry)
 		} else if row.Kind == "pipeline_stop" {
 			output, err = s.deps.Pipeline.StopRun(ctx, run.ID, user.ID)
 		} else {

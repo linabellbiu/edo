@@ -332,7 +332,7 @@ func TestRetryRunHTTPCanSelectOriginalRunArtifactWithoutRefInput(t *testing.T) {
 				t.Fatalf("重试选项没有只返回固定版本和原运行制品: status=%d body=%s", options.Code, options.Body.String())
 			}
 			retried := performJSONRequest(t, fixture.router, http.MethodPost, "/api/v1/pipeline-runs/"+failed.ID+"/retry", map[string]any{
-				"artifact_id": artifact.ID,
+				"reuse_artifacts": true,
 			}, cookie)
 			var payload struct {
 				PipelineRun model.PipelineRun `json:"pipeline_run"`

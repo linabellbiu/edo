@@ -80,7 +80,7 @@ type executeRunRequest struct {
 }
 
 type retryRunRequest struct {
-	ArtifactID string `json:"artifact_id" binding:"max=36"`
+	ReuseArtifacts bool `json:"reuse_artifacts"`
 }
 
 type buildPlanRequest struct {
@@ -481,7 +481,7 @@ func (h pipelineHandler) retryRun(c *gin.Context) {
 		}
 	}
 	actor, _ := currentUser(c)
-	run, err := h.service.RetryRunSelection(c.Request.Context(), c.Param("id"), actor.ID, request.ArtifactID)
+	run, err := h.service.RetryRunWithArtifacts(c.Request.Context(), c.Param("id"), actor.ID, request.ReuseArtifacts)
 	if err != nil {
 		h.writeError(c, "workflow_run_retry", err)
 		return
@@ -859,6 +859,8 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusConflict, "pipeline_run_not_retryable", err.Error())
 	case errors.Is(err, pipeline.ErrRetryArtifactInvalid):
 		writeError(c, http.StatusConflict, "retry_artifact_unavailable", err.Error())
+	case errors.Is(err, pipeline.ErrRetryArtifactsUnavailable):
+		writeError(c, http.StatusConflict, "retry_artifacts_unavailable", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineRunAwaitingReleasePlan):
 		writeError(c, http.StatusConflict, "pipeline_run_managed_by_release_plan", err.Error())
 	case errors.Is(err, pipeline.ErrManualCommitRequired):

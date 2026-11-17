@@ -258,37 +258,12 @@ func (s *Service) ExecuteRunSelection(ctx context.Context, runID, actorID, ref, 
 }
 
 func (s *Service) listManualWorkflowArtifacts(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow) ([]ManualRunArtifact, error) {
-	return s.listWorkflowArtifacts(ctx, application, workflow, "")
-}
-
-func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, pipelineRunID string) ([]ManualRunArtifact, error) {
 	if application == nil || workflow == nil {
 		return []ManualRunArtifact{}, nil
 	}
 	var artifacts []model.Artifact
-	query := s.db.WithContext(ctx).Where("application_id = ? AND status = ?", application.ID, model.ArtifactStatusAvailable)
-	// 重试链上沿用原运行制品的运行不再自己构建，这里同时接受它已经固定使用过的制品。
-	referenced := map[string]struct{}{}
-	if pipelineRunID = strings.TrimSpace(pipelineRunID); pipelineRunID != "" {
-		referencedIDs, referencedErr := s.pipelineRunReferencedArtifactIDs(ctx, pipelineRunID)
-		if referencedErr != nil {
-			if s.logger != nil {
-				s.logger.Error("查询运行固定使用的制品失败", "operation", "pipeline_run_referenced_artifacts", "pipeline_run_id", pipelineRunID, "err", referencedErr)
-			}
-			return nil, referencedErr
-		}
-		referenced = referencedIDs
-		if len(referenced) == 0 {
-			query = query.Where("pipeline_run_id = ?", pipelineRunID)
-		} else {
-			ids := make([]string, 0, len(referenced))
-			for id := range referenced {
-				ids = append(ids, id)
-			}
-			query = query.Where("(pipeline_run_id = ? OR uuid IN ?)", pipelineRunID, ids)
-		}
-	}
-	if err := query.
+	if err := s.db.WithContext(ctx).
+		Where("application_id = ? AND status = ?", application.ID, model.ArtifactStatusAvailable).
 		Order("id DESC").Limit(100).Find(&artifacts).Error; err != nil {
 		if s.logger != nil {
 			s.logger.Error("查询手动执行可选制品失败", "operation", "pipeline_manual_artifacts", "application_id", application.ID, "workflow_id", workflow.ID, "err", err)
@@ -334,9 +309,7 @@ func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.
 	for i := range artifacts {
 		build, buildOK := buildByID[artifacts[i].BuildRunID]
 		plan, planOK := planByID[build.BuildPlanID]
-		_, reused := referenced[artifacts[i].ID]
-		if !buildOK || !planOK || build.ApplicationID != application.ID ||
-			(pipelineRunID != "" && !reused && build.PipelineRunID != pipelineRunID) {
+		if !buildOK || !planOK || build.ApplicationID != application.ID {
 			continue
 		}
 		if _, _, ok := manualArtifactBuildNodes(workflow, build, plan, artifacts[i]); !ok {
@@ -347,37 +320,208 @@ func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.
 	return result, nil
 }
 
-// pipelineRunReferencedArtifactIDs 返回该次运行固定使用过的制品：运行记录上的制品，以及构建节点
-// 在构建成功或沿用时登记的制品；重试链据此继续沿用原运行的制品，不必重新构建。
-func (s *Service) pipelineRunReferencedArtifactIDs(ctx context.Context, runID string) (map[string]struct{}, error) {
-	referenced := make(map[string]struct{})
-	runID = strings.TrimSpace(runID)
-	if runID == "" {
-		return referenced, nil
+// runReusableBuildArtifact 是一次重新执行可以沿用的构建制品及其在当前流水线中的构建节点。
+type runReusableBuildArtifact struct {
+	artifact model.Artifact
+	build    model.BuildRun
+	node     model.WorkflowNode
+}
+
+// runReuseSkipNode 是沿用制品时需要预先标记为跳过的任务。
+type runReuseSkipNode struct {
+	node       model.WorkflowNode
+	artifactID string
+	name       string
+	digest     string
+	imageRef   string
+}
+
+// listRunReusableArtifacts 返回该运行固定版本上已经构建、且能对应当前构建节点的可用制品。
+// 制品的生产记录必须使用同一个 Ref 和 Commit，同一个构建节点只取最新一份。
+func (s *Service) listRunReusableArtifacts(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, run *model.PipelineRun) ([]runReusableBuildArtifact, error) {
+	if application == nil || workflow == nil || run == nil ||
+		strings.TrimSpace(run.Ref) == "" || strings.TrimSpace(run.CommitSHA) == "" {
+		return nil, nil
 	}
-	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).Select("uuid", "artifact_id").First(&run, "uuid = ?", runID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return referenced, nil
+	tasks := workflowTasks(enabledWorkflowStages(workflow.Stages))
+	if len(tasks) == 0 {
+		return nil, nil
+	}
+	planIDByNode := make(map[string]string, len(tasks))
+	plans := inlineBuildPlansForWorkflow(workflow)
+	libraryPlanIDs := make([]string, 0, 4)
+	for i := range tasks {
+		if tasks[i].Type != model.WorkflowNodeBuild {
+			continue
+		}
+		if tasks[i].Config.InlineBuild != nil {
+			planIDByNode[tasks[i].ID] = inlineBuildIdentity(workflow.ID, tasks[i].ID)
+			continue
+		}
+		planID := strings.TrimSpace(tasks[i].Config.BuildPlanID)
+		planIDByNode[tasks[i].ID] = planID
+		if planID != "" {
+			libraryPlanIDs = append(libraryPlanIDs, planID)
+		}
+	}
+	if len(libraryPlanIDs) > 0 {
+		var stored []model.BuildPlan
+		if err := s.db.WithContext(ctx).Where("uuid IN ? AND is_active = ?", libraryPlanIDs, true).Find(&stored).Error; err != nil {
+			if s.logger != nil {
+				s.logger.Error("查询可沿用制品的构建方案失败", "operation", "pipeline_reuse_artifact_plans", "application_id", application.ID, "workflow_id", workflow.ID, "err", err)
+			}
+			return nil, err
+		}
+		for i := range stored {
+			plans[stored[i].ID] = stored[i]
+		}
+	}
+	if len(plans) == 0 {
+		return nil, nil
+	}
+	var builds []model.BuildRun
+	if err := s.db.WithContext(ctx).
+		Where("application_id = ? AND ref = ? AND commit_sha = ? AND status = ?", application.ID, run.Ref, run.CommitSHA, model.BuildRunStatusSucceeded).
+		Order("id DESC").Limit(100).Find(&builds).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("查询可沿用制品的构建记录失败", "operation", "pipeline_reuse_artifact_builds", "application_id", application.ID, "workflow_id", workflow.ID, "err", err)
 		}
 		return nil, err
 	}
-	var nodeArtifactIDs []string
-	if err := s.db.WithContext(ctx).Model(&model.PipelineNodeRun{}).
-		Where("pipeline_run_id = ? AND artifact_id <> ''", runID).
-		Where("status IN ?", []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunSkipped}).
-		Pluck("artifact_id", &nodeArtifactIDs).Error; err != nil {
+	if len(builds) == 0 {
+		return nil, nil
+	}
+	buildIDs := make([]string, 0, len(builds))
+	for i := range builds {
+		buildIDs = append(buildIDs, builds[i].ID)
+	}
+	var artifacts []model.Artifact
+	if err := s.db.WithContext(ctx).
+		Where("build_run_id IN ? AND application_id = ? AND status = ?", buildIDs, application.ID, model.ArtifactStatusAvailable).
+		Order("id DESC").Find(&artifacts).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("查询可沿用制品失败", "operation", "pipeline_reuse_artifacts", "application_id", application.ID, "workflow_id", workflow.ID, "err", err)
+		}
 		return nil, err
 	}
-	if id := strings.TrimSpace(run.ArtifactID); id != "" {
-		referenced[id] = struct{}{}
+	if len(artifacts) == 0 {
+		return nil, nil
 	}
-	for _, id := range nodeArtifactIDs {
-		if id = strings.TrimSpace(id); id != "" {
-			referenced[id] = struct{}{}
+	artifactByBuild := make(map[string]model.Artifact, len(artifacts))
+	for i := range artifacts {
+		if _, exists := artifactByBuild[artifacts[i].BuildRunID]; exists {
+			continue
+		}
+		artifactByBuild[artifacts[i].BuildRunID] = artifacts[i]
+	}
+	selected := make(map[string]runReusableBuildArtifact, len(builds))
+	for i := range builds {
+		plan, planOK := plans[builds[i].BuildPlanID]
+		if !planOK {
+			continue
+		}
+		artifact, artifactOK := artifactByBuild[builds[i].ID]
+		if !artifactOK || !manualArtifactKindMatches(artifact, plan) {
+			continue
+		}
+		node, nodeOK := reusableBuildNode(tasks, planIDByNode, builds[i], plan)
+		if !nodeOK {
+			continue
+		}
+		if _, exists := selected[node.ID]; exists {
+			continue
+		}
+		selected[node.ID] = runReusableBuildArtifact{artifact: artifact, build: builds[i], node: node}
+	}
+	if len(selected) == 0 {
+		return nil, nil
+	}
+	result := make([]runReusableBuildArtifact, 0, len(selected))
+	for i := range tasks {
+		if item, exists := selected[tasks[i].ID]; exists {
+			result = append(result, item)
 		}
 	}
-	return referenced, nil
+	return result, nil
+}
+
+// reusableBuildNode 在流水线中定位生产该制品的构建节点：有节点的构建记录必须与节点一致，
+// 否则只有在构建方案唯一对应一个构建节点时才接受。
+func reusableBuildNode(tasks []model.WorkflowNode, planIDByNode map[string]string, build model.BuildRun, plan model.BuildPlan) (model.WorkflowNode, bool) {
+	var match model.WorkflowNode
+	matched := 0
+	for i := range tasks {
+		if tasks[i].Type != model.WorkflowNodeBuild || planIDByNode[tasks[i].ID] != plan.ID {
+			continue
+		}
+		if build.WorkflowNodeID != "" && tasks[i].ID != build.WorkflowNodeID {
+			continue
+		}
+		match = tasks[i]
+		matched++
+	}
+	if matched != 1 {
+		return model.WorkflowNode{}, false
+	}
+	return match, true
+}
+
+// runReuseSkipNodes 计算沿用这些制品时需要预先标记为跳过的任务：构建节点，以及紧随其后、
+// 不涉及数据库迁移的 Shell 检查。跳过之后必须还有部署可以继续，否则不提供沿用。
+func runReuseSkipNodes(workflow *model.ReleaseWorkflow, artifacts []runReusableBuildArtifact) []runReuseSkipNode {
+	if workflow == nil || len(artifacts) == 0 {
+		return nil
+	}
+	tasks := workflowTasks(enabledWorkflowStages(workflow.Stages))
+	byNode := make(map[string]runReusableBuildArtifact, len(artifacts))
+	for i := range artifacts {
+		byNode[artifacts[i].node.ID] = artifacts[i]
+	}
+	skipped := make([]runReuseSkipNode, 0, len(artifacts))
+	for index := 0; index < len(tasks); index++ {
+		item, exists := byNode[tasks[index].ID]
+		if !exists || tasks[index].Type != model.WorkflowNodeBuild {
+			continue
+		}
+		skipped = append(skipped, runReuseSkipNode{
+			node: tasks[index], artifactID: item.artifact.ID,
+			name: item.artifact.Name, digest: item.artifact.Digest, imageRef: item.artifact.ImageRef,
+		})
+		for next := index + 1; next < len(tasks); next++ {
+			if tasks[next].Type != model.WorkflowNodeShell || tasks[next].Config.Migration != nil {
+				break
+			}
+			skipped = append(skipped, runReuseSkipNode{node: tasks[next]})
+			index = next
+		}
+	}
+	if len(skipped) == 0 {
+		return nil
+	}
+	resume := skipped[len(skipped)-1].node.ID
+	for index := range tasks {
+		if tasks[index].ID != resume {
+			continue
+		}
+		for later := index + 1; later < len(tasks); later++ {
+			if tasks[later].Type == model.WorkflowNodeDeploy {
+				return skipped
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+// manualArtifactKindMatches 判断制品类型与构建方案一致：Dockerfile 产出镜像，脚本产出文件制品。
+func manualArtifactKindMatches(stored model.Artifact, plan model.BuildPlan) bool {
+	switch plan.Kind {
+	case model.BuildPlanDockerfile:
+		return stored.Kind == model.ArtifactKindOCIImage
+	case model.BuildPlanScript:
+		return stored.Kind == model.ArtifactKindFileBundle
+	}
+	return false
 }
 
 func manualRunArtifactSummary(stored model.Artifact, build model.BuildRun) ManualRunArtifact {
@@ -443,13 +587,7 @@ func manualArtifactBuildNodes(workflow *model.ReleaseWorkflow, build model.Build
 	if workflow == nil || plan.ID == "" || build.BuildPlanID != plan.ID {
 		return model.WorkflowNode{}, model.WorkflowNode{}, false
 	}
-	expectedKind := model.ArtifactKindFileBundle
-	if plan.Kind == model.BuildPlanDockerfile {
-		expectedKind = model.ArtifactKindOCIImage
-	} else if plan.Kind != model.BuildPlanScript {
-		return model.WorkflowNode{}, model.WorkflowNode{}, false
-	}
-	if stored.Kind != expectedKind {
+	if !manualArtifactKindMatches(stored, plan) {
 		return model.WorkflowNode{}, model.WorkflowNode{}, false
 	}
 	tasks := workflowTasks(enabledWorkflowStages(workflow.Stages))

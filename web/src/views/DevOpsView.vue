@@ -70,7 +70,7 @@ interface Artifact extends ResourceRecord{id:string;application_id:string;build_
 interface ApplicationWorkflow extends PipelineWorkflow{workflow_template?:{id:string;name:string}}
 interface WorkflowTemplate extends PipelineWorkflow{description?:string}
 interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:ApplicationWorkflow[]}
-interface Run extends ResourceRecord,PipelineRunProgressRecord{retry_allowed?:boolean;approval?:PipelineRunApproval;row_id?:number;id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
+interface Run extends ResourceRecord,PipelineRunProgressRecord{retry_allowed?:boolean;approval?:PipelineRunApproval;row_id?:number;id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};selected_artifacts?:Array<{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string}>;trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
 interface DeploymentTarget extends ResourceRecord{id:string;platform:string;environment_id:string;host_ids?:string[]|null;host_id:string;runtime_id:string;namespace?:string;workload_name?:string;container_name?:string}
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
@@ -119,7 +119,7 @@ let releasePlanResourcesController:AbortController|null=null
 const buildImageDestination=ref<'local'|'registry'>('local'),buildSaveArtifact=ref(false),buildArgsText=ref(''),buildEnvironmentText=ref(''),selectedBuildPlanID=ref(''),buildPlanView=ref<'overview'|'artifacts'>(route.query.view==='artifacts'?'artifacts':'overview'),artifactApplicationID=ref(''),artifactLoading=ref(false),artifactUploading=ref(false),artifactDownloadingID=ref('')
 const planExecutionOpen=ref(false),planExecutionPlanID=ref(''),planExecutionTitle=ref(''),planExecutionExpectedUpdatedAt=ref(''),planExecutionRequestID=ref(''),planExecutionGroups=ref<PlanExecutionGroup[]>([])
 const executingReleasePlanIDs=ref<string[]>([])
-const retryOpen=ref(false),retryLoading=ref(false),retrySubmitting=ref(false),retryRunID=ref(''),retryOptions=ref<RetryRunOptions|null>(null),retryMode=ref<'rebuild'|'artifact'>('rebuild'),retryArtifactID=ref('')
+const retryOpen=ref(false),retryLoading=ref(false),retrySubmitting=ref(false),retryRunID=ref(''),retryOptions=ref<RetryRunOptions|null>(null),retryMode=ref<'rebuild'|'artifact'>('rebuild')
 let retryRequestRevision=0
 const stoppingRunID=ref('')
 const manualPicker=reactive({open:false,applicationID:'',workflowID:''})
@@ -374,7 +374,6 @@ const manualSourceOptions=computed(()=>manualSources.value.map(item=>({
  value:item.id,label:item.name,details:item.environment?[`环境：${item.environment}`]:[],
 })))
 const manualArtifactOptions=computed(()=>manualArtifacts.value.map(artifactSelectOption))
-const retryArtifactOptions=computed(()=>(retryOptions.value?.artifacts||[]).map(artifactSelectOption))
 const activeResourceID=computed(()=>props.section==='image-registries'&&typeof route.query.registry==='string'?route.query.registry:'')
 const activeApplicationID=computed(()=>props.section==='applications'&&typeof route.query.application==='string'?route.query.application:'')
 const activeReleasePlanID=computed(()=>props.section==='release-plans'&&typeof route.query.plan==='string'?route.query.plan:'')
@@ -1507,7 +1506,7 @@ function confirmStopRun(run:Run){
  })
 }
 function canRetryRun(entry:RunListEntry):entry is Run{return !isRunExecutionGroup(entry)&&(entry.status==='failed'||entry.status==='succeeded'&&entry.retry_allowed===true)&&auth.canAny(['pipeline_run.execute'])}
-function resetRetry(){retryRequestRevision++;retryOpen.value=false;retryLoading.value=false;retrySubmitting.value=false;retryRunID.value='';retryOptions.value=null;retryMode.value='rebuild';retryArtifactID.value=''}
+function resetRetry(){retryRequestRevision++;retryOpen.value=false;retryLoading.value=false;retrySubmitting.value=false;retryRunID.value='';retryOptions.value=null;retryMode.value='rebuild'}
 async function openRetry(run:Run){
  if(!canRetryRun(run)||retryLoading.value||retrySubmitting.value)return
  resetRetry();retryOpen.value=true;retryLoading.value=true;retryRunID.value=run.id
@@ -1517,18 +1516,17 @@ async function openRetry(run:Run){
   if(revision!==retryRequestRevision)return
   retryOptions.value=options
   retryMode.value=options.artifacts.length?'artifact':'rebuild'
-  retryArtifactID.value=options.artifacts.length===1?options.artifacts[0].id:''
  }catch(error){if(revision===retryRequestRevision){message.error(apiErrorMessage(error));resetRetry()}}
  finally{if(revision===retryRequestRevision)retryLoading.value=false}
 }
 async function executeRetry(){
- if(!auth.canAny(['pipeline_run.execute'])||retrySubmitting.value||retryLoading.value||!retryRunID.value||!retryOptions.value||(retryMode.value==='artifact'&&!retryArtifactID.value))return
- const revision=retryRequestRevision,scope=resourceScopeKey(),mode=retryMode.value
+ if(!auth.canAny(['pipeline_run.execute'])||retrySubmitting.value||retryLoading.value||!retryRunID.value||!retryOptions.value||(retryMode.value==='artifact'&&!retryOptions.value.artifacts.length))return
+ const revision=retryRequestRevision,scope=resourceScopeKey(),mode=retryMode.value,reusedCount=retryOptions.value?.artifacts.length||0
  retrySubmitting.value=true
  try{
-  const retried=(await client.post<{pipeline_run:Run}>(`/pipeline-runs/${retryRunID.value}/retry`,mode==='artifact'?{artifact_id:retryArtifactID.value}:{},{timeout:35000})).data.pipeline_run
+  const retried=(await client.post<{pipeline_run:Run}>(`/pipeline-runs/${retryRunID.value}/retry`,mode==='artifact'?{reuse_artifacts:true}:{},{timeout:35000})).data.pipeline_run
   if(revision!==retryRequestRevision)return
-  message.success(mode==='artifact'?'已使用原运行制品重新执行':'已按原固定版本重新构建')
+  message.success(mode==='artifact'?`已沿用原运行构建的 ${reusedCount} 个制品重新执行`:'已按原固定版本重新构建')
   resetRetry();await refresh()
   if(scope!==resourceScopeKey())return
   detachedRun.value=retried
@@ -2016,7 +2014,9 @@ function runReleasePlanName(run:Run){
 function runReferenceLabel(run?:Run){
  if(!run)return '—'
  const source=formatGitReference({ref:run.ref,sha:run.commit_sha,trigger:run.trigger})
- return run.selected_artifact?`已有制品：${run.selected_artifact.name}${source&&source!=='—'?`；原始版本：${source}`:''}`:source
+ const artifacts=run.selected_artifacts?.length?run.selected_artifacts:(run.selected_artifact?[run.selected_artifact]:[])
+ if(artifacts.length)return `已有制品：${artifacts.map(item=>item.name).join('、')}${source&&source!=='—'?`；原始版本：${source}`:''}`
+ return source
 }
 function artifactSelectOption(artifact:ManualArtifact){
  const reference=artifact.ref?.trim()||''
@@ -2635,15 +2635,15 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
   <a-form-item v-else label="历史制品"><a-select v-model:value="selectedArtifactID" show-search option-filter-prop="label" placeholder="选择之前构建或手工上传的可用制品" :options="manualArtifactOptions"><template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template></a-select></a-form-item>
  </a-form>
 </a-modal>
-<a-modal :open="retryOpen" title="重新执行流水线" :confirm-loading="retrySubmitting" :cancel-button-props="{disabled:retrySubmitting}" :mask-closable="!retrySubmitting" :keyboard="!retrySubmitting" :ok-button-props="{disabled:retryLoading||!retryOptions||(retryMode==='artifact'&&!retryArtifactID)}" ok-text="确认执行" @ok="executeRetry" @cancel="resetRetry">
+<a-modal :open="retryOpen" title="重新执行流水线" :confirm-loading="retrySubmitting" :cancel-button-props="{disabled:retrySubmitting}" :mask-closable="!retrySubmitting" :keyboard="!retrySubmitting" :ok-button-props="{disabled:retryLoading||!retryOptions||(retryMode==='artifact'&&!retryOptions.artifacts.length)}" ok-text="确认执行" @ok="executeRetry" @cancel="resetRetry">
  <a-spin :spinning="retryLoading">
   <a-form v-if="retryOptions" layout="vertical">
    <a-alert class="manual-release-note" type="info" show-icon message="重新执行沿用原运行固定的分支或 Tag 与 Commit。"/>
    <a-form-item label="固定代码版本"><a-input :value="formatGitReference({ref:retryOptions.ref,sha:retryOptions.commit_sha})" readonly/></a-form-item>
    <a-form-item label="执行方式"><a-radio-group v-model:value="retryMode" button-style="solid"><a-radio-button value="rebuild">按固定版本重新构建</a-radio-button><a-radio-button value="artifact" :disabled="!retryOptions.artifacts.length">使用原运行制品</a-radio-button></a-radio-group></a-form-item>
-   <a-form-item v-if="retryMode==='artifact'" label="该次运行使用的制品" required><a-select v-model:value="retryArtifactID" show-search option-filter-prop="label" placeholder="选择原运行已构建或已使用的可用制品" :options="retryArtifactOptions"><template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template></a-select></a-form-item>
-   <a-alert v-if="retryMode==='artifact'" type="warning" show-icon message="将跳过该制品对应的构建和紧随其后的 Shell 检查，从后续审核、人工放行或部署继续。"/>
-   <a-alert v-else-if="!retryOptions.artifacts.length" type="info" show-icon message="该次运行没有可复用的可用制品，将使用原 Commit 重新构建。"/>
+   <a-form-item v-if="retryMode==='artifact'" label="沿用的构建制品"><div class="retry-artifact-list"><div v-for="item in retryOptions.artifacts" :key="item.id" class="retry-artifact-item"><strong>{{ item.name }}</strong><small>{{ item.digest.slice(0,19) }}…</small></div></div></a-form-item>
+   <a-alert v-if="retryMode==='artifact'" type="warning" show-icon message="将跳过这些制品对应的构建和紧随其后的 Shell 检查，从后续审核、人工放行或部署继续。"/>
+   <a-alert v-else-if="!retryOptions.artifacts.length" type="info" show-icon message="该次运行固定的版本没有可沿用的可用制品，将使用原 Commit 重新构建。"/>
   </a-form>
  </a-spin>
 </a-modal>
@@ -2809,6 +2809,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
 .run-group-item>.run-detail{margin:0 10px 10px 38px;box-shadow:none}.run-group-item.is-open{border-color:color-mix(in srgb,var(--edo-primary) 30%,var(--edo-border))}
 @media(prefers-reduced-motion:reduce){.run-row-toggle svg{transition:none}}
 .manual-release-note{margin-bottom:16px}
+.retry-artifact-list{display:grid;gap:6px}.retry-artifact-item{display:flex;align-items:baseline;gap:8px;padding:6px 10px;border:1px solid var(--edo-border);border-radius:7px;background:var(--edo-surface-soft)}.retry-artifact-item strong{overflow:hidden;color:var(--edo-text);font-weight:600;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.retry-artifact-item small{color:var(--edo-muted);font-size:12px;white-space:nowrap}
 @keyframes application-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 32%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
 @media(max-width:1100px){.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:640px){.form-grid{grid-template-columns:1fr}.span2{grid-column:auto}.build-advanced-title{align-items:flex-start;flex-direction:column;gap:2px}.workflow-association-item{align-items:start;grid-template-columns:34px minmax(0,1fr)}.workflow-association-actions{grid-column:2;flex-wrap:wrap}.run-facts{grid-template-columns:1fr}.release-plan-resource-item>header{grid-template-columns:36px minmax(0,1fr)}.release-plan-resource-item>header .application-deployment-state{grid-column:2}.release-plan-resource-item>dl{grid-template-columns:1fr}}

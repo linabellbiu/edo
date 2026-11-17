@@ -1270,18 +1270,44 @@ func (s *Service) attachRunCommitAuthors(ctx context.Context, runs []model.Pipel
 }
 
 func (s *Service) attachRunSelectedArtifacts(ctx context.Context, runs []model.PipelineRun) error {
-	artifactIDs := make([]string, 0, len(runs))
-	seen := make(map[string]struct{}, len(runs))
+	if len(runs) == 0 {
+		return nil
+	}
+	runIDs := make([]string, 0, len(runs))
 	for i := range runs {
-		artifactID := strings.TrimSpace(runs[i].ArtifactID)
+		runIDs = append(runIDs, runs[i].ID)
+	}
+	var nodeRuns []model.PipelineNodeRun
+	if err := s.db.WithContext(ctx).
+		Select("pipeline_run_id", "artifact_id").
+		Where("pipeline_run_id IN ? AND artifact_id <> ''", runIDs).
+		Where("status IN ?", []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunSkipped}).
+		Order("id ASC").Find(&nodeRuns).Error; err != nil {
+		return fmt.Errorf("读取流水线节点制品失败: %w", err)
+	}
+	perRun := make(map[string][]string, len(runs))
+	seenPerRun := make(map[string]map[string]struct{}, len(runs))
+	addPerRun := func(runID, artifactID string) {
+		artifactID = strings.TrimSpace(artifactID)
 		if artifactID == "" {
-			continue
+			return
 		}
-		if _, exists := seen[artifactID]; exists {
-			continue
+		if seenPerRun[runID] == nil {
+			seenPerRun[runID] = make(map[string]struct{})
 		}
-		seen[artifactID] = struct{}{}
-		artifactIDs = append(artifactIDs, artifactID)
+		if _, exists := seenPerRun[runID][artifactID]; exists {
+			return
+		}
+		seenPerRun[runID][artifactID] = struct{}{}
+		perRun[runID] = append(perRun[runID], artifactID)
+	}
+	for i := range nodeRuns {
+		addPerRun(nodeRuns[i].PipelineRunID, nodeRuns[i].ArtifactID)
+	}
+	artifactIDs := make([]string, 0, len(runs))
+	for i := range runs {
+		addPerRun(runs[i].ID, runs[i].ArtifactID)
+		artifactIDs = append(artifactIDs, perRun[runs[i].ID]...)
 	}
 	if len(artifactIDs) == 0 {
 		return nil
@@ -1295,12 +1321,19 @@ func (s *Service) attachRunSelectedArtifacts(ctx context.Context, runs []model.P
 		artifactByID[artifacts[i].ID] = artifacts[i]
 	}
 	for i := range runs {
-		artifact, exists := artifactByID[runs[i].ArtifactID]
-		if !exists || artifact.PipelineRunID == runs[i].ID {
-			continue
-		}
-		runs[i].SelectedArtifact = &model.PipelineRunSelectedArtifact{
-			ID: artifact.ID, Name: artifact.Name, Kind: artifact.Kind, Digest: artifact.Digest,
+		for _, artifactID := range perRun[runs[i].ID] {
+			artifact, exists := artifactByID[artifactID]
+			if !exists || artifact.PipelineRunID == runs[i].ID {
+				continue
+			}
+			item := model.PipelineRunSelectedArtifact{
+				ID: artifact.ID, Name: artifact.Name, Kind: artifact.Kind, Digest: artifact.Digest,
+			}
+			runs[i].SelectedArtifacts = append(runs[i].SelectedArtifacts, item)
+			if runs[i].SelectedArtifact == nil || artifact.ID == runs[i].ArtifactID {
+				selected := item
+				runs[i].SelectedArtifact = &selected
+			}
 		}
 	}
 	return nil

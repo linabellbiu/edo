@@ -40,3 +40,15 @@
 - 本次未重启、未重建、未部署本机运行中的 `edo-local-api-1`/`edo-local-web-1`，它们仍是修复前的构建；要在真实页面看到修复后的选项，需要重新构建镜像并更新容器。
 - 未执行用户的任何真实流水线运行，未修改应用、流水线、部署方案、集群或制品记录，也未删除历史运行。
 - “使用原运行制品”仍然只固定一次选择中的一个制品：多构建节点时可选的是紧跟部署之前的那个构建节点，其余前置构建节点按原行为跳过（本应用为 api 构建被跳过、web 制品被固定）。本轮没有把该选择扩展为多制品，也没有改变跳过范围。
+## 改为沿用历史构建制品（2026-11-17 22:30，PRA-09）
+
+上一版按“本次运行自己构建或固定使用过的制品”提供单个制品选项，仍有两个问题：沿用的制品只能选一个；本应用有两个构建节点（api、web）时，只有紧邻部署前的那个能被单独固定，另一个永远进不来。用户明确要求“沿用历史构建制品就行了”。
+
+新语义：
+
+- `ListRetryRunOptions` 改为 `listRunReusableArtifacts`：以该次运行固定的 `ref` + `commit_sha` 为边界，查询该应用在这个版本上构建成功、状态可用的制品，按当前流水线的构建节点匹配（生产记录带有构建节点时必须与该节点一致，否则要求构建方案只对应一个构建节点），每个节点取最新一份，按节点顺序返回。
+- `POST /pipeline-runs/:id/retry` 的 `artifact_id` 换成 `reuse_artifacts: true`；服务端重新解析同一批制品后，在创建运行的同一事务里为每个被沿用的构建节点写入 `pipeline_node_runs`（状态 `skipped`、登记制品），因此重试链上继续沿用也不会退化，部署任务按上游构建节点拿到各自的镜像，不再落到“运行上的单个 artifact_id”。
+- 制品过期、构建失败、属于其他提交或无法对应当前构建节点时不沿用；没有任何可沿用制品时返回 `retry_artifacts_unavailable`，界面只能按固定版本重建。
+- 重新执行弹窗不再提供单品选择，改为只读列出将沿用的制品；运行详情用 `selected_artifacts` 展示本次沿用的全部制品名称。
+
+验证：`TestRetryReusesEveryArtifactOfFixedVersion`（双构建节点、按节点顺序给出 2 个制品、两个构建节点都跳过并各自登记、无构建任务、重试链再次沿用同一批、过期制品退出沿用范围）、`TestRetryFailedRunReusesArtifactsBuiltForFixedVersion`（同版本其他运行的制品可沿用，其他提交的制品不可沿用）、`TestSuccessfulManualWorkflowRunCanExecuteAgain` 重建/沿用两支；`go test ./internal/pipeline ./internal/httpapi ./internal/assistant ./internal/model` 通过；`node --test web/tests/pipelineRetry.test.mjs` 5 项通过；`npm --prefix web run build`（含 `vue-tsc --noEmit`）通过。

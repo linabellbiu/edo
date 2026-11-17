@@ -24,11 +24,11 @@ func TestApprovedRetryUsesResolvedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	fingerprint, err := service.PreviewRetryRun(ctx, failed.ID, "operator", "")
+	fingerprint, err := service.PreviewRetryRun(ctx, failed.ID, "operator", false)
 	if err != nil || fingerprint == "" {
 		t.Fatalf("生成确认指纹失败: %v", err)
 	}
-	again, err := service.PreviewRetryRun(ctx, failed.ID, "operator", "")
+	again, err := service.PreviewRetryRun(ctx, failed.ID, "operator", false)
 	if err != nil || again != fingerprint {
 		t.Fatalf("随机运行ID或时间污染确认指纹: %s %s %v", fingerprint, again, err)
 	}
@@ -44,7 +44,7 @@ func TestApprovedRetryUsesResolvedSnapshot(t *testing.T) {
 	if err := db.Model(&original).Update("dockerfile_path", "Dockerfile.changed").Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.RetryRunSelectionExpected(ctx, failed.ID, "operator", "", fingerprint); !errors.Is(err, ErrRetrySnapshotChanged) {
+	if _, err := service.RetryRunExpected(ctx, failed.ID, "operator", false, fingerprint); !errors.Is(err, ErrRetrySnapshotChanged) {
 		t.Fatalf("独立构建方案变化应拒绝旧确认: %v", err)
 	}
 	db.Model(&model.PipelineRun{}).Count(&count)
@@ -54,11 +54,11 @@ func TestApprovedRetryUsesResolvedSnapshot(t *testing.T) {
 	if err := db.Model(&original).Update("dockerfile_path", original.DockerfilePath).Error; err != nil {
 		t.Fatal(err)
 	}
-	refreshed, err := service.PreviewRetryRun(ctx, failed.ID, "operator", "")
+	refreshed, err := service.PreviewRetryRun(ctx, failed.ID, "operator", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := service.RetryRunSelectionExpected(ctx, failed.ID, "operator", "", refreshed)
+	run, err := service.RetryRunExpected(ctx, failed.ID, "operator", false, refreshed)
 	if err != nil || run == nil || run.ID == failed.ID || run.RetryOfID != failed.ID || run.CommitSHA != failed.CommitSHA {
 		t.Fatalf("新确认未创建固定代码版本的重试: %+v %v", run, err)
 	}

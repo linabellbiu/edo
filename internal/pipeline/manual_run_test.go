@@ -480,12 +480,13 @@ func TestRetryFailedRunCreatesNewAuditedExecution(t *testing.T) {
 	}
 }
 
-func TestRetryFailedRunCanUseArtifactBuiltByOriginalRun(t *testing.T) {
+func TestRetryFailedRunReusesArtifactsBuiltForFixedVersion(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "retry_built_artifact")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
 		t.Fatal(err)
 	}
+	ctx := context.Background()
 	now := time.Now().UTC()
 	commitSHA := strings.Repeat("9", 40)
 	failed := model.PipelineRun{
@@ -498,38 +499,41 @@ func TestRetryFailedRunCanUseArtifactBuiltByOriginalRun(t *testing.T) {
 	if err := db.Create(&failed).Error; err != nil {
 		t.Fatal(err)
 	}
+	// 同一固定版本上其他运行构建的制品同样可以沿用，不要求本次运行自己构建过。
 	stored := createPreviousManualArtifact(t, db, application, commitSHA)
-	if _, err := service.RetryRunSelection(context.Background(), failed.ID, "operator", stored.ID); !errors.Is(err, ErrRetryArtifactInvalid) {
-		t.Fatalf("重试使用其他运行的制品未被拒绝: %v", err)
-	}
-	if err := db.Model(&model.BuildRun{}).Where("uuid = ?", stored.BuildRunID).Update("pipeline_run_id", failed.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.Artifact{}).Where("uuid = ?", stored.ID).Update("pipeline_run_id", failed.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", failed.ID).Update("artifact_id", stored.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	options, err := service.ListRetryRunOptions(context.Background(), failed.ID)
+	options, err := service.ListRetryRunOptions(ctx, failed.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if options.Ref != failed.Ref || options.CommitSHA != failed.CommitSHA || len(options.Artifacts) != 1 || options.Artifacts[0].ID != stored.ID {
-		t.Fatalf("重试选项没有固定原代码版本和原运行制品: %+v", options)
+		t.Fatalf("重试选项没有固定原代码版本和可沿用的制品: %+v", options)
 	}
-	retried, err := service.RetryRunSelection(context.Background(), failed.ID, "operator", stored.ID)
+	retried, err := service.RetryRunWithArtifacts(ctx, failed.ID, "operator", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if retried.RetryOfID != failed.ID || retried.Ref != failed.Ref || retried.CommitSHA != failed.CommitSHA ||
 		retried.ArtifactID != stored.ID || retried.CurrentNodeID != "approval" || retried.Status != model.PipelineRunAwaitingApproval ||
 		retried.ExecutionJobID != "" {
-		t.Fatalf("重试没有使用原运行制品跳过构建并保留固定代码版本: %+v", retried)
+		t.Fatalf("沿用制品重试没有跳过构建并保留固定代码版本: %+v", retried)
 	}
 	var jobs int64
 	if err := db.Model(&model.Job{}).Where("payload LIKE ?", "%"+retried.ID+"%").Count(&jobs).Error; err != nil || jobs != 0 {
-		t.Fatalf("使用原运行制品重试后仍创建了构建任务: count=%d err=%v", jobs, err)
+		t.Fatalf("沿用制品重试后仍创建了构建任务: count=%d err=%v", jobs, err)
+	}
+	// 其他提交的制品不属于该固定版本，不能沿用。
+	otherVersion := failed
+	otherVersion.RowID, otherVersion.ID = 0, "failed-other-version"
+	otherVersion.CommitSHA = strings.Repeat("8", 40)
+	if err := db.Create(&otherVersion).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherOptions, err := service.ListRetryRunOptions(ctx, otherVersion.ID)
+	if err != nil || len(otherOptions.Artifacts) != 0 {
+		t.Fatalf("其他提交的制品不应进入选项: options=%+v err=%v", otherOptions, err)
+	}
+	if _, err := service.RetryRunWithArtifacts(ctx, otherVersion.ID, "operator", true); !errors.Is(err, ErrRetryArtifactsUnavailable) {
+		t.Fatalf("没有可沿用制品时必须拒绝沿用重试: %v", err)
 	}
 }
 

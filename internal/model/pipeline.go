@@ -312,54 +312,55 @@ type PipelineRunSelectedArtifact struct {
 }
 
 type PipelineRun struct {
-	RowID                      uint64                       `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
-	ID                         string                       `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
-	DepartmentID               string                       `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
-	ProjectID                  string                       `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
-	ApplicationID              string                       `gorm:"type:varchar(36);not null;index" json:"application_id"`
-	ReleasePlanExecutionID     string                       `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_execution_id,omitempty"`
-	ReleasePlanExecutionItemID string                       `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_execution_item_id,omitempty"`
-	ReleasePlanID              string                       `gorm:"-" json:"release_plan_id,omitempty"`
-	Trigger                    string                       `gorm:"type:varchar(24);not null;index" json:"trigger"`
-	TriggerAction              string                       `gorm:"type:varchar(16);not null;default:'';index" json:"trigger_action,omitempty"`
-	SourceBranch               string                       `gorm:"type:varchar(255);not null;default:''" json:"source_branch,omitempty"`
-	TargetBranch               string                       `gorm:"type:varchar(255);not null;default:''" json:"target_branch,omitempty"`
-	EventDedupKey              *string                      `gorm:"type:varchar(64);uniqueIndex" json:"-"`
-	Ref                        string                       `gorm:"type:varchar(512);not null" json:"ref"`
-	CommitSHA                  string                       `gorm:"type:varchar(64);not null" json:"commit_sha"`
-	CommitMessage              string                       `gorm:"type:varchar(255);not null;default:''" json:"commit_message,omitempty"`
-	CommitAuthor               string                       `gorm:"-" json:"commit_author,omitempty"`
-	Status                     PipelineRunStatus            `gorm:"type:varchar(32);not null;index" json:"status"`
-	Stage                      string                       `gorm:"type:varchar(32);not null" json:"stage"`
-	Environment                string                       `gorm:"type:varchar(16);not null;default:'';index" json:"environment,omitempty"`
-	WorkflowID                 string                       `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_id,omitempty"`
-	WorkflowRevision           uint64                       `gorm:"not null;default:0" json:"workflow_revision,omitempty"`
-	RetryOfID                  string                       `gorm:"type:varchar(36);not null;default:'';index" json:"retry_of_id,omitempty"`
-	CurrentNodeID              string                       `gorm:"type:varchar(64);not null;default:'';index" json:"current_node_id,omitempty"`
-	WorkflowSnapshot           string                       `gorm:"type:text;not null" json:"-"`
-	ExecutionJobID             string                       `gorm:"type:varchar(36);not null;default:'';index" json:"execution_job_id,omitempty"`
-	LogBytes                   uint64                       `gorm:"not null;default:0" json:"-"`
-	LogTruncated               bool                         `gorm:"not null;default:false" json:"-"`
-	ArtifactID                 string                       `gorm:"type:varchar(36);not null;default:'';index" json:"artifact_id,omitempty"`
-	DeploymentID               string                       `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_id,omitempty"`
-	Image                      string                       `gorm:"type:varchar(1024);not null;default:''" json:"image,omitempty"`
-	Message                    string                       `gorm:"type:varchar(255);not null;default:''" json:"message,omitempty"`
-	CreatedBy                  string                       `gorm:"type:varchar(36);not null;default:'';index" json:"created_by,omitempty"`
-	ApprovedBy                 *string                      `gorm:"type:varchar(36);index" json:"approved_by,omitempty"`
-	ApprovedAt                 *time.Time                   `json:"approved_at,omitempty"`
-	ApprovalRequired           bool                         `gorm:"-" json:"approval_required"`
-	RetryAllowed               bool                         `gorm:"-" json:"retry_allowed"`
-	CurrentNodeName            string                       `gorm:"-" json:"current_node_name,omitempty"`
-	ExecutionGraph             *PipelineRunGraph            `gorm:"-" json:"execution_graph,omitempty"`
-	Timing                     *PipelineStageTiming         `gorm:"-" json:"timing,omitempty"`
-	SelectedArtifact           *PipelineRunSelectedArtifact `gorm:"-" json:"selected_artifact,omitempty"`
-	StatusWriteback            bool                         `gorm:"not null;default:false;index" json:"status_writeback"`
-	RepositoryCheckState       string                       `gorm:"type:varchar(16);not null;default:''" json:"repository_check_state"`
-	NodeExecution              bool                         `gorm:"-" json:"-"`
-	CreatedAt                  time.Time                    `gorm:"not null;index" json:"created_at"`
-	UpdatedAt                  time.Time                    `gorm:"not null" json:"updated_at"`
-	Application                Application                  `gorm:"foreignKey:ApplicationID;references:ID" json:"application,omitempty"`
-	Repositories               []PipelineRunRepository      `gorm:"foreignKey:PipelineRunID;references:ID" json:"repositories"`
+	RowID                      uint64                        `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                         string                        `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
+	DepartmentID               string                        `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
+	ProjectID                  string                        `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
+	ApplicationID              string                        `gorm:"type:varchar(36);not null;index" json:"application_id"`
+	ReleasePlanExecutionID     string                        `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_execution_id,omitempty"`
+	ReleasePlanExecutionItemID string                        `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_execution_item_id,omitempty"`
+	ReleasePlanID              string                        `gorm:"-" json:"release_plan_id,omitempty"`
+	Trigger                    string                        `gorm:"type:varchar(24);not null;index" json:"trigger"`
+	TriggerAction              string                        `gorm:"type:varchar(16);not null;default:'';index" json:"trigger_action,omitempty"`
+	SourceBranch               string                        `gorm:"type:varchar(255);not null;default:''" json:"source_branch,omitempty"`
+	TargetBranch               string                        `gorm:"type:varchar(255);not null;default:''" json:"target_branch,omitempty"`
+	EventDedupKey              *string                       `gorm:"type:varchar(64);uniqueIndex" json:"-"`
+	Ref                        string                        `gorm:"type:varchar(512);not null" json:"ref"`
+	CommitSHA                  string                        `gorm:"type:varchar(64);not null" json:"commit_sha"`
+	CommitMessage              string                        `gorm:"type:varchar(255);not null;default:''" json:"commit_message,omitempty"`
+	CommitAuthor               string                        `gorm:"-" json:"commit_author,omitempty"`
+	Status                     PipelineRunStatus             `gorm:"type:varchar(32);not null;index" json:"status"`
+	Stage                      string                        `gorm:"type:varchar(32);not null" json:"stage"`
+	Environment                string                        `gorm:"type:varchar(16);not null;default:'';index" json:"environment,omitempty"`
+	WorkflowID                 string                        `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_id,omitempty"`
+	WorkflowRevision           uint64                        `gorm:"not null;default:0" json:"workflow_revision,omitempty"`
+	RetryOfID                  string                        `gorm:"type:varchar(36);not null;default:'';index" json:"retry_of_id,omitempty"`
+	CurrentNodeID              string                        `gorm:"type:varchar(64);not null;default:'';index" json:"current_node_id,omitempty"`
+	WorkflowSnapshot           string                        `gorm:"type:text;not null" json:"-"`
+	ExecutionJobID             string                        `gorm:"type:varchar(36);not null;default:'';index" json:"execution_job_id,omitempty"`
+	LogBytes                   uint64                        `gorm:"not null;default:0" json:"-"`
+	LogTruncated               bool                          `gorm:"not null;default:false" json:"-"`
+	ArtifactID                 string                        `gorm:"type:varchar(36);not null;default:'';index" json:"artifact_id,omitempty"`
+	DeploymentID               string                        `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_id,omitempty"`
+	Image                      string                        `gorm:"type:varchar(1024);not null;default:''" json:"image,omitempty"`
+	Message                    string                        `gorm:"type:varchar(255);not null;default:''" json:"message,omitempty"`
+	CreatedBy                  string                        `gorm:"type:varchar(36);not null;default:'';index" json:"created_by,omitempty"`
+	ApprovedBy                 *string                       `gorm:"type:varchar(36);index" json:"approved_by,omitempty"`
+	ApprovedAt                 *time.Time                    `json:"approved_at,omitempty"`
+	ApprovalRequired           bool                          `gorm:"-" json:"approval_required"`
+	RetryAllowed               bool                          `gorm:"-" json:"retry_allowed"`
+	CurrentNodeName            string                        `gorm:"-" json:"current_node_name,omitempty"`
+	ExecutionGraph             *PipelineRunGraph             `gorm:"-" json:"execution_graph,omitempty"`
+	Timing                     *PipelineStageTiming          `gorm:"-" json:"timing,omitempty"`
+	SelectedArtifact           *PipelineRunSelectedArtifact  `gorm:"-" json:"selected_artifact,omitempty"`
+	SelectedArtifacts          []PipelineRunSelectedArtifact `gorm:"-" json:"selected_artifacts,omitempty"`
+	StatusWriteback            bool                          `gorm:"not null;default:false;index" json:"status_writeback"`
+	RepositoryCheckState       string                        `gorm:"type:varchar(16);not null;default:''" json:"repository_check_state"`
+	NodeExecution              bool                          `gorm:"-" json:"-"`
+	CreatedAt                  time.Time                     `gorm:"not null;index" json:"created_at"`
+	UpdatedAt                  time.Time                     `gorm:"not null" json:"updated_at"`
+	Application                Application                   `gorm:"foreignKey:ApplicationID;references:ID" json:"application,omitempty"`
+	Repositories               []PipelineRunRepository       `gorm:"foreignKey:PipelineRunID;references:ID" json:"repositories"`
 }
 
 func (PipelineRun) TableName() string { return "pipeline_runs" }

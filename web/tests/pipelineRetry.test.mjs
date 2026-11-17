@@ -75,15 +75,21 @@ test('行入口读取固定版本并打开确认，不直接执行；重复提�
   assert.equal(h.replacements.at(-1).query.run, 'retried')
 })
 
-test('原运行制品选择继续有效，没有选择制品不能提交', async t => {
-  const artifacts = [{ id: 'one', name: '镜像一' }, { id: 'two', name: '镜像二' }]
+test('有可沿用的制品时默认沿用整批制品一次提交，没有制品时只能重建', async t => {
+  const artifacts = [{ id: 'one', name: '镜像一', digest: 'sha256:' + 'a'.repeat(64) }, { id: 'two', name: '镜像二', digest: 'sha256:' + 'b'.repeat(64) }]
   const h = harness(t, { api: { get: async path => ({ data: path.endsWith('/retry-options') ? { ...options, artifacts } : { pipeline_runs: [], total: 0 } }) } })
   await h.state.openRetry(failed)
   assert.equal(h.state.retryMode.value, 'artifact')
-  await h.state.executeRetry(); assert.equal(writes(h).length, 0)
-  h.state.retryArtifactID.value = 'two'
+  assert.equal(h.state.retryOptions.value.artifacts.length, 2)
   await h.state.executeRetry()
-  assert.deepEqual(writes(h)[0].body, { artifact_id: 'two' })
+  assert.deepEqual(writes(h)[0].body, { reuse_artifacts: true })
+  assert.equal(writes(h).length, 1)
+  const plain = harness(t, { api: { get: async path => ({ data: path.endsWith('/retry-options') ? options : { pipeline_runs: [], total: 0 } }) } })
+  await plain.state.openRetry(failed)
+  assert.equal(plain.state.retryMode.value, 'rebuild')
+  await plain.state.executeRetry()
+  assert.deepEqual(writes(plain)[0].body, {})
+  assert.equal(writes(plain).length, 1)
 })
 
 test('取消后打开另一条失败运行，迟到选项不能替换新目标；权限撤销清理弹窗', async t => {
