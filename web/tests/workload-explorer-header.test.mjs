@@ -32,6 +32,6 @@ test('头部刷新按钮紧凑透明，不铺白卡片也不撑高标题', () =>
   assert.match(button, /box-shadow:\s*none/)
   const hover = block('.explorer-column>header :deep(.ant-btn:not(:disabled):hover)')
   assert.ok(hover)
-  assert.doesNotMatch(hover, /background:\s*var\(--workload-column\)/, '悬停不能用纯白底，避免白色卡片盖在标题栏上')
-  assert.match(hover, /color-mix\(in srgb, var\(--workload-bar\)/)
+  assert.match(hover, /color:\s*var\(--workload-link\)/)
+  assert.match(hover, /background:\s*transparent/, '悬停只变色，不出现任何色块，避免看起来像掉落的白卡片')
 })

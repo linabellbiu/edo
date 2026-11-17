@@ -255,7 +255,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 .heading-count { margin-left: 4px; color: var(--workload-muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .history-limit { margin-left: auto; padding: 1px 7px; border: 1px solid var(--workload-border); border-radius: 8px; background: var(--workload-column); color: var(--workload-muted); font-size: 12px; line-height: 18px; white-space: nowrap; }
 .explorer-column>header :deep(.ant-btn) { display: grid; flex: 0 0 auto; align-self: center; width: 24px; height: 24px; margin: 0; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; box-shadow: none; color: var(--workload-muted); line-height: 1; }
-.explorer-column>header :deep(.ant-btn:not(:disabled):hover) { color: var(--workload-link); background: color-mix(in srgb, var(--workload-bar) 55%, transparent); }
+.explorer-column>header :deep(.ant-btn:not(:disabled):hover) { color: var(--workload-link); background: transparent; }
 .revision-list { position: relative; padding: 8px 8px 12px 22px; }
 .revision-list::before { position: absolute; top: 23px; bottom: 30px; left: 9px; width: 1px; background: var(--workload-border); content: ''; }
 .revision-entry { position: relative; margin: 0 0 12px; }
