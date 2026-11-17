@@ -12,7 +12,7 @@ const props=defineProps<{object:KubeObject;type:KubeType;events:KubeObject[];eve
 const emit=defineEmits<{events:[]}>()
 const {t}=useI18n()
 const cells=computed(()=>resourceCells(props.object,t))
-const fields=computed(()=>resourceColumns(props.type,t).filter(field=>['replicas','updatedReplicas','availableReplicas','currentReplicas','completions','activeJobs','restarts'].includes(field.key)))
+const fields=computed(()=>resourceColumns(props.type,t).filter(field=>['replicas','currentReplicas','completions','activeJobs','restarts'].includes(field.key)))
 const annotations=computed(()=>Object.entries(props.object.metadata.annotations??{}).filter(([key])=>key!=='kubectl.kubernetes.io/last-applied-configuration'))
 const labels=computed(()=>Object.entries(props.object.metadata.labels??{}))
 const metadataExpanded=ref(false)

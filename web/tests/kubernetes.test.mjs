@@ -200,14 +200,17 @@ test('所有资源使用各自的关键列，不再用通用配置列代替',()=
   const columns=presentation.resourceColumns(type,translate),keys=columns.map(column=>column.key)
   assert.equal(keys[0],'name');assert.equal(keys.at(-1),'created');assert.equal(new Set(keys).size,keys.length)
   assert.equal(keys.includes('configuration'),false);assert.equal(keys.includes('namespace'),type.namespaced)
+  assert.equal(keys.includes('updatedReplicas'),false);assert.equal(keys.includes('availableReplicas'),false)
  }
  const columns=resource=>presentation.resourceColumns(api.kubeTypes.find(type=>type.resource===resource),translate).map(column=>column.key)
  assert.ok(columns('deployments').includes('replicas'));assert.ok(columns('pods').includes('restarts'))
+ assert.ok(columns('statefulsets').includes('replicas'));assert.ok(columns('daemonsets').includes('currentReplicas'))
  assert.ok(columns('persistentvolumeclaims').includes('volume'));assert.ok(columns('storageclasses').includes('binding'))
  assert.ok(columns('services').includes('servicePorts'));assert.ok(columns('ingresses').includes('routes'));assert.ok(columns('networkpolicies').includes('egressRules'))
 })
 test('工作负载状态等待控制器确认版本，Running 但未就绪不显示成功',()=>{
- const object={kind:'Deployment',metadata:{generation:3},spec:{replicas:2},status:{observedGeneration:2,readyReplicas:2,updatedReplicas:2}}
+ const object={kind:'Deployment',metadata:{generation:3},spec:{replicas:2},status:{observedGeneration:2,readyReplicas:2,updatedReplicas:2,availableReplicas:2}}
+ assert.equal(presentation.resourceCells(object,translate).updatedReplicas.text,'2');assert.equal(presentation.resourceCells(object,translate).availableReplicas.text,'2')
  assert.equal(presentation.resourceStatus(object,translate).key,'updating')
  object.status.observedGeneration=3;assert.equal(presentation.resourceStatus(object,translate).key,'ready')
  object.status.updatedReplicas=1;assert.equal(presentation.resourceStatus(object,translate).key,'updating')

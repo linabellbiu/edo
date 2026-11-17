@@ -72,9 +72,9 @@ export function resourceColumns(type:KubeType,t:Translate) {
   const status=column('status','status','125px'),image=column('images','image','240px'),selector=column('selector','selectorShort','220px')
   const special:Record<string,ReturnType<typeof column>[]>={
     nodes:[{key:'role',label:t('nodeRoles.role'),width:'200px'},status,column('address','nodeIP','150px'),column('usage','resourceUsage','318px'),column('nodeVersion','versionRuntime','190px')],
-    deployments:[status,column('replicas','readyReplicas','100px'),column('updatedReplicas','updated','90px'),column('availableReplicas','availableReplicas','90px'),image],
-    statefulsets:[status,column('replicas','readyReplicas','100px'),column('updatedReplicas','updated','90px'),image,column('service','serviceName','170px')],
-    daemonsets:[status,column('replicas','readyNodesShort','100px'),column('currentReplicas','currentReplicas','90px'),column('updatedReplicas','updated','90px'),column('availableReplicas','availableReplicas','90px'),column('nodeSelector','nodeSelectorShort','180px')],
+    deployments:[status,column('replicas','readyReplicas','100px'),image],
+    statefulsets:[status,column('replicas','readyReplicas','100px'),image,column('service','serviceName','170px')],
+    daemonsets:[status,column('replicas','readyNodesShort','100px'),column('currentReplicas','currentReplicas','90px'),column('nodeSelector','nodeSelectorShort','180px')],
     pods:[status,column('replicas','readyContainers','110px'),column('restarts','restarts','90px'),column('placement','nodeAndIP','195px'),column('usage','usage','150px'),image],
     jobs:[status,column('completions','completions','135px'),image,column('jobTiming','executionTime','175px')],
     cronjobs:[status,column('schedule','schedule','175px'),column('activeJobs','activeJobs','110px'),image,column('lastSchedule','lastSchedule','170px')],

@@ -1,6 +1,6 @@
 import type {KubeObject} from '@/api/kubernetes'
 export interface KubeListState {query:string;label:string;status:string;sort:string;order:'asc'|'desc';page:number;limit:number}
-export const kubeSortableColumns=['name','namespace','created','status','replicas','updatedReplicas','availableReplicas','currentReplicas','restarts','completions','activeJobs','lastSchedule']
+export const kubeSortableColumns=['name','namespace','created','status','replicas','currentReplicas','restarts','completions','activeJobs','lastSchedule']
 export const kubeListQueryKeys=['q','label','status','sort','order','page','limit'] as const
 const text=(value:unknown)=>typeof value==='string'?value:''
 export function readKubeListState(query:Record<string,unknown>):KubeListState {

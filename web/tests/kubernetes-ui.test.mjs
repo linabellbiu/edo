@@ -150,7 +150,11 @@ test('副本与重启按数值排序，缺失始终在最后，URL保存正确�
  const rows=[0,10,2,undefined].map((value,index)=>({metadata:{name:`pod-${index}`},cells:{restarts:{sortValue:value}}}))
  assert.deepEqual(workspace.sortKubeRows(rows,'restarts','asc').map(row=>row.cells.restarts.sortValue),[0,2,10,undefined])
  assert.deepEqual(workspace.sortKubeRows(rows,'restarts','desc').map(row=>row.cells.restarts.sortValue),[10,2,0,undefined])
- assert.equal(workspace.readKubeListState({sort:'availableReplicas'}).sort,'availableReplicas')
+ assert.equal(workspace.readKubeListState({sort:'replicas'}).sort,'replicas')
+ for(const removed of ['updatedReplicas','availableReplicas']){
+  const restored=workspace.readKubeListState({sort:removed})
+  assert.equal(restored.sort,'name');assert.equal(workspace.kubeListQuery(restored).sort,undefined)
+ }
 })
 test('日志可选择Init和临时容器，终端只允许当前正在运行的普通或临时容器',()=>{
  const pod={status:{phase:'Running',containerStatuses:[{name:'app',state:{running:{}}}],initContainerStatuses:[{name:'init',state:{running:{}}}],ephemeralContainerStatuses:[{name:'debug',state:{running:{}}}]},spec:{containers:[{name:'app'},{name:'sidecar'}],initContainers:[{name:'init'}],ephemeralContainers:[{name:'debug'}]}}

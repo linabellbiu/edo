@@ -372,7 +372,12 @@ test('工作负载摘要保留显式零策略和中性缩容状态，缺失副�
  const props=vue.reactive({object:{...structuredClone(deployment),spec:{replicas:0,minReadySeconds:0,progressDeadlineSeconds:0,revisionHistoryLimit:0,strategy:{type:'RollingUpdate',rollingUpdate:{maxSurge:0,maxUnavailable:'0%'}}},status:{replicas:0,readyReplicas:0,updatedReplicas:0}},type:api.kubeTypes.find(type=>type.resource==='deployments'),events:[],eventsError:false})
  const scope=vue.effectScope();let state;scope.run(()=>{state=component.setup(props,{expose(){},emit(){}})})
  assert.equal(state.cells.value.replicas.text,'0/0');assert.equal(state.cells.value.replicas.badge,'neutral')
+ assert.deepEqual(state.fields.value.map(field=>field.key),['replicas'])
  assert.deepEqual(state.settings.value.map(row=>row.value),['RollingUpdate',0,'0%','0','0',0])
  props.object={...structuredClone(deployment),spec:{replicas:2}};assert.equal(state.cells.value.replicas.text,'—/2');assert.equal(state.cells.value.replicas.badge,'neutral');assert.deepEqual(state.settings.value,[])
+ for(const resource of ['deployments','statefulsets','daemonsets']){
+  props.type=api.kubeTypes.find(type=>type.resource===resource)
+  assert.deepEqual(state.fields.value.map(field=>field.key),resource==='daemonsets'?['replicas','currentReplicas']:['replicas'])
+ }
  scope.stop()
 })
