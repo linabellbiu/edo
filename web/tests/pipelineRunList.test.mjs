@@ -4,7 +4,7 @@ import {runListHarness,runFilterModule as filters} from './pipelineRunTestHarnes
 
 const records=Array.from({length:225},(_,i)=>({id:`run-${i+1}`,row_id:i+1,application_id:'app',status:i%2?'succeeded':'failed'}))
 test('运行筛选默认按ID倒序，日期按上海时区包含结束日，URL保留上下文',()=>{
-  assert.deepEqual(filters.parsePipelineRunFilters({}),{status:'',from:'',to:'',order:'desc',page:1,pageSize:10})
+  assert.deepEqual(filters.parsePipelineRunFilters({}),{status:'',from:'',to:'',order:'desc',page:1,pageSize:10,application:'',workflow:''})
   const range=filters.pipelineRunDateBounds(['2026-10-23','2026-10-24'])
   assert.deepEqual(range,{from:'2026-10-22T16:00:00.000Z',to:'2026-10-24T16:00:00.000Z'})
   assert.deepEqual(filters.pipelineRunDateRange(range),['2026-10-23','2026-10-24'])
@@ -12,6 +12,28 @@ test('运行筛选默认按ID倒序，日期按上海时区包含结束日，URL
   assert.equal(query.project,'p');assert.equal(query.run,undefined);assert.equal(query.page,'2');assert.equal(query.order,'asc')
   assert.equal(filters.parsePipelineRunFilters({page:'NaN',page_size:'200',order:'drop'}).pageSize,10)
   assert.deepEqual(filters.pipelineRunDateBounds(['2026-02-30','2026-03-01']),{from:'',to:''})
+})
+test('流水线作用域按应用与流水线读取记录，筛选分页保留作用域，查看全部后清除',async()=>{
+  const scoped=filters.parsePipelineRunFilters({application:'app-1',workflow:'flow-1'})
+  assert.equal(scoped.application,'app-1');assert.equal(scoped.workflow,'flow-1')
+  assert.deepEqual(filters.pipelineRunRequestParams(scoped),{application_id:'app-1',workflow_id:'flow-1',order:'desc',page:1,page_size:10})
+  const invalid=filters.parsePipelineRunFilters({application:'../etc',workflow:'x'.repeat(80)})
+  assert.equal(invalid.application,'');assert.equal(invalid.workflow,'')
+  const kept=filters.pipelineRunRouteQuery({view:'runs',application:'app-1',workflow:'flow-1',project:'p'},{...scoped,status:'failed',page:2})
+  assert.equal(kept.application,'app-1');assert.equal(kept.workflow,'flow-1');assert.equal(kept.project,'p');assert.equal(kept.status,'failed');assert.equal(kept.page,'2')
+  const cleared=filters.pipelineRunRouteQuery({view:'runs',application:'app-1',workflow:'flow-1'},{...scoped,application:'',workflow:''})
+  assert.equal(cleared.application,undefined);assert.equal(cleared.workflow,undefined);assert.equal(cleared.view,'runs')
+})
+test('作用域列表只请求该流水线的运行，查看全部记录回到项目范围',async()=>{
+  const {state,route,requests}=runListHarness({records,query:{application:'app-1',workflow:'flow-1'}})
+  await state.loadRunPage()
+  const request=requests.find(item=>item.path==='/pipeline-runs')
+  assert.equal(request.params.application_id,'app-1');assert.equal(request.params.workflow_id,'flow-1')
+  assert.equal(state.runScopeActive.value,true);assert.equal(state.runScopeLabel.value,'所选应用 · 所选流水线')
+  state.changeRunFilters({status:'failed'})
+  assert.equal(route.query.application,'app-1');assert.equal(route.query.workflow,'flow-1');assert.equal(route.query.status,'failed')
+  state.clearRunScope()
+  assert.equal(route.query.application,undefined);assert.equal(route.query.workflow,undefined);assert.equal(route.query.view,'runs');assert.equal(route.query.page,undefined)
 })
 test('筛选和分页交给服务端，超过200条仍能准确翻页，刷新保留条件',async()=>{
   const {state,route,requests}=runListHarness({records,query:{status:'failed',order:'asc',page:'11'}})

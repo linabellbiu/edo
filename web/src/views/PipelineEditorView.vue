@@ -6,7 +6,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, t
 import { message, Modal } from 'ant-design-vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import {
-  Bell, CheckCircle2, ChevronLeft, CircleAlert, CircleDot, GitBranch, GripVertical, Layers3, LibraryBig,
+  ArrowUpRight, Bell, CheckCircle2, ChevronLeft, CircleAlert, CircleDot, GitBranch, GripVertical, History, Layers3, LibraryBig,
   Maximize2, Minimize2, Package, Pencil, Plus, Rocket, Save, Scan, Search,
   ShieldCheck, TerminalSquare, Trash2, X,
 } from 'lucide-vue-next'
@@ -254,6 +254,11 @@ const canReadNotificationChannels = computed(() => scopeAllowed() && auth.canAny
 const canCreateNotificationChannels = computed(() => scopeCan('notification.create'))
 const canTestNotificationChannels = computed(() => scopeCan('notification.execute'))
 const publicMode = computed(() => !applicationID.value)
+// 运行记录固定当前应用与流水线身份，在新标签页打开，避免离开编辑器丢失未保存草稿。
+const canReadPipelineRecords = computed(() => !publicMode.value && auth.canAny(['pipeline_run.read']))
+const pipelineRecordsHref = computed(() => canReadPipelineRecords.value && applicationID.value && workflowID.value
+  ? router.resolve({ path: '/release-plans', query: { view: 'runs', application: applicationID.value, workflow: workflowID.value } }).href
+  : '')
 const editorApplication = computed<ApplicationRecord | null>(() => {
   if (publicMode.value) return { id: 'public-template', name: '流水线' }
   return applications.value.find(item => item.id === applicationID.value) || null
@@ -1834,7 +1839,17 @@ onBeforeRouteLeave(async () => {
 
         <footer class="board-footer">
           <div><a-tag :color="exceptionalTaskCount || issues.length || !draftStructureValid ? 'warning' : 'success'">{{ exceptionalTaskCount ? `存在异常任务（${exceptionalTaskCount}）` : issues.length ? `${issues.length} 个问题` : draftStructureValid ? '结构正常' : '流程尚未完成' }}</a-tag><span>{{ saveState }}</span></div>
-          <small v-if="canUpdate">拖动阶段可调整执行顺序，拖动任务可调整并行分支的位置。</small>
+          <div class="board-footer-tail">
+            <small v-if="canUpdate">拖动阶段可调整执行顺序，拖动任务可调整并行分支的位置。</small>
+            <a
+              v-if="pipelineRecordsHref"
+              class="pipeline-records-link"
+              :href="pipelineRecordsHref"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="在新标签页打开这条流水线的运行记录"
+            ><History :size="13" aria-hidden="true" />流水线记录<ArrowUpRight :size="12" aria-hidden="true" /></a>
+          </div>
         </footer>
       </main>
 
@@ -2215,6 +2230,10 @@ onBeforeRouteLeave(async () => {
 .graph-view-pill { display: inline-flex; height: 28px; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--edo-primary); border-radius: 6px; color: var(--edo-primary) !important; background: var(--edo-primary-soft); font-weight: 600; }
 .board-footer { border-top: 1px solid var(--edo-border); border-bottom: 0; }
 .board-footer > div { display: flex; align-items: center; gap: 8px; }
+.board-footer-tail { min-width: 0; justify-content: flex-end; }
+.pipeline-records-link { display: inline-flex; flex: none; align-items: center; gap: 5px; padding: 4px 9px; border: 1px solid var(--edo-border); border-radius: 8px; color: var(--edo-primary); background: var(--edo-surface); text-decoration: none; }
+.pipeline-records-link:hover { border-color: var(--edo-primary); background: var(--edo-primary-soft); }
+.pipeline-records-link:focus-visible { outline: 2px solid var(--edo-primary); outline-offset: 2px; }
 .pipeline-board-scroll { min-width: 0; overflow: auto; background: var(--edo-surface-soft); }
 .pipeline-flow { --pipeline-insert-width: 28px; display: flex; width: max-content; min-width: 100%; min-height: 100%; align-items: stretch; padding-right: calc(var(--pipeline-insert-width) / 2); background: var(--edo-surface); }
 .pipeline-source-column { width: 300px; flex: 0 0 300px; padding: 18px 20px; border-right: 1px solid var(--edo-border); background: var(--edo-surface-soft); }

@@ -9,6 +9,9 @@ export interface PipelineRunFilters {
   order: PipelineRunOrder
   page: number
   pageSize: number
+  // 作用域固定为某条流水线时，运行记录只读取该应用与流水线；空值表示整个项目的记录。
+  application: string
+  workflow: string
 }
 
 type Query = Record<string, unknown>
@@ -17,6 +20,10 @@ const shanghaiOffset = 8 * 60 * 60 * 1000
 const dayMilliseconds = 24 * 60 * 60 * 1000
 
 function single(value: unknown) { return typeof value === 'string' ? value : '' }
+function scopeID(value: unknown) {
+  const text = single(value).trim()
+  return /^[A-Za-z0-9_.~-]{1,64}$/.test(text) && text !== '.' && text !== '..' ? text : ''
+}
 function instant(value: unknown) {
   const text = single(value)
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(text) && Number.isFinite(Date.parse(text)) ? new Date(text).toISOString() : ''
@@ -34,6 +41,8 @@ export function parsePipelineRunFilters(query: Query): PipelineRunFilters {
     order: query.order === 'asc' ? 'asc' : 'desc',
     page: Number.isSafeInteger(page) && page > 0 ? page : 1,
     pageSize: pageSizes.includes(pageSize) ? pageSize : 10,
+    application: scopeID(query.application),
+    workflow: scopeID(query.workflow),
   }
 }
 
@@ -42,6 +51,8 @@ export function pipelineRunRequestParams(filters: PipelineRunFilters) {
     ...(filters.status ? { status: filters.status } : {}),
     ...(filters.from ? { from: filters.from } : {}),
     ...(filters.to ? { to: filters.to } : {}),
+    ...(filters.application ? { application_id: filters.application } : {}),
+    ...(filters.workflow ? { workflow_id: filters.workflow } : {}),
     order: filters.order,
     page: filters.page,
     page_size: filters.pageSize,
@@ -50,13 +61,15 @@ export function pipelineRunRequestParams(filters: PipelineRunFilters) {
 
 export function pipelineRunRouteQuery(query: LocationQueryRaw, filters: PipelineRunFilters) {
   const next: LocationQueryRaw = { ...query, view: 'runs' }
-  for (const key of ['status', 'from', 'to', 'order', 'page', 'page_size', 'run']) delete next[key]
+  for (const key of ['status', 'from', 'to', 'order', 'page', 'page_size', 'run', 'application', 'workflow']) delete next[key]
   if (filters.status) next.status = filters.status
   if (filters.from) next.from = filters.from
   if (filters.to) next.to = filters.to
   if (filters.order !== 'desc') next.order = filters.order
   if (filters.page !== 1) next.page = String(filters.page)
   if (filters.pageSize !== 10) next.page_size = String(filters.pageSize)
+  if (filters.application) next.application = filters.application
+  if (filters.workflow) next.workflow = filters.workflow
   return next
 }
 

@@ -253,6 +253,21 @@ const runDateRange=computed(()=>pipelineRunDateRange(runFilters.value))
 const runTotal=ref(0),runListLoading=ref(false),runListError=ref('')
 let runQueryRevision=0,runListController:AbortController|undefined,executionRevision=0,executionController:AbortController|undefined,lastRunQuery=''
 const runPagination=computed(()=>({current:runFilters.value.page,pageSize:runFilters.value.pageSize,total:runTotal.value,showSizeChanger:true,pageSizeOptions:['10','20','50','100'],showTotal:(total:number)=>`共 ${total} 条运行记录`}))
+// 从某条流水线打开时只读取该应用与流水线的运行；筛选和分页沿用同一作用域，直到显式查看全部记录。
+const runScopeActive=computed(()=>Boolean(runFilters.value.application||runFilters.value.workflow))
+const runScopeApplication=computed(()=>runFilters.value.application?applications.value.find(item=>item.id===runFilters.value.application):undefined)
+const runScopeWorkflow=computed(()=>runFilters.value.workflow?runScopeApplication.value?.workflows?.find(item=>item.id===runFilters.value.workflow):undefined)
+const runScopeLabel=computed(()=>{
+ if(!runScopeActive.value)return ''
+ const application=runScopeApplication.value,workflow=runScopeWorkflow.value
+ const names=[runFilters.value.application?application?.name||'所选应用':'']
+ if(runFilters.value.workflow)names.push(workflow?workflowDisplayName(workflow):'所选流水线')
+ return names.filter(Boolean).join(' · ')
+})
+function clearRunScope(){
+ if(!runScopeActive.value)return
+ void router.push({query:pipelineRunRouteQuery(route.query,{...runFilters.value,application:'',workflow:'',page:1})})
+}
 const runQueryKey=computed(()=>`${props.section}:${releaseView.value}:${JSON.stringify(pipelineRunRequestParams(runFilters.value))}`)
 const expandedRunIDs=ref<string[]>([])
 const expandedExecutionIDs=ref<string[]>([])
@@ -2360,6 +2375,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
  </div>
 </div>
 <div v-else-if="releaseView==='runs'" ref="runWorkspace" class="run-workspace vben-card">
+  <div v-if="runScopeActive" class="run-scope-bar"><span>仅显示：<strong>{{ runScopeLabel }}</strong></span><a-button type="link" size="small" @click="clearRunScope">查看全部记录</a-button></div>
   <div class="run-filter-toolbar">
     <label>状态<a-select :value="runFilters.status" aria-label="运行状态" :options="[{value:'',label:'全部状态'},{value:'succeeded',label:'成功'},{value:'failed',label:'失败'}]" @change="(value: unknown)=>changeRunFilters({status:value as PipelineRunFilters['status']})" /></label>
     <label>时间<a-range-picker :value="runDateRange" value-format="YYYY-MM-DD" :placeholder="['开始日期','结束日期']" aria-label="运行时间范围" @change="changeRunDates" /></label>
@@ -2380,7 +2396,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
     :row-class-name="runListRowClass"
     @change="changeRunPage"
   >
-    <template #emptyText><a-empty :description="runFilters.status||runFilters.from||runFilters.to?'没有符合条件的运行记录':'还没有流水线运行'"/></template>
+    <template #emptyText><a-empty :description="runFilters.status||runFilters.from||runFilters.to?'没有符合条件的运行记录':runScopeActive?'这条流水线还没有运行记录':'还没有流水线运行'"/></template>
     <template #bodyCell="{column,record}">
       <ResourceRowActions v-if="column.key==='actions'" :more="false">
         <a-button size="small" @click="expandRunListEntry(true,record)">详情</a-button>
@@ -2768,6 +2784,8 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
 
 <style scoped>
 .resource-load-error{margin-bottom:12px}
+.run-scope-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 16px 9px;border-bottom:1px solid var(--edo-border);color:var(--edo-muted);font-size:12px}
+.run-scope-bar span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-scope-bar strong{color:var(--edo-text);font-weight:600}
 .run-filter-toolbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;padding:16px;border-bottom:1px solid var(--edo-border)}.run-filter-toolbar label{display:flex;align-items:center;gap:8px;color:var(--edo-muted);font-size:13px}.run-filter-toolbar :deep(.ant-select){min-width:140px}.run-filter-error{margin:12px 16px}@media(max-width:640px){.run-filter-toolbar label{width:100%;justify-content:space-between}.run-filter-toolbar :deep(.ant-select),.run-filter-toolbar :deep(.ant-picker){flex:1;min-width:0}}
 
 .application-failed-deployments{margin-top:14px}.application-failed-deployments h4{margin:0 0 8px;color:var(--edo-text)}.application-failed-deployments article{padding:12px;border:1px solid var(--edo-border);border-radius:8px}.application-failed-deployments article+article{margin-top:8px}.application-failed-deployments p{margin:6px 0;overflow-wrap:anywhere}.application-failed-deployments .ant-btn{margin:4px 6px 0 0}
