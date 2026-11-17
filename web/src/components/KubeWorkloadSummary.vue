@@ -55,7 +55,7 @@ const settings=computed(()=>{
 
 <style scoped>
 .workload-summary { display: grid; grid-template-columns: minmax(0,3fr) minmax(0,2fr); align-items: start; gap: 16px; margin-bottom: 16px; }
-.workload-identity { min-width: 0; padding: 14px 16px; border: 0; border-radius: 6px; background: var(--workload-column); color: var(--workload-text); }
+.workload-identity { min-width: 0; padding: 14px 16px; border: 0; border-radius: 12px; background: var(--workload-column); color: var(--workload-text); }
 .identity-facts { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 18px; margin: 0; padding: 0 0 12px; }
 .identity-facts>div { display: flex; align-items: baseline; gap: 7px; max-width: 100%; min-width: 0; }
 dt { margin: 0; color: var(--workload-muted); font-size: 12px; white-space: nowrap; }
@@ -65,7 +65,7 @@ dd { margin: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .metadata-group { display: grid; grid-template-columns: 30px minmax(0,1fr); align-items: start; gap: 7px; min-width: 0; }
 .metadata-label,.metadata-empty { color: var(--workload-muted); font-size: 12px; line-height: 22px; }
 .metadata-chips { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 4px; min-width: 0; max-height: 46px; overflow: hidden; }
-.metadata-chip { display: block; max-width: 100%; padding: 2px 6px; overflow: hidden; border: 0; border-radius: 3px; background: var(--workload-stripe); color: var(--workload-text); font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.metadata-chip { display: block; max-width: 100%; padding: 2px 6px; overflow: hidden; border: 0; border-radius: 6px; background: var(--workload-stripe); color: var(--workload-text); font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .identity-compact .metadata-chips { max-height: 22px; }
 .expanded .metadata-chips,.identity-compact .expanded .metadata-chips { max-height: none; overflow: visible; }
 .expanded .metadata-chip { white-space: pre-wrap; overflow-wrap: anywhere; }

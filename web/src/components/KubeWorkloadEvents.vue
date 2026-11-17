@@ -46,7 +46,7 @@ const rows = computed(() => props.events.map((event, index) => ({
 </template>
 
 <style scoped>
-.workload-events { min-width: 0; overflow: hidden; border: 0; border-radius: 6px; background: var(--workload-column); color: var(--workload-text); }
+.workload-events { min-width: 0; overflow: hidden; border: 0; border-radius: 12px; background: var(--workload-column); color: var(--workload-text); }
 .events-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 5px 10px; background: var(--workload-column); }
 .events-heading h4 { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--workload-title); font-size: 13px; font-weight: 650; line-height: 22px; }
 .events-count { color: var(--workload-muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -57,8 +57,7 @@ const rows = computed(() => props.events.map((event, index) => ({
 .event-table-scroll:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: -2px; }
 .event-table { width: 100%; min-width: 480px; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; line-height: 1.5; }
 .event-table th { position: sticky; top: 0; z-index: 1; padding: 6px 10px; border: 0; background: var(--workload-header); color: var(--workload-on-header); font-size: 12px; font-weight: 650; letter-spacing: .01em; text-align: left; }
-.event-table thead th:first-child { border-top-left-radius: 4px; }
-.event-table thead th:last-child { border-top-right-radius: 4px; }
+/* 表头圆角由卡片裁切统一处理，避免内外两层圆角出现白边。 */
 .event-table th:nth-child(1) { width: 24%; }
 .event-table th:nth-child(2) { width: 27%; }
 .event-table th:nth-child(3) { width: 12%; text-align: center; }

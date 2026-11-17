@@ -171,12 +171,12 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-events>summary>.event-warning-count { color: var(--workload-warning-text); }
 .runtime-events>summary:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
 .runtime-events { padding-bottom: 10px; }
-.runtime-pod-card { overflow: hidden; border: 0; border-radius: 5px; background: var(--workload-column); }
+.runtime-pod-card { overflow: hidden; border: 0; border-radius: 12px; background: var(--workload-column); }
 .runtime-pod-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 10px 12px; background: var(--workload-header); color: var(--workload-on-header); font-size: 12px; }
 .pod-age { flex: none; color: var(--workload-on-header); font-size: 12px; opacity: .9; text-decoration: underline dashed; text-underline-offset: 4px; white-space: nowrap; }
 .pod-title-main { display: flex; align-items: baseline; flex: 1; gap: 10px; min-width: 0; }
 .pod-title-main>strong { min-width: 0; font-weight: 600; white-space: normal; overflow-wrap: anywhere; font-family: var(--edo-font-mono, ui-monospace, monospace); }
-.pod-detail-link { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 2px 7px; border: 0; border-radius: 3px; background: var(--workload-column); color: var(--workload-link); font: inherit; white-space: nowrap; cursor: pointer; }
+.pod-detail-link { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 2px 7px; border: 0; border-radius: 8px; background: var(--workload-column); color: var(--workload-link); font: inherit; white-space: nowrap; cursor: pointer; }
 .pod-detail-link:hover:not(:disabled) { background: var(--workload-hover); }
 .pod-detail-link:focus-visible { outline-color: var(--workload-on-header); }
 .runtime-pod-facts { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,.7fr); gap: 12px; margin: 0; padding: 16px 12px; }
@@ -187,7 +187,7 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-link { padding: 0; border: 0; background: none; color: var(--workload-link); font: inherit; text-align: left; cursor: pointer; }
 .runtime-link:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
 .runtime-conditions { display: grid; grid-template-columns: minmax(0,1fr); gap: 4px; padding: 0 12px 16px; }
-.runtime-condition { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 7px; min-width: 0; padding: 7px 10px; border-radius: 3px; background: var(--workload-stripe); color: var(--workload-text); font-size: 12px; }
+.runtime-condition { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 7px; min-width: 0; padding: 7px 10px; border-radius: 8px; background: var(--workload-heading); color: var(--workload-text); font-size: 12px; }
 .runtime-condition:nth-child(even) { background: var(--workload-column); }
 .runtime-condition strong { min-width: 0; font-weight: 500; }
 .runtime-condition time { margin-left: auto; color: var(--workload-muted); font-variant-numeric: tabular-nums; }
@@ -198,7 +198,7 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .condition-error>.condition-dot { background: var(--workload-error-text); }
 .runtime-empty { color: var(--workload-muted); font-size: 12px; }
 .runtime-containers { display: grid; gap: 10px; padding: 0 12px 12px; }
-.runtime-container { min-width: 0; overflow: hidden; padding: 0; border: 0; border-radius: 4px; background: var(--workload-stripe); }
+.runtime-container { min-width: 0; overflow: hidden; padding: 0; border: 0; border-radius: 10px; background: var(--workload-stripe); }
 .runtime-container.selected { background: var(--workload-column); box-shadow: none; }
 .container-heading { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 42px; padding: 9px 10px; border: 0; background: none; color: var(--workload-title); font: inherit; text-align: left; cursor: pointer; }
 .runtime-container.selected .container-heading { background: var(--workload-idle); }
@@ -213,12 +213,12 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .container-image { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; margin: 0; padding: 8px 12px; color: var(--workload-muted); font-size: 12px; line-height: 1.6; }
 .container-image>span:last-child { min-width: 0; overflow-wrap: anywhere; }
 .container-image code { font: inherit; }
-.container-current-state,.previous-state { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 0 12px; padding: 8px; border-radius: 3px; background: var(--workload-stripe); color: var(--workload-muted); font-size: 12px; }
+.container-current-state,.previous-state { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 0 12px; padding: 8px; border-radius: 8px; background: var(--workload-stripe); color: var(--workload-muted); font-size: 12px; }
 .container-current-state :deep(.ant-tag) { margin: 0; font-size: 12px; line-height: 17px; }
 .previous-state { margin-top: 4px; }
 .runtime-message { margin: 8px 12px; font-size: 12px; overflow-wrap: anywhere; }
 .container-action-bar { display: flex; gap: 8px; margin-top: 8px; }
-.container-action-bar :deep(.ant-btn) { display: flex; align-items: center; gap: 5px; height: 30px; border: 0; border-radius: 3px; box-shadow: none; font-size: 12px; }
+.container-action-bar :deep(.ant-btn) { display: flex; align-items: center; gap: 5px; height: 30px; border: 0; border-radius: 8px; box-shadow: none; font-size: 12px; }
 .container-action-bar :deep(.ant-btn:not(:disabled)) { background: var(--workload-idle); color: var(--workload-link); }
 .container-action-bar :deep(.ant-btn:not(:disabled):hover) { background: var(--workload-hover); color: var(--workload-link); }
 .container-action-bar :deep(.session-popout-link) { height: 30px; border: 0; background: var(--workload-idle); color: var(--workload-link); }

@@ -69,7 +69,7 @@ test('填充选中、标题、普通内容与状态标签的正文对比度充�
  }
 })
 
-test('蓝色选中、青绿悬停与浅青普通项有清晰层次，状态色保持独立',()=>{
+test('品牌靛蓝选中、浅靛蓝悬停与普通项有清晰层次，状态色保持独立',()=>{
  const luminance=hex=>channels(hex).reduce((sum,value,index)=>sum+value*[.2126,.7152,.0722][index],0)
  for(const theme of ['light','dark']){
   const colors=palette(theme)
@@ -79,7 +79,7 @@ test('蓝色选中、青绿悬停与浅青普通项有清晰层次，状态色�
   }
   const selected=channels(colors['--workload-selected']),idle=channels(colors['--workload-idle']),hover=channels(colors['--workload-hover'])
   assert.ok(selected[2]>selected[1]&&selected[1]>selected[0],`${theme} 选中需有明确蓝色强调`)
-  for(const [name,value] of [['idle',idle],['hover',hover]])assert.ok(value[1]>value[0]&&value[2]>value[0],`${theme}/${name} 使用青绿填充`)
+  for(const [name,value] of [['idle',idle],['hover',hover]])assert.ok(value[2]>value[1]&&value[1]>value[0],`${theme}/${name} 使用品牌靛蓝填充`)
   assert.notEqual(colors['--workload-idle'],colors['--workload-hover'])
   assert.notEqual(colors['--workload-selected'],colors['--workload-hover'])
   assert.notEqual(colors['--workload-selected'],colors['--workload-idle'])
