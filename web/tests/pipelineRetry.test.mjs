@@ -37,6 +37,7 @@ async function renderActions(state, render = rowRender) {
   const app = vue.createSSRApp({ setup: () => state, render })
   app.component('ResourceRowActions', { setup: (_, { slots }) => () => vue.h('div', slots.default?.()) })
   app.component('a-button', { inheritAttrs: false, setup: (_, { attrs, slots }) => () => vue.h('button', attrs, slots.default?.()) })
+  app.component('SessionPopoutLink', { setup: () => () => null })
   return renderToString(app)
 }
 
@@ -46,7 +47,7 @@ test('操作列允许失败及开启手动执行的成功记录重新执行，�
     for (const status of ['failed', 'running', 'succeeded', 'canceled', 'awaiting_approval', 'skipped']) {
      for (const manual of [false, true]) {
       const record = { ...failed, status, retry_allowed: manual }
-      const html = await renderActions({ column: { key: 'actions' }, record, canRetryRun: h.state.canRetryRun, retryRunID: '', retryLoading: false, retrySubmitting: false, expandRunListEntry() {}, openLogs() {}, openRetry() {} })
+      const html = await renderActions({ column: { key: 'actions' }, record, canRetryRun: h.state.canRetryRun, applicationName: h.state.applicationName, retryRunID: '', retryLoading: false, retrySubmitting: false, expandRunListEntry() {}, openLogs() {}, openRetry() {} })
       assert.equal(html.includes('重新执行'), execute && (status === 'failed' || status === 'succeeded' && manual))
       assert.match(html, /详情/); assert.match(html, /日志/)
      }

@@ -2641,9 +2641,9 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
    <a-alert class="manual-release-note" type="info" show-icon message="重新执行沿用原运行固定的分支或 Tag 与 Commit。"/>
    <a-form-item label="固定代码版本"><a-input :value="formatGitReference({ref:retryOptions.ref,sha:retryOptions.commit_sha})" readonly/></a-form-item>
    <a-form-item label="执行方式"><a-radio-group v-model:value="retryMode" button-style="solid"><a-radio-button value="rebuild">按固定版本重新构建</a-radio-button><a-radio-button value="artifact" :disabled="!retryOptions.artifacts.length">使用原运行制品</a-radio-button></a-radio-group></a-form-item>
-   <a-form-item v-if="retryMode==='artifact'" label="该次运行已构建的制品" required><a-select v-model:value="retryArtifactID" show-search option-filter-prop="label" placeholder="选择原运行已经构建的可用制品" :options="retryArtifactOptions"><template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template></a-select></a-form-item>
+   <a-form-item v-if="retryMode==='artifact'" label="该次运行使用的制品" required><a-select v-model:value="retryArtifactID" show-search option-filter-prop="label" placeholder="选择原运行已构建或已使用的可用制品" :options="retryArtifactOptions"><template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template></a-select></a-form-item>
    <a-alert v-if="retryMode==='artifact'" type="warning" show-icon message="将跳过该制品对应的构建和紧随其后的 Shell 检查，从后续审核、人工放行或部署继续。"/>
-   <a-alert v-else-if="!retryOptions.artifacts.length" type="info" show-icon message="该次运行没有已构建的可用制品，将使用原 Commit 重新构建。"/>
+   <a-alert v-else-if="!retryOptions.artifacts.length" type="info" show-icon message="该次运行没有可复用的可用制品，将使用原 Commit 重新构建。"/>
   </a-form>
  </a-spin>
 </a-modal>

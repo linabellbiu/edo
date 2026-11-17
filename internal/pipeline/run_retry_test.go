@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"edo/internal/model"
 )
 
@@ -120,5 +122,87 @@ func TestSuccessfulRetryRechecksCurrentManualSetting(t *testing.T) {
 	}
 	if err := db.Model(&model.Job{}).Count(&count).Error; err != nil || count != 0 {
 		t.Fatalf("被拒绝的重新执行不得创建任务: count=%d err=%v", count, err)
+	}
+}
+
+func TestChainedRetryKeepsArtifactPinnedByPreviousRetry(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "retry_chain_artifact")
+	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	commitSHA := strings.Repeat("6", 40)
+	original := model.PipelineRun{
+		ID: "original-build-run", ApplicationID: application.ID, WorkflowID: application.Workflow.ID,
+		WorkflowRevision: application.Workflow.Revision, Trigger: "manual",
+		Ref: "refs/tags/v0.0.8", CommitSHA: commitSHA, CommitMessage: "固定版本",
+		Status: model.PipelineRunFailed, Stage: "deploy_failed", Message: "部署失败",
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&original).Error; err != nil {
+		t.Fatal(err)
+	}
+	stored := createPreviousManualArtifact(t, db, application, commitSHA)
+	if err := db.Model(&model.BuildRun{}).Where("uuid = ?", stored.BuildRunID).
+		Updates(map[string]any{"pipeline_run_id": original.ID, "ref": original.Ref, "workflow_node_id": "build"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Artifact{}).Where("uuid = ?", stored.ID).Update("pipeline_run_id", original.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.PipelineNodeRun{
+		ID: uuid.NewString(), PipelineRunID: original.ID, NodeID: "build", StageID: "build", Name: "构建制品",
+		Type: model.WorkflowNodeBuild, Status: model.PipelineRunSucceeded, Stage: "completed", Message: "任务已完成",
+		ArtifactID: stored.ID, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	firstRetry, err := service.RetryRunSelection(context.Background(), original.ID, "operator", stored.ID)
+	if err != nil || firstRetry.ArtifactID != stored.ID || firstRetry.RetryOfID != original.ID {
+		t.Fatalf("第一次重新执行没有沿用原运行制品: run=%+v err=%v", firstRetry, err)
+	}
+	// 第一次重新执行同样跳过构建，只登记沿用的制品；它部署失败后再次重新执行。
+	if err := db.Where("pipeline_run_id = ?", firstRetry.ID).Delete(&model.PipelineNodeRun{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.PipelineNodeRun{
+		ID: uuid.NewString(), PipelineRunID: firstRetry.ID, NodeID: "build", StageID: "build", Name: "构建制品",
+		Type: model.WorkflowNodeBuild, Status: model.PipelineRunSkipped, Stage: "skipped", Message: "本次使用已选择的制品，跳过重新构建",
+		ArtifactID: stored.ID, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", firstRetry.ID).
+		Updates(map[string]any{"status": model.PipelineRunFailed, "stage": "deploy_failed", "message": "部署失败"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	options, err := service.ListRetryRunOptions(context.Background(), firstRetry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Ref != original.Ref || options.CommitSHA != original.CommitSHA || len(options.Artifacts) != 1 || options.Artifacts[0].ID != stored.ID {
+		t.Fatalf("沿用原制品的运行再次重新执行时必须提供同一个制品: %+v", options)
+	}
+	secondRetry, err := service.RetryRunSelection(context.Background(), firstRetry.ID, "operator", stored.ID)
+	if err != nil || secondRetry.RetryOfID != firstRetry.ID || secondRetry.ArtifactID != stored.ID ||
+		secondRetry.Ref != original.Ref || secondRetry.CommitSHA != commitSHA ||
+		secondRetry.CurrentNodeID != "approval" || secondRetry.Status != model.PipelineRunAwaitingApproval || secondRetry.ExecutionJobID != "" {
+		t.Fatalf("重试链再次沿用原制品时必须跳过构建并保留固定版本: run=%+v err=%v", secondRetry, err)
+	}
+	var jobs int64
+	if err := db.Model(&model.Job{}).Where("payload LIKE ?", "%"+secondRetry.ID+"%").Count(&jobs).Error; err != nil || jobs != 0 {
+		t.Fatalf("重试链沿用原制品后仍创建了构建任务: count=%d err=%v", jobs, err)
+	}
+	foreign := createPreviousManualArtifact(t, db, application, strings.Repeat("7", 40))
+	if _, err := service.RetryRunSelection(context.Background(), firstRetry.ID, "operator", foreign.ID); !errors.Is(err, ErrRetryArtifactInvalid) {
+		t.Fatalf("重试链不得接受该运行没有固定使用的其他制品: %v", err)
+	}
+	var preserved model.PipelineRun
+	if err := db.First(&preserved, "uuid = ?", firstRetry.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if preserved.Status != model.PipelineRunFailed {
+		t.Fatalf("重新执行不得覆盖原记录: %+v", preserved)
 	}
 }

@@ -267,8 +267,26 @@ func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.
 	}
 	var artifacts []model.Artifact
 	query := s.db.WithContext(ctx).Where("application_id = ? AND status = ?", application.ID, model.ArtifactStatusAvailable)
+	// 重试链上沿用原运行制品的运行不再自己构建，这里同时接受它已经固定使用过的制品。
+	referenced := map[string]struct{}{}
 	if pipelineRunID = strings.TrimSpace(pipelineRunID); pipelineRunID != "" {
-		query = query.Where("pipeline_run_id = ?", pipelineRunID)
+		referencedIDs, referencedErr := s.pipelineRunReferencedArtifactIDs(ctx, pipelineRunID)
+		if referencedErr != nil {
+			if s.logger != nil {
+				s.logger.Error("查询运行固定使用的制品失败", "operation", "pipeline_run_referenced_artifacts", "pipeline_run_id", pipelineRunID, "err", referencedErr)
+			}
+			return nil, referencedErr
+		}
+		referenced = referencedIDs
+		if len(referenced) == 0 {
+			query = query.Where("pipeline_run_id = ?", pipelineRunID)
+		} else {
+			ids := make([]string, 0, len(referenced))
+			for id := range referenced {
+				ids = append(ids, id)
+			}
+			query = query.Where("(pipeline_run_id = ? OR uuid IN ?)", pipelineRunID, ids)
+		}
 	}
 	if err := query.
 		Order("id DESC").Limit(100).Find(&artifacts).Error; err != nil {
@@ -316,8 +334,9 @@ func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.
 	for i := range artifacts {
 		build, buildOK := buildByID[artifacts[i].BuildRunID]
 		plan, planOK := planByID[build.BuildPlanID]
+		_, reused := referenced[artifacts[i].ID]
 		if !buildOK || !planOK || build.ApplicationID != application.ID ||
-			(pipelineRunID != "" && build.PipelineRunID != pipelineRunID) {
+			(pipelineRunID != "" && !reused && build.PipelineRunID != pipelineRunID) {
 			continue
 		}
 		if _, _, ok := manualArtifactBuildNodes(workflow, build, plan, artifacts[i]); !ok {
@@ -326,6 +345,39 @@ func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.
 		result = append(result, manualRunArtifactSummary(artifacts[i], build))
 	}
 	return result, nil
+}
+
+// pipelineRunReferencedArtifactIDs 返回该次运行固定使用过的制品：运行记录上的制品，以及构建节点
+// 在构建成功或沿用时登记的制品；重试链据此继续沿用原运行的制品，不必重新构建。
+func (s *Service) pipelineRunReferencedArtifactIDs(ctx context.Context, runID string) (map[string]struct{}, error) {
+	referenced := make(map[string]struct{})
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return referenced, nil
+	}
+	var run model.PipelineRun
+	if err := s.db.WithContext(ctx).Select("uuid", "artifact_id").First(&run, "uuid = ?", runID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return referenced, nil
+		}
+		return nil, err
+	}
+	var nodeArtifactIDs []string
+	if err := s.db.WithContext(ctx).Model(&model.PipelineNodeRun{}).
+		Where("pipeline_run_id = ? AND artifact_id <> ''", runID).
+		Where("status IN ?", []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunSkipped}).
+		Pluck("artifact_id", &nodeArtifactIDs).Error; err != nil {
+		return nil, err
+	}
+	if id := strings.TrimSpace(run.ArtifactID); id != "" {
+		referenced[id] = struct{}{}
+	}
+	for _, id := range nodeArtifactIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			referenced[id] = struct{}{}
+		}
+	}
+	return referenced, nil
 }
 
 func manualRunArtifactSummary(stored model.Artifact, build model.BuildRun) ManualRunArtifact {

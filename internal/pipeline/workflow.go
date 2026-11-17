@@ -43,7 +43,7 @@ var (
 	ErrWorkflowSelfApproval           = errors.New("执行申请人不能审核自己的流水线运行")
 	ErrPipelineRunNotFound            = errors.New("流水线运行不存在")
 	ErrPipelineRunNotRetryable        = errors.New("仅失败运行或已开启手动执行的成功运行可以重新执行")
-	ErrRetryArtifactInvalid           = errors.New("所选制品不是原运行已经构建的可用制品，请重新选择")
+	ErrRetryArtifactInvalid           = errors.New("所选制品不是原运行已构建或已使用的可用制品，请重新选择")
 	ErrRetrySnapshotChanged           = errors.New("流水线配置已变化，请重新确认后再执行")
 	ErrPipelineRunAwaitingReleasePlan = errors.New("流水线运行由发布计划统一调度")
 )
@@ -2488,12 +2488,23 @@ func (s *Service) retryRunSelection(ctx context.Context, runID, actorID, artifac
 	artifactID = strings.TrimSpace(artifactID)
 	var selectedArtifact *manualArtifactSelection
 	if artifactID != "" {
+		referenced, referencedErr := s.pipelineRunReferencedArtifactIDs(ctx, failed.ID)
+		if referencedErr != nil {
+			return nil, referencedErr
+		}
 		selectedArtifact, err = s.validateManualArtifactSelection(ctx, application, workflow, artifactID)
-		if err != nil || selectedArtifact == nil || selectedArtifact.artifact.PipelineRunID != failed.ID || selectedArtifact.build.PipelineRunID != failed.ID ||
-			selectedArtifact.build.Ref != failed.Ref || selectedArtifact.build.CommitSHA != failed.CommitSHA {
+		artifactErr := err
+		if artifactErr == nil && selectedArtifact != nil {
+			_, reused := referenced[selectedArtifact.artifact.ID]
+			owned := selectedArtifact.artifact.PipelineRunID == failed.ID && selectedArtifact.build.PipelineRunID == failed.ID
+			if (!owned && !reused) || selectedArtifact.build.Ref != failed.Ref || selectedArtifact.build.CommitSHA != failed.CommitSHA {
+				artifactErr = ErrRetryArtifactInvalid
+			}
+		}
+		if artifactErr != nil || selectedArtifact == nil {
 			if s.logger != nil {
 				s.logger.Warn("流水线重新执行选择的制品不属于原运行", "operation", "pipeline_retry_artifact_validate",
-					"pipeline_run_id", failed.ID, "artifact_id", artifactID, "err", err)
+					"pipeline_run_id", failed.ID, "artifact_id", artifactID, "err", artifactErr)
 			}
 			return nil, ErrRetryArtifactInvalid
 		}
