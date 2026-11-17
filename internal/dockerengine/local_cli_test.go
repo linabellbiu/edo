@@ -81,3 +81,32 @@ func TestLocalCLIEnvironmentRejectsDisabledDockerCapability(t *testing.T) {
 		t.Fatal("停用 Docker 能力后仍获得 CLI 连接", err)
 	}
 }
+
+func TestManualCLIConnectionUsesBuilderIdentityAndProjectScopeWithoutSessionFiles(t *testing.T) {
+	service, db := newMonitorTestService(t)
+	service.config.DockerBuilderHost = "unix:///saved-builder.sock"
+	t.Setenv("DOCKER_HOST", "unix:///unrelated.sock")
+	t.Setenv("DOCKER_CERT_PATH", "/unrelated/certificates")
+	ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{DepartmentID: database.DefaultDepartmentID, ProjectID: database.DefaultProjectID(database.DefaultDepartmentID)})
+	host, cert, verify, err := service.ManualCLIConnection(ctx)
+	if err != nil || host != "unix:///saved-builder.sock" || cert != "" || verify != "" {
+		t.Fatal("指引必须使用当前实际构建器，不能混入其他连接或认证", host, cert, err)
+	}
+	foreign := database.WithDepartmentScope(context.Background(), database.DepartmentScope{DepartmentID: database.DefaultDepartmentID, ProjectID: "foreign-project"})
+	if _, _, _, err := service.ManualCLIConnection(foreign); !errors.Is(err, ErrEndpointNotFound) {
+		t.Fatal("不能向其他项目提供本地运行环境", err)
+	}
+	service.config.DockerBuilderHost = ""
+	t.Setenv("DOCKER_CERT_PATH", "")
+	t.Setenv("DOCKER_TLS_VERIFY", "1")
+	host, cert, verify, err = service.ManualCLIConnection(ctx)
+	if err != nil || host != "unix:///unrelated.sock" || cert != "" || verify != "" {
+		t.Fatal("标准环境变量必须与官方 Docker SDK 一致，不能猜测证书目录", host, cert, verify, err)
+	}
+	if err := db.WithContext(ctx).Model(&model.HostCapability{}).Where("host_id = ? AND kind = ?", model.BuiltinLocalHostID, model.HostCapabilityDocker).Update("status", model.HostCapabilityUnreachable).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := service.ManualCLIConnection(ctx); !errors.Is(err, ErrEndpointNotFound) {
+		t.Fatal("不能绕过本地 Docker 能力边界", err)
+	}
+}

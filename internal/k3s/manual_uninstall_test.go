@@ -48,7 +48,7 @@ func TestManualUninstallGuideWorksOfflineAfterHostIPChangesWithoutRemoteOrDataba
 	if err != nil {
 		t.Fatal(err)
 	}
-	if guide.Command != "k3d cluster delete '"+k3dResourceName(record.ID)+"'" || guide.ResourceName == cluster.Name || guide.Host.Address != "192.0.2.10" || guide.DockerID != "original-docker-id" || guide.Local {
+	if guide.ResourceName != k3dResourceName(record.ID) || guide.ResourceName == cluster.Name || guide.Host.Address != "192.0.2.10" || guide.DockerID != "original-docker-id" || guide.Local {
 		t.Fatalf("指引目标与安装快照不一致: %+v", guide)
 	}
 	if f.transport.reads != 0 || f.transport.privileges != 0 || len(f.transport.writes) != 0 {
@@ -86,7 +86,7 @@ func TestManualUninstallGuideUsesReviewedNameInsteadOfReconstructingHistoricalNa
 		t.Fatal(err)
 	}
 	guide, err := f.service.ManualUninstall(f.ctx, f.actor.ID, cluster.ID)
-	if err != nil || guide.Command != "k3d cluster delete 'historical-resource-name'" {
+	if err != nil || guide.ResourceName != "historical-resource-name" {
 		t.Fatal("历史名称必须以安装时的计划为准", guide, err)
 	}
 }
@@ -137,7 +137,7 @@ func TestManualUninstallGuideWorksWithoutUsableInstallationRecord(t *testing.T) 
 				}
 			}
 			guide, err := f.service.ManualUninstall(f.ctx, f.actor.ID, cluster.ID)
-			if err != nil || guide == nil || guide.ClusterID != cluster.ID || guide.ListCommand != "k3d cluster list" || guide.Command != "" || guide.ResourceName != "" || guide.Host != nil {
+			if err != nil || guide == nil || guide.ClusterID != cluster.ID || len(guide.Executions) == 0 || guide.Executions[0].ListCommand == "k3d cluster list" || guide.ResourceName != "" || guide.Host != nil {
 				t.Fatal("没有可预填记录时仍须返回通用指引，不猜测卸载名称", guide, err)
 			}
 		})

@@ -205,8 +205,14 @@ export interface K3dManualUninstallGuide {
   host?: K3sPlanHost
   local: boolean
   docker_id?: string
-  command?: string
-  list_command: string
+  executions: {
+    id: 'remote' | 'local'
+    label: string
+    instruction: string
+    enter_command?: string
+    list_command: string
+    delete_command: string
+  }[]
 }
 export async function getK3dManualUninstallGuide(clusterID: string, signal?: AbortSignal) {
   return (await client.get<K3dManualUninstallGuide>('/kubernetes/k3s/manual-uninstall-guide', { params: { cluster_id: clusterID }, signal })).data

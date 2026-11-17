@@ -17,14 +17,13 @@ import (
 var reviewedK3dName = regexp.MustCompile(`^edo_cli cluster create '([a-z0-9][a-z0-9-]{0,62})'(?: |$)`)
 
 type ManualUninstallGuide struct {
-	ClusterID    string `json:"cluster_id"`
-	ClusterName  string `json:"cluster_name"`
-	ResourceName string `json:"resource_name,omitempty"`
-	Host         *Host  `json:"host,omitempty"`
-	Local        bool   `json:"local"`
-	DockerID     string `json:"docker_id,omitempty"`
-	Command      string `json:"command,omitempty"`
-	ListCommand  string `json:"list_command"`
+	ClusterID    string                     `json:"cluster_id"`
+	ClusterName  string                     `json:"cluster_name"`
+	ResourceName string                     `json:"resource_name,omitempty"`
+	Host         *Host                      `json:"host,omitempty"`
+	Local        bool                       `json:"local"`
+	DockerID     string                     `json:"docker_id,omitempty"`
+	Executions   []ManualUninstallExecution `json:"executions"`
 }
 
 // ManualUninstall 始终提供通用指引；安装快照只作为可选预填来源。
@@ -48,7 +47,7 @@ func (s *Service) ManualUninstall(ctx context.Context, actorID, clusterID string
 		}
 		return nil, err
 	}
-	guide = &ManualUninstallGuide{ClusterID: cluster.ID, ClusterName: cluster.Name, ListCommand: "k3d cluster list"}
+	guide = &ManualUninstallGuide{ClusterID: cluster.ID, ClusterName: cluster.Name, Executions: s.manualUninstallExecutions(ctx)}
 	var records []model.K3sInstallation
 	if lookupErr := s.db.WithContext(ctx).Where("cluster_id = ? AND project_id = ? AND department_id = ? AND action = ? AND status = ?", cluster.ID, scope.ProjectID, scope.DepartmentID, "create", "succeeded").Limit(2).Find(&records).Error; lookupErr != nil {
 		slog.WarnContext(ctx, "读取手动卸载预填记录失败，使用通用指引", "operation", "k3d_manual_uninstall_prefill", "cluster_id", cluster.ID, "err", lookupErr)
@@ -79,7 +78,7 @@ func (s *Service) ManualUninstall(ctx context.Context, actorID, clusterID string
 	}
 	// 只呈现目标身份，不返回快照中的配置、认证信息或终端日志。
 	host := Host{ID: hosts[0].ID, Name: hosts[0].Name, Address: hosts[0].Address, Role: "host"}
-	guide.ResourceName, guide.Host, guide.Local, guide.Command = name, &host, host.ID == model.BuiltinLocalHostID, "k3d cluster delete "+shellQuote(name)
+	guide.ResourceName, guide.Host, guide.Local = name, &host, host.ID == model.BuiltinLocalHostID
 	if snapshot.K3dCleanup != nil && snapshot.K3dCleanup.InstallationID == record.ID && snapshot.K3dCleanup.HostID == host.ID {
 		guide.DockerID = snapshot.K3dCleanup.DaemonID
 	} else if guide.Local && snapshot.LocalK3d != nil {
