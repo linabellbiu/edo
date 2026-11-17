@@ -1065,7 +1065,7 @@ function readResourceList<T>(key:string,field:string,target:Ref<T[]>,permission:
   try{
    const {data}=await client.get<Record<string,T[]>>(`/${key}${key==='pipeline-runs'||key==='deployments'?'?limit=200':''}`,{...resourceReadOptions(),signal:controller.signal})
    if(current()){target.value=data[field]||[];if(key===props.section)resourceLoadedScope=resourceScopeKey()}
-  }catch(error){console.info('[devops-debug] read fail',key,String(error?.stack||error).slice(0,600));if(current()){resourceErrors.value[key]=apiErrorMessage(error);if(key===props.section)resourceLoadedScope=''}}
+  }catch(error){if(current()){resourceErrors.value[key]=apiErrorMessage(error);if(key===props.section)resourceLoadedScope=''}}
   finally{const request=resourceRequests.get(key);if(request?.controller===controller){const again=current()&&request.again;resourceRequests.delete(key);delete resourcePending.value[key];if(again)void readResourceList(key,field,target,permission)}}
  })()
  resourceRequests.set(key,{scope,controller,promise,again:false})
