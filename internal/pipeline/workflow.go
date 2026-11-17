@@ -77,6 +77,9 @@ type WorkflowResult struct {
 	Workflow *model.ReleaseWorkflow `json:"workflow"`
 	Valid    bool                   `json:"valid"`
 	Issues   []WorkflowIssue        `json:"issues"`
+	// BuildImages 与 BuildArtifacts 是构建任务静态确定的产物名称，部署阶段据此提供下拉选择。
+	BuildImages    []WorkflowBuildImage    `json:"build_images"`
+	BuildArtifacts []WorkflowBuildArtifact `json:"build_artifacts"`
 }
 
 type workflowSnapshot struct {
@@ -172,8 +175,21 @@ func (s *Service) GetWorkflow(ctx context.Context, applicationID string) (*Workf
 	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflow.Stages); err != nil {
 		return nil, err
 	}
-	issues := s.validateWorkflowWithMode(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages, workflowValidationConfiguration)
-	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
+	return s.workflowResultWithBuildProducts(ctx, application, workflow, workflow.Stages)
+}
+
+// workflowResultWithBuildProducts 在流水线结果中带上静态构建产物名称，供部署阶段选择镜像。
+func (s *Service) workflowResultWithBuildProducts(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, stages []model.WorkflowStage) (*WorkflowResult, error) {
+	issues := s.validateWorkflowWithMode(ctx, application, workflow.SchemaVersion, workflow.Source, stages, workflowValidationConfiguration)
+	images, artifacts, buildIssues, err := s.workflowBuildProducts(ctx, application, stages)
+	if err != nil {
+		return nil, err
+	}
+	issues = uniqueIssues(append(issues, buildIssues...))
+	return &WorkflowResult{
+		Workflow: workflow, Valid: len(issues) == 0, Issues: issues,
+		BuildImages: images, BuildArtifacts: artifacts,
+	}, nil
 }
 
 func (s *Service) ListApplicationWorkflows(ctx context.Context, applicationID string) ([]model.ReleaseWorkflow, error) {
@@ -223,8 +239,7 @@ func (s *Service) GetApplicationWorkflow(ctx context.Context, applicationID, wor
 	if err := s.freezeWorkflowPlanDefaults(ctx, s.db, workflow.Stages); err != nil {
 		return nil, err
 	}
-	issues := s.validateWorkflowWithMode(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages, workflowValidationConfiguration)
-	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
+	return s.workflowResultWithBuildProducts(ctx, application, workflow, workflow.Stages)
 }
 
 func (s *Service) CreateApplicationWorkflow(
@@ -476,7 +491,15 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 	if err != nil {
 		return nil, s.workflowMutationError(ctx, "application_workflow_save", application.ID, workflow.ID, err)
 	}
-	return &WorkflowResult{Workflow: &saved, Valid: len(issues) == 0, Issues: issues}, nil
+	images, artifacts, buildIssues, buildErr := s.workflowBuildProducts(ctx, application, saved.Stages)
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	issues = uniqueIssues(append(issues, buildIssues...))
+	return &WorkflowResult{
+		Workflow: &saved, Valid: len(issues) == 0, Issues: issues,
+		BuildImages: images, BuildArtifacts: artifacts,
+	}, nil
 }
 
 func (s *Service) DeleteApplicationWorkflow(ctx context.Context, applicationID, workflowID string) error {
@@ -1165,6 +1188,14 @@ func (s *Service) validateWorkflowWithMode(
 	issues = append(issues, validateWorkflowArtifactFlow(tasks, activeBuildPlans, activeDeploymentPlans, activeTargets)...)
 	issues = append(issues, checkDuplicateKubernetesTargets(stages, activeDeploymentPlans, activeTargets)...)
 	issues = append(issues, validateUpstreamArtifactStages(stages)...)
+	_, _, productIssues, productErr := s.workflowBuildProducts(ctx, application, stages)
+	if productErr != nil {
+		if s.logger != nil {
+			s.logger.Error("校验流水线构建产物名称失败", "operation", "pipeline_workflow_validate_build_products", "application_id", application.ID, "err", productErr)
+		}
+	} else {
+		issues = append(issues, productIssues...)
+	}
 	return uniqueIssues(issues)
 }
 

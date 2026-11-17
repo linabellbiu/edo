@@ -8,7 +8,7 @@ import {listEnvironments,listHosts,environmentIDsOf,type InfrastructureHost,type
 import DeploymentConfigurationFields from '@/components/DeploymentConfigurationFields.vue'
 import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vue'
 import KubernetesDeploymentTemplateFields from '@/components/KubernetesDeploymentTemplateFields.vue'
-import {kubernetesResourceName,kubernetesContainerDefault} from '@/utils/kubernetesDeployment'
+import {kubernetesResourceName,kubernetesContainerDefault,workflowBuildImageNames} from '@/utils/kubernetesDeployment'
 import DeploymentHostSelection from '@/components/DeploymentHostSelection.vue'
 import {deploymentHostUnavailableReason} from '@/utils/deploymentHostAvailability'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
@@ -45,6 +45,18 @@ const selectedImageBuildID=computed(()=>{
  return matches.length===1?matches[0].id:undefined
 })
 const selectedClusterK3d=computed(()=>Boolean(clusters.value.find(cluster=>cluster.id===plan.value?.deployment_target?.runtime_id)?.k3d))
+// 上游镜像构建任务的产物名称：部署阶段只能从这里选择镜像。
+const buildImages=computed(()=>workflowBuildImageNames(props.applicationName||'',props.buildNodes,props.buildPlans))
+const registryImage=computed(()=>(execution.value.deployment_inputs?.find(input=>input.kind==='registry')?.image||'').trim())
+watch(registryImage,(value,previous)=>{
+ if(props.disabled||plan.value?.kind!=='kubernetes'||!value)return
+ const current=plan.value?.deployment_target?.container_name||''
+ const next=kubernetesResourceName(value.split('/').at(-1)||'')
+ const previousName=kubernetesResourceName(((previous||'').split('/').at(-1)||''))
+ if(!next||next===current)return
+ // 用户自己改过容器名时保持原值，只跟随镜像默认派生值。
+ if(!current||current===previousName)target({container_name:next})
+})
 const clusterOptions=computed(()=>{
  const options=clusters.value.filter(cluster=>cluster.is_active).map(cluster=>({value:cluster.id,label:cluster.name,disabled:false}))
  const selected=plan.value?.deployment_target?.runtime_id
@@ -170,7 +182,7 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
    <template v-else><a-form-item label="上游构建产出环境变量" required><a-input :value="node.config.compose_source?.artifact_reference || (node.config.compose_source?.artifact_name?'${'+node.config.compose_source.artifact_name+'}':'')" :disabled="disabled" placeholder="例如 ${BUILD_ARTIFACT}" @update:value="change({compose_source:{kind:'upstream',artifact_reference:String($event),path:node.config.compose_source?.path||'compose.yaml'}})"/></a-form-item><a-form-item label="产物内文件路径" required><a-input :value="node.config.compose_source?.path" :disabled="disabled" placeholder="deploy/compose.yaml" @update:value="change({compose_source:{...node.config.compose_source!,path:String($event)}})"/></a-form-item></template>
    <a-alert v-if="serviceError" :type="sourceKind==='upstream'?'info':'warning'" show-icon :message="serviceError"/>
   </template>
-  <template v-else-if="plan.kind==='kubernetes'"><DeploymentConfigurationFields report-validation @validation-change="executionFieldIssues=$event" :config="execution" :deploymentPlan="plan" :applicationID="applicationID" :applicationName="applicationName" :disabled="disabled" edit-permission="workflow.update" :registry-target="registryHost" hide-script @change="updateExecution($event)"/><a-form-item label="集群" required><KubernetesClusterSelect :value="plan.deployment_target?.runtime_id" :disabled="disabled||!auth.canAny(['cluster.read'])" :clusters="clusters" :options="clusterOptions" @update:value="target({runtime_id:$event,environment_id:'',host_ids:undefined,host_id:undefined})"/></a-form-item><a-form-item label="命名空间" required><a-input :value="plan.deployment_target?.namespace" :disabled="disabled" @update:value="target({namespace:String($event)})"/></a-form-item><a-form-item label="Deployment" required><a-input :value="plan.deployment_target?.workload_name" :disabled="disabled" @update:value="target({workload_name:String($event)})"/></a-form-item><a-form-item label="容器名称" required><a-input :value="plan.deployment_target?.container_name" :disabled="disabled" @update:value="target({container_name:String($event)})"/></a-form-item><KubernetesDeploymentTemplateFields @invalid="kubernetesFieldError=$event;emit('invalid',$event)" :model-value="execution.kubernetes" :disabled="disabled" :k3d="selectedClusterK3d" @update:model-value="updateExecution({kubernetes:$event})"/></template>
+  <template v-else-if="plan.kind==='kubernetes'"><DeploymentConfigurationFields report-validation @validation-change="executionFieldIssues=$event" :config="execution" :deploymentPlan="plan" :applicationID="applicationID" :applicationName="applicationName" :build-images="buildImages" :disabled="disabled" edit-permission="workflow.update" :registry-target="registryHost" hide-script @change="updateExecution($event)"/><a-form-item label="集群" required><KubernetesClusterSelect :value="plan.deployment_target?.runtime_id" :disabled="disabled||!auth.canAny(['cluster.read'])" :clusters="clusters" :options="clusterOptions" @update:value="target({runtime_id:$event,environment_id:'',host_ids:undefined,host_id:undefined})"/></a-form-item><a-form-item label="命名空间" required><a-input :value="plan.deployment_target?.namespace" :disabled="disabled" @update:value="target({namespace:String($event)})"/></a-form-item><a-form-item label="Deployment" required><a-input :value="plan.deployment_target?.workload_name" :disabled="disabled" @update:value="target({workload_name:String($event)})"/></a-form-item><a-form-item label="容器名称" required><a-input :value="plan.deployment_target?.container_name" :disabled="disabled" @update:value="target({container_name:String($event)})"/></a-form-item><KubernetesDeploymentTemplateFields @invalid="kubernetesFieldError=$event;emit('invalid',$event)" :model-value="execution.kubernetes" :disabled="disabled" :k3d="selectedClusterK3d" @update:model-value="updateExecution({kubernetes:$event})"/></template>
   <template v-else>
    <a-form-item required><DeploymentScriptEditor :model-value="plan.script||''" kind="script" :disabled="disabled" edit-permission="workflow.update" @update:model-value="update({script:$event})"/></a-form-item>
    <a-form-item label="工作目录"><a-input :value="plan.deployment_target?.working_directory" :disabled="disabled" placeholder="例如 /srv/my_app" @update:value="target({working_directory:String($event)})"/></a-form-item>

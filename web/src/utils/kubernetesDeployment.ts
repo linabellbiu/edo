@@ -73,3 +73,27 @@ export function kubernetesDeploymentRuntimeError(config:KubernetesDeploymentSett
  }
  return ''
 }
+
+export interface WorkflowBuildImageName { node_id: string; node_name: string; image_name: string }
+
+// workflowBuildImageNames 按与后端一致的规则静态列出镜像构建任务的产物名称：
+// 显式配置优先，留空时使用应用名，仍然依赖运行期变量的名称不参与选择。
+export function workflowBuildImageNames(
+  applicationName: string,
+  nodes: Array<{ id: string; name: string; type?: string; config: { image_name?: string; build_plan_id?: string; inline_build?: { kind?: string } } }>,
+  buildPlans?: Array<{ id: string; kind?: string }>,
+): WorkflowBuildImageName[] {
+  const result: WorkflowBuildImageName[] = []
+  const seen = new Set<string>()
+  for (const node of nodes) {
+    if (node.type !== 'build') continue
+    const plan = node.config.inline_build || buildPlans?.find(item => item.id === node.config.build_plan_id)
+    if ((plan?.kind || '') !== 'dockerfile') continue
+    const raw = (node.config.image_name || '').replaceAll('${EDO_APPLICATION_NAME}', applicationName || '')
+    const image = raw.trim() || (applicationName || '').trim()
+    if (!image || image.includes('${') || seen.has(image)) continue
+    seen.add(image)
+    result.push({ node_id: node.id, node_name: node.name, image_name: image })
+  }
+  return result
+}

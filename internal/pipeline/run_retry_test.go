@@ -267,8 +267,8 @@ func createTwoBuildRunTestApplication(t *testing.T, service *Service, db *gorm.D
 	source := model.WorkflowNode{ID: "trigger-manual", Type: model.WorkflowNodeTrigger, Name: "代码源",
 		Config: model.WorkflowNodeConfig{Branch: "main", Events: []string{"manual", "push"}}}
 	tasks := []model.WorkflowNode{
-		{ID: "build-api", Type: model.WorkflowNodeBuild, Name: "构建 API 镜像", Config: model.WorkflowNodeConfig{BuildPlanID: apiPlan.ID}},
-		{ID: "build-web", Type: model.WorkflowNodeBuild, Name: "构建 Web 镜像", Config: model.WorkflowNodeConfig{BuildPlanID: webPlan.ID}},
+		{ID: "build-api", Type: model.WorkflowNodeBuild, Name: "构建 API 镜像", Config: model.WorkflowNodeConfig{BuildPlanID: apiPlan.ID, ImageName: name + "-api"}},
+		{ID: "build-web", Type: model.WorkflowNodeBuild, Name: "构建 Web 镜像", Config: model.WorkflowNodeConfig{BuildPlanID: webPlan.ID, ImageName: name + "-web"}},
 		{ID: "approval", Type: model.WorkflowNodeApproval, Name: "发布审核"},
 		{ID: "deploy-dev", Type: model.WorkflowNodeDeploy, Name: "部署", Config: model.WorkflowNodeConfig{DeploymentPlanID: deploymentPlan.ID}},
 	}

@@ -9,7 +9,7 @@ import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 import { validConfigurationPath } from '@/utils/deploymentCommandPreview'
 import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
-const props = defineProps<{ reportValidation?:boolean; config: WorkflowNodeConfig; deploymentPlan?: Pick<DeploymentCommandPlan,'kind'>; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; registryOnly?:boolean; registryTarget?:HTMLElement; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}> }>()
+const props = defineProps<{ reportValidation?:boolean; config: WorkflowNodeConfig; deploymentPlan?: Pick<DeploymentCommandPlan,'kind'>; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; registryOnly?:boolean; registryTarget?:HTMLElement; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}>; buildImages?: Array<{node_id:string;node_name:string;image_name:string}> }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>]; 'validation-change':[issues:string[]] }>()
 const auth = useAuthStore()
 type Configuration = { id: string; name: string; kind: string; version: number; is_active: boolean; project_id: string; application_id?: string; environment_id?: string }
@@ -63,6 +63,22 @@ function chooseConfiguration(index: number, id: string) { if (!canRead.value || 
 const managesRegistry = computed(() => ['docker','compose','compose_stack','kubernetes'].includes(props.deploymentPlan?.kind || ''))
 const primaryRegistryIndex = computed(() => selected.value.findIndex(input => input.kind === 'registry'))
 const savedRegistry = computed(()=>props.config.deployment_registry_id || (primaryRegistryIndex.value>=0 ? selected.value[primaryRegistryIndex.value]?.registry_id : '') || '')
+// 上游构建产物名称优先，其次才是仓库里已有的镜像；已保存的旧值也要能继续显示。
+const upstreamImageNames = computed(()=>(props.buildImages||[]).filter(item=>item.image_name))
+const kubeImageOptions = computed(()=>{
+ const options:Array<{value:string;label:string}>=[]
+ const seen=new Set<string>()
+ for(const item of upstreamImageNames.value){if(seen.has(item.image_name))continue;seen.add(item.image_name);options.push({value:item.image_name,label:item.node_name?item.image_name+' · '+item.node_name:item.image_name})}
+ for(const value of (optionsByRow.value[primaryRegistryIndex.value]?.images||[])){if(seen.has(value))continue;seen.add(value);options.push({value,label:value})}
+ const current=(primaryRegistryInput.value?.image||'').trim()
+ if(current&&!seen.has(current))options.push({value:current,label:current+' · 已保存'})
+ return options
+})
+const kubeImageNotFromBuild = computed(()=>{
+ const current=(primaryRegistryInput.value?.image||'').trim()
+ if(!current||current.includes('${')||!upstreamImageNames.value.length)return false
+ return !upstreamImageNames.value.some(item=>item.image_name===current)
+})
 const primaryRegistryInput = computed(() => primaryRegistryIndex.value>=0 ? selected.value[primaryRegistryIndex.value] : undefined)
 const deploymentRegistry = computed(() => savedRegistry.value || undefined)
 const deploymentRegistryOptions = computed(() => {
@@ -133,13 +149,13 @@ watch(()=>[props.reportValidation,validationIssues.value] as const,([report,issu
  <section class="deployment-configuration" :aria-label="kubernetesImage?'部署镜像':'部署文件与脚本'">
   <Teleport :to="registryTarget || 'body'" :disabled="!registryTarget">
   <a-form-item v-if="managesRegistry" :required="!kubernetesRegistryOnly" :validate-status="!kubernetesRegistryOnly&&!deploymentRegistry&&!loading?'error':undefined" :help="!kubernetesRegistryOnly&&!savedRegistry&&!canEdit?'尚未保存镜像仓库，请修改部署方案并保存。':undefined">
-   <template #label><span>镜像仓库<DeploymentFieldHelp text="选择并保存部署使用的镜像仓库，镜像名称和 Tag 由部署配置决定，不自动关联上游构建。" label="部署镜像仓库说明" /></span></template>
+   <template #label><span>镜像仓库<DeploymentFieldHelp text="选择并保存部署使用的镜像仓库；镜像名称从上游构建产物中选择，Tag 由本次运行的构建结果决定。" label="部署镜像仓库说明" /></span></template>
    <div class="registry-control"><a-select :value="deploymentRegistry" :loading="loading" :disabled="!canEdit||!canReadRegistry" :options="deploymentRegistryOptions" placeholder="选择镜像仓库" aria-label="部署镜像仓库" @update:value="setDeploymentRegistry(String($event))"/>
     <a-button v-if="!kubernetesImage&amp;&amp;primaryRegistryIndex&lt;0&amp;&amp;deploymentRegistry" type="link" size="small" :disabled="!canEdit||!canReadRegistry" @click="addRegistryImage">指定镜像与 Tag</a-button>
    </div>
   </a-form-item>
   <div v-if="kubernetesImage&&!kubernetesRegistryOnly" class="source-fields kubernetes-image-fields">
-   <a-form-item label="镜像" required><a-auto-complete aria-label="部署镜像" :value="primaryRegistryInput?.image" :disabled="!canEdit||!canReadRegistry||!deploymentRegistry" :options="(optionsByRow[primaryRegistryIndex]?.images||[]).map(value=>({value}))" placeholder="选择或输入镜像名称" @focus="registryOptions(primaryRegistryIndex,false)" @update:value="chooseImage(primaryRegistryIndex,String($event))"/></a-form-item>
+   <a-form-item label="镜像" required :validate-status="kubeImageNotFromBuild?'warning':undefined" :help="kubeImageNotFromBuild?`请从上游构建产物中选择：${upstreamImageNames.map(item=>item.image_name).join('、')}`:undefined"><a-auto-complete aria-label="部署镜像" :value="primaryRegistryInput?.image" :disabled="!canEdit||!canReadRegistry||!deploymentRegistry" :options="kubeImageOptions" placeholder="选择上游构建产物" @focus="registryOptions(primaryRegistryIndex,false)" @update:value="chooseImage(primaryRegistryIndex,String($event))"><template #default="{value}">{{ value }}</template></a-auto-complete></a-form-item>
    <a-form-item label="镜像 Tag" required><a-auto-complete aria-label="部署镜像 Tag" :value="primaryRegistryInput?.tag" :disabled="!canEdit||!canReadRegistry||!primaryRegistryInput?.image" :options="(optionsByRow[primaryRegistryIndex]?.tags||[]).map(value=>({value}))" placeholder="例如 v1.0.0 或 ${EDO_IMAGE_TAG}" @focus="registryOptions(primaryRegistryIndex,true)" @update:value="update(primaryRegistryIndex,{tag:String($event)})"/></a-form-item>
   </div>
   <p v-if="kubernetesImage&&(error||optionsByRow[primaryRegistryIndex]?.error)" class="registry-error" role="status">{{error||optionsByRow[primaryRegistryIndex]?.error}}</p>
