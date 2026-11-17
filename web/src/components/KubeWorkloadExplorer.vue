@@ -57,6 +57,28 @@ const selectedContainer = computed(() => choices.value.find(container => contain
 const actionDisabled = computed(() => Boolean(props.disabled) || props.podsLoading || Boolean(props.podsError) || deployment.value && Boolean(historyError.value) || !readable.value || !selectedPod.value || !selectedContainer.value)
 
 function count(value: unknown) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? String(value) : '—' }
+function imageSummary(item: WorkloadRevision) {
+  const images = item.images ?? []
+  if (!images.length) return ''
+  const first = images[0]!.split('/').pop() || images[0]!
+  return images.length > 1 ? `${first} +${images.length - 1}` : first
+}
+function revisionTone(item: WorkloadRevision) {
+  const desired = Number(item.desired ?? 0), ready = Number(item.ready ?? 0)
+  if (desired <= 0) return 'idle'
+  if (ready >= desired) return 'ready'
+  return ready > 0 ? 'partial' : 'down'
+}
+function replicaWidth(item: WorkloadRevision) {
+  const desired = Number(item.desired ?? 0), ready = Number(item.ready ?? 0)
+  if (desired <= 0) return '0%'
+  return `${Math.max(0, Math.min(100, Math.round(ready / desired * 100)))}%`
+}
+function podRestartTotal(pod: KubeObject) {
+  const statuses = [pod.status?.containerStatuses, pod.status?.initContainerStatuses, pod.status?.ephemeralContainerStatuses].flatMap(list => Array.isArray(list) ? list : [])
+  return statuses.reduce((sum: number, item: KubeObject) => sum + (typeof item.restartCount === 'number' && item.restartCount > 0 ? item.restartCount : 0), 0)
+}
+const scaledDownRevision = computed(() => Boolean(selectedRevision.value) && visiblePods.value.length === 0 && Number(selectedRevision.value?.desired ?? 0) <= 0)
 function revealInColumn(column: HTMLElement, item: HTMLElement) {
   const bounds = column.getBoundingClientRect(), target = item.getBoundingClientRect()
   const top = bounds.top + (column.querySelector('header')?.getBoundingClientRect().height ?? 0) + 6
@@ -176,7 +198,9 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
             <span class="revision-created" :title="formatDateTime(item.created)">已创建：{{ formatRelativeTime(item.created) }}</span>
             <button class="revision-item" :class="{ selected: item.uid === revisionUID }" :disabled="disabled" :aria-pressed="item.uid === revisionUID" :title="(item.images ?? []).join('\n')" @click="chooseRevision(item)">
               <span class="revision-heading"><strong>{{ item.name }}</strong><span>#{{ item.revision ?? '—' }}</span><span v-if="item.current" class="revision-current">当前</span></span>
+              <span v-if="imageSummary(item)" class="revision-images" :title="(item.images ?? []).join('\n')"><Box :size="12" aria-hidden="true" /><span>{{ imageSummary(item) }}</span></span>
               <span class="replica-counts"><span>期望<b>{{ count(item.desired) }}</b></span><span>当前<b>{{ count(item.replicas) }}</b></span><span>就绪<b>{{ count(item.ready) }}</b></span></span>
+              <span class="replica-meter" :class="`tone-${revisionTone(item)}`" role="img" :aria-label="`就绪 ${count(item.ready)} / 期望 ${count(item.desired)}`"><i :style="{ width: replicaWidth(item) }" /></span>
             </button>
           </div>
         </div>
@@ -193,11 +217,12 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
       <a-spin :spinning="podsLoading">
         <div v-if="visiblePods.length" class="pod-list" role="list" aria-label="关联 Pod">
           <div v-for="pod in visiblePods" :key="pod.metadata.uid" role="listitem"><button class="pod-item" :class="{ selected: pod.metadata.uid === podUID }" :disabled="disabled || !readable" :aria-pressed="pod.metadata.uid === podUID" @click="choosePod(pod)">
-            <span class="pod-heading"><Box :size="14" /><strong :title="pod.metadata.name">{{ pod.metadata.name }}</strong><a-tag :color="podState(pod).tone">{{ podState(pod).text }}</a-tag><ChevronRight :size="12" /></span>
+            <span class="pod-heading"><Box :size="14" /><strong :title="pod.metadata.name">{{ pod.metadata.name }}</strong><span v-if="podRestartTotal(pod)" class="pod-restarts" :title="`容器累计重启 ${podRestartTotal(pod)} 次（含所有容器）`">重启 {{ podRestartTotal(pod) }}</span><a-tag :color="podState(pod).tone">{{ podState(pod).text }}</a-tag><ChevronRight :size="12" /></span>
             <span class="pod-placement"><span title="Pod IP"><Network :size="12" aria-hidden="true" /><code>{{ pod.status?.podIP || '—' }}</code></span><span :title="pod.spec?.nodeName"><Server :size="12" aria-hidden="true" /><span>{{ pod.spec?.nodeName || '未调度' }}</span></span><time class="pod-created" :title="formatDateTime(pod.metadata.creationTimestamp)">{{ formatRelativeTime(pod.metadata.creationTimestamp) }}</time></span>
             <span v-if="podState(pod).reason" class="pod-reason">{{ podState(pod).reason }}</span>
           </button></div>
         </div>
+        <div v-else-if="!podsLoading && !podsError && scaledDownRevision" class="pod-empty-note" role="status">该版本已缩容到 0，没有运行中的容器组。</div>
         <a-empty v-else-if="!podsLoading && !podsError" :description="deployment && !selectedRevision ? '请选择历史版本' : '暂无关联 Pod'" :image-style="{ height: '40px' }" />
       </a-spin>
     </section>
@@ -250,6 +275,21 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .replica-counts { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; color: var(--workload-muted); font-size: 12px; line-height: 20px; }
 .replica-counts>span { display: flex; align-items: baseline; gap: 6px; min-width: 0; white-space: nowrap; }
 .replica-counts b { color: var(--workload-text); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.replica-meter { display: block; height: 4px; overflow: hidden; border-radius: 2px; background: var(--workload-border); }
+.replica-meter>i { display: block; height: 100%; border-radius: 2px; background: var(--workload-ready-text); transition: width 160ms ease; }
+.replica-meter.tone-partial>i { background: var(--workload-warning-text); }
+.replica-meter.tone-down>i { background: var(--workload-error-text); }
+.replica-meter.tone-idle { background: color-mix(in srgb, var(--workload-border) 55%, transparent); }
+.replica-meter.tone-idle>i { display: none; }
+.revision-item.selected .replica-meter { background: rgb(255 255 255 / 28%); }
+.revision-item.selected .replica-meter>i { background: var(--workload-on-selected); }
+.revision-images { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--workload-muted); font-size: 12px; line-height: 18px; }
+.revision-images>span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.revision-images>svg { flex: none; }
+.revision-item.selected .revision-images,.revision-item.selected .revision-images>svg { color: var(--workload-on-selected); }
+.pod-restarts { flex: none; padding: 0 5px; border-radius: 6px; background: var(--workload-warning-bg); color: var(--workload-warning-text); font-size: 12px; line-height: 18px; }
+.pod-item.selected .pod-restarts { background: rgb(255 255 255 / 18%); color: var(--workload-on-selected); }
+.pod-empty-note { margin: 10px; padding: 10px; border-radius: 8px; background: var(--workload-column); color: var(--workload-muted); font-size: 12px; line-height: 1.6; }
 .revision-heading .revision-current { padding: 0 5px; border-radius: 6px; background: var(--workload-column); color: var(--workload-link); font-size: 12px; line-height: 18px; }
 .selected-revision { margin: 0 0 8px; padding: 7px 10px; color: var(--workload-muted); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
 .selected-revision>strong { color: var(--workload-link); font-weight: 500; }
@@ -279,6 +319,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
   .is-deployment .pod-detail-column { grid-column: 1/-1; max-height: none; overflow: visible; }
   .pod-detail-column { scrollbar-gutter: auto; }
 }
+@media(prefers-reduced-motion:reduce) { .replica-meter>i { transition: none; } }
 @media(max-width:680px) {
   .workload-explorer,.workload-explorer.is-deployment { grid-template-columns: minmax(0,1fr); height: auto; padding: 8px; gap: 12px; }
   .explorer-column,.is-deployment .revision-column,.is-deployment .pod-column { max-height: none; overflow: visible; }
