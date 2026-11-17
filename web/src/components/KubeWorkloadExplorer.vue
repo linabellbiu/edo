@@ -189,7 +189,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 <template>
   <section ref="root" class="workload-explorer" :class="{ 'is-deployment': deployment }" aria-label="工作负载运行状态" @focusin="revealFocused">
     <aside v-if="deployment" class="explorer-column revision-column" tabindex="0" aria-label="历史版本">
-      <header><h4>历史版本</h4><span class="history-limit">最多 {{ object.spec?.revisionHistoryLimit ?? '—' }} 个</span><span class="column-header-action"><a-button size="small" type="text" :loading="historyLoading" :disabled="disabled || !readable" aria-label="刷新历史版本" @click="loadHistory"><RefreshCw :size="13" /></a-button></span></header>
+      <header><h4>历史版本</h4><span class="history-limit">最多 {{ object.spec?.revisionHistoryLimit ?? '—' }} 个</span><span class="column-header-action"><a-button size="small" type="text" :disabled="disabled || !readable" :aria-busy="historyLoading" aria-label="刷新历史版本" @click="loadHistory"><RefreshCw :size="13" :class="{ 'is-spinning': historyLoading }" /></a-button></span></header>
       <a-alert v-if="historyError" class="column-alert" type="error" show-icon :message="historyError"><template #action><a-button size="small" :disabled="disabled" @click="loadHistory">重试</a-button></template></a-alert>
       <a-alert v-else-if="historyState==='partial' || historyState==='pods_unavailable'" class="column-alert" type="warning" show-icon :message="historyState==='partial'?'历史版本数据尚未完整加载':'暂时无法读取历史版本关联的 Pod，请核对关联 Pod 列表'" />
       <a-spin :spinning="historyLoading">
@@ -210,7 +210,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
     </aside>
 
     <section class="explorer-column pod-column" tabindex="0" aria-label="对应容器组">
-      <header><h4>对应容器组 <span class="heading-count">{{ podsError||podsLoading?'—':`${visiblePods.length}${podsPartial?'+':''}` }}</span></h4><span class="column-header-action"><a-button size="small" type="text" :disabled="disabled || !readable" :loading="podsLoading" aria-label="刷新关联 Pod" @click="emit('retryPods')"><RefreshCw :size="13" /></a-button></span></header>
+      <header><h4>对应容器组 <span class="heading-count">{{ podsError||podsLoading?'—':`${visiblePods.length}${podsPartial?'+':''}` }}</span></h4><span class="column-header-action"><a-button size="small" type="text" :disabled="disabled || !readable" :aria-busy="podsLoading" aria-label="刷新关联 Pod" @click="emit('retryPods')"><RefreshCw :size="13" :class="{ 'is-spinning': podsLoading }" /></a-button></span></header>
       <p v-if="selectedRevision" class="selected-revision">副本集 <strong :title="selectedRevision.name">{{ selectedRevision.name }}</strong></p>
       <a-alert v-if="podsError" class="column-alert" type="error" show-icon :message="podsError"><template #action><a-button size="small" :disabled="disabled" @click="emit('retryPods')">重试</a-button></template></a-alert>
       <a-alert v-else-if="podsPartial" class="column-alert" type="warning" show-icon message="关联 Pod 尚未完整加载" />
@@ -255,7 +255,10 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 .heading-count { margin-left: 4px; color: var(--workload-muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .history-limit { margin-left: auto; padding: 1px 7px; border: 1px solid var(--workload-border); border-radius: 8px; background: var(--workload-column); color: var(--workload-muted); font-size: 12px; line-height: 18px; white-space: nowrap; }
 .column-header-action { display: flex; flex: 0 0 auto; align-self: stretch; align-items: center; justify-content: center; min-height: 24px; }
-.explorer-column>header :deep(.ant-btn) { display: grid; flex: 0 0 auto; align-self: center; width: 24px; height: 24px; margin: 0; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; box-shadow: none; color: var(--workload-muted); line-height: 1; }
+.explorer-column>header :deep(.ant-btn) { display: inline-flex; flex: 0 0 auto; align-items: center; align-self: center; justify-content: center; column-gap: 0; width: 24px; height: 24px; margin: 0; padding: 0; border: 0; border-radius: 6px; background: transparent; box-shadow: none; color: var(--workload-muted); line-height: 1; overflow: hidden; }
+.explorer-column>header :deep(svg.is-spinning) { animation: workload-header-spin .9s linear infinite; }
+@keyframes workload-header-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .explorer-column>header :deep(svg.is-spinning) { animation: none; opacity: .65; } }
 .explorer-column>header :deep(.ant-btn:not(:disabled):hover) { color: var(--workload-link); background: transparent; }
 .revision-list { position: relative; padding: 8px 8px 12px 22px; }
 .revision-list::before { position: absolute; top: 23px; bottom: 30px; left: 9px; width: 1px; background: var(--workload-border); content: ''; }
