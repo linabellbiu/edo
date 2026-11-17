@@ -12,9 +12,9 @@ const value=(text:string|undefined)=>!text||text==='—'?'—':props.date?format
   <a-tooltip :mouse-enter-delay="0.1" :trigger="['hover','focus']">
     <template #title><span>{{ value(cell?.text) }}</span><br v-if="cell?.secondary" /><span v-if="cell?.secondary">{{ value(cell.secondary) }}</span><template v-if="cell?.raw"><br /><span>{{ t('k8s.quantityOriginal') }}: {{ cell.raw }}</span></template></template>
     <div class="kube-cell" :class="{numeric:cell?.progress!==undefined||cell?.badge,tokenized:cell?.tokens?.length}">
-      <div v-if="cell?.tokens?.length" class="cell-tokens" role="list"><span v-for="(token,index) in cell.tokens" :key="`${index}/${token}`" v-copy-full-text class="kube-namespace-badge kube-port-badge" role="listitem">{{ token }}</span></div>
-      <button v-else-if="cell?.reference&&canFollow" type="button" class="cell-link" @click="emit('follow',cell.reference)">{{ value(cell.text) }}</button><span v-else v-copy-full-text class="cell-primary" :class="cell?.badge?['kube-ready-badge',`is-${cell.badge}`]:undefined">{{ value(cell?.text) }}</span>
-      <span v-if="!cell?.badge&&cell?.secondary&&cell.secondary!=='—'" v-copy-full-text class="cell-secondary">{{ value(cell.secondary) }}</span>
+      <div v-if="cell?.tokens?.length" class="cell-tokens" role="list"><span v-for="(token,index) in cell.tokens" :key="`${index}/${token}`" v-copy-full-text tabindex="0" class="kube-namespace-badge kube-port-badge" role="listitem">{{ token }}</span></div>
+      <button v-else-if="cell?.reference&&canFollow" type="button" class="cell-link" @click="emit('follow',cell.reference)">{{ value(cell.text) }}</button><span v-else v-copy-full-text tabindex="0" class="cell-primary" :class="cell?.badge?['kube-ready-badge',`is-${cell.badge}`]:undefined">{{ value(cell?.text) }}</span>
+      <span v-if="!cell?.badge&&cell?.secondary&&cell.secondary!=='—'" v-copy-full-text tabindex="0" class="cell-secondary">{{ value(cell.secondary) }}</span>
       <div v-if="!cell?.badge&&cell?.progress!==undefined" class="replica-track" role="meter" :aria-label="t('k8s.readyReplicas')" :aria-valuenow="cell.progress" aria-valuemin="0" aria-valuemax="100" :aria-valuetext="cell.text"><i :style="{width:`${cell.progress}%`}" /></div>
     </div>
   </a-tooltip>

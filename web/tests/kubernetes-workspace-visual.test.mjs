@@ -43,6 +43,7 @@ function compiledComponent(name){
   '@/api/kubernetes':api,'@/utils/kubernetesPresentation':presentation,'@/utils/kubernetesDetails':details,
   '@/utils/kubernetesRoles':roles,'@/utils/kubernetesNode':{nodeConditionState:()=> 'default'},
   '@/utils/time':{formatDateTime:value=>value??'—'},
+  '@/directives/copyFullText':{vCopyFullText:{},selectAndCopyFullText:()=>false},
   './KubeResourceCell.vue':{__esModule:true,default:{props:['cell'],setup:props=>()=>vue.h('span',props.cell?.text??'—')}},
  }
  const module={exports:{}}
