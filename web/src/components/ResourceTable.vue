@@ -3,6 +3,7 @@ import type { ResourceRecord } from '@/api/resources'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
+import { vCopyFullText } from '@/directives/copyFullText'
 
 export interface ResourceColumn {
   key: string
@@ -88,8 +89,8 @@ function displayValue(value: unknown): string {
               <td v-for="column in columns" :key="column.key">
                 <slot :name="`cell-${column.key}`" :row="row" :value="row[column.key]">
                   <a-tag v-if="typeof row[column.key] === 'boolean'" :color="row[column.key] ? 'success' : 'default'">{{ row[column.key] ? '启用' : '停用' }}</a-tag>
-                  <code v-else-if="typeof row[column.key] === 'object' && row[column.key] !== null" class="json-cell">{{ displayValue(row[column.key]) }}</code>
-                  <a-tooltip v-else :title="displayValue(row[column.key])" :mouse-enter-delay="0.1"><button v-if="details && column.key === 'name'" class="resource-name" @click="openDetails(row)">{{ displayValue(row[column.key]) }}</button><span v-else class="resource-value">{{ displayValue(row[column.key]) }}</span></a-tooltip>
+                  <code v-else-if="typeof row[column.key] === 'object' && row[column.key] !== null" v-copy-full-text class="json-cell">{{ displayValue(row[column.key]) }}</code>
+                  <a-tooltip v-else :title="displayValue(row[column.key])" :mouse-enter-delay="0.1" :trigger="['hover','focus']"><button v-if="details && column.key === 'name'" class="resource-name" @click="openDetails(row)">{{ displayValue(row[column.key]) }}</button><span v-else v-copy-full-text class="resource-value">{{ displayValue(row[column.key]) }}</span></a-tooltip>
                 </slot>
               </td>
               <td v-if="$slots.actions || details" class="table-actions"><div class="resource-row-actions"><a-button v-if="details" size="small" @click="openDetails(row)">{{ t('resourceList.details') }}</a-button><slot name="actions" :row="row" /></div></td>
@@ -119,6 +120,8 @@ tbody tr:hover td { background: color-mix(in srgb,var(--edo-primary) 3%,transpar
 tbody tr.active td { background: var(--edo-primary-soft); }
 .json-cell { display: block; max-width: 360px; overflow: hidden; color: var(--edo-muted); text-overflow: ellipsis; white-space: nowrap; }
 .resource-value { display:block; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.copy-full-text { cursor:text; user-select:text; }
+.copy-full-text:focus-visible { outline:2px solid var(--edo-primary); outline-offset:3px; }
 .table-actions,.table-action-heading { position:sticky; right:0; width:1%; white-space:nowrap; background:var(--edo-surface); }
 .has-right-overflow .table-actions,.has-right-overflow .table-action-heading { box-shadow:-5px 0 7px -5px rgb(31 35 41 / 16%); }
 .resource-pagination { display:flex; justify-content:flex-end; margin:14px 16px; }
