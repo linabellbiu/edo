@@ -23,6 +23,7 @@ const emptyDrawer = { setup: () => () => null }
 const ResourceTable = compile(parse(read('../src/components/ResourceTable.vue')).descriptor, {
   'vue-i18n': { useI18n: () => ({ t: key => key }) },
   '@/components/ResourceDetailDrawer.vue': { __esModule: true, default: emptyDrawer },
+  '@/directives/copyFullText': { vCopyFullText: {}, selectAndCopyFullText: () => false },
 })
 const view = parse(read('../src/views/DevOpsView.vue')).descriptor
 const tables = []

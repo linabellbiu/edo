@@ -23,6 +23,7 @@ const ResourceDetailDrawer = compile(parse(read('../src/components/ResourceDetai
 const ResourceTable = compile(parse(read('../src/components/ResourceTable.vue')).descriptor, {
   'vue-i18n': {useI18n: () => ({t: key => key})},
   '@/components/ResourceDetailDrawer.vue': {__esModule: true, default: ResourceDetailDrawer},
+  '@/directives/copyFullText': {vCopyFullText: {}, selectAndCopyFullText: () => false},
 })
 const tables = []
 function visit(node) {
