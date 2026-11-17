@@ -6,7 +6,7 @@ import KubernetesResourceQuantityInput from '@/components/KubernetesResourceQuan
 import {useAuthStore} from '@/stores/auth'
 import type {KubernetesDeploymentServiceType,KubernetesDeploymentSettings} from '@/types/pipeline'
 import {kubernetesDeploymentRuntimeError,kubernetesDeploymentPortError,kubernetesDeploymentServiceError,kubernetesServiceType,kubernetesServiceUsesNodePort} from '@/utils/kubernetesDeployment'
-const props=defineProps<{modelValue?:KubernetesDeploymentSettings;disabled?:boolean}>()
+const props=defineProps<{modelValue?:KubernetesDeploymentSettings;disabled?:boolean;k3d?:boolean}>()
 const emit=defineEmits<{'update:modelValue':[value:KubernetesDeploymentSettings|undefined];invalid:[error:string]}>()
 const auth=useAuthStore()
 const resourceDisabled=computed(()=>props.disabled||!auth.canAny(['kubernetes.workload.update']))
@@ -66,6 +66,7 @@ function port(index:number,patch:Partial<KubernetesDeploymentSettings['ports'][n
     <a-button class="kube-port-add" :disabled="networkDisabled||modelValue.ports.length>=32" @click="addPort"><Plus :size="15"/>添加端口</a-button>
     </template>
     <p v-if="portsError" class="kube-runtime-error" role="alert">{{portsError}}</p>
+    <p v-if="k3d&&usesNodePort&&serviceType!=='ExternalName'" class="kube-service-note" role="note">k3d 容器集群：节点端口由 EDO 发布到宿主机（仅 TCP），部署后使用宿主机 IP:节点端口访问。</p>
    </section>
    <a-collapse class="kube-template-advanced"><a-collapse-panel key="runtime" header="启动与发布">
     <div class="kube-resource-grid"><a-form-item label="镜像拉取策略"><a-select aria-label="镜像拉取策略" :value="modelValue.image_pull_policy||''" :disabled="resourceDisabled" :options="[{value:'',label:'Kubernetes 默认'},{value:'IfNotPresent',label:'本地没有时拉取'},{value:'Always',label:'每次检查镜像'},{value:'Never',label:'仅使用本地镜像'}]" @update:value="update({image_pull_policy:$event||undefined})"/></a-form-item><a-form-item label="终止宽限期（秒）"><a-input-number aria-label="终止宽限期（秒）" :value="modelValue.termination_grace_period_seconds" :min="0" :max="3600" :precision="0" placeholder="Kubernetes 默认" :disabled="resourceDisabled" @update:value="update({termination_grace_period_seconds:$event===null?undefined:Number($event)})"/></a-form-item></div>

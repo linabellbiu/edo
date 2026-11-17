@@ -63,6 +63,7 @@ export interface InfrastructureCluster {
   api_server: string
   default_namespace: string
   is_active: boolean
+  k3d?: boolean
   hosts?: ClusterHost[] | null
   created_at?: string
   updated_at?: string

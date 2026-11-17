@@ -118,6 +118,7 @@ interface Runtime {
   api_server?: string
   default_namespace?: string
   local?: boolean
+  k3d?: boolean
   is_active: boolean
 }
 
@@ -1307,7 +1308,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
             </a-form-item>
 
           </template>
-          <KubernetesDeploymentTemplateFields @invalid="kubernetesEditorError=$event" v-if="form.kind==='kubernetes'" :model-value="form.execution_config?.kubernetes" :disabled="!canUseForm()" @update:model-value="updateExecution({...form.execution_config,kubernetes:$event})"/>
+          <KubernetesDeploymentTemplateFields @invalid="kubernetesEditorError=$event" v-if="form.kind==='kubernetes'" :model-value="form.execution_config?.kubernetes" :disabled="!canUseForm()" :k3d="Boolean(clusterByID.get(form.runtime_id)?.k3d)" @update:model-value="updateExecution({...form.execution_config,kubernetes:$event})"/>
           <DeploymentExecutionFields kubernetes-registry-only :model-value="form.execution_config || {}" :plan="executionPlan" :disabled="!canUseForm()" :edit-permission="executionPermission" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :hide-script="form.kind==='script'" :registry-target="registryHost" @update:timeout-seconds="form.timeout_seconds=$event" @update:model-value="updateExecution" />
           </template>
         </div>

@@ -4,7 +4,7 @@ Kubernetes 部署阶段提供“内置标准模板”，首次创建 Deployment�
 
 新任务命名空间和 Deployment 默认应用名，按 Kubernetes 名称规则转为小写和短横线。容器名使用选定 Dockerfile 构建的镜像名称末段；未配置镜像名称时沿用应用名。仅填写空字段，用户修改后保持原值。多个上游镜像必须先明确选择。
 
-默认 1 个副本，请求 CPU 200m、内存 300Mi，限制 CPU 1 核、内存 1Gi；表单的单位放在数字输入后。默认仅保留关闭的 http 8080 示例，名称、协议和端口均可编辑，也可增删，不根据名称设置应用协议。服务类型支持 ClusterIP、NodePort、LoadBalancer、ExternalName，默认 ClusterIP；未启用端口不创建普通 Service。节点端口由集群分配或显式填写 30000–32767。关闭全部端口时，已有模板 Service 取消对 Pod 的匹配，不删除资源。ExternalName 是外部 DNS 别名，LoadBalancer 需要集群已有对应实现；不自动安装额外组件、添加 Ingress 或开启 hostNetwork。
+默认 1 个副本，请求 CPU 200m、内存 300Mi，限制 CPU 1 核、内存 1Gi；表单的单位放在数字输入后。默认仅保留关闭的 http 8080 示例，名称、协议和端口均可编辑，也可增删，不根据名称设置应用协议。服务类型支持 ClusterIP、NodePort、LoadBalancer、ExternalName，默认 ClusterIP；未启用端口不创建普通 Service。节点端口由集群分配或显式填写 30000–32767。对 EDO 创建的远程 k3d 集群，NodePort 与 LoadBalancer 的节点端口会由 EDO 发布到宿主机（仅 TCP），使用宿主机 IP:节点端口访问；UDP 端口不发布，原生 K3s 或接入的真实集群不需要这一步。关闭全部端口时，已有模板 Service 取消对 Pod 的匹配，不删除资源。ExternalName 是外部 DNS 别名，LoadBalancer 需要集群已有对应实现；不自动安装额外组件、添加 Ingress 或开启 hostNetwork。
 
 HPA 默认关闭；工作负载分区可启用，配置最小/最大副本及 CPU、内存目标利用率。执行使用原生 autoscaling/v2 HPA，并保留它在再次发布前已调整的副本数；关闭后下一次部署仅移除当前目标的 EDO HPA，恢复固定副本，需要相应删除权限。利用率相对资源申请量，需要已有 Metrics Server。完整参数及阶段快照语义见 [通用方案与阶段覆盖](kubernetes-plan-stage-overrides.md)。
 

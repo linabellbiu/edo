@@ -346,13 +346,20 @@ func TestK3dWorkerWaitsForRealConnectionAndDoesNotAssociatePhysicalHost(t *testi
 	}
 	f.service.runInstallation(context.Background(), *record)
 	result, err := f.service.Get(f.ctx, plan.ID)
-	if err != nil || result.Mode != "k3d" || result.K3d == nil || result.Status != "succeeded" || api.tests < 3 || clusters.created != 1 || len(clusters.linked) != 0 || clusters.joins != 0 || len(transport.writes) != 2 {
-		t.Fatalf("k3d 未按独立连接接入: %+v tests=%d created=%d err=%v", result, api.tests, clusters.created, err)
+	if err != nil || result.Mode != "k3d" || result.K3d == nil || result.Status != "succeeded" || api.tests < 3 || clusters.created != 1 || len(clusters.linked) != 0 || clusters.joins != 0 || len(transport.writes) != 3 {
+		t.Fatalf("k3d 未按独立连接接入: %+v tests=%d created=%d writes=%d err=%v", result, api.tests, clusters.created, len(transport.writes), err)
 	}
+	published := false
 	for _, script := range transport.writes {
 		if strings.Contains(script, "base64 -d > /etc/rancher/k3s/config.yaml") || strings.Contains(script, "cluster delete") {
 			t.Fatal("k3d 误写原生配置或自动删除集群")
 		}
+		if strings.Contains(script, k3dNodePortContainerPrefix) && strings.Contains(script, "EDO_BIND_ADDRESS=") && strings.Contains(script, "--network host") {
+			published = true
+		}
+	}
+	if !published {
+		t.Fatal("k3d 安装完成后未发布容器节点端口")
 	}
 }
 

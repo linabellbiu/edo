@@ -66,6 +66,8 @@ Server、Worker 的 CPU 和内存可分别配置，Worker 配置作用于每个�
 
 k3d 连接作为独立集群保存，安装任务记录宿主机，但容器节点不会被冒充为 SSH 物理主机进行自动关联。现有“添加节点”仍是原生 K3s 安装，不用于扩容 k3d 容器。
 
+k3d 容器节点不会在宿主机监听 NodePort。集群节点就绪后，EDO 在宿主机创建自己管理的端口发布容器，持续同步集群中带 nodePort 的 Service（NodePort、LoadBalancer 及 Ingress 控制器端口）并转发到宿主机绑定的 IPv4，使部署配置中的节点端口可以直接访问；仅支持 TCP，UDP 端口不发布，使用宿主机 IP 与节点端口访问。发布容器使用集群自身的 k3s 镜像、只读 kubeconfig 和 EDO 自己的标签，不拉取其他镜像、不改动其他容器或防火墙；随 Docker 重启自动恢复，卸载集群时删除容器与只读 kubeconfig。本地 k3d 集群运行在 EDO 的隔离 Docker 内，该发布不生效，仍需通过 EDO 终端或端口转发访问。
+
 ## k3d 检测与独立诊断
 
 k3d 保留“安装前检测 → 生成计划 → 开始安装”流程，按其官方要求核对 Docker、runc、累计资源、绑定地址和端口。检测只读，不安装依赖或自动修复；配置变化后重新检测。
@@ -159,6 +161,8 @@ EDO 只核对来源安装记录、所选主机和默认脚本目标，并冻结�
 输入精确的“我已确认卸载”后，可复制按所填写真实名称生成的官方 `k3d cluster delete '<实际名称>'` 命令。修改集群名称后需要重新确认。执行账号须具有相应 Docker 操作权限。工具不存在或核验失败时停止并提示核对原执行环境，不自动安装或改用自制清理。命令隔离 K3D/Docker Context 环境，并使用独立临时 HOME 与 kubeconfig，避免改写默认连接配置；结束时仅清除此命令创建的临时目录。不会生成 `--all`、`docker rm` 或自制清理脚本，也不依据用户可修改的集群显示名称猜测资源名。
 
 官方命令会停止并删除该集群的容器、专用网络及本地卷数据。宿主机挂载目录和外部存储不由此指引清理。获取或复制命令不会执行卸载、创建后台任务、解除主机占用或自动移除 EDO 连接，手动执行也不会被 EDO 自动记为卸载成功。
+
+由 EDO 发布过容器端口的 k3d 集群还会在宿主机留下 EDO 管理的端口发布容器（名称前缀 `edo-k3d-nodeport-`，标签 `edo.dev/component=k3d-nodeport`）和只读 kubeconfig（`/var/lib/edo/k3d/<集群资源名>/kubeconfig`）。官方删除完成后可在同一 Docker 环境删除该容器并移除目录；发布容器只转发 TCP 端口，删除它不影响其他集群或宿主机已有服务。
 
 只读接口：`GET /api/v1/kubernetes/k3s/manual-uninstall-guide?cluster_id=<连接 ID>`。连接不存在或属于其他项目时拒绝请求；没有可用安装记录时返回通用指引，由用户填写真实名称，避免猜测删除目标。官方依据：[k3d cluster delete](https://k3d.io/stable/usage/commands/k3d_cluster_delete/)。
 

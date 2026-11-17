@@ -69,6 +69,7 @@ type kubernetesClusterResponse struct {
 	APIServer            string               `json:"api_server"`
 	DefaultNamespace     string               `json:"default_namespace"`
 	KubeconfigConfigured bool                 `json:"kubeconfig_configured"`
+	K3d                  bool                 `json:"k3d"`
 	IsActive             bool                 `json:"is_active"`
 	CreatedBy            string               `json:"created_by"`
 	CreatedAt            time.Time            `json:"created_at"`
@@ -224,8 +225,14 @@ func (h clusterHandler) listKubernetesClusters(c *gin.Context) {
 		h.writeKubernetesError(c, "kubernetes_cluster_hosts_list", err)
 		return
 	}
+	k3d := map[string]bool{}
+	if kinds, err := h.kube.K3dClusterIDs(c.Request.Context(), ids); err != nil {
+		h.logger.Warn("读取 k3d 集群标识失败", "operation", "kubernetes_cluster_k3d_list", "request_id", requestIDFrom(c), "err", err)
+	} else {
+		k3d = kinds
+	}
 	for i := range clusters {
-		item := toKubernetesClusterResponse(&clusters[i])
+		item := toKubernetesClusterResponse(&clusters[i], k3d[clusters[i].ID])
 		if hosts[clusters[i].ID] != nil {
 			item.Hosts = hosts[clusters[i].ID]
 		}
@@ -370,7 +377,13 @@ func (h clusterHandler) respondKubernetesCluster(c *gin.Context, status int, clu
 		h.writeKubernetesError(c, "kubernetes_cluster_hosts_response", err)
 		return
 	}
-	response := toKubernetesClusterResponse(cluster)
+	k3d := false
+	if kinds, err := h.kube.K3dClusterIDs(c.Request.Context(), []string{cluster.ID}); err != nil {
+		h.logger.Warn("读取 k3d 集群标识失败", "operation", "kubernetes_cluster_k3d", "request_id", requestIDFrom(c), "cluster_id", cluster.ID, "err", err)
+	} else {
+		k3d = kinds[cluster.ID]
+	}
+	response := toKubernetesClusterResponse(cluster, k3d)
 	if hosts[cluster.ID] != nil {
 		response.Hosts = hosts[cluster.ID]
 	}
@@ -530,10 +543,10 @@ func toKubernetesInput(request kubernetesClusterRequest) kube.Input {
 	}
 }
 
-func toKubernetesClusterResponse(cluster *model.KubernetesCluster) kubernetesClusterResponse {
+func toKubernetesClusterResponse(cluster *model.KubernetesCluster, k3d bool) kubernetesClusterResponse {
 	return kubernetesClusterResponse{
 		ID: cluster.ID, Name: cluster.Name, Mode: cluster.Mode, APIServer: cluster.APIServer,
-		DefaultNamespace: cluster.DefaultNamespace, KubeconfigConfigured: cluster.KubeconfigCiphertext != "",
+		DefaultNamespace: cluster.DefaultNamespace, KubeconfigConfigured: cluster.KubeconfigCiphertext != "", K3d: k3d,
 		IsActive: cluster.IsActive, CreatedBy: cluster.CreatedBy,
 		CreatedAt: cluster.CreatedAt, UpdatedAt: cluster.UpdatedAt,
 	}

@@ -347,6 +347,10 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
+	// 容器节点不在宿主机监听 NodePort，安装完成后立即发布节点端口；发布失败不改变集群安装结果。
+	if err := s.publishK3dNodePorts(ctx, record, input, current, bundle, value); err != nil {
+		slog.WarnContext(ctx, "k3d 容器端口发布未完成", "operation", "k3d_nodeport_publish", "installation_id", record.ID, "err", err)
+	}
 	return s.completeK3d(ctx, record, connectionInput, hosts)
 }
 

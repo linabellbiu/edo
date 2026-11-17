@@ -114,6 +114,31 @@ func (s *Service) List(ctx context.Context) ([]model.KubernetesCluster, error) {
 	return clusters, nil
 }
 
+// K3dClusterIDs 返回通过 EDO k3d 安装创建的集群，供界面提示容器集群的宿主机端口发布方式。
+func (s *Service) K3dClusterIDs(ctx context.Context, ids []string) (map[string]bool, error) {
+	result := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	var records []model.K3sInstallation
+	if err := s.db.WithContext(ctx).Select("cluster_id", "preview").Where("cluster_id IN ? AND action = ? AND status = ?", ids, "create", "succeeded").Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("查询 k3d 安装记录失败: %w", err)
+	}
+	for _, record := range records {
+		var preview struct {
+			Mode  string `json:"mode"`
+			Hosts []struct {
+				ID string `json:"id"`
+			} `json:"hosts"`
+		}
+		// 本地 k3d 集群运行在 EDO 的隔离 Docker 内，不向宿主机发布端口，不在此标记为可发布集群。
+		if json.Unmarshal(record.Preview, &preview) == nil && preview.Mode == "k3d" && len(preview.Hosts) > 0 && preview.Hosts[0].ID != "" && preview.Hosts[0].ID != model.BuiltinLocalHostID {
+			result[record.ClusterID] = true
+		}
+	}
+	return result, nil
+}
+
 func (s *Service) Find(ctx context.Context, id string) (*model.KubernetesCluster, error) {
 	var cluster model.KubernetesCluster
 	if err := s.db.WithContext(ctx).First(&cluster, "uuid = ?", id).Error; err != nil {
