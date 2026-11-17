@@ -54,3 +54,28 @@ test('拒绝不匹配目标及可注入命令，项目变化立即阻止复制',
   h.project.value = 'project-b'; await h.state.copy(); await settle()
   assert.equal(h.copies.length, 0); assert.equal(h.state.guide.value, undefined); h.stop()
 })
+
+test('没有安装记录时可查看和复制列表命令，手填真实名称后生成单个集群卸载命令', async () => {
+  const h = await harness()
+  await h.resolve(0, { cluster_id: 'cluster-a', cluster_name: '导入的集群', local: false, list_command: 'k3d cluster list' })
+  assert.equal(h.state.error.value, ''); assert.equal(h.state.resourceName.value, ''); assert.equal(h.state.command.value, '')
+  h.state.listText.value = { textContent: 'k3d cluster list' }; await h.state.copyList()
+  assert.deepEqual(h.copies, ['k3d cluster list'])
+  for (const name of ['--all', 'one two', "name'; touch /tmp/never", 'name\nother']) {
+    h.state.resourceName.value = name; assert.equal(h.state.command.value, '')
+  }
+  h.state.resourceName.value = 'my-actual-cluster'; h.state.confirmation.value = '我已确认卸载'
+  h.state.commandText.value = { textContent: h.state.command.value }; await h.state.copy()
+  assert.equal(h.copies.at(-1), "k3d cluster delete 'my-actual-cluster'")
+  h.state.resourceName.value = 'another-cluster'
+  assert.equal(h.state.confirmation.value, ''); await h.state.copy()
+  assert.equal(h.copies.length, 2, '更换名称必须重新确认')
+  assert.equal(h.requests.length, 1, '手动填写不依赖额外安装记录查询或远程执行'); h.stop()
+})
+
+test('预填名称可由用户更正，复制使用更正后的真实名称', async () => {
+  const h = await harness(); await h.resolve(0)
+  h.state.resourceName.value = 'My_Actual.Cluster'; h.state.confirmation.value = '我已确认卸载'
+  h.state.commandText.value = { textContent: h.state.command.value }; await h.state.copy()
+  assert.equal(h.copies.at(-1), "k3d cluster delete 'My_Actual.Cluster'"); h.stop()
+})

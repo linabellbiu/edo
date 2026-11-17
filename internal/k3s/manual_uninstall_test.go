@@ -3,7 +3,6 @@ package k3s
 import (
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -92,11 +91,19 @@ func TestManualUninstallGuideUsesReviewedNameInsteadOfReconstructingHistoricalNa
 	}
 }
 
-func TestManualUninstallGuideRejectsAmbiguousNativeAndDamagedSnapshots(t *testing.T) {
-	for _, scenario := range []string{"ambiguous", "native", "damaged", "host-mismatch", "failed", "missing-name"} {
+func TestManualUninstallGuideWorksWithoutUsableInstallationRecord(t *testing.T) {
+	for _, scenario := range []string{"missing", "ambiguous", "native", "damaged", "host-mismatch", "failed", "missing-name", "records-unavailable"} {
 		t.Run(scenario, func(t *testing.T) {
 			f, cluster, record, snapshot := manualGuideFixture(t)
 			switch scenario {
+			case "records-unavailable":
+				if err := f.db.Migrator().DropTable(&model.K3sInstallation{}); err != nil {
+					t.Fatal(err)
+				}
+			case "missing":
+				if err := f.db.Delete(&record).Error; err != nil {
+					t.Fatal(err)
+				}
 			case "ambiguous":
 				record.ID, record.RowID = uuid.NewString(), 0
 				if err := f.db.Create(&record).Error; err != nil {
@@ -130,8 +137,8 @@ func TestManualUninstallGuideRejectsAmbiguousNativeAndDamagedSnapshots(t *testin
 				}
 			}
 			guide, err := f.service.ManualUninstall(f.ctx, f.actor.ID, cluster.ID)
-			if guide != nil || !errors.Is(err, ErrManualUninstallUnavailable) || strings.Contains(err.Error(), "private-corrupt-snapshot") {
-				t.Fatal("无法核对的目标不能生成删除命令或泄露内部错误", guide, err)
+			if err != nil || guide == nil || guide.ClusterID != cluster.ID || guide.ListCommand != "k3d cluster list" || guide.Command != "" || guide.ResourceName != "" || guide.Host != nil {
+				t.Fatal("没有可预填记录时仍须返回通用指引，不猜测卸载名称", guide, err)
 			}
 		})
 	}

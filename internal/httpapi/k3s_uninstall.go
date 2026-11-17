@@ -29,13 +29,6 @@ func (h k3sHandler) manualUninstallGuide(c *gin.Context) {
 	actor, _ := currentUser(c)
 	guide, err := h.service.ManualUninstall(c.Request.Context(), actor.ID, c.Query("cluster_id"))
 	if err != nil {
-		if errors.Is(err, k3s.ErrManualUninstallUnavailable) {
-			if h.logger != nil {
-				h.logger.Warn("无法生成 k3d 手动卸载指引", "operation", "k3d_manual_uninstall", "cluster_id", c.Query("cluster_id"), "actor_id", actor.ID, "err", err)
-			}
-			writeError(c, http.StatusConflict, "k3d_manual_uninstall_unavailable", k3s.ErrManualUninstallUnavailable.Error())
-			return
-		}
 		h.uninstallError(c, "k3d_manual_uninstall", err)
 		return
 	}

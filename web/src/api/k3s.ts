@@ -201,11 +201,11 @@ export async function listK3sUninstallTargets(hostID: string, signal?: AbortSign
 export interface K3dManualUninstallGuide {
   cluster_id: string
   cluster_name: string
-  resource_name: string
-  host: K3sPlanHost
+  resource_name?: string
+  host?: K3sPlanHost
   local: boolean
   docker_id?: string
-  command: string
+  command?: string
   list_command: string
 }
 export async function getK3dManualUninstallGuide(clusterID: string, signal?: AbortSignal) {

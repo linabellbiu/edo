@@ -152,15 +152,15 @@ EDO 只核对来源安装记录、所选主机和默认脚本目标，并冻结�
 
 ## k3d 主机失联时的手动卸载
 
-在“主机与集群 → 集群”中，打开对应集群的更多菜单，选择“k3d 手动卸载指引”。此入口只读取 EDO 保存的安装记录，不连接旧 IP，不要求 Kubernetes API 可用。需要 `cluster.read` 和独立的 `kubernetes.k3s.uninstall` 权限。
+在“主机与集群 → 集群”中，打开对应集群的更多菜单，选择“k3d 手动卸载指引”。此入口不要求存在 EDO 安装记录，不连接旧 IP，也不要求 Kubernetes API 可用。需要 `cluster.read` 和独立的 `kubernetes.k3s.uninstall` 权限。
 
-指引显示原安装主机、安装时地址和实际 k3d 名称。登录原主机的新地址，在安装时使用的 Docker 环境中先运行 `k3d cluster list` 核对名称；本地隔离 Docker 的集群需进入对应 Docker 环境，不能使用另一个 Docker 实例。存在安装时 Docker ID 的记录还会显示其身份及核对命令。
+先复制并运行 `k3d cluster list`，将目标行的 NAME 填入“k3d 集群名称”。有可核对的安装记录时会预填名称和显示原安装主机、安装时地址，预填名称仍可修改。登录目标主机的新地址，在实际运行集群的 Docker 环境中核对名称；本地隔离 Docker 的集群需进入对应 Docker 环境，不能使用另一个 Docker 实例。存在安装时 Docker ID 的记录还会显示其身份及核对命令。
 
-输入精确的“我已确认卸载”后，可复制由该安装记录生成的官方 `k3d cluster delete '<实际名称>'` 命令。主机须能运行 k3d CLI，且当前账号具有 Docker 操作权限；找不到 CLI 时可通过弹窗中的官方安装链接安装。不会生成 `--all`、`docker rm` 或自制清理脚本，也不依据用户可修改的集群显示名称猜测资源名。
+输入精确的“我已确认卸载”后，可复制按所填写真实名称生成的官方 `k3d cluster delete '<实际名称>'` 命令。修改集群名称后需要重新确认。主机须能运行 k3d CLI，且当前账号具有 Docker 操作权限；找不到 CLI 时可通过弹窗中的官方安装链接安装。不会生成 `--all`、`docker rm` 或自制清理脚本，也不依据用户可修改的集群显示名称猜测资源名。
 
 官方命令会停止并删除该集群的容器、专用网络及本地卷数据。宿主机挂载目录和外部存储不由此指引清理。获取或复制命令不会执行卸载、创建后台任务、解除主机占用或自动移除 EDO 连接，手动执行也不会被 EDO 自动记为卸载成功。
 
-只读接口：`GET /api/v1/kubernetes/k3s/manual-uninstall-guide?cluster_id=<连接 ID>`。连接不存在、属于其他项目或无法唯一核对 k3d 安装快照时不返回删除命令。官方依据：[k3d cluster delete](https://k3d.io/stable/usage/commands/k3d_cluster_delete/)。
+只读接口：`GET /api/v1/kubernetes/k3s/manual-uninstall-guide?cluster_id=<连接 ID>`。连接不存在或属于其他项目时拒绝请求；没有可用安装记录时返回通用指引，由用户填写真实名称，避免猜测删除目标。官方依据：[k3d cluster delete](https://k3d.io/stable/usage/commands/k3d_cluster_delete/)。
 
 ## 安装结果验收
 
