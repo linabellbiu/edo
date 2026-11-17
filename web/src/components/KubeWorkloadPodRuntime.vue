@@ -8,7 +8,7 @@ import { resourceStatus, type KubeReference } from '@/utils/kubernetesPresentati
 import { podRuntimeContainers } from '@/utils/kubernetesDiagnostics'
 import { podContainerChoices } from '@/utils/kubernetesWorkspace'
 import { podExplorerEvents, workloadConditionTone, type WorkloadContainerTarget } from '@/utils/kubernetesWorkloadExplorer'
-import { formatDateTime } from '@/utils/time'
+import { formatDateTime, formatRelativeTime } from '@/utils/time'
 import KubeResourceDiagnostics from './KubeResourceDiagnostics.vue'
 import KubeWorkloadEvents from './KubeWorkloadEvents.vue'
 import SessionPopoutLink from './SessionPopoutLink.vue'
@@ -119,7 +119,7 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 
     <section class="runtime-pod-card">
       <header class="runtime-pod-title">
-        <Box :size="15" /><span>容器组</span><strong :title="pod.metadata.name">{{ pod.metadata.name }}</strong>
+        <Box :size="15" /><span>容器组：</span><span class="pod-title-main"><strong :title="pod.metadata.name">{{ pod.metadata.name }}</strong><span class="pod-age" :title="formatDateTime(pod.metadata.creationTimestamp)">{{ formatRelativeTime(pod.metadata.creationTimestamp) }}</span></span>
         <button v-if="canFollow({resource:'pods',name:pod.metadata.name,namespace:pod.metadata.namespace,uid:pod.metadata.uid})" class="pod-detail-link" :disabled="disabled" @click="follow({resource:'pods',name:pod.metadata.name,namespace:pod.metadata.namespace,uid:pod.metadata.uid})">完整详情 <ChevronRight :size="13" /></button>
       </header>
       <dl class="runtime-pod-facts">
@@ -171,12 +171,14 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-events>summary>.event-warning-count { color: var(--workload-warning-text); }
 .runtime-events>summary:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
 .runtime-events { padding-bottom: 10px; }
-.runtime-pod-card { overflow: hidden; border: 0; border-radius: 5px; background: var(--workload-stripe); }
-.runtime-pod-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 10px 12px; background: var(--workload-accent); color: var(--workload-on-accent); font-size: 12px; }
-.runtime-pod-title>strong { flex: 1; min-width: 0; font-weight: 600; white-space: normal; overflow-wrap: anywhere; font-family: var(--edo-font-mono, ui-monospace, monospace); }
+.runtime-pod-card { overflow: hidden; border: 0; border-radius: 5px; background: var(--workload-column); }
+.runtime-pod-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 10px 12px; background: var(--workload-header); color: var(--workload-on-header); font-size: 12px; }
+.pod-age { flex: none; color: var(--workload-on-header); font-size: 12px; opacity: .9; text-decoration: underline dashed; text-underline-offset: 4px; white-space: nowrap; }
+.pod-title-main { display: flex; align-items: baseline; flex: 1; gap: 10px; min-width: 0; }
+.pod-title-main>strong { min-width: 0; font-weight: 600; white-space: normal; overflow-wrap: anywhere; font-family: var(--edo-font-mono, ui-monospace, monospace); }
 .pod-detail-link { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 2px 7px; border: 0; border-radius: 3px; background: var(--workload-column); color: var(--workload-link); font: inherit; white-space: nowrap; cursor: pointer; }
 .pod-detail-link:hover:not(:disabled) { background: var(--workload-hover); }
-.pod-detail-link:focus-visible { outline-color: var(--workload-on-accent); }
+.pod-detail-link:focus-visible { outline-color: var(--workload-on-header); }
 .runtime-pod-facts { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,.7fr); gap: 12px; margin: 0; padding: 16px 12px; }
 .runtime-pod-facts>div { min-width: 0; }
 .runtime-pod-facts dt { margin-bottom: 4px; color: var(--workload-muted); font-size: 12px; }
@@ -184,17 +186,19 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-pod-facts :deep(.ant-tag) { margin: 0; }
 .runtime-link { padding: 0; border: 0; background: none; color: var(--workload-link); font: inherit; text-align: left; cursor: pointer; }
 .runtime-link:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
-.runtime-conditions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px 10px; padding: 0 12px 16px; }
-.runtime-condition { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 7px; min-width: 0; padding: 7px 8px; border-radius: 3px; background: var(--workload-column); color: var(--workload-text); font-size: 12px; }
+.runtime-conditions { display: grid; grid-template-columns: minmax(0,1fr); gap: 4px; padding: 0 12px 16px; }
+.runtime-condition { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 7px; min-width: 0; padding: 7px 10px; border-radius: 3px; background: var(--workload-stripe); color: var(--workload-text); font-size: 12px; }
+.runtime-condition:nth-child(even) { background: var(--workload-column); }
 .runtime-condition strong { min-width: 0; font-weight: 500; }
 .runtime-condition time { margin-left: auto; color: var(--workload-muted); font-variant-numeric: tabular-nums; }
 .condition-dot { width: 7px; height: 7px; margin: 0 3px; border-radius: 50%; background: var(--workload-muted); }
-.condition-success>svg { color: var(--workload-ready-text); }
+.condition-success>svg { color: var(--workload-ready-text); fill: var(--workload-ready-text); }
+.condition-success>svg :deep(path) { stroke: var(--workload-column); }
 .condition-warning>.condition-dot { background: var(--workload-warning-text); }
 .condition-error>.condition-dot { background: var(--workload-error-text); }
 .runtime-empty { color: var(--workload-muted); font-size: 12px; }
 .runtime-containers { display: grid; gap: 10px; padding: 0 12px 12px; }
-.runtime-container { min-width: 0; overflow: hidden; padding: 0; border: 0; border-radius: 4px; background: var(--workload-column); }
+.runtime-container { min-width: 0; overflow: hidden; padding: 0; border: 0; border-radius: 4px; background: var(--workload-stripe); }
 .runtime-container.selected { background: var(--workload-column); box-shadow: none; }
 .container-heading { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 42px; padding: 9px 10px; border: 0; background: none; color: var(--workload-title); font: inherit; text-align: left; cursor: pointer; }
 .runtime-container.selected .container-heading { background: var(--workload-idle); }
@@ -225,7 +229,7 @@ button:focus-visible { outline: 2px solid var(--workload-focus); outline-offset:
 .container-heading:focus-visible { outline-offset: -2px; }
 button:disabled { opacity: .55; cursor: not-allowed; }
 .runtime-pod-card>:deep(.ant-alert) { margin: 0 12px 10px; }
-@media(max-width:1100px) { .runtime-pod-facts { grid-template-columns: repeat(2,minmax(0,1fr)); } .runtime-pod-title { flex-wrap: wrap; } .runtime-pod-title>strong { flex-basis: 70%; } }
+@media(max-width:1100px) { .runtime-pod-facts { grid-template-columns: repeat(2,minmax(0,1fr)); } .runtime-pod-title { flex-wrap: wrap; } .pod-title-main { flex-basis: 70%; } }
 @media(prefers-reduced-motion:reduce) { .container-chevron { transition: none; } }
-@media(max-width:540px) { .runtime-conditions { grid-template-columns: minmax(0,1fr); } .runtime-condition { flex-wrap: wrap; } .runtime-conditions time { width: 100%; margin-left: 20px; } .runtime-pod-facts { padding: 10px; } .runtime-containers { padding: 0 10px 10px; } }
+@media(max-width:540px) { .runtime-condition { flex-wrap: wrap; } .runtime-conditions time { width: 100%; margin-left: 20px; } .runtime-pod-facts { padding: 10px; } .runtime-containers { padding: 0 10px 10px; } }
 </style>

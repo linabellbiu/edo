@@ -3,7 +3,10 @@
   --workload-accent: #4673c4;
   --workload-accent-hover: #3865b5;
   --workload-on-accent: #fff;
-  --workload-selected: #426b9f;
+  --workload-header: #395a8f;
+  --workload-on-header: #fff;
+  --workload-page: #f1f2f6;
+  --workload-selected: #395a8f;
   --workload-on-selected: #fff;
   --workload-selected-border: #8aa7d0;
   --workload-idle: #e9f6f3;
@@ -47,7 +50,10 @@
   --workload-accent: #5077b6;
   --workload-accent-hover: #6087c6;
   --workload-on-accent: #fff;
-  --workload-selected: #385b86;
+  --workload-header: #2f4a72;
+  --workload-on-header: #eef3fb;
+  --workload-page: #141b24;
+  --workload-selected: #35547f;
   --workload-on-selected: #fff;
   --workload-selected-border: #6887b0;
   --workload-idle: #203632;
@@ -132,7 +138,7 @@
 .kube-workload-drawer .detail-tabs > .ant-tabs-content-holder { flex: 1; min-height: 0; overflow: hidden; }
 .kube-workload-drawer .detail-tabs > .ant-tabs-content-holder > .ant-tabs-content { height: 100%; }
 .kube-workload-drawer .detail-tabs .ant-tabs-tabpane { height: 100%; min-height: 0; overflow: auto; overscroll-behavior: contain; }
-.kube-workload-drawer .detail-tabs .ant-tabs-tabpane.workload-overview-pane { display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.kube-workload-drawer .detail-tabs .ant-tabs-tabpane.workload-overview-pane { display: flex; flex-direction: column; gap: 10px; overflow: hidden; padding: 8px 10px 10px; background: var(--workload-page); }
 .kube-workload-drawer .workload-overview-pane .workload-summary { flex: 0 0 clamp(124px, 19dvh, 164px); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; min-height: 0; margin: 0; }
 .kube-workload-drawer .workload-summary > .workload-identity { min-height: 0; height: 100%; overflow: auto; overscroll-behavior: contain; padding: 10px 12px; }
 .kube-workload-drawer .workload-summary .identity-facts { padding-bottom: 6px; gap: 4px 16px; }

@@ -228,7 +228,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 .explorer-column>header { display: flex; position: sticky; top: 0; z-index: 1; align-items: center; justify-content: space-between; gap: 6px; min-height: 36px; padding: 5px 10px; background: var(--workload-heading); color: var(--workload-title); }
 .explorer-column h4 { margin: 0; font-size: 13px; font-weight: 650; line-height: 22px; }
 .heading-count { margin-left: 4px; color: var(--workload-muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.history-limit { margin-left: auto; color: var(--workload-muted); font-size: 12px; white-space: nowrap; }
+.history-limit { margin-left: auto; padding: 1px 7px; border: 1px solid var(--workload-border); border-radius: 3px; background: var(--workload-column); color: var(--workload-muted); font-size: 12px; line-height: 18px; white-space: nowrap; }
 .explorer-column>header :deep(.ant-btn) { display: grid; width: 26px; height: 26px; place-items: center; padding: 0; color: var(--workload-muted); }
 .explorer-column>header :deep(.ant-btn:not(:disabled):hover) { color: var(--workload-link); background: var(--workload-column); }
 .revision-list { position: relative; padding: 8px 8px 12px 22px; }
@@ -239,6 +239,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 .revision-created { display: block; padding: 3px 0 6px; color: var(--workload-muted); font-size: 12px; line-height: 18px; }
 .revision-item,.pod-item { position: relative; display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0; padding: 12px; border: 0; border-radius: 5px; background: var(--workload-idle); color: var(--workload-text); font: inherit; text-align: left; cursor: pointer; }
 .revision-item.selected,.pod-item.selected { background: var(--workload-selected); color: var(--workload-on-selected); }
+.revision-item.selected::after { position: absolute; top: 50%; right: -6px; width: 0; height: 0; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 6px solid var(--workload-selected); transform: translateY(-50%); content: ''; }
 .revision-item.selected .revision-heading strong,.pod-item.selected .pod-heading strong { color: var(--workload-on-selected); }
 .revision-item:hover:not(.selected):not(:disabled),.pod-item:hover:not(.selected):not(:disabled) { background: var(--workload-hover); color: var(--workload-text); }
 button:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
