@@ -21,16 +21,17 @@ function runtime(){
  return {state,props,requests,events,permissions,async respond(index,items=[]){requests[index].resolve({data:{items}});await flush()},stop:()=>scope.stop()}
 }
 
-test('唯一日志与终端操作栏位于事件和图表之前，精确选择容器且保留权限与禁用守卫',async()=>{
+test('容器直接点选并在自身状态下提供日志终端，无下拉且保留权限与禁用守卫',async()=>{
  const template=parse(source('KubeWorkloadPodRuntime')).descriptor.template.content
- assert.ok(template.indexOf('class="runtime-actions"')<template.indexOf('class="runtime-events"'))
- assert.ok(template.indexOf('class="runtime-actions"')<template.indexOf('<KubeResourceDiagnostics'))
+ assert.ok(template.indexOf('class="runtime-actions"')>template.indexOf('class="container-current-state"'))
+ assert.doesNotMatch(template,/<KubeSelect|<a-select|<select|runtime-container-choice/)
+ assert.match(template,/:aria-expanded="item.name===container" @click="chooseContainer\(item.name\)"/)
  assert.equal((template.match(/class="container-action-bar"/g)??[]).length,1)
  assert.match(template,/:disabled="!allowedContainer\(container\)"/)
  assert.match(template,/v-if="can\('terminal.open'\)" :disabled="!allowedTerminal\(container\)"/)
- assert.match(template,/@update:value="chooseContainer\(String\(\$event\)\)"/)
- assert.match(template,/<KubeSelect :value="container" :options="containerOptions" :disabled="disabled \|\| !readable \|\| !containers.length" aria-label="日志与终端目标容器" @update:value="chooseContainer\(String\(\$event\)\)"/)
  const h=runtime();await h.respond(0)
+ h.state.chooseContainer('init');assert.deepEqual(h.events,[{name:'container',args:[{cluster:'cluster-a',namespace:'team',podUID:'pod-a',container:'init'}]}])
+ h.events.length=0
  h.state.openLogs('app');assert.deepEqual(h.events.at(-1),{name:'logs',args:[{cluster:'cluster-a',namespace:'team',podUID:'pod-a',container:'app'}]})
  h.state.openLogs('init',true);assert.equal(h.events.filter(event=>event.name==='terminal').length,0)
  h.props.disabled=true;const count=h.events.length;h.state.openLogs('app');h.state.chooseContainer('init');assert.equal(h.events.length,count)

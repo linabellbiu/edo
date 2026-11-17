@@ -154,7 +154,8 @@ test('运行中Init和原生sidecar禁用终端但可查看日志，普通与临
  assert.equal(h.actions().length,4)
  const template=parse(readFileSync(new URL('../src/components/KubeWorkloadPodRuntime.vue',import.meta.url),'utf8')).descriptor.template.content
  assert.match(template,/:disabled="!allowedTerminal\(container\)" @click="openLogs\(container,true\)"/)
- assert.match(template,/:value="container"[^>]*@update:value="chooseContainer\(String\(\$event\)\)"/)
+ assert.doesNotMatch(template,/<KubeSelect|<a-select|<select/)
+ assert.match(template,/@click="chooseContainer\(item.name\)"/)
  h.stop()
 })
 

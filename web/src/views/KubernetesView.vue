@@ -35,9 +35,10 @@ import TerminalDrawer from '@/components/TerminalDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
 import {readKubeListState,kubeListQuery,kubeListQueryKeys,withoutKubeListQuery,sortKubeRows,kubeSortableColumns,reloadKubeWindow,podContainerChoices,type KubeListState} from '@/utils/kubernetesWorkspace'
 import { formatDateTime } from '@/utils/time'
-import type {WorkloadExplorerSelection} from '@/utils/kubernetesWorkloadExplorer'
+import type {WorkloadContainerTarget,WorkloadExplorerSelection} from '@/utils/kubernetesWorkloadExplorer'
 
 const KubeWorkloadExplorer = defineAsyncComponent(() => import('@/components/KubeWorkloadExplorer.vue'))
+const KubeWorkloadPodRuntime = defineAsyncComponent(() => import('@/components/KubeWorkloadPodRuntime.vue'))
 const KubeResourceDiagnostics = defineAsyncComponent(() => import('@/components/KubeResourceDiagnostics.vue'))
 const KubeYamlManifest = defineAsyncComponent(() => import('@/components/KubeYamlManifest.vue'))
 const KubeYamlDrawer = defineAsyncComponent(() => import('@/components/KubeYamlDrawer.vue'))
@@ -235,6 +236,7 @@ async function refreshOverview(silent=false,fresh=false){
 function refreshAll(){void refresh(false,false,true);void refreshOverview(false,true);void loadNamespaces(true)}
 watch(()=>`${cluster.value}:${overviewNamespaces.value.join(',')}`,()=>{overviewRevision++;overviewController?.abort();overviewLoading.value=false;overviewPending=false;overview.value=null;overviewError.value='';lastOverview=0;void refreshOverview()})
 watch(cluster,(id,previous)=>{
+  selectedContainer.value={}
   if(previous)clusterScopes.set(previous,[...selectedNamespaces.value])
   selectedNamespaces.value=route.query.cluster===id?namespaceSelection(route.query.namespace,clusterInfo.value?.default_namespace??'default'):clusterScopes.get(id)??[clusterInfo.value?.default_namespace??'default']
   namespaces.value=[];void loadNamespaces();storeScope()
@@ -407,18 +409,18 @@ function remove(object:KubeObject,type=activeType.value) {
 function showScale(object:KubeObject,type=activeType.value) {if(!type)return;scaleTarget.value={object,type,cluster:cluster.value};scaleValue.value=object.spec?.replicas ?? 1;scaleOpen.value=true}
 async function scale() {const target=scaleTarget.value;if(!target||busy.value)return;if(!Number.isInteger(scaleValue.value)||scaleValue.value<0||scaleValue.value>1000){message.error(t('k8s.invalidReplicas'));return}try{await runAction(target.cluster,target.type,target.object,'scale',scaleValue.value);scaleOpen.value=false}catch{}}
 function podStreamPath(pod:KubeObject, terminal=false) {
-  const container=selectedPodContainer(pod)?.name
-  if(!container||!pod.metadata.uid)return ''
+  const choice=selectedPodContainer(pod),container=choice?.name
+  if(!container||!pod.metadata.uid||!can('kubernetes.workload.read')||terminal&&(!can('terminal.open')||!choice.running||pod.metadata.deletionTimestamp))return ''
   const parts=[cluster.value,nsOf(pod),pod.metadata.name,container].map(value=>encodeURIComponent(value))
   const project=encodeURIComponent(localStorage.getItem('edo.project')??'')
   const path=terminal ? `/api/v1/terminals/kubernetes/${parts[0]}/namespaces/${parts[1]}/pods/${parts[2]}/containers/${parts[3]}/ws` : `/api/v1/kubernetes/clusters/${parts[0]}/namespaces/${parts[1]}/pods/${parts[2]}/containers/${parts[3]}/logs/ws`
   return `${path}?project_id=${project}&pod_uid=${encodeURIComponent(pod.metadata.uid)}`
 }
 function openStream(pod:KubeObject, terminal=false) {
-  if(!can(terminal?'terminal.open':'kubernetes.workload.read'))return
+  if(!can('kubernetes.workload.read')||terminal&&!can('terminal.open'))return
   const choice=selectedPodContainer(pod),container=choice?.name
   if(!container)return
-  if(terminal&&!choice.running){message.warning(t('k8s.state_notReady'));return}
+  if(terminal&&(!choice.running||pod.metadata.deletionTimestamp)){message.warning(t('k8s.state_notReady'));return}
   const path=podStreamPath(pod,terminal)
   if(path)stream.value={open:true,terminal,path,title:`${pod.metadata.name} / ${container}`}
 }
@@ -429,8 +431,43 @@ function openWorkloadStream(pod:KubeObject,container:string,terminal=false){
   if(!podContainerChoices(current).some(item=>item.name===container))return
   selectedContainer.value[kubeKey(current)]=container;openStream(current,terminal)
 }
-function selectedPodContainer(pod:KubeObject){const choices=podContainerChoices(pod);return choices.find(item=>item.name===selectedContainer.value[kubeKey(pod)])??choices[0]}
-function containerOptions(pod:KubeObject){return podContainerChoices(pod).map(item=>({value:item.name,label:item.kind==='app'?item.name:`${item.name} (${t(`k8s.containerKind_${item.kind}`)})`}))}
+function selectedPodContainer(pod:KubeObject){const choices=podContainerChoices(pod),name=selectedContainer.value[kubeKey(pod)];return name===undefined?choices[0]:choices.find(item=>item.name===name)}
+function selectedPodContainerName(pod:KubeObject){return selectedContainer.value[kubeKey(pod)]??selectedPodContainer(pod)?.name??''}
+function missingPodContainer(pod:KubeObject){return Boolean(selectedPodContainerName(pod))&&!selectedPodContainer(pod)}
+function currentDetailPod(target:WorkloadContainerTarget){
+  const pod=detail.value
+  if(!detailOpen.value||pod?.kind!=='Pod'||busy.value||detailLoading.value||detailError.value||detailSyncError.value||!can('kubernetes.workload.read'))return
+  if(target.cluster!==cluster.value||target.namespace!==nsOf(pod)||target.podUID!==pod.metadata.uid)return
+  return pod
+}
+function chooseDetailPodContainer(target:WorkloadContainerTarget){
+  const pod=currentDetailPod(target)
+  if(pod&&podContainerChoices(pod).some(item=>item.name===target.container))selectedContainer.value[kubeKey(pod)]=target.container
+}
+function openDetailPodContainer(target:WorkloadContainerTarget,terminal=false){
+  const pod=currentDetailPod(target)
+  if(!pod||!podContainerChoices(pod).some(item=>item.name===target.container))return
+  chooseDetailPodContainer(target);openStream(pod,terminal)
+}
+function canFollowDetailPodReference(reference?:KubeReference){
+  const pod=detail.value
+  if(pod?.kind==='Pod'&&reference?.resource==='pods'&&reference.name===pod.metadata.name&&(reference.namespace??'')===nsOf(pod)&&(!reference.uid||reference.uid===pod.metadata.uid))return false
+  return canFollow(reference)
+}
+function followDetailPodReference(reference:KubeReference,target:WorkloadContainerTarget){if(currentDetailPod(target)&&canFollowDetailPodReference(reference))void followReference(reference)}
+function currentRelatedPod(pod:KubeObject){
+  if(!detailOpen.value||busy.value||detailLoading.value||detailError.value||detailSyncError.value||relatedLoading.value||relatedError.value||!can('kubernetes.workload.read'))return
+  return relatedPods.value.find(item=>item.metadata.uid===pod.metadata.uid&&item.metadata.name===pod.metadata.name&&nsOf(item)===nsOf(pod))
+}
+function chooseRelatedPodContainer(pod:KubeObject,name:string){
+  const current=currentRelatedPod(pod)
+  if(current&&podContainerChoices(current).some(item=>item.name===name))selectedContainer.value[kubeKey(current)]=name
+}
+function allowedRelatedPodStream(pod:KubeObject,terminal=false){
+  const current=currentRelatedPod(pod),choice=current?selectedPodContainer(current):undefined
+  return Boolean(current&&choice&&(!terminal||can('terminal.open')&&choice.running&&!current.metadata.deletionTimestamp))
+}
+function openRelatedPodStream(pod:KubeObject,terminal=false){const current=currentRelatedPod(pod);if(current&&allowedRelatedPodStream(current,terminal))openStream(current,terminal)}
 async function reveal() {
   const object=detail.value,type=detailType.value,id=cluster.value,current=detailRevision
   const inContext=()=>mounted&&current===detailRevision&&detailOpen.value&&detailTab.value==='data'&&can('kubernetes.config.read')&&can('kubernetes.secret.read')
@@ -591,7 +628,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
           <template v-else-if="column.key==='usage'"><KubeNodeUsage v-if="row.kind==='Node'" :node="row" :overview="overview" :failed="Boolean(overviewError)" /><div v-else class="usage-cell"><span>{{ formatKubeCPU(overviewError?undefined:usageFor(overview,row)?.cpu) }}</span><span class="secondary">{{ formatKubeMemory(overviewError?undefined:usageFor(overview,row)?.memory) }}</span></div></template>
           <KubeResourceCell v-else :cell="row.cells[column.key]" :date="['jobTiming','lastSchedule'].includes(column.key)" :can-follow="canFollow(row.cells[column.key]?.reference)" @follow="followFromRow(row,$event)" />
         </template>
-        <template v-if="hasRowActions" #actions="{row}"><KubeResourceActions v-if="activeType" :object="row" :type="activeType" :can="can" :terminal-ready="selectedPodContainer(row)?.running" :logs-path="podStreamPath(row)" :terminal-path="podStreamPath(row,true)" :loading="busy===row.metadata.uid" :disabled="Boolean(busy)" @details="openDetails(row)" @link="linkApplication(row)" @yaml="openDetails(row,'manifest')" @edit="edit(row)" @pods="openDetails(row,'pods')" @logs="openStream(row)" @terminal="openStream(row,true)" @action="confirmAction(row,$event)" @scale="showScale(row)" @remove="remove(row)" @remove-node="showRemoveNode(row)" /></template>
+        <template v-if="hasRowActions" #actions="{row}"><KubeResourceActions v-if="activeType" :object="row" :type="activeType" :can="can" :terminal-ready="selectedPodContainer(row)?.running === true" :logs-path="podStreamPath(row)" :terminal-path="podStreamPath(row,true)" :loading="busy===row.metadata.uid" :disabled="Boolean(busy)" @details="openDetails(row)" @link="linkApplication(row)" @yaml="openDetails(row,'manifest')" @edit="edit(row)" @pods="openDetails(row,'pods')" @logs="openStream(row)" @terminal="openStream(row,true)" @action="confirmAction(row,$event)" @scale="showScale(row)" @remove="remove(row)" @remove-node="showRemoveNode(row)" /></template>
         <template #pagination="{page,limit,total,changePage,changeLimit}"><div class="kube-pagination"><a-pagination :current="page" :page-size="limit" :total="total" :show-size-changer="false" :show-total="(count:number)=>t('planList.total',{count})" @change="changePage" /><label>{{ t('k8s.rowsPerPage') }}<KubeSelect :value="limit" :aria-label="t('k8s.rowsPerPage')" :options="[10,20,50,100].map(value=>({value,label:String(value)}))" @update:value="(value:unknown)=>changeLimit(Number(value))" /></label></div></template>
       </ResourceTable>
       <div v-if="hasContinuation" class="load-more"><span>{{ t('k8s.loaded',{count:rows.length}) }}</span><a-button :loading="loading" @click="refresh(false,true)">{{ t('k8s.loadMore') }}</a-button></div>
@@ -600,7 +637,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
     </div>
 
     <ResourceDetailDrawer class="kube-detail-drawer" :width="workloadDetail?'min(1640px, 96vw)':undefined" :open="detailPresented" :title="detail?.metadata.name??''" @update:open="value=>{if(!value)closeDetails()}" @close="closeDetails">
-      <template #actions><a-button v-if="detailHistory.length" size="small" :disabled="detailLoading" @click="backDetail"><ArrowLeft :size="13" />{{ t('k8s.backResource') }}</a-button><span class="detail-context"><a-tag>{{ detail?.kind }}</a-tag>{{ clusterInfo?.name }} <span>/</span> {{ detail?.metadata.namespace||t('k8s.clusterScope') }}</span><a-tag v-if="detailStatus&&detail?.apiVersion" :color="detailStatus.tone">{{ detailStatus.text }}</a-tag><a-button v-if="detail" size="small" :loading="detailLoading" @click="refreshDetail"><RefreshCw :size="13" />{{ t('k8s.refresh') }}</a-button><a-select v-if="detail?.kind==='Pod'&&containerOptions(detail).length>1" :value="selectedPodContainer(detail)?.name" class="container-select" :aria-label="t('k8s.container')" :options="containerOptions(detail)" @update:value="(value:unknown)=>selectedContainer[kubeKey(detail!)]=String(value)" /><KubeResourceActions v-if="detail&&detailType" :object="detail" :type="detailType" :can="can" :terminal-ready="selectedPodContainer(detail)?.running" :logs-path="podStreamPath(detail)" :terminal-path="podStreamPath(detail,true)" in-drawer :loading="Boolean(busy)" :disabled="Boolean(busy)||detailLoading||Boolean(detailError)||Boolean(detailSyncError)" @link="linkApplication(detail)" @edit="edit(detail,detailType)" @pods="detailTab=workloadExplorer?'basic':'pods'" @logs="openStream(detail)" @terminal="openStream(detail,true)" @action="confirmAction(detail,$event,detailType)" @scale="showScale(detail,detailType)" @remove="remove(detail,detailType)" @remove-node="showRemoveNode(detail)" /></template>
+      <template #actions><a-button v-if="detailHistory.length" size="small" :disabled="detailLoading" @click="backDetail"><ArrowLeft :size="13" />{{ t('k8s.backResource') }}</a-button><span class="detail-context"><a-tag>{{ detail?.kind }}</a-tag>{{ clusterInfo?.name }} <span>/</span> {{ detail?.metadata.namespace||t('k8s.clusterScope') }}</span><a-tag v-if="detailStatus&&detail?.apiVersion" :color="detailStatus.tone">{{ detailStatus.text }}</a-tag><a-button v-if="detail" size="small" :loading="detailLoading" @click="refreshDetail"><RefreshCw :size="13" />{{ t('k8s.refresh') }}</a-button><KubeResourceActions v-if="detail&&detailType" :object="detail" :type="detailType" :can="can" :terminal-ready="selectedPodContainer(detail)?.running === true" hide-container-actions :logs-path="podStreamPath(detail)" :terminal-path="podStreamPath(detail,true)" in-drawer :loading="Boolean(busy)" :disabled="Boolean(busy)||detailLoading||Boolean(detailError)||Boolean(detailSyncError)" @link="linkApplication(detail)" @edit="edit(detail,detailType)" @pods="detailTab=workloadExplorer?'basic':'pods'" @logs="openStream(detail)" @terminal="openStream(detail,true)" @action="confirmAction(detail,$event,detailType)" @scale="showScale(detail,detailType)" @remove="remove(detail,detailType)" @remove-node="showRemoveNode(detail)" /></template>
       <a-alert v-if="detailError" type="error" :message="detailError" />
       <a-alert v-if="detailSyncError" type="warning" show-icon :message="detailSyncError" />
       <a-skeleton v-if="detailLoading&&!detail?.apiVersion" active :paragraph="{rows:6}" class="detail-skeleton" /><a-spin :spinning="detailLoading"><KubeDetailTabs v-if="detail&&detail.apiVersion&&detailType&&!detailError" v-model:active-key="detailTab" class="detail-tabs">
@@ -609,14 +646,14 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         <a-tab-pane key="basic" :tab="t(workloadDetail?'k8s.workloadOverview':'k8s.resourceSettings')">
           <KubeWorkloadSummary v-if="workloadDetail" :object="detail" :type="detailType" :events="events" :events-error="eventsError" :events-loading="detailLoading||eventsLoading" @events="detailTab='events'" />
           <KubeWorkloadExplorer v-if="workloadExplorer" v-show="detailTab==='basic'" :visible="detailPresented&&detailTab==='basic'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :selection="workloadSelections[cluster+detail.metadata.uid]" @selection="value=>workloadSelections[cluster+detail!.metadata.uid]=value" :pods="relatedPods" :pods-loading="relatedLoading" :pods-error="relatedError" :pods-partial="relatedPartial" :events="events" :events-error="eventsError" :auto-refresh="autoRefresh&&detailPresented&&detailTab==='basic'" :refresh-token="detailRefresh" :can="can" :can-follow="canFollow" :disabled="Boolean(busy)||detailLoading||Boolean(detailSyncError)||relatedLoading" @follow="followReference" @logs="(pod,container)=>openWorkloadStream(pod,container)" @terminal="(pod,container)=>openWorkloadStream(pod,container,true)" @retry-pods="retryRelatedPods" />
-          <KubeResourceDiagnostics v-else-if="detail.kind==='Pod'&&detailTab==='basic'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :can-follow="canFollow" @follow="followReference" />
-          <KubeResourceDetails v-else-if="!workloadDetail" :object="detail" :type="detailType" :container="detail.kind==='Pod'?selectedPodContainer(detail)?.name:undefined" :can-follow="canFollow" @container="value=>selectedContainer[kubeKey(detail!)]=value" @follow="followReference" />
+          <KubeWorkloadPodRuntime v-else-if="detail.kind==='Pod'&&detailTab==='basic'&&can('kubernetes.workload.read')" :key="cluster+detail.metadata.uid" class="pod-detail-runtime" :cluster="cluster" :pod="detail" :container="selectedPodContainerName(detail)" :auto-refresh="autoRefresh&&detailPresented" :refresh-token="detailRefresh" :can="can" :can-follow="canFollowDetailPodReference" :disabled="Boolean(busy)||detailLoading||Boolean(detailSyncError)" @container="chooseDetailPodContainer" @logs="target=>openDetailPodContainer(target)" @terminal="target=>openDetailPodContainer(target,true)" @follow="followDetailPodReference" />
+          <KubeResourceDetails v-else-if="!workloadDetail" :object="detail" :type="detailType" :container="detail.kind==='Pod'?selectedPodContainerName(detail):undefined" :can-follow="canFollow" @container="value=>selectedContainer[kubeKey(detail!)]=value" @follow="followReference" />
           <KubeNodeInfo v-if="detail.kind==='Node'" :node="detail" />
         </a-tab-pane>
         <a-tab-pane v-if="detail.kind==='Service'" key="diagnostics" :tab="t(detail.kind==='Service'?'k8s.serviceEndpoints':detail.kind==='Deployment'?'k8s.deploymentHistory':'k8s.podDiagnostics')"><KubeResourceDiagnostics v-if="detailTab==='diagnostics'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :can-follow="canFollow" @follow="followReference" /></a-tab-pane>
         <a-tab-pane v-if="workloadDetail" key="template" :tab="t('k8s.workloadPodTemplate')">
           <a-radio-group v-model:value="templateSection" class="workload-template-nav" :aria-label="t('k8s.workloadSelectSection')" button-style="solid"><a-radio-button value="containers">{{ t('k8s.containers') }}</a-radio-button><a-radio-button value="storage">{{ t('k8s.volumes') }}</a-radio-button><a-radio-button value="scheduling">{{ t('k8s.scheduling') }}</a-radio-button></a-radio-group>
-          <KubeResourceDetails :key="templateIdentity" :object="detail" :type="detailType" :section="templateSection" :selection-identity="templateIdentity" :container-key="templateContainerSelections[templateIdentity]" :container="detail.kind==='Pod'?selectedPodContainer(detail)?.name:undefined" :can-follow="canFollow" @container="value=>selectedContainer[kubeKey(detail!)]=value" @container-key="rememberTemplateContainer" @follow="followReference" />
+          <KubeResourceDetails :key="templateIdentity" :object="detail" :type="detailType" :section="templateSection" :selection-identity="templateIdentity" :container-key="templateContainerSelections[templateIdentity]" :container="detail.kind==='Pod'?selectedPodContainerName(detail):undefined" :can-follow="canFollow" @container="value=>selectedContainer[kubeKey(detail!)]=value" @container-key="rememberTemplateContainer" @follow="followReference" />
         </a-tab-pane>
         <a-tab-pane v-if="['ConfigMap','Secret'].includes(detail.kind)" key="data" :tab="t('k8s.dataTab')">
           <section v-if="detail.kind==='ConfigMap'" class="resource-detail-section"><KubeConfigEntries v-if="Object.keys(detail.data??{}).length || !Object.keys(detail.binaryData??{}).length" :model-value="Object.entries(detail.data??{}).map(([key,value])=>({key,value:String(value)}))" readonly /><div v-for="(_,key) in detail.binaryData??{}" :key="key" class="config-entry"><strong>{{ key }} <a-tag>{{ t('k8s.binaryData') }}</a-tag></strong><p class="secondary">{{ t('k8s.binaryHidden') }}</p></div></section>
@@ -630,7 +667,19 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
             <template #cell-created="{row}">{{ formatDateTime(row.metadata.creationTimestamp) }}</template>
             <template #cell-usage="{row}"><div class="usage-cell"><span>{{ formatKubeCPU(overviewError?undefined:usageFor(overview,row)?.cpu) }}</span><span class="secondary">{{ formatKubeMemory(overviewError?undefined:usageFor(overview,row)?.memory) }}</span></div></template>
             <template #cell-replicas="{row}"><KubeResourceCell :cell="row.cells.replicas" /></template><template #cell-restarts="{row}">{{ row.cells.restarts.text }}</template>
-            <template #actions="{row}"><a-select v-if="containerOptions(row).length>1" :value="selectedPodContainer(row)?.name" class="container-select" :aria-label="t('k8s.container')" :options="containerOptions(row)" @update:value="(value:unknown)=>selectedContainer[kubeKey(row)]=String(value)" /><a-button class="kube-action kube-action-info" size="small" @click="openStream(row)">{{ t('k8s.logs') }}</a-button><SessionPopoutLink kind="container-log" :path="podStreamPath(row)" :title="row.metadata.name" /><a-button v-if="can('terminal.open')" class="kube-action kube-action-success" size="small" :disabled="!selectedPodContainer(row)?.running" @click="openStream(row,true)">{{ t('k8s.terminal') }}</a-button><SessionPopoutLink v-if="can('terminal.open')" kind="terminal" :path="podStreamPath(row,true)" :title="row.metadata.name" :disabled="!selectedPodContainer(row)?.running" /></template>
+            <template #actions="{row}">
+              <div class="related-pod-container-actions">
+                <div class="related-pod-container-choices" role="group" :aria-label="`${row.metadata.name} ${t('k8s.containers')}`">
+                  <button v-for="item in podContainerChoices(row)" :key="`${item.kind}/${item.name}`" type="button" :class="{'is-selected':selectedPodContainer(row)?.name===item.name}" :aria-pressed="selectedPodContainer(row)?.name===item.name" :disabled="!currentRelatedPod(row)" @click="chooseRelatedPodContainer(row,item.name)"><span>{{ item.name }}</span><small v-if="item.kind!=='app'">{{ t(`k8s.containerKind_${item.kind}`) }}</small></button>
+                  <span v-if="!podContainerChoices(row).length" class="secondary">暂无容器</span>
+                </div>
+                <p v-if="missingPodContainer(row)" class="related-container-missing" role="status">所选容器已不存在，请重新选择。</p>
+                <div class="related-pod-stream-actions">
+                  <a-button class="kube-action kube-action-info" size="small" :disabled="!allowedRelatedPodStream(row)" @click="openRelatedPodStream(row)">{{ t('k8s.logs') }}</a-button><SessionPopoutLink kind="container-log" :path="podStreamPath(row)" :title="`${row.metadata.name} / ${selectedPodContainerName(row)}`" :disabled="!allowedRelatedPodStream(row)" />
+                  <a-button v-if="can('terminal.open')" class="kube-action kube-action-success" size="small" :disabled="!allowedRelatedPodStream(row,true)" @click="openRelatedPodStream(row,true)">{{ t('k8s.terminal') }}</a-button><SessionPopoutLink v-if="can('terminal.open')" kind="terminal" :path="podStreamPath(row,true)" :title="`${row.metadata.name} / ${selectedPodContainerName(row)}`" :disabled="!allowedRelatedPodStream(row,true)" />
+                </div>
+              </div>
+            </template>
           </ResourceTable>
         </section></a-tab-pane>
         <a-tab-pane v-if="detail.kind==='Node'" key="images" :tab="t('k8s.nodeImages')"><section class="resource-detail-section"><p class="secondary">{{ t('k8s.nodeImagesHint') }}</p><ResourceTable class="kube-resource-table" :rows="(detail.status?.images??[]).map((image:KubeObject,index:number)=>({...image,id:index}))" :columns="[{key:'names',label:t('k8s.image')},{key:'sizeBytes',label:t('k8s.nodeImageSize')}]" :details="false" :empty-text="t('k8s.emptyData')"><template #cell-names="{row}"><div v-for="name in row.names" :key="name" class="annotation-row"><code>{{ name }}</code></div></template><template #cell-sizeBytes="{row}"><span :title="typeof row.sizeBytes==='number'?`${row.sizeBytes} B`:undefined">{{ formatKubeMemory(row.sizeBytes) }}</span></template></ResourceTable></section></a-tab-pane>
@@ -651,6 +700,19 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 </template>
 
 <style scoped>
+.pod-detail-runtime{padding:10px;border:1px solid var(--workload-border);border-radius:4px;background:var(--workload-column)}
+.related-pod-container-actions{display:grid;gap:6px;min-width:0;max-width:340px}
+.related-pod-container-choices{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.related-pod-container-choices>button{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:4px 8px;border:1px solid var(--kube-border);border-radius:3px;background:var(--kube-surface);color:var(--kube-text);font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.related-pod-container-choices>button>span{overflow-wrap:anywhere;min-width:0}
+.related-pod-container-choices>button>small{color:var(--kube-muted);white-space:nowrap}
+.related-pod-container-choices>button:not(:disabled):hover{background:var(--kube-hover)}
+.related-pod-container-choices>button.is-selected{background:var(--kube-selected);color:var(--kube-link)}
+.related-pod-container-choices>button:focus-visible{outline:2px solid var(--kube-focus);outline-offset:2px}
+.related-pod-container-choices>button:disabled{opacity:.55;cursor:not-allowed}
+.related-container-missing{margin:0;color:var(--workload-warning-text);font-size:12px;white-space:normal}
+.related-pod-stream-actions{display:flex;align-items:center;flex-wrap:wrap;gap:4px}
+
 .kube-workspace{min-width:0}
 .kube-pagination{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:12px;padding:12px 14px}.kube-pagination>label{display:flex;align-items:center;gap:8px;white-space:nowrap;font-size:12px;color:var(--edo-muted)}.kube-pagination :deep(.kube-select){width:74px}
 .kube-workspace-grid{display:grid;grid-template-columns:210px minmax(0,1fr);gap:14px;align-items:start}
@@ -691,7 +753,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 @media(max-width:768px){.kube-context-field{flex:1;min-width:240px}.cluster-select,.namespace-select{flex:1;min-width:0}.resource-search{max-width:none}.event-row{grid-template-columns:1fr}.event-row .secondary{grid-column:1}}
 </style>
 <style scoped>
-.workspace-tabs{background:var(--edo-surface);gap:28px}.workspace-tabs button{display:flex;gap:7px;align-items:center;padding-block:15px 13px;font-size:14px}.kube-filters{padding:12px 16px;gap:10px;background:var(--edo-bg)}.context-scope{margin-right:auto;font-size:12px;color:var(--edo-muted)}.resource-kind{font-size:11px;color:var(--edo-muted);margin-left:6px;font-weight:400}.list-filters{display:flex;align-items:center;gap:10px;padding:12px 16px;flex-wrap:wrap}.resource-search{margin:0;flex:1;min-width:220px;max-width:400px}.status-select{width:160px}.label-search{width:250px}.list-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 16px 12px;font-size:12px;color:var(--edo-muted);border-bottom:1px solid var(--edo-border)}.list-meta>span:first-child{display:flex;align-items:center;gap:12px}.list-meta strong{font-weight:600;color:var(--edo-text);font-size:13px}.partial-badge{background:var(--edo-bg);padding:2px 6px;border:1px solid var(--edo-border);border-radius:3px}.kube-resource-table :deep(.resource-table){min-width:1050px}.kube-resource-table :deep(th){background:var(--edo-bg)}.kube-resource-table :deep(td){height:72px}.kube-resource-table :deep(.table-actions),.kube-resource-table :deep(.table-action-heading){min-width:115px}.resource-identity{min-width:200px;max-width:260px}.resource-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.resource-name.deleting{text-decoration:line-through}.namespace-value{font-size:12px;color:var(--edo-muted);white-space:nowrap}.status-reason{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.detail-context{display:flex;align-items:center;flex-wrap:wrap;gap:4px;max-width:100%;overflow-wrap:anywhere}.detail-tabs :deep(.ant-tabs-nav){position:sticky;top:-16px;z-index:2;padding-top:4px;margin-bottom:14px}.detail-tabs :deep(.ant-tabs-tab){font-size:13px}.annotation-row{display:grid;grid-template-columns:minmax(180px,32%) minmax(0,1fr);gap:14px;padding:12px 0;border-bottom:1px solid var(--edo-border);font-size:13px;overflow-wrap:anywhere}.annotation-row code{font-size:12px;color:var(--edo-muted)}.related-pod-table :deep(.table-actions){min-width:285px}.related-pod-table :deep(.resource-table){min-width:1050px}.container-select{width:120px}.detail-labels{margin-top:0}.detail-labels :deep(.ant-tag){max-width:100%;white-space:normal;overflow-wrap:anywhere}.resource-detail-section h4{font-size:13px}
+.workspace-tabs{background:var(--edo-surface);gap:28px}.workspace-tabs button{display:flex;gap:7px;align-items:center;padding-block:15px 13px;font-size:14px}.kube-filters{padding:12px 16px;gap:10px;background:var(--edo-bg)}.context-scope{margin-right:auto;font-size:12px;color:var(--edo-muted)}.resource-kind{font-size:11px;color:var(--edo-muted);margin-left:6px;font-weight:400}.list-filters{display:flex;align-items:center;gap:10px;padding:12px 16px;flex-wrap:wrap}.resource-search{margin:0;flex:1;min-width:220px;max-width:400px}.status-select{width:160px}.label-search{width:250px}.list-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 16px 12px;font-size:12px;color:var(--edo-muted);border-bottom:1px solid var(--edo-border)}.list-meta>span:first-child{display:flex;align-items:center;gap:12px}.list-meta strong{font-weight:600;color:var(--edo-text);font-size:13px}.partial-badge{background:var(--edo-bg);padding:2px 6px;border:1px solid var(--edo-border);border-radius:3px}.kube-resource-table :deep(.resource-table){min-width:1050px}.kube-resource-table :deep(th){background:var(--edo-bg)}.kube-resource-table :deep(td){height:72px}.kube-resource-table :deep(.table-actions),.kube-resource-table :deep(.table-action-heading){min-width:115px}.resource-identity{min-width:200px;max-width:260px}.resource-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.resource-name.deleting{text-decoration:line-through}.namespace-value{font-size:12px;color:var(--edo-muted);white-space:nowrap}.status-reason{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.detail-context{display:flex;align-items:center;flex-wrap:wrap;gap:4px;max-width:100%;overflow-wrap:anywhere}.detail-tabs :deep(.ant-tabs-nav){position:sticky;top:-16px;z-index:2;padding-top:4px;margin-bottom:14px}.detail-tabs :deep(.ant-tabs-tab){font-size:13px}.annotation-row{display:grid;grid-template-columns:minmax(180px,32%) minmax(0,1fr);gap:14px;padding:12px 0;border-bottom:1px solid var(--edo-border);font-size:13px;overflow-wrap:anywhere}.annotation-row code{font-size:12px;color:var(--edo-muted)}.related-pod-table :deep(.table-actions){min-width:285px}.related-pod-table :deep(.resource-table){min-width:1050px}.detail-labels{margin-top:0}.detail-labels :deep(.ant-tag){max-width:100%;white-space:normal;overflow-wrap:anywhere}.resource-detail-section h4{font-size:13px}
 @media(max-width:900px){.workspace-tabs{gap:22px}.resource-kind{display:none}.label-search{flex:1;min-width:210px}.list-meta{align-items:flex-start;flex-wrap:wrap}.context-scope{display:none}.kube-filters>:last-child{margin-left:auto}}
 @media(max-width:540px){.workspace-tabs{gap:18px}.workspace-tabs button{font-size:13px}.status-select{width:130px}.list-filters{gap:8px}.list-filters>svg{display:none}.annotation-row{grid-template-columns:1fr}.detail-context{flex-basis:100%}}
 </style>

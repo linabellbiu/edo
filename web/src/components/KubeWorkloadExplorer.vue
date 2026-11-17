@@ -215,7 +215,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
   display: grid;
   grid-template-columns: minmax(230px, 1fr) minmax(0, 2fr);
   gap: 12px;
-  height: clamp(470px, calc(100dvh - 350px), 780px);
+  height: clamp(540px, calc(100dvh - 320px), 900px);
   padding: 10px;
   overflow: hidden;
   border: 1px solid var(--workload-border);
@@ -223,7 +223,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
   background: var(--workload-column);
   color: var(--workload-text);
 }
-.workload-explorer.is-deployment { grid-template-columns: minmax(210px, .94fr) minmax(240px, 1.04fr) minmax(0, 1.8fr); }
+.workload-explorer.is-deployment { grid-template-columns: minmax(190px, .9fr) minmax(210px, .9fr) minmax(0, 2.2fr); }
 .explorer-column { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding-top: 48px; background: var(--workload-column); }
 .explorer-column>header { display: flex; position: sticky; top: 0; z-index: 1; align-items: center; justify-content: space-between; gap: 6px; min-height: 36px; padding: 5px 10px; border-bottom: 1px solid var(--workload-border); background: var(--workload-heading); color: var(--workload-title); }
 .explorer-column h4 { margin: 0; font-size: 13px; font-weight: 650; line-height: 22px; }
@@ -263,6 +263,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .pod-created { margin-left: auto; color: var(--workload-muted); font-size: 12px; white-space: nowrap; }
 .pod-reason { color: var(--workload-muted); font-size: 12px; overflow-wrap: anywhere; }
 .pod-column,.pod-detail-column { padding-left: 12px; border-left: 1px solid var(--workload-divider); }
+.pod-column { background: var(--workload-stripe); }
 .pod-detail-column { padding-right: 2px; background: var(--workload-column); }
 .column-alert { margin: 8px; }
 .column-note { padding: 0 9px; color: var(--workload-muted); font-size: 12px; line-height: 1.6; }

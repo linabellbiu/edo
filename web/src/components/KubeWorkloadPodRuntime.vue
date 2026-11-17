@@ -11,7 +11,6 @@ import { podExplorerEvents, workloadConditionTone, type WorkloadContainerTarget 
 import { formatDateTime } from '@/utils/time'
 import KubeResourceDiagnostics from './KubeResourceDiagnostics.vue'
 import KubeWorkloadEvents from './KubeWorkloadEvents.vue'
-import KubeSelect from './KubeSelect.vue'
 import SessionPopoutLink from './SessionPopoutLink.vue'
 
 const props = defineProps<{
@@ -40,10 +39,6 @@ const events = ref<KubeObject[]>([]), eventsLoading = ref(false), eventsError = 
 const eventsExpanded = ref(false), warningCount = computed(() => events.value.filter(event => event.type === 'Warning').length)
 let eventsDisclosureTouched = false
 const missingContainer = computed(() => Boolean(props.container) && !containers.value.some(item => item.name === props.container))
-const containerOptions = computed(() => [
-  ...(missingContainer.value ? [{ value: props.container, label: `${props.container}（已不存在）`, disabled: true }] : []),
-  ...containers.value.map(item => ({ value: item.name, label: item.containerKind === 'app' ? item.name : `${item.name} · ${item.containerKind === 'init' ? 'Init 容器' : '临时容器'}` })),
-])
 let revision = 0, disposed = false, controller: AbortController | undefined, timer: ReturnType<typeof setInterval> | undefined
 
 const conditionLabel = (type: string) => ({ Initialized: '已初始化', PodScheduled: '已调度', PodReadyToStartContainers: '可启动容器', Ready: '容器组已就绪', ContainersReady: '容器已就绪', DisruptionTarget: '正在中断' } as Record<string, string>)[type] ?? type
@@ -116,14 +111,7 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 
 <template>
   <div class="workload-pod-runtime" :aria-busy="eventsLoading">
-    <p class="runtime-target"><strong>{{ pod.metadata.name }}</strong></p>
-    <div class="runtime-actions" aria-label="所选 Pod 容器操作">
-      <label v-if="containers.length > 1 || missingContainer" class="runtime-container-choice">容器<KubeSelect :value="container" :options="containerOptions" :disabled="disabled || !readable || !containers.length" aria-label="日志与终端目标容器" @update:value="chooseContainer(String($event))" /></label>
-      <div v-else class="runtime-container-name"><span>容器</span><strong>{{ containers[0]?.name || '暂无容器' }}</strong><a-tag v-if="containers[0] && containers[0].containerKind !== 'app'">{{ containers[0].containerKind === 'init' ? 'Init 容器' : '临时容器' }}</a-tag></div>
-      <div class="container-action-bar"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" />追踪日志</a-button><SessionPopoutLink kind="container-log" :path="streamPath()" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedContainer(container)" /><a-button v-if="can('terminal.open')" :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" />终端</a-button><SessionPopoutLink v-if="can('terminal.open')" kind="terminal" :path="streamPath(true)" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedTerminal(container)" /></div>
-    </div>
     <a-alert v-if="eventsError" type="warning" show-icon message="Pod 事件读取失败"><template #action><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">重试</a-button></template></a-alert>
-    <p v-if="container && !missingContainer && can('terminal.open') && !allowedTerminal(container)" class="runtime-action-hint">{{ containers.find(item=>item.name===container)?.containerKind==='init' ? 'Init 容器只支持查看日志，不支持终端。' : '所选容器未运行或当前不可操作，终端暂不可用。' }}</p>
     <details class="runtime-events" :open="eventsExpanded" aria-label="所选 Pod 事件"><summary @click.prevent="toggleEvents">Pod 事件 <span>{{ eventsLoading ? '读取中' : eventsError ? '读取失败' : `${events.length} 条` }}</span><span v-if="warningCount" class="event-warning-count">{{ warningCount }} 条警告</span></summary>
       <KubeWorkloadEvents :events="events" :error="Boolean(eventsError)" :error-text="eventsError" :loading="eventsLoading" compact empty-text="该 Pod 暂无事件"><template #actions><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">刷新</a-button></template></KubeWorkloadEvents>
     </details>
@@ -149,16 +137,21 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
       </div>
       <a-alert v-if="missingContainer" type="warning" show-icon message="所选容器已不存在，请重新选择容器；不会自动切换日志或终端目标。" />
       <div class="runtime-containers" aria-label="容器运行状态">
+        <p v-if="!containers.length" class="runtime-empty" role="status">暂无容器</p>
         <article v-for="item in containers" :key="`${item.containerKind}/${item.name}`" class="runtime-container" :class="{selected:item.name===container}">
-          <button class="container-heading" :disabled="disabled" :aria-expanded="item.name===container" @click="chooseContainer(item.name)">
-            <Box :size="22" /><a-tag>{{ item.containerKind==='app'?'容器':item.containerKind==='init'?'Init 容器':'临时容器' }}</a-tag><strong>{{ item.name }}</strong><a-tag :color="containerState(item).tone">{{ containerState(item).text }}</a-tag>
+          <button type="button" class="container-heading" :disabled="disabled || !readable" :aria-expanded="item.name===container" @click="chooseContainer(item.name)">
+            <ChevronRight class="container-chevron" :size="14" aria-hidden="true" /><Box :size="18" aria-hidden="true" /><a-tag>{{ item.containerKind==='app'?'容器':item.containerKind==='init'?'Init 容器':'临时容器' }}</a-tag><strong>{{ item.name }}</strong><a-tag :color="containerState(item).tone">{{ containerState(item).text }}</a-tag>
           </button>
-          <p class="container-image" :title="item.image"><span>镜像拉取策略：{{ item.imagePullPolicy || '—' }}</span><span>镜像：<code>{{ item.image || '—' }}</code></span></p>
+          <p v-if="item.name===container" class="container-image" :title="item.image"><span>镜像拉取策略：{{ item.imagePullPolicy || '—' }}</span><span>镜像：<code>{{ item.image || '—' }}</code></span></p>
           <template v-if="item.name===container">
             <div class="container-current-state"><span>当前状态</span><a-tag :color="item.runtime?.started===true?'success':item.runtime?.started===false?'warning':'default'">Started {{ item.runtime?.started===true?'是':item.runtime?.started===false?'否':'—' }}</a-tag><a-tag :color="item.runtime?.ready===true?'success':item.runtime?.ready===false?'warning':'default'">Ready {{ item.runtime?.ready===true?'是':item.runtime?.ready===false?'否':'—' }}</a-tag><a-tag :color="containerState(item).tone">{{ containerState(item).text }}</a-tag><span>重启 {{ item.runtime?.restartCount ?? '—' }} 次</span><time v-if="containerState(item).at">{{ formatDateTime(containerState(item).at) }}</time></div>
             <p v-if="containerState(item).message" class="runtime-message">{{ containerState(item).message }}</p>
             <p v-if="containerState(item).exit!==undefined" class="runtime-message">退出码 {{ containerState(item).exit }}</p>
             <div v-if="item.runtime?.lastState?.terminated" class="previous-state"><span>上次退出</span><strong>{{ item.runtime.lastState.terminated.reason || '—' }}</strong><span>exit {{ item.runtime.lastState.terminated.exitCode ?? '—' }}</span><time>{{ formatDateTime(item.runtime.lastState.terminated.finishedAt) }}</time></div>
+            <div class="runtime-actions" :aria-label="`${item.name} 容器操作`">
+              <div class="container-action-bar"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" />追踪日志</a-button><SessionPopoutLink kind="container-log" :path="streamPath()" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedContainer(container)" /><a-button v-if="can('terminal.open')" :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" />终端</a-button><SessionPopoutLink v-if="can('terminal.open')" kind="terminal" :path="streamPath(true)" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedTerminal(container)" /></div>
+            </div>
+            <p v-if="container && !missingContainer && can('terminal.open') && !allowedTerminal(container)" class="runtime-action-hint">{{ containers.find(item=>item.name===container)?.containerKind==='init' ? 'Init 容器只支持查看日志，不支持终端。' : '所选容器未运行或当前不可操作，终端暂不可用。' }}</p>
           </template>
         </article>
       </div>
@@ -168,15 +161,9 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 
 <style scoped>
 .workload-pod-runtime { min-width: 0; color: var(--workload-text); }
-.runtime-target { margin: 0 0 8px; font-size: 13px; overflow-wrap: anywhere; }
-.runtime-action-hint { margin: 0 0 10px; color: var(--workload-muted); font-size: 12px; }
-.runtime-actions { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px 12px; padding: 10px; margin-bottom: 10px; border: 1px solid var(--workload-border); border-radius: 3px; background: var(--workload-column); }
-.runtime-container-choice { display: grid; flex: 0 1 280px; gap: 4px; min-width: 0; max-width: 100%; color: var(--workload-muted); font-size: 12px; }
-.runtime-container-name { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; min-height: 28px; font-size: 12px; }
-.runtime-container-name>span { color: var(--workload-muted); }
-.runtime-container-name>strong { color: var(--workload-title); font-weight: 500; overflow-wrap: anywhere; }
-.runtime-container-name :deep(.ant-tag) { margin: 0; }
-.runtime-actions .container-action-bar { margin-top: 0; }
+.runtime-action-hint { margin: 8px 12px 12px; color: var(--workload-muted); font-size: 12px; }
+.runtime-actions { padding: 10px 12px 12px; }
+.runtime-actions .container-action-bar { margin-top: 0; flex-wrap: wrap; }
 .runtime-events>summary { display: flex; align-items: baseline; gap: 8px; padding: 8px 10px; color: var(--workload-title); background: var(--workload-heading); font-size: 13px; cursor: pointer; }
 .runtime-events>summary::before { content: ''; align-self: center; width: 6px; height: 6px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); }
 .runtime-events[open]>summary::before { transform: rotate(45deg); }
@@ -184,7 +171,7 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-events>summary>.event-warning-count { color: var(--workload-warning-text); }
 .runtime-events>summary:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
 .runtime-events { padding-bottom: 10px; }
-.runtime-pod-card { overflow: hidden; border: 1px solid var(--workload-border); border-radius: 4px; background: var(--workload-column); }
+.runtime-pod-card { overflow: hidden; border: 1px solid var(--workload-border); border-radius: 4px; background: var(--workload-stripe); }
 .runtime-pod-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 8px 10px; border-bottom: 1px solid var(--workload-border); background: var(--workload-heading); color: var(--workload-title); font-size: 12px; }
 .runtime-pod-title>strong { flex: 1; min-width: 0; font-weight: 600; white-space: normal; overflow-wrap: anywhere; font-family: var(--edo-font-mono, ui-monospace, monospace); }
 .pod-detail-link { display: flex; align-items: center; gap: 6px; padding: 2px 6px; border: 1px solid var(--workload-idle-border); border-radius: 3px; background: var(--workload-column); color: var(--workload-link); font: inherit; white-space: nowrap; cursor: pointer; }
@@ -196,10 +183,10 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-pod-facts :deep(.ant-tag) { margin: 0; }
 .runtime-link { padding: 0; border: 0; background: none; color: var(--workload-link); font: inherit; text-align: left; cursor: pointer; }
 .runtime-link:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
-.runtime-conditions { display: grid; gap: 0; padding: 4px 12px 8px; }
-.runtime-condition { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 0; border-bottom: 1px solid var(--workload-border); color: var(--workload-text); font-size: 12px; }
+.runtime-conditions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 14px; padding: 4px 12px 8px; }
+.runtime-condition { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 7px; min-width: 0; padding: 7px 0; border-bottom: 1px solid var(--workload-border); color: var(--workload-text); font-size: 12px; }
 .runtime-condition:last-child { border-bottom: 0; }
-.runtime-condition strong { min-width: 108px; font-weight: 500; }
+.runtime-condition strong { min-width: 0; font-weight: 500; }
 .runtime-condition time { margin-left: auto; color: var(--workload-muted); font-variant-numeric: tabular-nums; }
 .condition-dot { width: 7px; height: 7px; margin: 0 3px; border-radius: 50%; background: var(--workload-muted); }
 .condition-success>svg { color: var(--workload-ready-text); }
@@ -207,28 +194,34 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .condition-error>.condition-dot { background: var(--workload-error-text); }
 .runtime-empty { color: var(--workload-muted); font-size: 12px; }
 .runtime-containers { display: grid; gap: 8px; padding: 0 12px 12px; }
-.runtime-container { min-width: 0; padding: 10px; border: 1px solid var(--workload-idle-border); border-radius: 3px; background: var(--workload-column); }
+.runtime-container { min-width: 0; overflow: hidden; padding: 0; border: 1px solid var(--workload-idle-border); border-radius: 3px; background: var(--workload-column); }
 .runtime-container.selected { border-color: var(--workload-selected-border); background: var(--workload-column); box-shadow: none; }
-.container-heading { display: flex; align-items: center; gap: 7px; width: 100%; padding: 0; border: 0; background: none; color: var(--workload-title); font: inherit; text-align: left; cursor: pointer; }
+.container-heading { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 42px; padding: 9px 10px; border: 0; background: none; color: var(--workload-title); font: inherit; text-align: left; cursor: pointer; }
+.runtime-container.selected .container-heading { background: var(--workload-selected); }
+.runtime-container:not(.selected) .container-heading:hover:not(:disabled) { background: var(--workload-hover); }
+.container-chevron { transition: transform 150ms ease; }
+.runtime-container.selected .container-chevron { transform: rotate(90deg); }
 .container-heading>strong { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .runtime-container.selected .container-heading>strong { color: var(--workload-on-selected); }
-.container-heading:hover:not(:disabled)>strong { color: var(--workload-link); text-decoration: underline; text-underline-offset: 3px; }
+.runtime-container:not(.selected) .container-heading:hover:not(:disabled)>strong { color: var(--workload-link); text-decoration: underline; text-underline-offset: 3px; }
 .container-heading :deep(.ant-tag) { margin: 0; font-size: 12px; }
 .container-heading>svg { flex: none; color: var(--workload-muted); }
-.container-image { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; margin: 6px 0 8px; color: var(--workload-muted); font-size: 12px; line-height: 1.6; }
+.container-image { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; margin: 0; padding: 8px 12px; color: var(--workload-muted); font-size: 12px; line-height: 1.6; }
 .container-image>span:last-child { min-width: 0; overflow-wrap: anywhere; }
 .container-image code { font: inherit; }
-.container-current-state,.previous-state { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 6px 0; border-top: 1px solid var(--workload-border); color: var(--workload-muted); font-size: 12px; }
+.container-current-state,.previous-state { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 8px 12px; border-top: 1px solid var(--workload-border); color: var(--workload-muted); font-size: 12px; }
 .container-current-state :deep(.ant-tag) { margin: 0; font-size: 12px; line-height: 17px; }
 .previous-state { margin-top: 4px; }
-.runtime-message { margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }
+.runtime-message { margin: 8px 12px; font-size: 12px; overflow-wrap: anywhere; }
 .container-action-bar { display: flex; gap: 8px; margin-top: 8px; }
 .container-action-bar :deep(.ant-btn) { display: flex; align-items: center; gap: 5px; height: 28px; border-radius: 3px; font-size: 12px; }
 .container-action-bar :deep(.ant-btn:not(:disabled)) { border-color: var(--workload-idle-border); background: var(--workload-column); color: var(--workload-link); }
 .container-action-bar :deep(.ant-btn:not(:disabled):hover) { border-color: var(--workload-selected-border); background: var(--workload-selected); color: var(--workload-link); }
 button:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
+.container-heading:focus-visible { outline-offset: -2px; }
 button:disabled { opacity: .55; cursor: not-allowed; }
 .runtime-pod-card>:deep(.ant-alert) { margin: 0 12px 10px; }
 @media(max-width:1100px) { .runtime-pod-facts { grid-template-columns: repeat(2,minmax(0,1fr)); } .runtime-pod-title { flex-wrap: wrap; } .runtime-pod-title>strong { flex-basis: 70%; } }
-@media(max-width:540px) { .runtime-condition { flex-wrap: wrap; } .runtime-conditions time { width: 100%; margin-left: 20px; } .runtime-pod-facts { padding: 10px; } .runtime-containers { padding: 0 10px 10px; } }
+@media(prefers-reduced-motion:reduce) { .container-chevron { transition: none; } }
+@media(max-width:540px) { .runtime-conditions { grid-template-columns: minmax(0,1fr); } .runtime-condition { flex-wrap: wrap; } .runtime-conditions time { width: 100%; margin-left: 20px; } .runtime-pod-facts { padding: 10px; } .runtime-containers { padding: 0 10px 10px; } }
 </style>
