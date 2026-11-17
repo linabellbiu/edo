@@ -52,3 +52,13 @@
 - 重新执行弹窗不再提供单品选择，改为只读列出将沿用的制品；运行详情用 `selected_artifacts` 展示本次沿用的全部制品名称。
 
 验证：`TestRetryReusesEveryArtifactOfFixedVersion`（双构建节点、按节点顺序给出 2 个制品、两个构建节点都跳过并各自登记、无构建任务、重试链再次沿用同一批、过期制品退出沿用范围）、`TestRetryFailedRunReusesArtifactsBuiltForFixedVersion`（同版本其他运行的制品可沿用，其他提交的制品不可沿用）、`TestSuccessfulManualWorkflowRunCanExecuteAgain` 重建/沿用两支；`go test ./internal/pipeline ./internal/httpapi ./internal/assistant ./internal/model` 通过；`node --test web/tests/pipelineRetry.test.mjs` 5 项通过；`npm --prefix web run build`（含 `vue-tsc --noEmit`）通过。
+## 按构建节点选择历史制品（2026-11-17 23:00，PRA-10）
+
+用户确认“我构建了很多制品，我要选择”，同时要求删除重新执行弹窗里的“将跳过这些制品对应的构建和紧随其后的 Shell 检查……”说明。
+
+- `RetryRunOptions` 由单一制品列表改为 `build_nodes`：每个当前构建节点一组，组内是该固定版本（同 Ref 同 Commit）上已构建的可用制品，最新在前；之后没有可继续部署的节点不列出。
+- 弹窗按构建节点各给一个下拉，默认选中最新一份，可改选更早的构建；黄色说明整段删除，只保留“固定代码版本”和“执行方式”，没有可沿用制品时给出中性提示。
+- 接口由 `reuse_artifacts` 改为 `artifact_ids`：每个被选的制品必须是该固定版本上的可用制品，同一构建节点只能选一个；未指定时每个节点取最新一份。校验失败返回 `retry_artifact_invalid`，没有可用制品返回 `retry_artifacts_unavailable`。
+- 选中的制品在创建运行的同一事务里逐个登记到对应构建节点的跳过记录，部署任务据此取各自的上游制品。
+
+验证：`TestRetryLetsUserChooseHistoryArtifactsPerBuildNode`（同一节点两批制品、默认选最新、显式改选较早的一批、同节点重复选择与其他版本制品被拒绝、重试链仍可再选、过期制品退出选项）、`TestRetryFailedRunReusesArtifactsBuiltForFixedVersion`、`TestSuccessfulManualWorkflowRunCanExecuteAgain`；`go test ./internal/pipeline ./internal/httpapi ./internal/assistant` 通过；`node --test web/tests/pipelineRetry.test.mjs` 5 项通过；`npm --prefix web run build` 通过。

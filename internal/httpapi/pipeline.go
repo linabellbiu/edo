@@ -80,7 +80,7 @@ type executeRunRequest struct {
 }
 
 type retryRunRequest struct {
-	ReuseArtifacts bool `json:"reuse_artifacts"`
+	ArtifactIDs []string `json:"artifact_ids" binding:"max=16,dive,max=36"`
 }
 
 type buildPlanRequest struct {
@@ -481,7 +481,7 @@ func (h pipelineHandler) retryRun(c *gin.Context) {
 		}
 	}
 	actor, _ := currentUser(c)
-	run, err := h.service.RetryRunWithArtifacts(c.Request.Context(), c.Param("id"), actor.ID, request.ReuseArtifacts)
+	run, err := h.service.RetryRunWithArtifacts(c.Request.Context(), c.Param("id"), actor.ID, request.ArtifactIDs)
 	if err != nil {
 		h.writeError(c, "workflow_run_retry", err)
 		return

@@ -2350,10 +2350,17 @@ func parseWorkflowSnapshot(run *model.PipelineRun) (*workflowSnapshot, error) {
 }
 
 type RetryRunOptions struct {
-	Ref           string              `json:"ref"`
-	CommitSHA     string              `json:"commit_sha"`
-	CommitMessage string              `json:"commit_message,omitempty"`
-	Artifacts     []ManualRunArtifact `json:"artifacts"`
+	Ref           string               `json:"ref"`
+	CommitSHA     string               `json:"commit_sha"`
+	CommitMessage string               `json:"commit_message,omitempty"`
+	BuildNodes    []RetryArtifactGroup `json:"build_nodes"`
+}
+
+// RetryArtifactGroup 是一个构建节点上可沿用的历史制品，最新在前。
+type RetryArtifactGroup struct {
+	NodeID    string              `json:"node_id"`
+	NodeName  string              `json:"node_name"`
+	Artifacts []ManualRunArtifact `json:"artifacts"`
 }
 
 // ListRetryRunOptions 只返回原运行已经固定的代码版本，以及该次运行实际构建成功的可用制品。
@@ -2386,35 +2393,43 @@ func (s *Service) ListRetryRunOptions(ctx context.Context, runID string) (RetryR
 		s.logger.Warn("流水线未开启成功后手动重新执行", "operation", "pipeline_retry_options", "pipeline_run_id", failed.ID, "workflow_id", workflow.ID, "status", failed.Status, "err", ErrPipelineRunNotRetryable)
 		return RetryRunOptions{}, ErrPipelineRunNotRetryable
 	}
-	reused, err := s.listRunReusableArtifacts(ctx, application, workflow, &failed)
+	groups, err := s.listRunReusableArtifactGroups(ctx, application, workflow, &failed)
 	if err != nil {
 		return RetryRunOptions{}, err
 	}
-	artifacts := make([]ManualRunArtifact, 0, len(reused))
-	if len(runReuseSkipNodes(workflow, reused)) > 0 {
-		for i := range reused {
-			artifacts = append(artifacts, manualRunArtifactSummary(reused[i].artifact, reused[i].build))
+	options := make([]RetryArtifactGroup, 0, len(groups))
+	for i := range groups {
+		if len(runReuseSkipNodes(workflow, []runReusableBuildArtifact{groups[i].options[0]})) == 0 {
+			// 该构建节点之后没有可以继续的部署，沿用没有意义。
+			continue
 		}
+		artifacts := make([]ManualRunArtifact, 0, len(groups[i].options))
+		for j := range groups[i].options {
+			artifacts = append(artifacts, manualRunArtifactSummary(groups[i].options[j].artifact, groups[i].options[j].build))
+		}
+		options = append(options, RetryArtifactGroup{
+			NodeID: groups[i].node.ID, NodeName: groups[i].node.Name, Artifacts: artifacts,
+		})
 	}
 	return RetryRunOptions{
-		Ref: failed.Ref, CommitSHA: failed.CommitSHA, CommitMessage: failed.CommitMessage, Artifacts: artifacts,
+		Ref: failed.Ref, CommitSHA: failed.CommitSHA, CommitMessage: failed.CommitMessage, BuildNodes: options,
 	}, nil
 }
 
 // RetryRun 保留原记录，并使用相同代码版本和应用当前有效配置重新构建一条新的可审计运行。
 func (s *Service) RetryRun(ctx context.Context, runID, actorID string) (*model.PipelineRun, error) {
-	return s.retryRun(ctx, runID, actorID, false, "", false)
+	return s.retryRun(ctx, runID, actorID, nil, false, "", false)
 }
 
-// RetryRunWithArtifacts 不接受新的分支或 Commit。reuseArtifacts 为 true 时沿用该固定版本上已经
-// 构建的可用制品并跳过对应构建；否则仍以原运行固定的代码版本重新构建。
-func (s *Service) RetryRunWithArtifacts(ctx context.Context, runID, actorID string, reuseArtifacts bool) (*model.PipelineRun, error) {
-	return s.retryRun(ctx, runID, actorID, reuseArtifacts, "", false)
+// RetryRunWithArtifacts 不接受新的分支或 Commit，只沿用该固定版本上已经构建的可用制品并跳过
+// 对应构建。artifactIDs 为空时每个构建节点取最新一份；指定时只接受该版本上的可用制品。
+func (s *Service) RetryRunWithArtifacts(ctx context.Context, runID, actorID string, artifactIDs []string) (*model.PipelineRun, error) {
+	return s.retryRun(ctx, runID, actorID, artifactIDs, true, "", false)
 }
 
 // PreviewRetryRun 只解析重试配置，不创建运行或投递任务。
 func (s *Service) PreviewRetryRun(ctx context.Context, runID, actorID string, reuseArtifacts bool) (string, error) {
-	run, err := s.retryRun(ctx, runID, actorID, reuseArtifacts, "", true)
+	run, err := s.retryRun(ctx, runID, actorID, nil, reuseArtifacts, "", true)
 	if err != nil {
 		return "", err
 	}
@@ -2429,7 +2444,7 @@ func (s *Service) RetryRunExpected(ctx context.Context, runID, actorID string, r
 		}
 		return nil, ErrRetrySnapshotChanged
 	}
-	return s.retryRun(ctx, runID, actorID, reuseArtifacts, expectedFingerprint, false)
+	return s.retryRun(ctx, runID, actorID, nil, reuseArtifacts, expectedFingerprint, false)
 }
 
 func retryRunFingerprint(run *model.PipelineRun) (string, error) {
@@ -2453,7 +2468,7 @@ func retryRunFingerprint(run *model.PipelineRun) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func (s *Service) retryRun(ctx context.Context, runID, actorID string, reuseArtifacts bool, expectedFingerprint string, preview bool) (*model.PipelineRun, error) {
+func (s *Service) retryRun(ctx context.Context, runID, actorID string, artifactIDs []string, reuseArtifacts bool, expectedFingerprint string, preview bool) (*model.PipelineRun, error) {
 	var failed model.PipelineRun
 	if err := s.db.WithContext(ctx).First(&failed, "uuid = ?", runID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -2493,10 +2508,18 @@ func (s *Service) retryRun(ctx context.Context, runID, actorID string, reuseArti
 		return nil, ErrInvalidWorkflow
 	}
 	var skipped []runReuseSkipNode
-	if reuseArtifacts {
-		reused, reuseErr := s.listRunReusableArtifacts(ctx, application, workflow, &failed)
-		if reuseErr != nil {
-			return nil, reuseErr
+	if reuseArtifacts || len(artifactIDs) > 0 {
+		groups, groupErr := s.listRunReusableArtifactGroups(ctx, application, workflow, &failed)
+		if groupErr != nil {
+			return nil, groupErr
+		}
+		reused, selectErr := selectRunReusableArtifacts(groups, artifactIDs)
+		if selectErr != nil {
+			if s.logger != nil {
+				s.logger.Warn("流水线重新执行沿用制品无效", "operation", "pipeline_retry_artifacts",
+					"pipeline_run_id", failed.ID, "artifact_count", len(artifactIDs), "err", selectErr)
+			}
+			return nil, selectErr
 		}
 		skipped = runReuseSkipNodes(workflow, reused)
 		if len(skipped) == 0 {

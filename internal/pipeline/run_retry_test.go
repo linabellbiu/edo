@@ -39,11 +39,20 @@ func TestSuccessfulManualWorkflowRunCanExecuteAgain(t *testing.T) {
 			if reuseArtifacts {
 				artifactID = createPreviousManualArtifact(t, db, application, original.CommitSHA).ID
 			}
+			groups := 0
+			if reuseArtifacts {
+				groups = 1
+			}
 			options, err := service.ListRetryRunOptions(context.Background(), original.ID)
-			if err != nil || options.Ref != original.Ref || options.CommitSHA != original.CommitSHA || len(options.Artifacts) != map[bool]int{false: 0, true: 1}[reuseArtifacts] {
+			if err != nil || options.Ref != original.Ref || options.CommitSHA != original.CommitSHA || len(options.BuildNodes) != groups {
 				t.Fatalf("成功运行选项必须保留固定版本和可沿用的制品: options=%+v err=%v", options, err)
 			}
-			run, err := service.RetryRunWithArtifacts(context.Background(), original.ID, "operator", reuseArtifacts)
+			var run *model.PipelineRun
+			if reuseArtifacts {
+				run, err = service.RetryRunWithArtifacts(context.Background(), original.ID, "operator", nil)
+			} else {
+				run, err = service.RetryRun(context.Background(), original.ID, "operator")
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -119,7 +128,7 @@ func TestSuccessfulRetryRechecksCurrentManualSetting(t *testing.T) {
 	}
 }
 
-func TestRetryReusesEveryArtifactOfFixedVersion(t *testing.T) {
+func TestRetryLetsUserChooseHistoryArtifactsPerBuildNode(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	application := createTwoBuildRunTestApplication(t, service, db, repositoryID, "retry_two_builds")
 	workflow := application.Workflow
@@ -140,50 +149,77 @@ func TestRetryReusesEveryArtifactOfFixedVersion(t *testing.T) {
 	if err := db.Create(&original).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiArtifact := createFixedVersionArtifact(t, db, application, buildPlanIDForTestNode(t, workflow, "build-api"), "build-api", original.Ref, commitSHA, "edo.local/demo-api:v0.0.8")
-	webArtifact := createFixedVersionArtifact(t, db, application, buildPlanIDForTestNode(t, workflow, "build-web"), "build-web", original.Ref, commitSHA, "edo.local/demo-web:v0.0.8")
+	apiPlan := buildPlanIDForTestNode(t, workflow, "build-api")
+	webPlan := buildPlanIDForTestNode(t, workflow, "build-web")
+	// 同一固定版本上先后构建过两批制品：较早的一批仍然可用，用户必须能选到它。
+	olderAPI := createFixedVersionArtifact(t, db, application, apiPlan, "build-api", original.Ref, commitSHA, "edo.local/demo-api:v0.0.8-old")
+	olderWeb := createFixedVersionArtifact(t, db, application, webPlan, "build-web", original.Ref, commitSHA, "edo.local/demo-web:v0.0.8-old")
+	newerAPI := createFixedVersionArtifact(t, db, application, apiPlan, "build-api", original.Ref, commitSHA, "edo.local/demo-api:v0.0.8")
+	newerWeb := createFixedVersionArtifact(t, db, application, webPlan, "build-web", original.Ref, commitSHA, "edo.local/demo-web:v0.0.8")
+
 	options, err := service.ListRetryRunOptions(ctx, original.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.Ref != original.Ref || options.CommitSHA != original.CommitSHA || len(options.Artifacts) != 2 ||
-		options.Artifacts[0].ID != apiArtifact.ID || options.Artifacts[1].ID != webArtifact.ID {
-		t.Fatalf("重新执行必须按构建节点顺序提供固定版本的全部可用制品: %+v", options)
+	if options.Ref != original.Ref || options.CommitSHA != original.CommitSHA || len(options.BuildNodes) != 2 ||
+		options.BuildNodes[0].NodeID != "build-api" || options.BuildNodes[1].NodeID != "build-web" {
+		t.Fatalf("重新执行必须按构建节点给出可选制品: %+v", options)
 	}
-	retried, err := service.RetryRunWithArtifacts(ctx, original.ID, "operator", true)
+	if len(options.BuildNodes[0].Artifacts) != 2 ||
+		options.BuildNodes[0].Artifacts[0].ID != newerAPI.ID ||
+		options.BuildNodes[0].Artifacts[1].ID != olderAPI.ID {
+		t.Fatalf("构建节点的制品选项必须最新在前并保留历史构建: %+v", options.BuildNodes[0])
+	}
+	// 不指定时每个构建节点取最新一份。
+	defaultRetry, err := service.RetryRunWithArtifacts(ctx, original.ID, "operator", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retried.RetryOfID != original.ID || retried.Ref != original.Ref || retried.CommitSHA != original.CommitSHA ||
-		retried.ArtifactID != webArtifact.ID || retried.Status != model.PipelineRunAwaitingApproval || retried.ExecutionJobID != "" {
-		t.Fatalf("沿用全部制品必须跳过两个构建并保留固定版本: %+v", retried)
+	if defaultRetry.ArtifactID != newerWeb.ID || defaultRetry.Status != model.PipelineRunAwaitingApproval ||
+		defaultRetry.Ref != original.Ref || defaultRetry.CommitSHA != commitSHA {
+		t.Fatalf("未指定时每个构建节点应沿用最新制品: %+v", defaultRetry)
 	}
-	assertSkippedNodeArtifact(t, db, retried.ID, "build-api", apiArtifact.ID)
-	assertSkippedNodeArtifact(t, db, retried.ID, "build-web", webArtifact.ID)
+	assertSkippedNodeArtifact(t, db, defaultRetry.ID, "build-api", newerAPI.ID)
+	assertSkippedNodeArtifact(t, db, defaultRetry.ID, "build-web", newerWeb.ID)
+	// 用户显式选择较早的构建时，沿用所选的那一份。
+	chosen, err := service.RetryRunWithArtifacts(ctx, original.ID, "operator", []string{olderAPI.ID, olderWeb.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chosen.ArtifactID != olderWeb.ID || chosen.RetryOfID != original.ID || chosen.Ref != original.Ref ||
+		chosen.CommitSHA != commitSHA || chosen.Status != model.PipelineRunAwaitingApproval || chosen.ExecutionJobID != "" {
+		t.Fatalf("显式选择的制品没有按所选沿用: %+v", chosen)
+	}
+	assertSkippedNodeArtifact(t, db, chosen.ID, "build-api", olderAPI.ID)
+	assertSkippedNodeArtifact(t, db, chosen.ID, "build-web", olderWeb.ID)
 	var jobs int64
-	if err := db.Model(&model.Job{}).Where("payload LIKE ?", "%"+retried.ID+"%").Count(&jobs).Error; err != nil || jobs != 0 {
-		t.Fatalf("沿用全部制品后仍创建了构建任务: count=%d err=%v", jobs, err)
+	if err := db.Model(&model.Job{}).Where("payload LIKE ?", "%"+chosen.ID+"%").Count(&jobs).Error; err != nil || jobs != 0 {
+		t.Fatalf("沿用制品后仍创建了构建任务: count=%d err=%v", jobs, err)
 	}
-	// 沿用制品的运行再次重新执行时仍然拿到同一批制品，不会退化成只能重建。
-	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", retried.ID).
+	// 同一构建节点只能选一个；其他版本的制品不属于该固定版本。
+	if _, err := service.RetryRunWithArtifacts(ctx, original.ID, "operator", []string{olderAPI.ID, newerAPI.ID}); !errors.Is(err, ErrRetryArtifactInvalid) {
+		t.Fatalf("同一构建节点重复选择必须被拒绝: %v", err)
+	}
+	foreign := createFixedVersionArtifact(t, db, application, apiPlan, "build-api", original.Ref, strings.Repeat("7", 40), "edo.local/demo-api:other")
+	if _, err := service.RetryRunWithArtifacts(ctx, original.ID, "operator", []string{foreign.ID}); !errors.Is(err, ErrRetryArtifactInvalid) {
+		t.Fatalf("其他版本的制品不得沿用: %v", err)
+	}
+	// 沿用制品的运行再次重新执行时，仍然可以选到同一批历史制品。
+	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", chosen.ID).
 		Updates(map[string]any{"status": model.PipelineRunFailed, "stage": "deploy_failed"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	chainedOptions, err := service.ListRetryRunOptions(ctx, retried.ID)
-	if err != nil || len(chainedOptions.Artifacts) != 2 {
-		t.Fatalf("沿用制品的运行再次重新执行必须保留同一批制品: options=%+v err=%v", chainedOptions, err)
+	chainedOptions, err := service.ListRetryRunOptions(ctx, chosen.ID)
+	if err != nil || len(chainedOptions.BuildNodes) != 2 || len(chainedOptions.BuildNodes[1].Artifacts) != 2 {
+		t.Fatalf("沿用制品的运行再次重新执行必须保留可选的历史制品: options=%+v err=%v", chainedOptions, err)
 	}
-	chained, err := service.RetryRunWithArtifacts(ctx, retried.ID, "operator", true)
-	if err != nil || chained.RetryOfID != retried.ID || chained.ArtifactID != webArtifact.ID ||
-		chained.Status != model.PipelineRunAwaitingApproval || chained.Ref != original.Ref || chained.CommitSHA != commitSHA {
-		t.Fatalf("沿用制品的重试链必须继续沿用同一批制品: run=%+v err=%v", chained, err)
-	}
-	// 已失效的制品不再沿用，剩下的构建节点照常执行。
-	if err := db.Model(&model.Artifact{}).Where("uuid = ?", webArtifact.ID).Update("status", model.ArtifactStatusExpired).Error; err != nil {
+	// 已失效的制品不再可选，剩下的构建节点照常执行。
+	if err := db.Model(&model.Artifact{}).Where("uuid = ?", olderWeb.ID).Update("status", model.ArtifactStatusExpired).Error; err != nil {
 		t.Fatal(err)
 	}
 	partial, err := service.ListRetryRunOptions(ctx, original.ID)
-	if err != nil || len(partial.Artifacts) != 1 || partial.Artifacts[0].ID != apiArtifact.ID {
+	if err != nil || len(partial.BuildNodes) != 2 || len(partial.BuildNodes[1].Artifacts) != 1 ||
+		partial.BuildNodes[1].Artifacts[0].ID != newerWeb.ID {
 		t.Fatalf("只能沿用仍然可用的制品: options=%+v err=%v", partial, err)
 	}
 }

@@ -505,10 +505,11 @@ func TestRetryFailedRunReusesArtifactsBuiltForFixedVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.Ref != failed.Ref || options.CommitSHA != failed.CommitSHA || len(options.Artifacts) != 1 || options.Artifacts[0].ID != stored.ID {
+	if options.Ref != failed.Ref || options.CommitSHA != failed.CommitSHA || len(options.BuildNodes) != 1 ||
+		len(options.BuildNodes[0].Artifacts) != 1 || options.BuildNodes[0].Artifacts[0].ID != stored.ID {
 		t.Fatalf("重试选项没有固定原代码版本和可沿用的制品: %+v", options)
 	}
-	retried, err := service.RetryRunWithArtifacts(ctx, failed.ID, "operator", true)
+	retried, err := service.RetryRunWithArtifacts(ctx, failed.ID, "operator", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,10 +530,10 @@ func TestRetryFailedRunReusesArtifactsBuiltForFixedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	otherOptions, err := service.ListRetryRunOptions(ctx, otherVersion.ID)
-	if err != nil || len(otherOptions.Artifacts) != 0 {
+	if err != nil || len(otherOptions.BuildNodes) != 0 {
 		t.Fatalf("其他提交的制品不应进入选项: options=%+v err=%v", otherOptions, err)
 	}
-	if _, err := service.RetryRunWithArtifacts(ctx, otherVersion.ID, "operator", true); !errors.Is(err, ErrRetryArtifactsUnavailable) {
+	if _, err := service.RetryRunWithArtifacts(ctx, otherVersion.ID, "operator", nil); !errors.Is(err, ErrRetryArtifactsUnavailable) {
 		t.Fatalf("没有可沿用制品时必须拒绝沿用重试: %v", err)
 	}
 }

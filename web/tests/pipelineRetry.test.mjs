@@ -9,7 +9,7 @@ import { componentHarness, loadFrontend } from './acceptanceHarness.mjs'
 
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes }); return { promise, resolve } }
 const failed = { id: 'failed', status: 'failed', application_id: 'app', created_at: '2026-11-11T00:00:00Z' }
-const options = { ref: 'refs/tags/v1', commit_sha: 'a'.repeat(40), artifacts: [] }
+const options = { ref: 'refs/tags/v1', commit_sha: 'a'.repeat(40), build_nodes: [] }
 const retried = { ...failed, id: 'retried', status: 'ready' }
 function harness(t, { execute = true, api = {} } = {}) {
   const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', permissions: ['pipeline_run.read', ...(execute ? ['pipeline_run.execute'] : [])] }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
@@ -75,16 +75,24 @@ test('行入口读取固定版本并打开确认，不直接执行；重复提�
   assert.equal(h.replacements.at(-1).query.run, 'retried')
 })
 
-test('有可沿用的制品时默认沿用整批制品一次提交，没有制品时只能重建', async t => {
-  const artifacts = [{ id: 'one', name: '镜像一', digest: 'sha256:' + 'a'.repeat(64) }, { id: 'two', name: '镜像二', digest: 'sha256:' + 'b'.repeat(64) }]
-  const h = harness(t, { api: { get: async path => ({ data: path.endsWith('/retry-options') ? { ...options, artifacts } : { pipeline_runs: [], total: 0 } }) } })
+test('按构建节点默认选中最新制品，可改选历史制品后一次提交，没有制品时只能重建', async t => {
+  const groups = [
+    { node_id: 'build-api', node_name: '构建 API', artifacts: [{ id: 'api-new', name: 'api:v1', digest: 'sha256:' + 'a'.repeat(64), created_at: '2026-11-17T09:25:00Z' }, { id: 'api-old', name: 'api:v1', digest: 'sha256:' + 'c'.repeat(64), created_at: '2026-11-16T15:08:00Z' }] },
+    { node_id: 'build-web', node_name: '构建 Web', artifacts: [{ id: 'web-new', name: 'web:v1', digest: 'sha256:' + 'b'.repeat(64), created_at: '2026-11-17T09:25:00Z' }] },
+  ]
+  const h = harness(t, { api: { get: async path => ({ data: path.endsWith('/retry-options') ? { ...options, build_nodes: groups } : { pipeline_runs: [], total: 0 } }) } })
   await h.state.openRetry(failed)
   assert.equal(h.state.retryMode.value, 'artifact')
-  assert.equal(h.state.retryOptions.value.artifacts.length, 2)
+  assert.deepEqual(h.state.retryArtifactChoices.value, { 'build-api': 'api-new', 'build-web': 'web-new' })
   await h.state.executeRetry()
-  assert.deepEqual(writes(h)[0].body, { reuse_artifacts: true })
+  assert.deepEqual(writes(h)[0].body, { artifact_ids: ['api-new', 'web-new'] })
   assert.equal(writes(h).length, 1)
-  const plain = harness(t, { api: { get: async path => ({ data: path.endsWith('/retry-options') ? options : { pipeline_runs: [], total: 0 } }) } })
+  h.state.resetRetry()
+  await h.state.openRetry(failed)
+  h.state.retryArtifactChoices.value = { 'build-api': 'api-old', 'build-web': 'web-new' }
+  await h.state.executeRetry()
+  assert.deepEqual(writes(h)[1].body, { artifact_ids: ['api-old', 'web-new'] })
+  const plain = harness(t, { api: { get: async path => ({ data: path.endsWith('/retry-options') ? { ...options, build_nodes: [] } : { pipeline_runs: [], total: 0 } }) } })
   await plain.state.openRetry(failed)
   assert.equal(plain.state.retryMode.value, 'rebuild')
   await plain.state.executeRetry()

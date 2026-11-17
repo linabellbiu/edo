@@ -336,9 +336,15 @@ type runReuseSkipNode struct {
 	imageRef   string
 }
 
-// listRunReusableArtifacts 返回该运行固定版本上已经构建、且能对应当前构建节点的可用制品。
-// 制品的生产记录必须使用同一个 Ref 和 Commit，同一个构建节点只取最新一份。
-func (s *Service) listRunReusableArtifacts(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, run *model.PipelineRun) ([]runReusableBuildArtifact, error) {
+// runReusableArtifactGroup 是同一个构建节点上可沿用的制品，最新在前。
+type runReusableArtifactGroup struct {
+	node    model.WorkflowNode
+	options []runReusableBuildArtifact
+}
+
+// listRunReusableArtifactGroups 返回该运行固定版本上已经构建、且能对应当前构建节点的可用制品，
+// 按构建节点分组，组内最新在前。制品的生产记录必须使用同一个 Ref 和 Commit。
+func (s *Service) listRunReusableArtifactGroups(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, run *model.PipelineRun) ([]runReusableArtifactGroup, error) {
 	if application == nil || workflow == nil || run == nil ||
 		strings.TrimSpace(run.Ref) == "" || strings.TrimSpace(run.CommitSHA) == "" {
 		return nil, nil
@@ -414,7 +420,7 @@ func (s *Service) listRunReusableArtifacts(ctx context.Context, application *mod
 		}
 		artifactByBuild[artifacts[i].BuildRunID] = artifacts[i]
 	}
-	selected := make(map[string]runReusableBuildArtifact, len(builds))
+	grouped := make(map[string][]runReusableBuildArtifact, len(tasks))
 	for i := range builds {
 		plan, planOK := plans[builds[i].BuildPlanID]
 		if !planOK {
@@ -428,21 +434,67 @@ func (s *Service) listRunReusableArtifacts(ctx context.Context, application *mod
 		if !nodeOK {
 			continue
 		}
-		if _, exists := selected[node.ID]; exists {
-			continue
-		}
-		selected[node.ID] = runReusableBuildArtifact{artifact: artifact, build: builds[i], node: node}
+		grouped[node.ID] = append(grouped[node.ID], runReusableBuildArtifact{artifact: artifact, build: builds[i], node: node})
 	}
-	if len(selected) == 0 {
-		return nil, nil
-	}
-	result := make([]runReusableBuildArtifact, 0, len(selected))
+	result := make([]runReusableArtifactGroup, 0, len(grouped))
 	for i := range tasks {
-		if item, exists := selected[tasks[i].ID]; exists {
-			result = append(result, item)
+		if options := grouped[tasks[i].ID]; len(options) > 0 {
+			result = append(result, runReusableArtifactGroup{node: tasks[i], options: options})
 		}
 	}
 	return result, nil
+}
+
+// selectRunReusableArtifacts 解析实际沿用的制品：未指定时每个构建节点取最新一份，指定时只接受
+// 该固定版本上的可用制品，并且同一构建节点只能选一个。
+func selectRunReusableArtifacts(groups []runReusableArtifactGroup, artifactIDs []string) ([]runReusableBuildArtifact, error) {
+	if len(artifactIDs) == 0 {
+		selected := make([]runReusableBuildArtifact, 0, len(groups))
+		for i := range groups {
+			if len(groups[i].options) > 0 {
+				selected = append(selected, groups[i].options[0])
+			}
+		}
+		return selected, nil
+	}
+	index := make(map[string]runReusableBuildArtifact, len(groups))
+	for i := range groups {
+		for j := range groups[i].options {
+			index[groups[i].options[j].artifact.ID] = groups[i].options[j]
+		}
+	}
+	chosen := make(map[string]string, len(artifactIDs))
+	for _, raw := range artifactIDs {
+		artifactID := strings.TrimSpace(raw)
+		if artifactID == "" {
+			continue
+		}
+		option, ok := index[artifactID]
+		if !ok {
+			return nil, ErrRetryArtifactInvalid
+		}
+		if _, exists := chosen[option.node.ID]; exists {
+			return nil, ErrRetryArtifactInvalid
+		}
+		chosen[option.node.ID] = artifactID
+	}
+	if len(chosen) == 0 {
+		return nil, ErrRetryArtifactsUnavailable
+	}
+	selected := make([]runReusableBuildArtifact, 0, len(chosen))
+	for i := range groups {
+		artifactID, ok := chosen[groups[i].node.ID]
+		if !ok {
+			continue
+		}
+		for j := range groups[i].options {
+			if groups[i].options[j].artifact.ID == artifactID {
+				selected = append(selected, groups[i].options[j])
+				break
+			}
+		}
+	}
+	return selected, nil
 }
 
 // reusableBuildNode 在流水线中定位生产该制品的构建节点：有节点的构建记录必须与节点一致，
