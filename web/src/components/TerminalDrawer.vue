@@ -17,16 +17,28 @@ const actor = () => terminalActorContext(auth.user, typeof localStorage === 'und
 let openedContext = ''
 const stateLabel = computed(() => ({ connecting: '连接中', connected: '已连接', closed: '已结束', error: '连接失败' }[state.value]))
 async function close() { if (!fileBrowser.value || await fileBrowser.value.confirmDiscard()) emit('update:open', false) }
+// 统一规范：终端抽屉与其它弹层一样用 ESC 关闭，且与 × 走同一条关闭逻辑（含文件草稿确认）。
+// 终端自身已获得焦点时同样关闭；上层仍有弹窗（例如终端内文件编辑器）时只关闭最上层。
+function topLayerIsModal() {
+  return Array.from(document.querySelectorAll<HTMLElement>('.ant-modal-wrap')).some(element => getComputedStyle(element).display !== 'none')
+}
+function keyboard(event: KeyboardEvent) {
+  if (!props.open || event.key !== 'Escape' || event.defaultPrevented) return
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || topLayerIsModal()) return
+  event.preventDefault()
+  event.stopPropagation()
+  void close()
+}
 function resize() { mobile.value = window.innerWidth <= 700 }
 function contextChanged() { if (props.open && (openedContext !== actor() || !auth.canAny([props.permission]))) emit('update:open', false) }
 watch(() => [props.open, props.path], () => { if (props.open) { openedContext = actor(); state.value = 'connecting' } }, { immediate: true })
 watch(actor, contextChanged, { flush: 'sync' })
-onMounted(() => { resize(); window.addEventListener('resize', resize); window.addEventListener('storage', contextChanged); window.addEventListener('edo:projects-changed', contextChanged) })
-onBeforeUnmount(() => { window.removeEventListener('resize', resize); window.removeEventListener('storage', contextChanged); window.removeEventListener('edo:projects-changed', contextChanged) })
+onMounted(() => { resize(); window.addEventListener('resize', resize); window.addEventListener('storage', contextChanged); window.addEventListener('edo:projects-changed', contextChanged); window.addEventListener('keydown', keyboard, true) })
+onBeforeUnmount(() => { window.removeEventListener('resize', resize); window.removeEventListener('storage', contextChanged); window.removeEventListener('edo:projects-changed', contextChanged); window.removeEventListener('keydown', keyboard, true) })
 </script>
 
 <template>
-  <SessionPanel :open="open" :title="title" :standalone="standalone" placement="bottom" height="min(78vh, 850px)" class="terminal-drawer" :class="{ standalone }" :mask-closable="false" :keyboard="false" :body-style="{ padding: 0 }" @close="close">
+  <SessionPanel :open="open" :title="title" :standalone="standalone" placement="bottom" height="min(78vh, 850px)" class="terminal-drawer" :class="{ standalone }" :mask-closable="false" :body-style="{ padding: 0 }" @close="close">
     <template #extra><span class="terminal-connection" :class="state" role="status"><i />{{ stateLabel }}</span><button v-if="canFiles" type="button" class="terminal-files-toggle" :aria-pressed="showFiles" @click="showFiles = !showFiles"><Folder :size="15" />文件</button><SessionPopoutLink v-if="!standalone" kind="terminal" :path="path" :title="title" :source-deployment-i-d="sourceDeploymentID" /></template>
     <div v-if="open" class="container-terminal-workspace" :class="{ 'files-shown': showFiles && canFiles }">
       <TerminalFileBrowser v-if="canFiles" v-show="showFiles" ref="fileBrowser" :key="path" :path="path" />

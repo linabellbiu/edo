@@ -5,8 +5,8 @@ import { test } from 'node:test'
 import { parse } from '@vue/compiler-sfc'
 
 // 交互一致性：弹窗 / 抽屉的 ESC 与关闭按钮、遮罩使用同一阻断条件。
-// 例外只有终端输入面（ESC 属于 shell），在下方 allowlist 中明确列出。
-const keyboardOffAllowlist = new Set(['TerminalDrawer.vue'])
+// 终端抽屉不再例外：ESC 与 × 走同一条 close()。
+const keyboardOffAllowlist = new Set()
 const root = new URL('../src/', import.meta.url)
 
 function vueFiles(dir) {
@@ -52,8 +52,13 @@ test('弹窗与抽屉的 ESC 关闭与关闭按钮、遮罩使用同一阻断条
   assert.deepEqual(violations, [])
 })
 
-test('终端输入面保留 ESC 给 shell，其余弹层默认可用 ESC 关闭', () => {
+test('终端抽屉用 ESC 关闭，并与关闭按钮共用同一 close 逻辑', () => {
   const terminal = readFileSync(new URL('../src/components/TerminalDrawer.vue', import.meta.url), 'utf8')
-  assert.match(terminal, /:keyboard="false"/)
-  assert.ok(keyboardOffAllowlist.has('TerminalDrawer.vue'))
+  assert.doesNotMatch(terminal, /:keyboard="false"/, '终端抽屉不再禁用 ESC')
+  assert.match(terminal, /window\.addEventListener\('keydown', keyboard, true\)/, '需要键盘级监听，焦点在终端内也能关闭')
+  assert.match(terminal, /window\.removeEventListener\('keydown', keyboard, true\)/, '卸载时必须释放监听')
+  assert.match(terminal, /event\.key !== 'Escape'/)
+  assert.match(terminal, /topLayerIsModal\(\)/, '上层弹窗（终端内文件编辑器）必须先处理 ESC')
+  assert.match(terminal, /event\.preventDefault\(\)[\s\S]{0,80}void close\(\)/, 'ESC 与 × / 取消共用 close()，保留草稿确认')
+  assert.match(terminal, /@close="close"/, '抽屉自身的关闭事件仍走 close()')
 })
