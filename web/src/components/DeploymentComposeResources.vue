@@ -103,5 +103,5 @@ onBeforeUnmount(() => { disposed = true; reset() })
 </template>
 
 <style scoped>
-.compose-resource-summary{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:12px;font-size:13px}.compose-resource-permission{margin:8px 0;color:var(--edo-muted);font-size:13px}
+.compose-resource-summary{display:flex;flex-wrap:wrap;gap:8px 24px;margin:12px 0 8px;font-size:13px}.compose-resource-permission{margin:8px 0;color:var(--edo-muted);font-size:13px}
 </style>
