@@ -24,19 +24,22 @@ for(const [label,method,code,item] of [
   })
 }
 
-function logs(t) {
+async function logs(t) {
   const pending=[],unmount=[]
+  const auth={authorizationState:'ready',user:{id:'operator',permissions:['monitor.read']},canAny:codes=>codes.includes('monitor.read')}
   const h=componentHarness('../src/views/LogsView.vue',{
-    modules:{vue:{...vue,onMounted(){},onBeforeUnmount:callback=>unmount.push(callback)}},
+    modules:{vue:{...vue,onBeforeUnmount:callback=>unmount.push(callback)},'@/stores/auth':{useAuthStore:()=>auth}},
     api:{get:(_path,options)=>new Promise((resolve,reject)=>pending.push({options,resolve:data=>resolve({data}),reject}))},
   })
   t.after(h.stop)
+  pending.shift().resolve({items:[],next_before_id:0,has_more:false})
+  await new Promise(resolve=>setImmediate(resolve))
   return {...h,pending,unmount}
 }
 const response=(id,hasMore=false)=>({items:[{id,message:`日志${id}`}],next_before_id:id,has_more:hasMore})
 
 test('日志新筛选先返回后，旧成功响应不得覆盖列表和游标，并取消旧请求',async t=>{
-  const h=logs(t)
+  const h=await logs(t)
   h.state.query.value='old';const old=h.state.load(false)
   h.state.query.value='new';const current=h.state.load(false)
   h.pending[1].resolve(response(20,true));await current
@@ -47,30 +50,30 @@ test('日志新筛选先返回后，旧成功响应不得覆盖列表和游标�
 })
 
 test('旧日志错误和finally不得提示过时错误或结束仍在进行的新查询loading',async t=>{
-  const h=logs(t)
+  const h=await logs(t)
   h.state.query.value='old';const old=h.state.load(false)
   h.state.query.value='new';const current=h.state.load(false)
   h.pending[0].reject(new Error('过时查询失败'));await old
-  const oldNotifications=[...h.notifications],newStillLoading=h.state.loading.value
+  const oldError=h.state.error.value,newStillLoading=h.state.loading.value
   h.pending[1].resolve(response(20));await current
-  assert.deepEqual(oldNotifications,[])
+  assert.equal(oldError,'')
   assert.equal(newStillLoading,true)
   assert.equal(h.state.loading.value,false);assert.deepEqual(h.state.items.value.map(item=>item.id),[20])
 })
 
 test('新日志查询失败后，迟到旧错误不能替换新错误或清空原有结果',async t=>{
-  const h=logs(t)
+  const h=await logs(t)
   h.state.items.value=response(5).items
   const old=h.state.load(false),current=h.state.load(false)
   h.pending[1].reject(new Error('新查询失败'));await current
   h.pending[0].reject(new Error('过时查询失败'));await old
-  assert.deepEqual(h.notifications,[{kind:'error',value:'新查询失败'}])
+  assert.equal(h.state.error.value,'新查询失败')
   assert.deepEqual(h.state.items.value.map(item=>item.id),[5])
   assert.equal(h.state.loading.value,false)
 })
 
 test('追加旧日志时切换筛选，新请求接管loading且旧页不得混入新结果',async t=>{
-  const h=logs(t)
+  const h=await logs(t)
   h.state.items.value=response(30,true).items;h.state.nextBeforeID.value=30;h.state.hasMore.value=true
   const older=h.state.load(true)
   assert.equal(h.pending[0].options.params.before_id,30)
@@ -84,7 +87,7 @@ test('追加旧日志时切换筛选，新请求接管loading且旧页不得混�
 })
 
 test('日志加载更早记录防止重复并发，首屏刷新期间不能追加旧游标',async t=>{
-  const h=logs(t)
+  const h=await logs(t)
   h.state.nextBeforeID.value=30;h.state.hasMore.value=true
   const first=h.state.load(true),duplicate=h.state.load(true)
   const appendRequests=h.pending.length
@@ -100,20 +103,20 @@ test('日志加载更早记录防止重复并发，首屏刷新期间不能追�
 })
 
 test('日志当前请求失败仍提示错误并保留已有结果，之后可以重试',async t=>{
-  const h=logs(t)
+  const h=await logs(t)
   h.state.items.value=response(10).items
   const failed=h.state.load(false)
   h.pending[0].reject(new Error('当前日志暂不可用'));await failed
-  assert.deepEqual(h.notifications,[{kind:'error',value:'当前日志暂不可用'}])
+  assert.equal(h.state.error.value,'当前日志暂不可用')
   assert.deepEqual(h.state.items.value.map(item=>item.id),[10]);assert.equal(h.state.loading.value,false)
   const retry=h.state.load(false)
   h.pending[1].resolve(response(20));await retry
-  assert.deepEqual(h.state.items.value.map(item=>item.id),[20])
+  assert.deepEqual(h.state.items.value.map(item=>item.id),[20]);assert.equal(h.state.error.value,'')
 })
 
 test('日志离开页面取消读取，迟到成功或失败均不改写页面或提示错误',async t=>{
   for(const reject of [false,true]) {
-    const h=logs(t)
+    const h=await logs(t)
     const pending=h.state.load(false)
     h.unmount.forEach(callback=>callback())
     if(reject)h.pending[0].reject(new Error('离开后的旧错误'))
@@ -126,6 +129,6 @@ test('日志离开页面取消读取，迟到成功或失败均不改写页面�
     assert.equal(h.unmount.length,1)
     assert.equal(h.pending[0].options.signal?.aborted,true)
     assert.equal(h.pending.length,requestsBeforeRetry)
-    assert.deepEqual(h.state.items.value,[]);assert.deepEqual(h.notifications,[])
+    assert.deepEqual(h.state.items.value,[]);assert.equal(h.state.error.value,'')
   }
 })

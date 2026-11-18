@@ -41,6 +41,9 @@ function harness(t) {
     vue: {...vue, onBeforeUnmount: callback => { beforeUnmount = callback }},
     '@/api/client': {default: {get: async () => ({data: {logs: [], status: 'succeeded', next_after_id: 0}})}},
     '@/utils/liveSocket': {openLiveSocket: () => () => {}},
+    '@/utils/pipelineLogHighlight': {highlightPipelineLogs: logs => logs},
+    '@/components/SessionPanel.vue': {default: {}},
+    '@/components/SessionPopoutLink.vue': {default: {}},
   }
   const module = {exports: {}}
   new Function('require', 'module', 'exports', 'document', 'HTMLElement', compiled)(
@@ -67,9 +70,13 @@ function harness(t) {
 }
 
 test('日志抽屉使用公共关闭完成事件恢复焦点，不改变全站控件', () => {
-  const drawer = descriptor.template.ast.children.find(node => node.tag === 'a-drawer')
+  const drawer = descriptor.template.ast.children.find(node => node.tag === 'SessionPanel')
   assert.ok(drawer.props.some(prop => prop.type === 7 && prop.name === 'on' && prop.arg?.content === 'after-open-change' && prop.exp?.content === 'afterOpenChange'))
   assert.ok(drawer.props.some(prop => prop.name === 'root-class-name' && prop.value?.content === 'pipeline-log-drawer'))
+  const panel = parse(readFileSync(new URL('../src/components/SessionPanel.vue', import.meta.url), 'utf8')).descriptor
+  const nativeDrawer = panel.template.ast.children.find(node => node.tag === 'a-drawer')
+  assert.ok(nativeDrawer.props.some(prop => prop.name === 'on' && prop.arg?.content === 'after-open-change' && prop.exp?.content === "emit('after-open-change', $event)"))
+  assert.ok(nativeDrawer.props.some(prop => prop.name === 'bind' && !prop.arg && prop.exp?.content === 'attrs'))
 })
 
 test('正常键盘关闭后回到原按钮，且不滚动页面', async t => {

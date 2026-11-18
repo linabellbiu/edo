@@ -120,7 +120,8 @@ test('登录方式保存失败保留表单，启停只提交状态而不带密�
 
 test('系统日志首屏替换与历史追加使用正确游标和筛选，错误保留已有结果',async t=>{
   let calls=0
-  const h=harness(t,'../src/views/LogsView.vue',{api:{get:async()=>{calls++;if(calls===3)throw new Error('日志暂不可用');return {data:{items:[{id:3-calls,message:'日志'+calls}],next_before_id:3-calls,has_more:true}}}},modules:{vue:{...vue,onMounted(){},onBeforeUnmount(){},watch(){}}}})
+  const auth={authorizationState:'ready',user:{id:'operator',permissions:['monitor.read']},canAny:codes=>codes.includes('monitor.read')}
+  const h=harness(t,'../src/views/LogsView.vue',{api:{get:async()=>{calls++;if(calls===3)throw new Error('日志暂不可用');return {data:{items:[{id:3-calls,message:'日志'+calls}],next_before_id:3-calls,has_more:true}}}},modules:{vue:{...vue,onBeforeUnmount(){},watch(){}},'@/stores/auth':{useAuthStore:()=>auth}}})
   h.state.level.value='warn';h.state.query.value='pipeline';await h.state.load(false)
   await h.state.load(true)
   assert.equal(h.requests[0].body.params.limit,100);assert.equal(h.requests[0].body.params.level,'warn');assert.equal(h.requests[0].body.params.query,'pipeline')
@@ -128,6 +129,7 @@ test('系统日志首屏替换与历史追加使用正确游标和筛选，错�
   assert.deepEqual(h.state.items.value.map(item=>item.id),[2,1])
   await h.state.load(false)
   assert.deepEqual(h.state.items.value.map(item=>item.id),[2,1]);assert.equal(h.state.loading.value,false)
+  assert.equal(h.state.error.value,'日志暂不可用')
 })
 
 test('任务取消和幂等重试调用准确任务接口，失败不会显示成功或清空列表',async t=>{
