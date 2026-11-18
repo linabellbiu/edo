@@ -3,11 +3,12 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import ts from 'typescript'
 import {v5 as uuidv5} from 'uuid'
-import {selectCurrentDeploymentInstances} from '../src/utils/deploymentInstances.ts'
+import {deploymentHostNodeID,kubernetesInstancePlan,selectCurrentDeploymentInstances,selectLatestFailedDeploymentAttempts,workflowDeploymentIDs} from '../src/utils/deploymentInstances.ts'
 const source=readFileSync(new URL('../src/views/DevOpsView.vue',import.meta.url),'utf8')
 const code=source.slice(source.indexOf('function applicationInstanceScope('),source.indexOf('\nfunction currentApplicationDeployments('))
 const transpiled=ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText
-const scope=(app,records,plans=[])=>new Function('uuidv5','deploymentPlans','deployments',transpiled+';return applicationInstanceScope(arguments[3])')(uuidv5,{value:plans},{value:records},app)
+const getScope=new Function('deploymentHostNodeID','workflowDeploymentIDs','kubernetesInstancePlan','deploymentPlans','deployments','app',transpiled+';return applicationInstanceScope(app)')
+const scope=(app,records,plans=[])=>getScope(deploymentHostNodeID,workflowDeploymentIDs,kubernetesInstancePlan,{value:plans},{value:records},app)
 const workflowID='workflow-a',nodeID='deploy-a',base=`edo.workflow.deployment:${workflowID}:${nodeID}`
 const plan=uuidv5(base+':plan','6ba7b812-9dad-11d1-80b4-00c04fd430c8'),target=uuidv5(base+':target','6ba7b812-9dad-11d1-80b4-00c04fd430c8')
 const app={id:'app-a',workflows:[{id:workflowID,stages:[{tasks:[{id:nodeID,type:'deploy',config:{inline_deployment_plan:{kind:'script',deployment_target:{environment_id:'edited-but-not-deployed'}}}}]}]}]}
@@ -66,4 +67,39 @@ test('库方案每台主机使用独立目标，共享方案 ID 不能丢掉其�
  assert.deepEqual(instances(configured,records,[{...library,deployment_target:{...libraryTarget,host_ids:[]}}]),[])
  assert.deepEqual(instances(configured,records,[]),[])
  assert.deepEqual(instances(configured,records,[{...library,deployment_target:{...libraryTarget,environment_id:'changed'}}]),[])
+})
+
+const kubeTarget={platform:'kubernetes',runtime_id:'cluster-a',namespace:'test',workload_name:'api',container_name:'app'}
+const kubePlan={id:'kube-template',kind:'kubernetes'}
+const kubeApp=(override,taskID=nodeID)=>({...app,workflows:[{id:workflowID,stages:[{tasks:[{id:taskID,type:'deploy',config:{deployment_plan_id:kubePlan.id,deployment_override:override}}]}]}]})
+const kubeRecord={...record,...kubeTarget,host_id:'',environment_id:'',pipeline_run_id:'run',deployment_plan_kind:'kubernetes'}
+
+test('通用 Kubernetes 方案按流水线任务解析部署实例和失败记录',()=>{
+ const configured=kubeApp({plan_snapshot:{kind:'kubernetes'},deployment_target:kubeTarget})
+ const success={...kubeRecord,id:'kube-success'}
+ const older={...success,id:'kube-older',created_at:'2026-11-07T00:00:00Z'}
+ const failed={...success,id:'kube-failed',status:'failed',created_at:'2026-11-09T00:00:00Z'}
+ const records=[older,success,failed]
+ const {plans,ids}=scope(configured,records,[kubePlan])
+ assert.deepEqual(instances(configured,records,[kubePlan]).map(item=>item.id),['kube-success'])
+ assert.deepEqual(selectLatestFailedDeploymentAttempts(app.id,records,new Set(),ids,plans).map(item=>item.id),['kube-failed'])
+ assert.deepEqual(instances(kubeApp({deployment_target:kubeTarget},'deploy-other'),records,[kubePlan]),[])
+ assert.deepEqual(instances(configured,records,[]),[])
+ assert.deepEqual(instances(configured,[{...success,application_id:'other-app'}],[kubePlan]),[])
+ for(const changes of [{runtime_id:'old-cluster'},{namespace:'old-namespace'},{workload_name:'old-workload'},{container_name:'old-container'}]){
+  assert.deepEqual(instances(configured,[{...success,...changes}],[kubePlan]),[])
+ }
+ assert.deepEqual(instances(configured,[{...success,runtime_deleted_at:success.created_at},older],[kubePlan]),[])
+})
+
+test('Kubernetes 有固定目标时，参数覆盖沿用目标 ID，修改目标后使用本阶段 ID',()=>{
+ const fixed={...kubePlan,deployment_target:{...kubeTarget,id:'fixed-target',environment_id:'env'}}
+ const fixedRecord={...kubeRecord,environment_id:'env',target_id:'fixed-target'}
+ const snapshot={kind:'kubernetes',deployment_target_id:'fixed-target',deployment_target:{...kubeTarget,environment_id:'env'}}
+ const editedLibrary={...fixed,deployment_target:{...fixed.deployment_target,id:'edited',runtime_id:'another-cluster'}}
+ assert.equal(instances(kubeApp({plan_snapshot:snapshot,kubernetes:{}}),[{...fixedRecord,deployment_plan_id:kubePlan.id}],[editedLibrary]).length,1)
+ assert.equal(instances(kubeApp({plan_snapshot:snapshot,timeout_seconds:180}),[fixedRecord],[editedLibrary]).length,1)
+ const moved={...kubeTarget,namespace:'new-test'}
+ assert.deepEqual(instances(kubeApp({plan_snapshot:snapshot,deployment_target:moved}),[fixedRecord],[editedLibrary]),[])
+ assert.equal(instances(kubeApp({plan_snapshot:snapshot,deployment_target:moved}),[{...fixedRecord,...moved,target_id:target}],[editedLibrary]).length,1)
 })

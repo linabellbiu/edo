@@ -8,7 +8,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
 import { isAxiosError } from 'axios'
-import { v4 as uuidv4, v5 as uuidv5 } from 'uuid'
+import { v4 as uuidv4 } from 'uuid'
 import { ArrowUpRight, Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Search, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
 
 import client from '@/api/client'
@@ -42,7 +42,7 @@ import { useAuthStore } from '@/stores/auth'
 import type { GitCredential as Credential } from '@/types/credential'
 import type { PipelineExecutionGraph, Workflow as PipelineWorkflow } from '@/types/pipeline'
 import { formatGitReference } from '@/utils/gitReference'
-import { retainCurrentDeploymentState, selectCurrentDeploymentInstances, selectLatestFailedDeploymentAttempts } from '@/utils/deploymentInstances'
+import { deploymentHostNodeID, kubernetesInstancePlan, retainCurrentDeploymentState, selectCurrentDeploymentInstances, selectLatestFailedDeploymentAttempts, workflowDeploymentIDs, type InstancePlan } from '@/utils/deploymentInstances'
 import type { RollbackRecord } from '@/types/deploymentRollback'
 import type { PipelineRunApproval } from '@/types/pipelineApproval'
 import { deploymentRollbackEn, deploymentRollbackZh } from '@/locales/deploymentRollback'
@@ -396,32 +396,38 @@ const activeReleasePlanID=computed(()=>props.section==='release-plans'&&typeof r
 const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook'},{key:'is_active',label:'状态'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
 
 function applicationInstanceScope(application:Application){
- const plans:DeploymentPlan[]=[]
+ const plans:InstancePlan[]=[]
  const ids=new Set<string>()
- const namespace='6ba7b812-9dad-11d1-80b4-00c04fd430c8'
  const latest=(planID:string,targetID:string,hostID?:string)=>deployments.value.filter(record=>record.application_id===application.id&&record.deployment_plan_id===planID&&record.target_id===targetID&&record.status==='succeeded'&&(!hostID||record.host_id===hostID)).sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at))[0]
  for(const workflow of application.workflows||[])for(const stage of workflow.stages)for(const task of stage.tasks){
   if(task.type!=='deploy')continue
   if(task.config.inline_deployment_plan){
    const hostIDs=task.config.inline_deployment_plan.deployment_target?.host_ids
-   const targets=hostIDs==null?[{nodeID:task.id,hostID:undefined}]:[...new Set(hostIDs)].map(hostID=>({nodeID:uuidv5(`edo.deployment.host:${task.id}:${hostID}`,namespace),hostID}))
+   const targets=hostIDs==null?[{nodeID:task.id,hostID:undefined}]:[...new Set(hostIDs)].map(hostID=>({nodeID:deploymentHostNodeID(task.id,hostID),hostID}))
    for(const {nodeID,hostID} of targets){
-    const base=`edo.workflow.deployment:${workflow.id}:${nodeID}`
-    const planID=uuidv5(base+':plan',namespace),targetID=uuidv5(base+':target',namespace)
+    const {planID,targetID}=workflowDeploymentIDs(workflow.id,nodeID)
     ids.add(planID)
     const current=latest(planID,targetID,hostID)
-    if(current)plans.push({id:planID,kind:task.config.inline_deployment_plan.kind,deployment_target_id:targetID,deployment_target:{id:targetID,platform:current.platform,environment_id:current.environment_id,host_id:current.host_id,runtime_id:current.runtime_id,namespace:current.namespace,workload_name:current.workload_name,container_name:current.container_name} as DeploymentTarget})
+    if(current)plans.push({id:planID,kind:task.config.inline_deployment_plan.kind,deployment_target:{id:targetID,platform:current.platform,environment_id:current.environment_id,host_id:current.host_id,runtime_id:current.runtime_id,namespace:current.namespace,workload_name:current.workload_name,container_name:current.container_name}})
    }
   }else if(task.config.deployment_plan_id){
    ids.add(task.config.deployment_plan_id)
    const plan=deploymentPlans.value.find(plan=>plan.id===task.config.deployment_plan_id)
    if(!plan)continue
+   if(plan.kind==='kubernetes'||task.config.deployment_override?.plan_snapshot?.kind==='kubernetes'){
+    const effective=kubernetesInstancePlan(workflow.id,task.id,plan,task.config.deployment_override)
+    if(effective){
+     ids.add(effective.id)
+     plans.push(effective)
+    }
+    continue
+   }
    const target=plan.deployment_target
    if(target?.host_ids==null){plans.push(plan);continue}
    for(const hostID of new Set(target.host_ids)){
-    const targetID=uuidv5(`edo.deployment.host:${target.id}:${hostID}`,namespace)
+    const targetID=deploymentHostNodeID(target.id,hostID)
     const current=latest(plan.id,targetID,hostID)
-    if(current)plans.push({...plan,deployment_target_id:targetID,deployment_target:{...target,id:targetID,host_id:hostID,runtime_id:current.runtime_id}})
+    if(current)plans.push({...plan,deployment_target:{...target,id:targetID,host_id:hostID,runtime_id:current.runtime_id}})
    }
   }
  }

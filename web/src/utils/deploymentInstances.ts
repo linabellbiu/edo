@@ -1,3 +1,17 @@
+import { v5 as uuidv5 } from 'uuid'
+import type { WorkflowDeploymentOverride } from '@/types/pipeline'
+
+const oidNamespace = '6ba7b812-9dad-11d1-80b4-00c04fd430c8'
+
+export function workflowDeploymentIDs(workflowID: string, nodeID: string) {
+  const identity = `edo.workflow.deployment:${workflowID}:${nodeID}`
+  return { planID: uuidv5(identity + ':plan', oidNamespace), targetID: uuidv5(identity + ':target', oidNamespace) }
+}
+
+export function deploymentHostNodeID(nodeID: string, hostID: string) {
+  return uuidv5(`edo.deployment.host:${nodeID}:${hostID}`, oidNamespace)
+}
+
 export interface InstanceRecord {
   id: string
   application_id?: string
@@ -17,7 +31,7 @@ export interface InstanceRecord {
   created_at: string
 }
 
-interface InstancePlan {
+export interface InstancePlan {
   id: string
   kind?: string
   service_name?: string
@@ -30,6 +44,50 @@ interface InstancePlan {
     namespace?: string
     workload_name?: string
     container_name?: string
+  }
+}
+
+export function kubernetesInstancePlan(
+  workflowID: string,
+  nodeID: string,
+  plan: InstancePlan,
+  override?: WorkflowDeploymentOverride,
+): InstancePlan | undefined {
+  const snapshot = override?.plan_snapshot
+  const baseTarget = snapshot
+    ? (snapshot.deployment_target && snapshot.deployment_target_id
+        ? { ...snapshot.deployment_target, id: snapshot.deployment_target_id }
+        : undefined)
+    : plan.deployment_target
+  // 与 ResolveWorkflowLibraryPlan 一致，仅绑定快照时仍使用原方案和目标的身份。
+  const changed = override != null && (
+    [override.deployment_target, override.timeout_seconds, override.artifact_node_id,
+      override.deployment_registry_id, override.deployment_input_version, override.deployment_inputs]
+      .some(value => value != null) || Object.keys(override.kubernetes ?? {}).length > 0
+  )
+  if (baseTarget && !changed) return { ...plan, deployment_target: baseTarget }
+  const selection = override?.deployment_target ?? baseTarget
+  if (!selection) return undefined
+  const runtimeID = selection.runtime_id?.trim()
+  const namespace = selection.namespace?.trim()
+  const workloadName = selection.workload_name?.trim()
+  const containerName = selection.container_name?.trim()
+  if (!runtimeID || !namespace || !workloadName || !containerName) return undefined
+  const { planID, targetID } = workflowDeploymentIDs(workflowID, nodeID)
+  const sameTarget = baseTarget && baseTarget.runtime_id === runtimeID && baseTarget.namespace === namespace &&
+    baseTarget.workload_name === workloadName && baseTarget.container_name === containerName
+  return {
+    id: planID,
+    kind: 'kubernetes',
+    deployment_target: {
+      id: sameTarget ? baseTarget.id : targetID,
+      platform: 'kubernetes',
+      environment_id: baseTarget?.environment_id || '',
+      runtime_id: runtimeID,
+      namespace,
+      workload_name: workloadName,
+      container_name: containerName,
+    },
   }
 }
 
@@ -69,7 +127,8 @@ export function selectCurrentDeploymentInstances<T extends InstanceRecord>(
     if (record.platform !== 'ssh' && record.runtime_id !== target.runtime_id) return false
     if (plan.kind === 'compose' && plan.service_name && record.compose_service !== plan.service_name) return false
     if (plan.kind === 'kubernetes' && ((target.namespace && record.namespace !== target.namespace) ||
-      (target.workload_name && record.workload_name !== target.workload_name))) return false
+      (target.workload_name && record.workload_name !== target.workload_name) ||
+      (target.container_name && record.container_name !== target.container_name))) return false
     if (plan.kind === 'docker' && target.workload_name && record.workload_name !== target.workload_name) return false
     return true
   })
