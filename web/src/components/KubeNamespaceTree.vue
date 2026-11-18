@@ -74,7 +74,8 @@ h3{margin:0;font-size:13px;font-weight:600;color:var(--kube-text)}
 .scope-heading{display:flex;align-items:center;gap:8px;min-height:28px;padding-bottom:8px;border-bottom:1px solid var(--kube-border)}
 .scope-options{display:flex;flex-direction:column;gap:10px;min-height:0;flex:1}.scope-toggle{display:none}
 .namespace-tree-scroll{overflow:auto;min-height:100px;scrollbar-width:thin;flex:1;scroll-padding:6px}
-.namespace-cluster-row{display:flex;align-items:center;gap:6px;min-height:36px;border-radius:4px;padding:2px 3px}
+.namespace-cluster-row{display:flex;align-items:center;gap:6px;min-height:36px;border-radius:10px;padding:2px 6px}
+.namespace-tree-branch+.namespace-tree-branch{margin-top:6px}
 .namespace-cluster-row.cluster-only{padding:4px 7px}
 .namespace-tree-branch.active>.namespace-cluster-row:not(.is-disabled){background:var(--kube-selected)}
 .namespace-cluster-row.cluster-only.selected:not(.is-disabled){background:var(--kube-selected)}
@@ -93,8 +94,8 @@ h3{margin:0;font-size:13px;font-weight:600;color:var(--kube-text)}
 .namespace-cluster-name:not(:disabled):hover,.namespace-expander:not(:disabled):hover,.namespace-refresh:not(:disabled):hover{background:var(--kube-hover);color:var(--kube-link)}
 .namespace-cluster-name:disabled,.namespace-expander:disabled,.scope-toggle:disabled,.namespace-refresh:disabled{cursor:not-allowed;color:var(--kube-muted);opacity:.55}
 .namespace-cluster-name:focus-visible,.namespace-expander:focus-visible,.scope-toggle:focus-visible,.namespace-refresh:focus-visible{outline:2px solid var(--kube-focus);outline-offset:1px}
-.namespace-children{padding-left:24px;padding-top:4px}
-.namespace-tree-item{display:flex;align-items:center;min-height:34px;padding:4px 8px;border-radius:8px;color:var(--kube-muted);font-size:13px}
+.namespace-children{display:flex;flex-direction:column;gap:6px;padding:6px 0 0 24px}
+.namespace-tree-item{display:flex;align-items:center;min-height:34px;padding:5px 10px;border-radius:10px;color:var(--kube-muted);font-size:13px}
 .namespace-tree-item :deep(.ant-checkbox-wrapper)>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .namespace-tree-item:not(.selected):not(.is-disabled):hover{background:var(--kube-hover)}
 .namespace-tree-item.selected{color:var(--kube-link);background:var(--kube-selected)}
