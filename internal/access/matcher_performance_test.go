@@ -55,7 +55,7 @@ func TestAuthorizationMatcherPermissionFirstPreservesBoundaries(t *testing.T) {
 		{"个人例外允许", "exception", "application.create", "project-a", true},
 		{"其他动作的拒绝不影响当前动作", "deny-other", PermissionUserRead, "project-a", true},
 		{"没有授权的用户", "unassigned", "application.read", "project-a", false},
-		{"没有授权的动作", "reader", PermissionRepositorySecretRead, "project-a", false},
+		{"没有授权的动作", "reader", PermissionRepositoryExecute, "project-a", false},
 		{"未知权限仍被拒绝", "owner", "unknown.read", "project-a", false},
 	}
 	// 拒绝语义不能依赖策略的插入顺序。

@@ -86,34 +86,6 @@ func TestConfigurationVersionAndEnvironmentOverride(t *testing.T) {
 	}
 }
 
-func TestExternalGitWebhookSettingDefaultsOffAndUsesOptimisticVersion(t *testing.T) {
-	service := newConfigurationTestService(t)
-
-	initial, err := service.GetExternalGitWebhookSettings(context.Background())
-	if err != nil || initial.Enabled || initial.Version != 0 {
-		t.Fatalf("外部 Git Webhook 默认状态错误: settings=%+v err=%v", initial, err)
-	}
-	if enabled, err := service.ExternalGitWebhookEnabled(context.Background()); err != nil || enabled {
-		t.Fatalf("缺少设置时外部 Git Webhook 未保持关闭: enabled=%v err=%v", enabled, err)
-	}
-
-	enabled, err := service.UpdateExternalGitWebhookSettings(context.Background(), "admin", true, 0)
-	if err != nil || !enabled.Enabled || enabled.Version != 1 {
-		t.Fatalf("启用外部 Git Webhook 失败: settings=%+v err=%v", enabled, err)
-	}
-	if _, err := service.UpdateExternalGitWebhookSettings(context.Background(), "admin", false, 0); !errors.Is(err, ErrVersionConflict) {
-		t.Fatalf("过期设置版本未被拒绝: %v", err)
-	}
-	disabled, err := service.UpdateExternalGitWebhookSettings(context.Background(), "admin", false, enabled.Version)
-	if err != nil || disabled.Enabled || disabled.Version != 2 {
-		t.Fatalf("关闭外部 Git Webhook 失败: settings=%+v err=%v", disabled, err)
-	}
-	revisions, err := service.Revisions(context.Background(), externalGitWebhookConfigurationID(t, service), 10)
-	if err != nil || len(revisions) != 2 || revisions[0].Version != 2 {
-		t.Fatalf("外部 Git Webhook 设置修订记录错误: revisions=%+v err=%v", revisions, err)
-	}
-}
-
 func TestLoginLockoutSettingDefaultsOffAndUsesOptimisticVersion(t *testing.T) {
 	service := newConfigurationTestService(t)
 
@@ -238,10 +210,6 @@ func TestRuntimeDirectorySettingsUpgradeLegacyWorkspaceNameAndBuildDefault(t *te
 		settings.CacheDirectory != "data/cache" || settings.LocalArtifactDirectory != "data/artifacts" || settings.Version != 3 {
 		t.Fatalf("旧版运行目录设置兼容结果错误: %+v", settings)
 	}
-}
-
-func externalGitWebhookConfigurationID(t *testing.T, service *Service) string {
-	return systemConfigurationID(t, service, externalGitWebhookSettingKey)
 }
 
 func systemConfigurationID(t *testing.T, service *Service, key string) string {

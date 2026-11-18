@@ -53,7 +53,6 @@ func TestCreateReleasePlanExecutionAllowsConcurrentRepositoryPollStateUpdate(t *
 				}).Error
 			},
 		},
-		4,
 	)
 
 	execution, err := service.CreateReleasePlanExecution(
@@ -728,7 +727,7 @@ func setReleasePlanExecutionTestRefs(service *Service, db *gorm.DB, secrets *sec
 		db, secrets, credential.NewService(db, secrets),
 		pipelineRefLister{refs: repository.RefResult{
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
-		}}, 4,
+		}},
 	)
 }
 

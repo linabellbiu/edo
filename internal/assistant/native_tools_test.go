@@ -16,6 +16,7 @@ import (
 	"edo/internal/model"
 	"edo/internal/pipeline"
 	"edo/internal/repository"
+
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
@@ -69,7 +70,7 @@ func TestNativeWorkflowConfirmationIsOwnedIdempotentAndCreatesOnlyDraft(t *testi
 	if err := db.WithContext(ctx).Create(&repo).Error; err != nil {
 		t.Fatal(err)
 	}
-	s.deps.Pipeline = pipeline.NewService(db, repository.NewService(db, s.deps.Secrets, credential.NewService(db, s.deps.Secrets), nil, 4), s.deps.Secrets)
+	s.deps.Pipeline = pipeline.NewService(db, repository.NewService(db, s.deps.Secrets, credential.NewService(db, s.deps.Secrets), nil), s.deps.Secrets)
 	conversation, err := s.CreateConversation(ctx, user, "")
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +139,7 @@ func TestNativeEinoPlansFromCatalogWithoutWritingConfiguration(t *testing.T) {
 	if err := db.Create(&repo).Error; err != nil {
 		t.Fatal(err)
 	}
-	s.deps.Pipeline = pipeline.NewService(db, repository.NewService(db, s.deps.Secrets, credential.NewService(db, s.deps.Secrets), nil, 4), s.deps.Secrets)
+	s.deps.Pipeline = pipeline.NewService(db, repository.NewService(db, s.deps.Secrets, credential.NewService(db, s.deps.Secrets), nil), s.deps.Secrets)
 	conversation, err := s.CreateConversation(ctx, user, "")
 	if err != nil {
 		t.Fatal(err)

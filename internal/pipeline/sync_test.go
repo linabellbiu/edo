@@ -33,7 +33,7 @@ func (l pipelineRefLister) ListRefs(context.Context, model.GitRepository, string
 func TestSyncFailureKeepsSafeMessageAndPreservesPollingCursor(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
 	lister := &pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: "first-commit"}}}}
-	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
+	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "poll_recovery")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
 		t.Fatal(err)
@@ -139,8 +139,8 @@ func TestSyncApplicationPreservesReliablePullRequestsDuringPartialAPIResults(t *
 		pipelineRefLister: pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: sha("c")}}}},
 		client:            repository.NewGitClient(config.Git{Timeout: time.Second}),
 	}
-	repositories := repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
-	if _, _, err := repositories.Update(context.Background(), "admin", repositoryID, repository.Input{
+	repositories := repository.NewService(db, secrets, credential.NewService(db, secrets), lister)
+	if _, err := repositories.Update(context.Background(), "admin", repositoryID, repository.Input{
 		Name: "partial-pr-api", Provider: model.GitProviderGitee, CloneURL: server.URL + "/team/app.git",
 		DefaultBranch: "main", AuthType: model.GitAuthNone, AllowInsecureHTTP: true,
 	}); err != nil {
@@ -223,7 +223,6 @@ func TestSyncApplicationPollsPushNodeWithoutWebhook(t *testing.T) {
 		pipelineRefLister{refs: repository.RefResult{
 			Branches: []repository.GitRef{{Name: "test", SHA: "test-commit"}},
 		}},
-		4,
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "event_trigger_app")
 	workflow, err := service.GetWorkflow(context.Background(), application.ID)
@@ -262,7 +261,7 @@ func TestSyncApplicationAutomaticallyExecutesPolledPushChange(t *testing.T) {
 		Branches: []repository.GitRef{{Name: "main", SHA: "first-commit"}},
 	}}
 	service.repositories = repository.NewService(
-		db, secrets, credential.NewService(db, secrets), lister, 4,
+		db, secrets, credential.NewService(db, secrets), lister,
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "scheduled_branch_check")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
@@ -308,7 +307,7 @@ func TestSyncApplicationPollsEachMatchingWorkflowIndependently(t *testing.T) {
 		Branches: []repository.GitRef{{Name: "main", SHA: "baseline-commit"}},
 	}}
 	service.repositories = repository.NewService(
-		db, secrets, credential.NewService(db, secrets), lister, 4,
+		db, secrets, credential.NewService(db, secrets), lister,
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "multi_workflow_poll")
 	first := application.Workflow
@@ -368,7 +367,6 @@ func TestSyncApplicationAcceptsReadableRepositoryWithoutMatchingRef(t *testing.T
 		pipelineRefLister{refs: repository.RefResult{
 			Branches: []repository.GitRef{{Name: "main", SHA: "main-commit"}},
 		}},
-		4,
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "branch_not_created")
 	workflow, err := service.GetWorkflow(context.Background(), application.ID)
@@ -412,7 +410,7 @@ func TestSyncApplicationPollsEveryConfiguredCustomRef(t *testing.T) {
 		}},
 	}}
 	service.repositories = repository.NewService(
-		db, secrets, credential.NewService(db, secrets), lister, 4,
+		db, secrets, credential.NewService(db, secrets), lister,
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "custom_branch_poll")
 	var workflow model.ReleaseWorkflow
@@ -489,7 +487,7 @@ func TestSyncApplicationDetectsMergedPullRequestWithoutHistoricalReplay(t *testi
 			{Number: 12, Ref: "refs/pull/12/head", SHA: "merge-12", SourceBranch: "feature/payment", TargetBranch: "main", State: "open", Action: "opened"},
 		},
 	}}
-	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
+	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "pr_merge_poll")
 	var workflow model.ReleaseWorkflow
 	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {
@@ -553,7 +551,7 @@ func TestSyncApplicationDeduplicatesMergedPullRequestAndTargetPush(t *testing.T)
 			SourceBranch: "feature/payment", TargetBranch: "main", State: "open", Action: "opened",
 		}},
 	}}
-	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
+	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "pr_push_dedup")
 	var workflow model.ReleaseWorkflow
 	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {
@@ -605,7 +603,7 @@ func TestSyncApplicationContinuesPushAndTagWhenPullRequestAPIFails(t *testing.T)
 			SourceBranch: "feature/private", TargetBranch: "main", State: "open", Action: "opened",
 		}},
 	}}
-	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
+	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "pr_api_partial_failure")
 	var workflow model.ReleaseWorkflow
 	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {
@@ -669,7 +667,7 @@ func TestSyncApplicationMarksPullRequestOnlyFailureWithoutGuessingBranches(t *te
 		},
 		pullRequestErr: errors.New("provider API unavailable"),
 	}
-	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
+	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "pr_api_total_failure")
 	var workflow model.ReleaseWorkflow
 	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {

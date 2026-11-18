@@ -145,7 +145,7 @@ async function create(client, id, path, body, key, project) {
   return resourceID;
 }
 const ownName = (label) => `${manifest.prefix}-${label}`;
-const repositoryBody = (label) => ({ name: ownName(label), provider: 'generic', clone_url: `https://example.invalid/${manifest.prefix}/${label}.git`, default_branch: 'main', auth_type: 'none', webhook_enabled: false });
+const repositoryBody = (label) => ({ name: ownName(label), provider: 'generic', clone_url: `https://example.invalid/${manifest.prefix}/${label}.git`, default_branch: 'main', auth_type: 'none' });
 const environmentBody = (label) => ({ name: ownName(label), description: manifest.prefix, host_ids: [] });
 const variableBody = (name, value = randomBytes(16).toString('hex'), isSecret = false) => ({ name, description: manifest.prefix, kind: 'env', usage: 'build', value, is_secret: isSecret, is_active: true, protected_refs: [] });
 

@@ -63,10 +63,6 @@ func (c *GitClient) CachedCommitAuthorAt(ctx context.Context, directory, commitS
 	return commitSubject(commit.Author.Name), nil
 }
 
-type cachedTagCommitClient interface {
-	ResolveTagCommitCachedAt(context.Context, model.GitRepository, string, string, string, string) (string, error)
-}
-
 // CommitMessageCachedAt 与检出复用同一落盘对象库；调用方负责持有对应仓库缓存锁。
 func (c *GitClient) CommitMessageCachedAt(ctx context.Context, repository model.GitRepository, credential, ref, commitSHA, directory string, historical bool) (string, error) {
 	depth := 1
@@ -82,18 +78,6 @@ func (c *GitClient) commitMessageCachedAt(ctx context.Context, repository model.
 		return "", err
 	}
 	return commitSubject(commit.Message), nil
-}
-
-// ResolveTagCommitCachedAt 只解析事件携带的固定对象，不以 Tag 当前指向代替。
-func (c *GitClient) ResolveTagCommitCachedAt(ctx context.Context, repository model.GitRepository, credential, ref, objectSHA, directory string) (string, error) {
-	if !plumbing.ReferenceName(strings.TrimSpace(ref)).IsTag() {
-		return "", errors.New("Git Tag 引用格式无效")
-	}
-	commit, err := c.fixedCommitCachedAt(ctx, repository, credential, ref, objectSHA, directory, 1)
-	if err != nil {
-		return "", err
-	}
-	return commit.Hash.String(), nil
 }
 
 func (c *GitClient) fixedCommitCachedAt(ctx context.Context, repository model.GitRepository, credential, ref, commitSHA, directory string, depth int) (*object.Commit, error) {

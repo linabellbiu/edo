@@ -480,7 +480,7 @@ func newBuildExecutorTestRun(
 	t.Helper()
 	service, db, secrets, repositoryID := newPipelineTestService(t)
 	service.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
-	service.repositories = repository.NewService(db, secrets, nil, buildExecutorCheckoutStub{files: checkoutFiles}, 4)
+	service.repositories = repository.NewService(db, secrets, nil, buildExecutorCheckoutStub{files: checkoutFiles})
 	artifactService, err := artifact.NewService(db, t.TempDir(), 32*1024*1024, service.logger)
 	if err != nil {
 		t.Fatalf("初始化构建制品存储失败: %v", err)

@@ -39,7 +39,7 @@ func lockRepositoryMutation(tx *gorm.DB, expected *model.GitRepository) error {
 	}
 	if current.CloneURL != expected.CloneURL || current.Provider != expected.Provider || current.AuthType != expected.AuthType ||
 		current.Username != expected.Username || current.CredentialCiphertext != expected.CredentialCiphertext ||
-		current.AllowInsecureHTTP != expected.AllowInsecureHTTP || current.WebhookEnabled != expected.WebhookEnabled || current.WebhookSecretCiphertext != expected.WebhookSecretCiphertext ||
+		current.AllowInsecureHTTP != expected.AllowInsecureHTTP ||
 		referenceValue(current.CredentialID) != referenceValue(expected.CredentialID) || referenceValue(current.APICredentialID) != referenceValue(expected.APICredentialID) {
 		return ErrRepositoryChanged
 	}

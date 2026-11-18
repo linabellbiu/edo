@@ -10,7 +10,6 @@ export interface ResourceColumn {
   label: string
   width?: string
   sortable?: boolean
-  detailOnly?: boolean
 }
 
 const props = withDefaults(defineProps<{
@@ -30,7 +29,6 @@ const props = withDefaults(defineProps<{
 }>(), { loading: false, emptyText: '暂无数据', rowKey: 'id', details: true, pagination: true })
 const emit = defineEmits<{ 'update:currentPage': [page:number]; 'update:rowsPerPage': [size:number]; sort: [key:string] }>()
 const { t } = useI18n()
-const listColumns = computed(() => props.columns.filter(column => !column.detailOnly))
 const current = ref(1), pageSize = ref(10), detailID = ref(''), detailOpen = ref(false)
 const scrollContainer = ref<HTMLDivElement | null>(null), tableElement = ref<HTMLTableElement | null>(null)
 const hasRightOverflow = ref(false)
@@ -84,11 +82,11 @@ function displayValue(value: unknown): string {
       <div v-if="rows.length === 0&&!keepHeader" class="empty-panel"><slot name="empty"><a-empty :description="emptyText" /></slot></div>
       <div v-else ref="scrollContainer" class="table-scroll" :class="{ 'has-right-overflow': hasRightOverflow }" @scroll.passive="syncRightOverflow">
         <table ref="tableElement" class="resource-table">
-          <thead><tr><th v-for="column in listColumns" :key="column.key" :style="{ width: column.width }" :aria-sort="column.sortable?(sortKey===column.key?(sortOrder==='desc'?'descending':'ascending'):'none'):undefined"><button v-if="column.sortable" class="column-sort" :aria-label="`${column.label} · ${t('resourceList.sort')}`" @click="emit('sort',column.key)">{{ column.label }}<span aria-hidden="true">{{ sortKey===column.key?(sortOrder==='desc'?'↓':'↑'):'↕' }}</span></button><template v-else>{{ column.label }}</template></th><th v-if="$slots.actions || details" class="table-action-heading">{{ t('planList.actions') }}</th></tr></thead>
+          <thead><tr><th v-for="column in columns" :key="column.key" :style="{ width: column.width }" :aria-sort="column.sortable?(sortKey===column.key?(sortOrder==='desc'?'descending':'ascending'):'none'):undefined"><button v-if="column.sortable" class="column-sort" :aria-label="`${column.label} · ${t('resourceList.sort')}`" @click="emit('sort',column.key)">{{ column.label }}<span aria-hidden="true">{{ sortKey===column.key?(sortOrder==='desc'?'↓':'↑'):'↕' }}</span></button><template v-else>{{ column.label }}</template></th><th v-if="$slots.actions || details" class="table-action-heading">{{ t('planList.actions') }}</th></tr></thead>
           <tbody>
-            <tr v-if="!rows.length"><td :colspan="listColumns.length+($slots.actions||details?1:0)" class="table-empty-cell"><slot name="empty"><a-empty :description="emptyText" /></slot></td></tr>
+            <tr v-if="!rows.length"><td :colspan="columns.length+($slots.actions||details?1:0)" class="table-empty-cell"><slot name="empty"><a-empty :description="emptyText" /></slot></td></tr>
             <tr v-for="(row, index) in visibleRows" :key="keyOf(row,index)" :data-resource-key="keyOf(row,index)" :class="{ active: (activeRowKey && keyOf(row,index) === activeRowKey) || (detailOpen && selected === row) }">
-              <td v-for="column in listColumns" :key="column.key">
+              <td v-for="column in columns" :key="column.key">
                 <slot :name="`cell-${column.key}`" :row="row" :value="row[column.key]">
                   <a-tag v-if="typeof row[column.key] === 'boolean'" :color="row[column.key] ? 'success' : 'default'">{{ row[column.key] ? '启用' : '停用' }}</a-tag>
                   <code v-else-if="typeof row[column.key] === 'object' && row[column.key] !== null" v-copy-full-text class="json-cell">{{ displayValue(row[column.key]) }}</code>

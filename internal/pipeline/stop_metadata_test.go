@@ -43,7 +43,7 @@ func TestStopResponseMetadataDoesNotHoldPipelineSchedulingLock(t *testing.T) {
 			var releaseOnce sync.Once
 			release := func() { releaseOnce.Do(func() { close(client.release) }) }
 			defer release()
-			service.repositories = repository.NewService(db, service.secrets, nil, client, 4)
+			service.repositories = repository.NewService(db, service.secrets, nil, client)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			done := make(chan error, 1)

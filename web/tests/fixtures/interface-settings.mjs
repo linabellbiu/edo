@@ -23,7 +23,7 @@ client.defaults.adapter=async config=>{
    saved={enabled:body.enabled,version:saved.version+1};sessionStorage.setItem(key,JSON.stringify(saved))
   }
   data={...saved}
- }else if(method==='get')data=({'/projects':{projects:[{id:project,name:'界面验收项目',is_active:true}]},'/assistant/status':{enabled:false,configured:false},'/settings/external-git-webhook':{enabled:false,version:0,providers:[],events:[]},'/settings/login-lockout':{enabled:false,version:0,max_failures:5,window_seconds:300},'/settings/runtime-logging':{level:'info',http_access_enabled:false,version:0},'/settings/log-retention':{enabled:false,version:0,pipeline_log_days:30,audit_log_days:90},'/settings/runtime-directories':{workspace_directory:'/tmp/workspace',build_directory:'/tmp/build',cache_directory:'/tmp/cache',local_artifact_directory:'/tmp/artifacts',version:0}})[path]
+ }else if(method==='get')data=({'/projects':{projects:[{id:project,name:'界面验收项目',is_active:true}]},'/assistant/status':{enabled:false,configured:false},'/settings/login-lockout':{enabled:false,version:0,max_failures:5,window_seconds:300},'/settings/runtime-logging':{level:'info',http_access_enabled:false,version:0},'/settings/log-retention':{enabled:false,version:0,pipeline_log_days:30,audit_log_days:90},'/settings/runtime-directories':{workspace_directory:'/tmp/workspace',build_directory:'/tmp/build',cache_directory:'/tmp/cache',local_artifact_directory:'/tmp/artifacts',version:0}})[path]
  if(!data)throw Error(`未登记的合成接口 ${method} ${path}`)
  return {data,status:200,statusText:'OK',headers:{},config}
 }

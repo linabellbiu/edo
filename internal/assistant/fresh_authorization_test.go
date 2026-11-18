@@ -154,7 +154,7 @@ func TestAssistantNativeConfirmationRejectsRevokedWriteBeforePolicyReload(t *tes
 			input := operationInput{Kind: "workflow_create", Workflow: &pipeline.AssistantWorkflowInput{ApplicationName: "fresh_workflow_app", RepositoryID: newID(), Name: "新建草稿", Preset: "blank", Branch: "main", Events: []string{"manual"}}}
 			permissions := operationPermissions(input)
 			f := newFreshAssistantFixture(t, permissions[1:]...)
-			f.service.deps.Pipeline = pipeline.NewService(f.db, repository.NewService(f.db, f.service.deps.Secrets, credential.NewService(f.db, f.service.deps.Secrets), nil, 4), f.service.deps.Secrets)
+			f.service.deps.Pipeline = pipeline.NewService(f.db, repository.NewService(f.db, f.service.deps.Secrets, credential.NewService(f.db, f.service.deps.Secrets), nil), f.service.deps.Secrets)
 			scope, _ := database.DepartmentScopeFromContext(f.ctx)
 			repo := model.GitRepository{ID: input.Workflow.RepositoryID, Name: "助手仓库", CloneURL: "https://example.invalid/app.git", IsActive: true, DepartmentID: scope.DepartmentID, ProjectID: scope.ProjectID}
 			if err := f.db.Create(&repo).Error; err != nil {

@@ -59,7 +59,7 @@ func TestBuildSecretHTTPPersistsOnlyVersionReferencesAndSafeAudit(t *testing.T) 
 		t.Fatal(err)
 	}
 	f.pipelines.ConfigureDeliveryAccess(permissions)
-	repo, _, err := f.repositories.Create(context.Background(), "admin", repository.Input{
+	repo, err := f.repositories.Create(context.Background(), "admin", repository.Input{
 		Name: "构建密钥持久化测试仓库", Provider: model.GitProviderGeneric,
 		CloneURL: "https://example.invalid/build-secret-fixture.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
 	})

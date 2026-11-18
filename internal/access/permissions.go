@@ -42,12 +42,11 @@ const (
 	PermissionIdentityCreate = "identity.create"
 	PermissionIdentityUpdate = "identity.update"
 
-	PermissionRepositoryRead       = "repository.read"
-	PermissionRepositoryCreate     = "repository.create"
-	PermissionRepositoryUpdate     = "repository.update"
-	PermissionRepositoryDelete     = "repository.delete"
-	PermissionRepositoryExecute    = "repository.execute"
-	PermissionRepositorySecretRead = "repository.secret.read"
+	PermissionRepositoryRead    = "repository.read"
+	PermissionRepositoryCreate  = "repository.create"
+	PermissionRepositoryUpdate  = "repository.update"
+	PermissionRepositoryDelete  = "repository.delete"
+	PermissionRepositoryExecute = "repository.execute"
 
 	PermissionCredentialRead       = "credential.read"
 	PermissionCredentialSecretRead = "credential.secret.read"
@@ -176,7 +175,6 @@ var catalog = append([]Permission{
 	permission(PermissionRepositoryUpdate, "代码仓库", "repository", "代码仓库", "update", "修改", "修改或启停代码仓库连接", false),
 	permission(PermissionRepositoryDelete, "代码仓库", "repository", "代码仓库", "delete", "删除", "删除代码仓库连接", true),
 	permission(PermissionRepositoryExecute, "代码仓库", "repository", "代码仓库操作", "execute", "执行", "测试代码仓库连接或触发同步", true),
-	permission(PermissionRepositorySecretRead, "代码仓库", "repository", "代码仓库 Webhook 密钥", "read_secret", "查看密钥", "查看 Webhook 回调地址和签名密钥", true),
 
 	permission(PermissionCredentialRead, "个人令牌", "credential", "个人 Git 令牌", "read", "查看", "查看本人保存的 Git 令牌", false),
 	permission(PermissionCredentialSecretRead, "个人令牌", "credential", "个人 Git 令牌原文", "read_secret", "查看密钥", "查看本人保存的 Git 令牌或 SSH 私钥原文并记录审计", true),

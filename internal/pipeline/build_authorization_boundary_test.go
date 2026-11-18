@@ -39,7 +39,7 @@ func TestPipelineRechecksExecutionAuthorizationAfterCheckout(t *testing.T) {
 						revoked = true
 						return revokeBuildBoundaryAuthority(db, run, change)
 					},
-				}, 4)
+				})
 				calls := 0
 				service.scriptRunner = parallelScriptRunner(func(context.Context, dockerengine.ScriptContainerInput) (dockerengine.ScriptContainerResult, error) {
 					calls++

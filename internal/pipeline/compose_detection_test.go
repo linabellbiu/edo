@@ -14,10 +14,11 @@ import (
 	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/repository"
+	"time"
+
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"time"
 )
 
 type composeDetectionCheckout struct {
@@ -74,7 +75,7 @@ func TestDetectRepositoryComposeFileRootAndPriority(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, db, keys, repoID := newPipelineTestService(t)
 			checkout := &composeDetectionCheckout{files: tc.files}
-			s.repositories = repository.NewService(db, keys, credential.NewService(db, keys), checkout, 4, repository.WithCheckoutDirectory(t.TempDir()))
+			s.repositories = repository.NewService(db, keys, credential.NewService(db, keys), checkout, repository.WithCheckoutDirectory(t.TempDir()))
 			authorizeRegistryTestActors(t, s, "admin")
 			app, err := s.CreateApplication(deliveryTestContext(), "admin", ApplicationInput{Name: "compose_detect", RepositoryID: repoID})
 			if err != nil {
@@ -91,7 +92,7 @@ func TestDetectRepositoryComposeFileRootAndPriority(t *testing.T) {
 func TestDetectRepositoryComposeFileScopeRefsAndSafeFailure(t *testing.T) {
 	s, db, keys, repoID := newPipelineTestService(t)
 	checkout := &composeDetectionCheckout{files: map[string]string{"docker-compose.yaml": "private body"}}
-	s.repositories = repository.NewService(db, keys, credential.NewService(db, keys), checkout, 4, repository.WithCheckoutDirectory(t.TempDir()))
+	s.repositories = repository.NewService(db, keys, credential.NewService(db, keys), checkout, repository.WithCheckoutDirectory(t.TempDir()))
 	authorizeRegistryTestActors(t, s, "admin")
 	ctx := deliveryTestContext()
 	app, err := s.CreateApplication(ctx, "admin", ApplicationInput{Name: "compose_refs", RepositoryID: repoID})
@@ -152,7 +153,7 @@ func TestDetectRepositoryComposeFileRealGitCheckout(t *testing.T) {
 	if err := db.Model(&model.GitRepository{}).Where("uuid = ?", repoID).Update("clone_url", directory).Error; err != nil {
 		t.Fatal(err)
 	}
-	s.repositories = repository.NewService(db, keys, credential.NewService(db, keys), repository.NewGitClient(config.Git{Timeout: 10 * time.Second}), 4, repository.WithCheckoutDirectory(t.TempDir()))
+	s.repositories = repository.NewService(db, keys, credential.NewService(db, keys), repository.NewGitClient(config.Git{Timeout: 10 * time.Second}), repository.WithCheckoutDirectory(t.TempDir()))
 	authorizeRegistryTestActors(t, s, "admin")
 	app, err := s.CreateApplication(deliveryTestContext(), "admin", ApplicationInput{Name: "compose_real_git", RepositoryID: repoID})
 	if err != nil {

@@ -46,7 +46,7 @@ docker compose logs --tail 100 bootstrap migrate api web
 3. 配置测试和构建任务，选择部署方案，填好部署位置。
 4. 启用流水线，提交代码，在运行记录中查看执行过程。
 
-默认使用 Pull 模式：EDO 主动检查仓库变化，命中规则后执行流水线。仓库无需访问 EDO，放在内网也能使用；EDO 需要能访问仓库和部署目标。Webhook 可按需开启。
+默认使用 Pull 模式：EDO 主动检查仓库变化，命中规则后执行流水线。仓库无需访问 EDO，放在内网也能使用；EDO 需要能访问仓库和部署目标。
 
 应用可以发布到当前 EDO 的本地 Docker 环境，也可以发布到远程主机或 Kubernetes 集群。多个应用需要一起发布时，可以建立发布计划，选择并行或顺序执行。具体配置见[应用与交付](docs/unified-delivery.md)。
 

@@ -62,7 +62,7 @@ function configureDelivery(applicationID=''){deliveryApplicationID.value=applica
 async function deliveryCreated(result:WorkflowResponse){await refresh();await router.push({path:'/pipeline-plans/editor',query:{application:result.workflow.application_id,workflow:result.workflow.id}})}
 function consumeDeliveryRequest(){if(props.section==='applications'&&route.query.delivery_kind&&canConfigureDelivery.value)configureDelivery(typeof route.query.application==='string'?route.query.application:'')}
 
-interface Repository extends ResourceRecord{id:string;name:string;provider:string;clone_url:string;default_branch:string;webhook_enabled:boolean;webhook_url?:string;is_active:boolean;auth_type:string;username?:string;allow_insecure_http:boolean;has_credential?:boolean;credential_id?:string;api_credential_id?:string}
+interface Repository extends ResourceRecord{id:string;name:string;provider:string;clone_url:string;default_branch:string;is_active:boolean;auth_type:string;username?:string;allow_insecure_http:boolean;has_credential?:boolean;credential_id?:string;api_credential_id?:string}
 interface BuildPlan extends ResourceRecord{id:string;name:string;kind:'dockerfile'|'script';description:string;script?:string;dockerfile_path?:string;context_path:string;working_directory:string;artifact_path?:string;runtime_image?:string;image_registry_id?:string;pull:boolean;cache_enabled:boolean;build_args:Record<string,string>;environment_variables:Record<string,string>;timeout_seconds:number;is_active:boolean;created_at:string;updated_at:string;image_registry?:Registry}
 type RegistryProvider='harbor'|'docker_hub'|'generic'
 interface Registry extends ResourceRecord{id:string;name:string;provider:RegistryProvider;endpoint:string;namespace:string;has_credential:boolean;is_active:boolean}
@@ -152,7 +152,7 @@ function resetResourceStatus(){cancelResourceReads();if(resourceStatusDialog)res
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const workflowPickerOpen=ref(false)
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
-const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
+const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',allow_insecure_http:false})
 const repositoryUsesHTTP=computed(()=>/^http:\/\//i.test(repoForm.clone_url.trim()))
 const creatingApplicationRepository=ref(false)
 const credentialCreation=reactive({open:false,target:'git' as 'git'|'api',provider:'github',authType:'token' as Credential['auth_type']})
@@ -163,11 +163,6 @@ const runtimeImageOptions=['alpine:3.22','node:24-alpine','golang:1.26-alpine','
 const buildForm=reactive({name:'',kind:'dockerfile' as 'dockerfile'|'script',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',platform:'linux/amd64',pull:true,cache_enabled:true,timeout_seconds:1800})
 const registryForm=reactive({name:'',provider:'generic' as RegistryProvider,endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
 const dockerHubRegistry=computed(()=>registryForm.provider==='docker_hub')
-const repositoryWebhookAPI=computed(()=>{
- if(!formEditingID.value)return ''
- const path=repositories.value.find(item=>item.id===formEditingID.value)?.webhook_url||`/api/v1/webhooks/git/${formEditingID.value}`
- return new URL(path,window.location.origin).toString()
-})
 const selectedBuildRegistry=computed(()=>registries.value.find(item=>item.id===buildForm.image_registry_id))
 const buildImagePathPreview=computed(()=>{
  const registry=selectedBuildRegistry.value
@@ -175,7 +170,7 @@ const buildImagePathPreview=computed(()=>{
  const namespace=(registry?.namespace||'[命名空间]').replace(/^\/+|\/+$/g,'')
  return `${endpoint}/${namespace}/[应用名]:[版本标签]`
 })
-const copy:Record<Section,{description:string}>={applications:{description:'创建应用，关联仓库并配置流水线。'},repositories:{description:'管理代码仓库、Git 凭据和 Webhook。'},'build-plans':{description:'保存可复用的 Dockerfile 或脚本构建配置。'},'image-registries':{description:'管理镜像仓库，保存前请先测试连接。'},'release-plans':{description:'选择多个应用一起发布，或查看流水线运行记录。'}}
+const copy:Record<Section,{description:string}>={applications:{description:'创建应用，关联仓库并配置流水线。'},repositories:{description:'管理代码仓库和 Git 凭据。'},'build-plans':{description:'保存可复用的 Dockerfile 或脚本构建配置。'},'image-registries':{description:'管理镜像仓库，保存前请先测试连接。'},'release-plans':{description:'选择多个应用一起发布，或查看流水线运行记录。'}}
 const releaseView=computed(()=>route.query.view==='runs'?'runs':'plans')
 const requestedRunID=computed(()=>typeof route.query.run==='string'?route.query.run:'')
 const sectionPermission=computed(()=>props.section==='build-plans'?'build_plan':props.section==='image-registries'?'image_registry':props.section==='release-plans'?(route.query.view==='runs'?'pipeline_run':'release_plan'):'application')
@@ -393,7 +388,7 @@ const manualArtifactOptions=computed(()=>manualArtifacts.value.map(artifactSelec
 const activeResourceID=computed(()=>props.section==='image-registries'&&typeof route.query.registry==='string'?route.query.registry:'')
 const activeApplicationID=computed(()=>props.section==='applications'&&typeof route.query.application==='string'?route.query.application:'')
 const activeReleasePlanID=computed(()=>props.section==='release-plans'&&typeof route.query.plan==='string'?route.query.plan:'')
-const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook',detailOnly:true},{key:'is_active',label:'状态'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
+const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'is_active',label:'状态'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
 
 function applicationInstanceScope(application:Application){
  const plans:InstancePlan[]=[]
@@ -1181,7 +1176,7 @@ function resetForms(){
 	 creatingApplicationRepository.value=false
 	 editingID.value='';selectedWorkflowTemplateID.value='';workflowPickerOpen.value=false;workflowRemovalID.value='';registryTested.value=false;buildImageDestination.value='local';buildSaveArtifact.value=false;buildArgsText.value='';buildEnvironmentText.value=''
  Object.assign(appForm,{name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
-	 Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
+	 Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',allow_insecure_http:false})
 	 Object.assign(buildForm,{name:'',kind:'dockerfile',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',platform:'linux/amd64',pull:true,cache_enabled:true,timeout_seconds:1800})
  Object.assign(registryForm,{name:'',provider:'generic',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
 }
@@ -1208,7 +1203,7 @@ function create(){
 function createApplicationRepository(){
  if(saving.value||!auth.canAny(['repository.create']))return
  // 只切换仓库子表单，应用草稿和编辑中的应用 ID 保持不变。
- Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
+ Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',allow_insecure_http:false})
  creatingApplicationRepository.value=true
 }
 function closeForm(){
@@ -1245,7 +1240,7 @@ function edit(row:ResourceRecord){
  }
  if(props.section==='repositories'){
   const item=row as Repository
-	  Object.assign(repoForm,{name:item.name,provider:item.provider,clone_url:item.clone_url,default_branch:item.default_branch,auth_type:item.auth_type,username:item.username||'',credential_id:item.credential_id||'',api_credential_id:item.api_credential_id||'',webhook_enabled:item.webhook_enabled,allow_insecure_http:item.allow_insecure_http})
+	  Object.assign(repoForm,{name:item.name,provider:item.provider,clone_url:item.clone_url,default_branch:item.default_branch,auth_type:item.auth_type,username:item.username||'',credential_id:item.credential_id||'',api_credential_id:item.api_credential_id||'',allow_insecure_http:item.allow_insecure_http})
  }
  if(props.section==='build-plans'){
   const item=row as BuildPlan
@@ -1264,7 +1259,6 @@ async function save(){
  try{
   const section=formSection.value
   const resourceID=formEditingID.value
-  const creatingRepository=section==='repositories'&&!resourceID
   let endpoint='',payload:unknown={},method:'post'|'put'='post'
   let pendingWorkflowTemplateID=''
   if(section==='applications'){
@@ -1277,7 +1271,7 @@ async function save(){
   }
   if(section==='repositories'){
    endpoint=resourceID?`/repositories/${resourceID}`:'/repositories'
-	   payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',regenerate_webhook:false}
+	   payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||''}
    method=resourceID?'put':'post'
   }
   if(props.section==='build-plans'){
@@ -1318,9 +1312,6 @@ async function save(){
    if(!request.current())return
   }
   const savedRepository=section==='repositories'?(response.data as {repository?:Repository}).repository:undefined
-  const savedWebhookAPI=creatingRepository&&repoForm.webhook_enabled&&savedRepository?.webhook_url
-   ?new URL(savedRepository.webhook_url,window.location.origin).toString()
-   :''
   let completionRevision=resourceFormRevision
   if(creatingApplicationRepository.value&&savedRepository){
    repositories.value=[savedRepository,...repositories.value.filter(item=>item.id!==savedRepository.id)]
@@ -1332,7 +1323,6 @@ async function save(){
   }
   if(planExecutionDisposed||request.identity!==resourceFormIdentity.value||completionRevision!==resourceFormRevision)return
   if(creatingDeliveryApplication&&canConfigureDelivery.value){configureDelivery((response.data as {application:Application}).application.id)}
-  if(savedWebhookAPI)Modal.info({title:'Webhook 已启用',width:650,okText:'关闭',content:()=>`Webhook API：${savedWebhookAPI}`})
  }catch(error){
   if(!request.current())return
   if(isMutationAcknowledged(error)){formOpen.value=false;message.info('请求已受理，请重新查看结果，勿重复提交。')}
@@ -1340,15 +1330,6 @@ async function save(){
  }finally{finishResourceFormRequest(request.controller)}
 }
 
-async function copyRepositoryWebhookAPI(){
- if(!repositoryWebhookAPI.value)return
- try{
-  await navigator.clipboard.writeText(repositoryWebhookAPI.value)
-  message.success('Webhook API 已复制')
- }catch{
-  message.error('复制失败，请手动复制')
- }
-}
 function openWorkflowPicker(){
  if(saving.value||testing.value||!editingID.value||!formOpen.value||!canUseResourceForm())return
  workflowPickerOpen.value=true
@@ -1509,7 +1490,7 @@ function confirmDeleteBuildPlan(plan:Pick<BuildPlan,'id'|'name'>){
  })
  resourceStatusDialog=dialog
 }
-async function testRepository(){if(testing.value||saving.value||!formOpen.value||!canUseResourceForm()||!auth.canAny(['repository.execute']))return;const request=startResourceFormRequest('repository.execute');testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null,regenerate_webhook:false};const result=formEditingID.value?await client.post<RefResult>(`/repositories/${formEditingID.value}/test`,undefined,{...request.options,timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{...request.options,timeout:35000});if(request.current())message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){if(request.current())message.error(apiErrorMessage(error))}finally{finishResourceFormRequest(request.controller)}}
+async function testRepository(){if(testing.value||saving.value||!formOpen.value||!canUseResourceForm()||!auth.canAny(['repository.execute']))return;const request=startResourceFormRequest('repository.execute');testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null};const result=formEditingID.value?await client.post<RefResult>(`/repositories/${formEditingID.value}/test`,undefined,{...request.options,timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{...request.options,timeout:35000});if(request.current())message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){if(request.current())message.error(apiErrorMessage(error))}finally{finishResourceFormRequest(request.controller)}}
 async function testStoredRepository(repository:Repository){repositoryTestingID.value=repository.id;try{const result=await client.post<RefResult>(`/repositories/${repository.id}/test`,undefined,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`);await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{repositoryTestingID.value=''}}
 async function testRegistry(){if(testing.value||saving.value||!formOpen.value||!canUseResourceForm()||!auth.canAny(['image_registry.execute']))return;const request=startResourceFormRequest('image_registry.execute'),payload=registryRequestPayload(),snapshot=JSON.stringify(payload);testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',payload,{...request.options,timeout:35000});if(!request.current()||snapshot!==JSON.stringify(registryRequestPayload()))return;registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){if(request.current()&&snapshot===JSON.stringify(registryRequestPayload()))message.error(apiErrorMessage(error))}finally{finishResourceFormRequest(request.controller)}}
 async function action(path:string){try{await client.post(path,undefined,{timeout:35000});await refresh()}catch(error){message.error(apiErrorMessage(error))}}
@@ -2030,7 +2011,6 @@ function executeReleasePlan(){
   if(currentPlanExecutionScope(scope))setReleasePlanExecuting(planID,false)
  })
 }
-function showWebhook(item:Repository){void client.get<{webhook_url:string;webhook_secret:string}>(`/repositories/${item.id}/webhook`).then(result=>Modal.info({title:`${item.name} Webhook`,width:650,content:()=>`${result.data.webhook_url}\n${result.data.webhook_secret}`})).catch(error=>message.error(apiErrorMessage(error)))}
 function applicationName(run:Pick<Run,'application_id'|'application'>){return applications.value.find(item=>item.id===run.application_id)?.name||run.application?.name||'未命名应用'}
 function applicationForRun(run:Run){return applications.value.find(item=>item.id===run.application_id)||run.application}
 function workflowForRun(run:Run){return applicationForRun(run)?.workflows?.find(item=>item.id===run.workflow_id)}
@@ -2395,7 +2375,6 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
    <template #actions="{row}">
     <ResourceRowActions v-if="props.section==='repositories'" :more="canUpdate" :loading="resourceMutationID===String(row.id)">
      <a-button v-if="canExecute" type="link" :loading="repositoryTestingID===String(row.id)" :disabled="Boolean(repositoryTestingID)&&repositoryTestingID!==String(row.id)" @click="testStoredRepository(row as Repository)">测试</a-button>
-     <a-button v-if="(row as Repository).webhook_enabled&&auth.canAny(['repository.secret.read'])" type="link" @click="showWebhook(row as Repository)">Webhook</a-button>
      <template #more><a-menu-item v-if="canUpdate" @click="edit(row)">{{ t('applicationCard.configure') }}</a-menu-item><a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(row as Repository)"><Power :size="14"/>{{ t((row as Repository).is_active?'delivery.disable':'delivery.enable') }}</a-menu-item></template>
     </ResourceRowActions>
    </template>
@@ -2595,7 +2574,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
   </a-form-item>
  </section>
  <section class="application-form-section">
-  <header><strong>代码检查</strong><small>分支、PR/MR、Tag 和手动启动规则在流水线的代码源中配置；Webhook 只用于降低延迟。</small></header>
+  <header><strong>代码检查</strong><small>分支、PR/MR、Tag 和手动启动规则在流水线的代码源中配置。</small></header>
   <div class="form-grid">
    <a-form-item label="检查间隔"><a-select v-model:value="appForm.poll_interval_seconds" :options="[3,5,10,60].map(value=>({value,label:`${value} 秒`}))"/></a-form-item>
   </div>
@@ -2629,14 +2608,6 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
     <a-button v-if="auth.canAny(['credential.create'])" class="resource-create" :aria-label="t('repositoryForm.createApiToken')" :title="t('repositoryForm.createApiToken')" @click="createRepositoryCredential('api')"><Plus :size="16"/></a-button>
    </div>
    <small>{{ t(repoForm.auth_type==='token'?'repositoryForm.apiReuseHint':'repositoryForm.apiTokenHint') }}</small>
-  </a-form-item>
-  <a-checkbox v-model:checked="repoForm.webhook_enabled">启用 Webhook</a-checkbox>
-  <a-form-item v-if="repoForm.webhook_enabled" class="span2" label="Webhook API">
-   <div class="webhook-api-field">
-    <a-input :value="repositoryWebhookAPI" readonly :placeholder="formEditingID?'正在获取 Webhook API':'保存仓库后生成 Webhook API'"/>
-    <a-button :disabled="!repositoryWebhookAPI" @click="copyRepositoryWebhookAPI">复制</a-button>
-   </div>
-   <small class="field-hint">{{ repositoryWebhookAPI?'将此地址填写到代码托管平台的 Webhook 配置中。':'仓库 ID 由系统在保存时生成，创建成功后会显示实际地址。' }}</small>
   </a-form-item>
  </div>
 </template>
@@ -2820,7 +2791,6 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
 
 .resource-option{display:grid;gap:2px;padding-block:2px}.resource-option strong{overflow:hidden;color:var(--edo-text);font-weight:600;text-overflow:ellipsis;white-space:nowrap}.resource-option small{overflow:hidden;color:var(--edo-muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span2{grid-column:1/-1}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}.release-plan-add-hint{display:block;margin-top:6px;color:var(--edo-muted);font-size:11px}
-.webhook-api-field{display:flex;gap:8px}.webhook-api-field :deep(.ant-input){min-width:0}.webhook-api-field :deep(.ant-btn){flex:0 0 auto}
 .lifecycle-command-output{max-height:420px;margin:0;overflow:auto;padding:12px;border-radius:9px;color:var(--edo-text);background:#111827;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
 .release-plan-resource-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;color:var(--edo-muted);font-size:11px}.release-plan-resource-toolbar :deep(.ant-btn),.release-plan-resource-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.release-plan-resource-list{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.release-plan-resource-item{min-width:0;padding:13px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.release-plan-resource-item>header{display:grid;align-items:center;grid-template-columns:36px minmax(0,1fr) auto;gap:10px}.release-plan-resource-copy{min-width:0}.release-plan-resource-copy strong,.release-plan-resource-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.release-plan-resource-copy strong{font-size:13px}.release-plan-resource-copy small{margin-top:2px;color:var(--edo-muted);font-size:10px}.release-plan-resource-item>dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:11px 0 0}.release-plan-resource-item>dl>div{min-width:0;padding:8px 9px;border-radius:8px;background:var(--edo-surface)}.release-plan-resource-item dt{color:var(--edo-muted);font-size:9px}.release-plan-resource-item dd{overflow:hidden;margin:3px 0 0;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.release-plan-resource-actions{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:10px}.release-plan-resource-permission,.release-plan-resource-hint{color:var(--edo-muted);font-size:10px}.release-plan-resource-hint{display:block;margin-top:9px}
 .resource-section-stack{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}

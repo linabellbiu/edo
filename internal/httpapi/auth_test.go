@@ -136,8 +136,7 @@ func newAuthTestRouter(t *testing.T, configure ...func(*Dependencies, *gorm.DB))
 	kubernetesService := kube.NewService(db, secretManager, config.Runtime{ConnectTimeout: time.Second, RequestTimeout: time.Second})
 	repositoryService := repository.NewService(
 		db, secretManager, credentialService,
-		repository.NewGitClient(config.Git{Timeout: time.Second}), 4,
-		repository.WithWebhookGate(configurationService),
+		repository.NewGitClient(config.Git{Timeout: time.Second}),
 	)
 	repositoryDirectories, err := repositoryService.PrepareDirectories(t.TempDir(), t.TempDir())
 	if err != nil {

@@ -12,6 +12,51 @@ import (
 	"edo/internal/model"
 )
 
+func TestRepositoryWebhookPermissionRemovedOnUpgrade(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, config.Database{
+		Driver: "sqlite", DSN: "file:repository_webhook_permission_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(db)
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	const legacyPermission = "repository.secret.read"
+	const repositoryRead = "repository.read"
+	if err := db.Where("version = ?", "202611180080").Delete(&model.SchemaMigration{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, permission := range []string{legacyPermission, repositoryRead} {
+		if err := db.Create(&model.RolePermission{RoleID: "role-a", Permission: permission}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&model.UserPermission{UserID: "user-a", Permission: permission, Effect: model.PermissionDeny}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var roleRules []model.RolePermission
+	if err := db.Find(&roleRules).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(roleRules) != 1 || roleRules[0].RoleID != "role-a" || roleRules[0].Permission != repositoryRead {
+		t.Fatalf("升级后角色权限不正确: %+v", roleRules)
+	}
+	var userRules []model.UserPermission
+	if err := db.Find(&userRules).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(userRules) != 1 || userRules[0].UserID != "user-a" || userRules[0].Permission != repositoryRead || userRules[0].Effect != model.PermissionDeny {
+		t.Fatalf("升级后用户权限覆盖不正确: %+v", userRules)
+	}
+}
+
 func TestLegacyManagePermissionsExpandAndDisappear(t *testing.T) {
 	db, err := Open(context.Background(), config.Database{
 		Driver: "sqlite", DSN: "file:legacy_permission_expansion?mode=memory&cache=shared",

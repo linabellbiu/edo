@@ -104,7 +104,7 @@ func TestCreateReleasePlanExecutionReturnsAccepted(t *testing.T) {
 	defer fixture.close()
 
 	ctx := context.Background()
-	repositoryItem, _, err := fixture.repositories.Create(ctx, "admin", repository.Input{
+	repositoryItem, err := fixture.repositories.Create(ctx, "admin", repository.Input{
 		Name: "发布计划执行测试仓库", Provider: model.GitProviderGeneric,
 		CloneURL: "https://git.example.com/team/release-plan.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
 	})
@@ -187,7 +187,7 @@ func TestManualAndReleasePlanHTTPCanSelectPreviousArtifact(t *testing.T) {
 	defer fixture.close()
 
 	ctx := context.Background()
-	repositoryItem, _, err := fixture.repositories.Create(ctx, "admin", repository.Input{
+	repositoryItem, err := fixture.repositories.Create(ctx, "admin", repository.Input{
 		Name: "历史制品执行测试仓库", Provider: model.GitProviderGeneric,
 		CloneURL: "https://git.example.com/team/artifact-release.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
 	})
@@ -295,7 +295,7 @@ func TestRetryRunHTTPCanSelectOriginalRunArtifactWithoutRefInput(t *testing.T) {
 			defer fixture.close()
 
 			ctx := context.Background()
-			repositoryItem, _, err := fixture.repositories.Create(ctx, "admin", repository.Input{
+			repositoryItem, err := fixture.repositories.Create(ctx, "admin", repository.Input{
 				Name: "重试固定版本测试仓库", Provider: model.GitProviderGeneric,
 				CloneURL: "https://git.example.com/team/retry-artifact.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
 			})
@@ -390,8 +390,7 @@ func newReleasePlanExecutionHTTPFixture(t *testing.T, commitSHA string, clients 
 		gitClient = clients[0]
 	}
 	repositoryService := repository.NewService(
-		db, secretManager, credentialService, gitClient, 4,
-		repository.WithWebhookGate(configurationService),
+		db, secretManager, credentialService, gitClient,
 	)
 	pipelineService := pipeline.NewService(db, repositoryService, secretManager)
 	pipelineService.ConfigureDeliveryAccess(accessService)

@@ -2210,37 +2210,6 @@ func newWorkflowRun(application *model.Application, workflow *model.ReleaseWorkf
 	}, nil
 }
 
-func matchingWorkflowTriggers(workflow *model.ReleaseWorkflow, event, ref, sourceBranch, targetBranch, action string) []model.WorkflowNode {
-	if workflow == nil || !workflow.IsActive {
-		return nil
-	}
-	node := workflow.Source
-	if node.Type != model.WorkflowNodeTrigger || !containsEvent(node.Config.Events, event) {
-		return nil
-	}
-	if event == "pr" {
-		action = normalizePullRequestAction(action)
-		if action == "" || !containsEvent(node.Config.PRActions, action) ||
-			!matchWorkflowPattern(node.Config.PRSourcePattern, sourceBranch) ||
-			!matchWorkflowPattern(node.Config.PRTargetPattern, targetBranch) {
-			return nil
-		}
-		return []model.WorkflowNode{node}
-	}
-	if event == "tag" {
-		tag := strings.TrimPrefix(ref, "refs/tags/")
-		if matchTag(node.Config.TagPattern, tag) {
-			return []model.WorkflowNode{node}
-		}
-		return nil
-	}
-	branch := strings.TrimPrefix(ref, "refs/heads/")
-	if matchWorkflowPattern(node.Config.Branch, branch) {
-		return []model.WorkflowNode{node}
-	}
-	return nil
-}
-
 type workflowSourceBinding struct {
 	Workflow *model.ReleaseWorkflow
 	Source   model.WorkflowNode
@@ -2254,21 +2223,10 @@ func applicationPollSources(application *model.Application) []workflowSourceBind
 			continue
 		}
 		node := workflow.Source
-		// Push、PR 和 Tag 均由远端状态发现；Webhook 只提供可选的低延迟通知。
+		// Push、PR 和 Tag 均由远端状态发现。
 		if node.Type == model.WorkflowNodeTrigger &&
 			(containsEvent(node.Config.Events, "push") || containsEvent(node.Config.Events, "pr") || containsEvent(node.Config.Events, "tag")) {
 			result = append(result, workflowSourceBinding{Workflow: workflow, Source: node})
-		}
-	}
-	return result
-}
-
-func applicationEventSources(application *model.Application, event, ref, sourceBranch, targetBranch, action string) []workflowSourceBinding {
-	result := make([]workflowSourceBinding, 0, len(application.Workflows))
-	for i := range application.Workflows {
-		workflow := &application.Workflows[i]
-		for _, source := range matchingWorkflowTriggers(workflow, event, ref, sourceBranch, targetBranch, action) {
-			result = append(result, workflowSourceBinding{Workflow: workflow, Source: source})
 		}
 	}
 	return result
@@ -2295,10 +2253,6 @@ func normalizePullRequestAction(action string) string {
 	default:
 		return ""
 	}
-}
-
-func workflowEventName(repositoryEvent string) string {
-	return map[string]string{"branch_push": "push", "pull_request": "pr", "tag_push": "tag"}[repositoryEvent]
 }
 
 type workflowPollCandidate struct {

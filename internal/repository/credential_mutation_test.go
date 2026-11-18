@@ -52,7 +52,7 @@ func TestRepositoryPersistRechecksOwnerDepartmentAfterNormalization(t *testing.T
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = db.Callback().Query().Remove(callback) })
-			repo, _, err := s.Create(ctx, "owner", Input{Name: "department-reference", Provider: model.GitProviderGeneric,
+			repo, err := s.Create(ctx, "owner", Input{Name: "department-reference", Provider: model.GitProviderGeneric,
 				CloneURL: "https://example.invalid/a.git", AuthType: model.GitAuthToken, CredentialID: &selected.ID})
 			if !changed.Load() || moveErr != nil {
 				t.Fatalf("正常调部门交错未成立: changed=%t err=%v", changed.Load(), moveErr)
@@ -84,7 +84,7 @@ func TestRepositoryStaleEditorCannotRestoreOtherOwnersCredential(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := Input{Name: "stale-reference", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/a.git", AuthType: model.GitAuthToken, CredentialID: &original.ID}
-			repo, _, err := s.Create(ctx, "token-owner", input)
+			repo, err := s.Create(ctx, "token-owner", input)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -107,12 +107,12 @@ func TestRepositoryStaleEditorCannotRestoreOtherOwnersCredential(t *testing.T) {
 				} else {
 					newInput.CredentialID = &other.ID
 				}
-				_, _, updateErr = s.Update(ctx, "different-editor", repo.ID, newInput)
+				_, updateErr = s.Update(ctx, "different-editor", repo.ID, newInput)
 			}); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = db.Callback().Query().Remove(callback) })
-			_, _, err = s.Update(ctx, "different-editor", repo.ID, input)
+			_, err = s.Update(ctx, "different-editor", repo.ID, input)
 			if !changed.Load() || updateErr != nil || !errors.Is(err, ErrRepositoryChanged) {
 				t.Fatalf("陈旧更新未按真实改绑结果拒绝: changed=%t update_err=%v err=%v", changed.Load(), updateErr, err)
 			}
@@ -135,7 +135,7 @@ func TestRepositoryRetainsInactiveOwnersExistingCloneReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := Input{Name: "retained-reference", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/a.git", AuthType: model.GitAuthToken, CredentialID: &selected.ID}
-	repo, _, err := s.Create(context.Background(), "token-owner", input)
+	repo, err := s.Create(context.Background(), "token-owner", input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,49 +144,44 @@ func TestRepositoryRetainsInactiveOwnersExistingCloneReference(t *testing.T) {
 	}
 	input.CredentialID = nil
 	input.Name = "retained-renamed"
-	updated, _, err := s.Update(context.Background(), "different-editor", repo.ID, input)
+	updated, err := s.Update(context.Background(), "different-editor", repo.ID, input)
 	if err != nil || referenceValue(updated.CredentialID) != selected.ID {
 		t.Fatalf("既有合法保留路径被新增停用限制改变: err=%v", err)
 	}
 }
 
 func TestRepositoryStaleUpdateCannotOverwriteSecurityConfiguration(t *testing.T) {
-	for _, field := range []string{"insecure_http", "webhook"} {
-		t.Run(field, func(t *testing.T) {
-			s, db := newRepositoryTestService(t)
-			ctx := context.Background()
-			input := Input{Name: "security-reference", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/a.git", AuthType: model.GitAuthNone}
-			repo, _, err := s.Create(ctx, "admin", input)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var changed atomic.Bool
-			var updateErr error
-			callback := "test:replace_repository_security_after_read"
-			if err := db.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
-				value, ok := tx.Statement.Dest.(*model.GitRepository)
-				if !ok || value.ID != repo.ID || tx.Error != nil {
-					return
-				}
-				if _, locked := tx.Statement.ConnPool.(gorm.TxCommitter); locked || changed.Swap(true) {
-					return
-				}
-				newInput := input
-				newInput.AllowInsecureHTTP = field == "insecure_http"
-				newInput.WebhookEnabled = field == "webhook"
-				_, _, updateErr = s.Update(ctx, "admin", repo.ID, newInput)
-			}); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = db.Callback().Query().Remove(callback) })
-			_, _, err = s.Update(ctx, "admin", repo.ID, input)
-			if !changed.Load() || updateErr != nil || !errors.Is(err, ErrRepositoryChanged) {
-				t.Fatalf("陈旧编辑未拒绝安全配置覆盖: field=%s changed=%t update_err=%v err=%v", field, changed.Load(), updateErr, err)
-			}
-			var current model.GitRepository
-			if err := db.First(&current, "uuid = ?", repo.ID).Error; err != nil || current.AllowInsecureHTTP != (field == "insecure_http") || current.WebhookEnabled != (field == "webhook") || field == "webhook" && current.WebhookSecretCiphertext == "" {
-				t.Fatalf("并发完成的安全配置被陈旧请求覆盖: field=%s err=%v", field, err)
-			}
-		})
+	s, db := newRepositoryTestService(t)
+	ctx := context.Background()
+	input := Input{Name: "security-reference", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/a.git", AuthType: model.GitAuthNone}
+	repo, err := s.Create(ctx, "admin", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var changed atomic.Bool
+	var updateErr error
+	callback := "test:replace_repository_security_after_read"
+	if err := db.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+		value, ok := tx.Statement.Dest.(*model.GitRepository)
+		if !ok || value.ID != repo.ID || tx.Error != nil {
+			return
+		}
+		if _, locked := tx.Statement.ConnPool.(gorm.TxCommitter); locked || changed.Swap(true) {
+			return
+		}
+		newInput := input
+		newInput.AllowInsecureHTTP = true
+		_, updateErr = s.Update(ctx, "admin", repo.ID, newInput)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Query().Remove(callback) })
+	_, err = s.Update(ctx, "admin", repo.ID, input)
+	if !changed.Load() || updateErr != nil || !errors.Is(err, ErrRepositoryChanged) {
+		t.Fatalf("陈旧编辑未拒绝安全配置覆盖: changed=%t update_err=%v err=%v", changed.Load(), updateErr, err)
+	}
+	var current model.GitRepository
+	if err := db.First(&current, "uuid = ?", repo.ID).Error; err != nil || !current.AllowInsecureHTTP {
+		t.Fatalf("并发完成的安全配置被陈旧请求覆盖: err=%v", err)
 	}
 }

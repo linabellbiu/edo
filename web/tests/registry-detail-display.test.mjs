@@ -42,7 +42,7 @@ const loading = false, activeResourceID = '', canUpdate = false, canExecute = fa
 const auth = {canAny: () => false}
 const registryProviderLabel = props.providerLabel
 const registryEndpointLabel = (row: Record<string, unknown>) => row.endpoint
-const edit = () => {}, testStoredRepository = () => {}, showWebhook = () => {}
+const edit = () => {}, testStoredRepository = () => {}
 </script><template>${table.loc.source}</template>`).descriptor, {
   './ResourceTable.vue': {__esModule: true, default: ResourceTable},
 })
@@ -127,13 +127,13 @@ test('详情缺失或空类型、凭据状态显示空值，不伪造匿名和�
   }
 })
 
-test('代码仓库列表省略 Webhook 列，详情保留原字段和状态', async t => {
+test('代码仓库列表与详情均不显示已移除的 Webhook', async t => {
   const page = mount(t, 'repositories', {id: 'repository', name: '代码仓库', provider: 'gitee', clone_url: 'https://git.test/team/demo', default_branch: 'main', webhook_enabled: false, is_active: true})
   assert.match(page.listText(), /启用/)
   assert.doesNotMatch(page.listText(), /Webhook|停用/)
   const facts = await page.open()
   assert.equal(facts['平台'], 'gitee')
-  assert.equal(facts['Webhook'], 'false')
+  assert.equal(facts['Webhook'], undefined)
   assert.equal(facts['状态'], 'true')
   assert.doesNotMatch(Object.values(facts).join(' '), /匿名|已配置/)
 })

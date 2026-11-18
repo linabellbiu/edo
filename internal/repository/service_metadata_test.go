@@ -53,7 +53,7 @@ func (s *serviceMetadataClient) CheckoutCachedAt(ctx context.Context, repository
 
 func createServiceMetadataRepository(t *testing.T, service *Service, ctx context.Context, name string) *model.GitRepository {
 	t.Helper()
-	repository, _, err := service.Create(ctx, "admin", Input{
+	repository, err := service.Create(ctx, "admin", Input{
 		Name: name, Provider: model.GitProviderGeneric,
 		CloneURL: "https://git.example.com/team/" + name + ".git", AuthType: model.GitAuthNone,
 	})

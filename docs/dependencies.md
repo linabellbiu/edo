@@ -74,7 +74,6 @@ UUID 选型核对了 [uuid](https://github.com/uuidjs/uuid) 和 [Nano ID](https:
 | 候选 | 结论 |
 | --- | --- |
 | `casbin/gorm-adapter` | 当前版本不能与 EDO 的角色元数据共享同一个外部 GORM 事务。另建 `casbin_rule` 会形成双数据源并产生部分提交风险，因此使用只读适配器把现有事务表投影到 Casbin。 |
-| `go-playground/webhooks` | 只覆盖 GitHub、GitLab、Gitea，不能完整覆盖 EDO 必须支持的 Gitee 和通用 Git；接入后仍需维护两套签名和事件模型，不能降低复杂度。 |
 | GitHub、GitLab、Gitea、Gitee 四套完整 Go API SDK | 已评估官方或主流客户端，但当前只需要一个只读 PR/MR 列表接口；同时引入四套客户端会显著增加依赖体积、版本升级和企业版 Base URL 适配成本，且仍不能覆盖通用 Git。保留 `go-git` 处理标准 Git 能力，平台 PR/MR 使用 Go 标准库 HTTP 客户端调用官方只读 API，并通过统一结构、分页上限、超时、响应体上限和契约测试隔离平台差异；后续扩展评论、状态检查等多接口时再切换对应官方 SDK。 |
 | 通用 Redis 限流器 | EDO 的登录锁定默认关闭，开启后只累计失败并在成功后清零，和普通请求频率限制语义不同；继续使用 Redis 原子计数与 TTL。 |
 | 第三方 AES 封装 | 当前实现只是标准库 AES-256-GCM 的版本化信封和 AAD 绑定。额外依赖不会改善算法或密钥边界，反而扩大供应链。 |

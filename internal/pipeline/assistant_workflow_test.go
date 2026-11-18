@@ -120,7 +120,7 @@ func TestAssistantDraftUsesNativePlansAndAtomicRollback(t *testing.T) {
 func TestAssistantDeployFixedVersionAndChangedConfiguration(t *testing.T) {
 	s, db, secrets, repositoryID := newPipelineTestService(t)
 	commit := strings.Repeat("a", 40)
-	s.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commit}}}}, 4)
+	s.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commit}}}})
 	app := createManualRunTestApplication(t, s, db, repositoryID, "assistant_run")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", app.ID).Update("is_active", true).Error; err != nil {
 		t.Fatal(err)

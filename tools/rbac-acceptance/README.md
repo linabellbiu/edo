@@ -30,7 +30,7 @@ node tools/rbac-acceptance/run.mjs --admin-file /private/tmp/edo-rbac-private/ad
 - 内置开发角色是否携带发布保护/集群写权限；没有 `deployment.review` 的成员是否出现在审核人选项并被允许保存为必需审核人；合法双审批策略保存及开发者不能关闭保护。
 - 尝试创建完整项目动作角色；超过 API 动作上限时明确失败并保留原数量，绝不截断权限列表冒充成功。
 
-种子仓库指向 `example.invalid`，关闭 Webhook，不创建关联应用。当前 `CreateApplication` 总是启用新应用，后台 `scanDueApplications` 扫描全部启用应用；`SyncApplication` 在判断空工作流前也会轮询仓库。创建后立即停用存在竞态，不能保证没有外部 Git 请求。因此脚本显式禁止 `POST /applications`，将应用创建/修改正向及相应关联场景记为“前置未满足”，等待原子创建停用应用的正常入口后再测试。不要为了继续验收而停止或修改共享后台调度。
+种子仓库指向 `example.invalid`，不创建关联应用。当前 `CreateApplication` 总是启用新应用，后台 `scanDueApplications` 扫描全部启用应用；`SyncApplication` 在判断空工作流前也会轮询仓库。创建后立即停用存在竞态，不能保证没有外部 Git 请求。因此脚本显式禁止 `POST /applications`，将应用创建/修改正向及相应关联场景记为“前置未满足”，等待原子创建停用应用的正常入口后再测试。不要为了继续验收而停止或修改共享后台调度。
 
 环境无主机，构建方案只保存不执行。脚本不连接外部代码源、Docker、Kubernetes、SSH 或数据库目标，也不读取本机集群配置。
 

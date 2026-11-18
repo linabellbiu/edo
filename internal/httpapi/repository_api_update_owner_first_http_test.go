@@ -44,7 +44,7 @@ func TestRepositoryAPIUpdateRejectsOwnerMutationBeforePersistHTTP(t *testing.T) 
 			}
 			body := map[string]any{
 				"name": "a02-http-api-original-" + operation, "provider": "gitea", "auth_type": "none",
-				"clone_url": "https://example.invalid/a02/http-update.git", "default_branch": "main", "webhook_enabled": false,
+				"clone_url": "https://example.invalid/a02/http-update.git", "default_branch": "main",
 			}
 			created := performJSONRequest(t, router, http.MethodPost, "/api/v1/repositories", body, owner)
 			var repositoryPayload struct {

@@ -21,52 +21,26 @@ const (
 )
 
 type GitRepository struct {
-	RowID                   uint64      `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
-	ID                      string      `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
-	Name                    string      `gorm:"type:varchar(128);not null;uniqueIndex:ux_git_repositories_department_name,priority:2;uniqueIndex:ux_git_repositories_project_name,priority:2" json:"name"`
-	Provider                GitProvider `gorm:"type:varchar(16);not null;index" json:"provider"`
-	CloneURL                string      `gorm:"type:varchar(1024);not null" json:"clone_url"`
-	DefaultBranch           string      `gorm:"type:varchar(255);not null;default:''" json:"default_branch"`
-	AuthType                GitAuthType `gorm:"type:varchar(16);not null" json:"auth_type"`
-	Username                string      `gorm:"type:varchar(255);not null;default:''" json:"username,omitempty"`
-	CredentialID            *string     `gorm:"type:varchar(36);index" json:"credential_id,omitempty"`
-	APICredentialID         *string     `gorm:"type:varchar(36);index" json:"api_credential_id,omitempty"`
-	CredentialCiphertext    string      `gorm:"type:text;not null" json:"-"`
-	WebhookSecretCiphertext string      `gorm:"type:text;not null" json:"-"`
-	WebhookEnabled          bool        `gorm:"not null;default:false;index" json:"webhook_enabled"`
-	AllowInsecureHTTP       bool        `gorm:"not null;default:false" json:"allow_insecure_http"`
-	IsActive                bool        `gorm:"not null;default:true;index" json:"is_active"`
-	DepartmentID            string      `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_git_repositories_department_name,priority:1" json:"department_id"`
-	ProjectID               string      `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_git_repositories_project_name,priority:1" json:"project_id"`
-	CreatedBy               string      `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	CreatedAt               time.Time   `gorm:"not null" json:"created_at"`
-	UpdatedAt               time.Time   `gorm:"not null" json:"updated_at"`
+	RowID                uint64      `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                   string      `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
+	Name                 string      `gorm:"type:varchar(128);not null;uniqueIndex:ux_git_repositories_department_name,priority:2;uniqueIndex:ux_git_repositories_project_name,priority:2" json:"name"`
+	Provider             GitProvider `gorm:"type:varchar(16);not null;index" json:"provider"`
+	CloneURL             string      `gorm:"type:varchar(1024);not null" json:"clone_url"`
+	DefaultBranch        string      `gorm:"type:varchar(255);not null;default:''" json:"default_branch"`
+	AuthType             GitAuthType `gorm:"type:varchar(16);not null" json:"auth_type"`
+	Username             string      `gorm:"type:varchar(255);not null;default:''" json:"username,omitempty"`
+	CredentialID         *string     `gorm:"type:varchar(36);index" json:"credential_id,omitempty"`
+	APICredentialID      *string     `gorm:"type:varchar(36);index" json:"api_credential_id,omitempty"`
+	CredentialCiphertext string      `gorm:"type:text;not null" json:"-"`
+	// 旧数据库的此列无默认值。创建仓库时继续写入空值，已有密文不再读取或更新。
+	LegacyWebhookSecretCiphertext string    `gorm:"column:webhook_secret_ciphertext;type:text;not null;->:false;<-:create" json:"-"`
+	AllowInsecureHTTP             bool      `gorm:"not null;default:false" json:"allow_insecure_http"`
+	IsActive                      bool      `gorm:"not null;default:true;index" json:"is_active"`
+	DepartmentID                  string    `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_git_repositories_department_name,priority:1" json:"department_id"`
+	ProjectID                     string    `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_git_repositories_project_name,priority:1" json:"project_id"`
+	CreatedBy                     string    `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt                     time.Time `gorm:"not null" json:"created_at"`
+	UpdatedAt                     time.Time `gorm:"not null" json:"updated_at"`
 }
 
 func (GitRepository) TableName() string { return "git_repositories" }
-
-type WebhookDeliveryStatus string
-
-const (
-	WebhookReceived  WebhookDeliveryStatus = "received"
-	WebhookProcessed WebhookDeliveryStatus = "processed"
-	WebhookFailed    WebhookDeliveryStatus = "failed"
-)
-
-type GitWebhookDelivery struct {
-	RowID        uint64                `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
-	ID           string                `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
-	RepositoryID string                `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_git_delivery,priority:1"`
-	DeliveryID   string                `gorm:"type:varchar(128);not null;uniqueIndex:idx_git_delivery,priority:2"`
-	EventType    string                `gorm:"type:varchar(32);not null;index"`
-	Ref          string                `gorm:"type:varchar(512);not null"`
-	CommitSHA    string                `gorm:"type:varchar(64);not null;default:''"`
-	Message      string                `gorm:"type:varchar(255);not null;default:''"`
-	PayloadHash  string                `gorm:"type:varchar(64);not null"`
-	Status       WebhookDeliveryStatus `gorm:"type:varchar(16);not null;index"`
-	JobID        string                `gorm:"type:varchar(36);not null;default:'';index"`
-	ReceivedAt   time.Time             `gorm:"not null;index"`
-	ProcessedAt  *time.Time
-}
-
-func (GitWebhookDelivery) TableName() string { return "git_webhook_deliveries" }

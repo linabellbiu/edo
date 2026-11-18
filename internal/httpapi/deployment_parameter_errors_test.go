@@ -14,7 +14,7 @@ import (
 func TestWorkflowSaveAcceptsRepositoryEnvFileAndRejectsUnsafeParameters(t *testing.T) {
 	f := newReleasePlanExecutionHTTPFixture(t, strings.Repeat("a", 40))
 	defer f.close()
-	repo, _, err := f.repositories.Create(context.Background(), "admin", repository.Input{Name: "参数诊断仓库", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/parameters.git", DefaultBranch: "main", AuthType: model.GitAuthNone})
+	repo, err := f.repositories.Create(context.Background(), "admin", repository.Input{Name: "参数诊断仓库", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/parameters.git", DefaultBranch: "main", AuthType: model.GitAuthNone})
 	if err != nil {
 		t.Fatal(err)
 	}

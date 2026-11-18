@@ -119,8 +119,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	authAPI.GET("/oauth/:id/callback", identityAPI.callbackOAuth)
 	// 身份重验不依赖业务读取或旧项目准入，项目移除后仍须通知当前会话。
 	authAPI.GET("/events/ws", requireAuth(deps.Accounts, deps.Sessions, deps.Logger, deps.AuthConfig.CookieName), streamAuthEvents(deps))
-	repositoryAPI := repositoryHandler{service: deps.Repositories, access: deps.Access, logger: deps.Logger}
-	api.POST("/webhooks/git/:id", repositoryAPI.webhook)
+	repositoryAPI := repositoryHandler{service: deps.Repositories, logger: deps.Logger}
 
 	protected := api.Group("")
 	protected.Use(requireAuth(deps.Accounts, deps.Sessions, deps.Logger, deps.AuthConfig.CookieName))
@@ -226,8 +225,6 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.DELETE("/repositories/:id", auditAction(deps.Audits, deps.Logger, "repository.delete", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryDelete), repositoryAPI.delete)
 	protected.PATCH("/repositories/:id/status", auditAction(deps.Audits, deps.Logger, "repository.status.update", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryUpdate), repositoryAPI.setStatus)
 	protected.POST("/repositories/:id/test", auditAction(deps.Audits, deps.Logger, "repository.test", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryExecute), repositoryAPI.testConnection)
-	protected.GET("/repositories/:id/webhook-deliveries", requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryRead), repositoryAPI.listDeliveries)
-	protected.GET("/repositories/:id/webhook", auditAction(deps.Audits, deps.Logger, "repository.webhook.reveal", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositorySecretRead), repositoryAPI.webhookConfiguration)
 
 	pipelineAPI := pipelineHandler{service: deps.Pipelines, logger: deps.Logger, realtime: deps.Realtime, streamAuth: func(c *gin.Context) func() bool { return streamAuthorization(deps, c, "pipeline_run.read") }}
 	artifactAPI := artifactHandler{service: deps.Artifacts, logger: deps.Logger, uploadAuthorization: func(c *gin.Context) func(context.Context) error {
@@ -427,8 +424,6 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/settings/github-logo", settingsAPI.githubLogo)
 	protected.PUT("/settings/github-logo", auditAction(deps.Audits, deps.Logger, "settings.github_logo.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), settingsAPI.updateGitHubLogo)
 	protected.GET("/settings/builtin-variables", requireAnyPermission(deps.Access, deps.Logger, access.PermissionConfigRead, "application.read", "workflow.read", "build_plan.read", "deployment_plan.read"), settingsAPI.builtinVariables)
-	protected.GET("/settings/external-git-webhook", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.externalGitWebhook)
-	protected.PUT("/settings/external-git-webhook", auditAction(deps.Audits, deps.Logger, "settings.git_webhook.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), settingsAPI.updateExternalGitWebhook)
 	protected.GET("/settings/login-lockout", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.loginLockout)
 	protected.PUT("/settings/login-lockout", auditAction(deps.Audits, deps.Logger, "settings.login_lockout.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), settingsAPI.updateLoginLockout)
 	protected.GET("/settings/runtime-logging", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.runtimeLogging)

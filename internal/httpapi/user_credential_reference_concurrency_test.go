@@ -56,8 +56,8 @@ func TestUserDeletionCannotLeaveConcurrentRepositoryCredentialReferenceHTTP(t *t
 			repositoryName := "a02-concurrent-" + reference
 			body := map[string]any{
 				"name": repositoryName, "provider": "gitea", "auth_type": "none",
-				"clone_url": "https://example.invalid/a02/repository.git", "webhook_enabled": false,
-				reference: credentialID,
+				"clone_url": "https://example.invalid/a02/repository.git",
+				reference:   credentialID,
 			}
 			if reference == "credential_id" {
 				body["auth_type"] = "token"

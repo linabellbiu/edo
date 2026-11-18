@@ -394,7 +394,7 @@ func TestDeleteUserCleansIdentityButKeepsSharedRoles(t *testing.T) {
 		ID: uuid.NewString(), DepartmentID: user.DepartmentID, Name: "离职交接仓库",
 		Provider: model.GitProviderGitea, CloneURL: "https://git.example.com/team/service.git",
 		DefaultBranch: "main", AuthType: model.GitAuthToken, CredentialID: &credential.ID,
-		CredentialCiphertext: "", WebhookSecretCiphertext: "", IsActive: true,
+		CredentialCiphertext: "", IsActive: true,
 		CreatedBy: user.ID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(&repository).Error; err != nil {

@@ -57,7 +57,6 @@ func TestProjectRolesAndExplicitDeny(t *testing.T) {
 	}
 	check(a.ID, "application.read", true)
 	check(a.ID, "application.create", false)
-	check(a.ID, "repository.secret.read", false)
 	check(b.ID, "application.create", true)
 	check(b.ID, "user.update", true) // 平台管理来自平台角色，不来自项目。
 	check(database.DefaultProjectID(user.DepartmentID), "application.create", false)

@@ -52,7 +52,7 @@ var migrations = []migration{
 	{
 		version: "202607230005",
 		up: func(tx *gorm.DB) error {
-			return tx.AutoMigrate(&model.GitRepository{}, &model.GitWebhookDelivery{})
+			return tx.AutoMigrate(&model.GitRepository{})
 		},
 	},
 	{
@@ -406,6 +406,19 @@ var migrations = []migration{
 	}},
 	{version: "202611080078", up: migrateHostGroups},
 	{version: "202611080079", up: func(tx *gorm.DB) error { return addColumns(tx, &model.DeploymentTarget{}, []string{"HostIDs"}) }},
+	{version: "202611180080", up: removeRepositoryWebhookPermission},
+}
+
+// 移除入站 Webhook 的专用授权，避免旧权限导致角色列表校验失败。
+func removeRepositoryWebhookPermission(tx *gorm.DB) error {
+	const permission = "repository.secret.read"
+	if err := tx.Where("permission = ?", permission).Delete(&model.RolePermission{}).Error; err != nil {
+		return fmt.Errorf("清理仓库 Webhook 角色权限失败: %w", err)
+	}
+	if err := tx.Where("permission = ?", permission).Delete(&model.UserPermission{}).Error; err != nil {
+		return fmt.Errorf("清理仓库 Webhook 用户权限失败: %w", err)
+	}
+	return nil
 }
 
 // migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，

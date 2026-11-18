@@ -32,7 +32,6 @@ var keyPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
 
 const (
 	systemNamespace              = "edo"
-	externalGitWebhookSettingKey = "EXTERNAL_GIT_WEBHOOK_ENABLED"
 	loginLockoutSettingKey       = "LOGIN_LOCKOUT_ENABLED"
 	runtimeLoggingSettingKey     = "RUNTIME_LOGGING_SETTINGS"
 	runtimeDirectorySettingKey   = "RUNTIME_DIRECTORY_SETTINGS"
@@ -85,11 +84,6 @@ type RevisionView struct {
 	IsActive    bool                  `json:"is_active"`
 	ChangedBy   string                `json:"changed_by"`
 	CreatedAt   time.Time             `json:"created_at"`
-}
-
-type ExternalGitWebhookSettings struct {
-	Enabled bool `json:"enabled"`
-	Version int  `json:"version"`
 }
 
 type LoginLockoutSettings struct {
@@ -360,31 +354,6 @@ func (s *Service) Resolve(ctx context.Context, namespace string, environment mod
 		}
 	}
 	return result, nil
-}
-
-// ExternalGitWebhookEnabled 实现仓库 Webhook 的全局安全开关。配置缺失时保持关闭，
-// 避免新安装或升级后在管理员未确认公网入口前直接暴露接收端点。
-func (s *Service) ExternalGitWebhookEnabled(ctx context.Context) (bool, error) {
-	settings, err := s.GetExternalGitWebhookSettings(ctx)
-	if err != nil {
-		return false, err
-	}
-	return settings.Enabled, nil
-}
-
-func (s *Service) GetExternalGitWebhookSettings(ctx context.Context) (ExternalGitWebhookSettings, error) {
-	settings, err := s.getSystemBooleanSettings(ctx, externalGitWebhookSettingKey, "外部 Git Webhook")
-	return ExternalGitWebhookSettings(settings), err
-}
-
-func (s *Service) UpdateExternalGitWebhookSettings(
-	ctx context.Context,
-	actorID string,
-	enabled bool,
-	expectedVersion int,
-) (ExternalGitWebhookSettings, error) {
-	settings, err := s.updateSystemBooleanSettings(ctx, actorID, externalGitWebhookSettingKey, "外部 Git Webhook", enabled, expectedVersion)
-	return ExternalGitWebhookSettings(settings), err
 }
 
 // LoginLockoutEnabled 供登录入口读取动态开关；配置缺失时默认关闭。

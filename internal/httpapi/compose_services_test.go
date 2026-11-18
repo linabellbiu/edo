@@ -17,7 +17,7 @@ import (
 func TestComposeServicesHTTPReturnsOnlyParsedServiceNames(t *testing.T) {
 	f := newReleasePlanExecutionHTTPFixture(t, "0123456789abcdef0123456789abcdef01234567")
 	defer f.close()
-	repo, _, err := f.repositories.Create(context.Background(), "admin", repository.Input{Name: "Compose来源接口仓库", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/compose.git", DefaultBranch: "main", AuthType: model.GitAuthNone})
+	repo, err := f.repositories.Create(context.Background(), "admin", repository.Input{Name: "Compose来源接口仓库", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/compose.git", DefaultBranch: "main", AuthType: model.GitAuthNone})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestDetectComposeFileHTTPMetadataAndAuthorization(t *testing.T) {
 	checkout := &composeDetectionHTTPCheckout{releasePlanExecutionRefLister: releasePlanExecutionRefLister{commitSHA: strings.Repeat("a", 40)}}
 	f := newReleasePlanExecutionHTTPFixture(t, strings.Repeat("a", 40), checkout)
 	defer f.close()
-	repo, _, err := f.repositories.Create(context.Background(), "admin", repository.Input{Name: "自动检测仓库", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/detect.git", DefaultBranch: "main", AuthType: model.GitAuthNone})
+	repo, err := f.repositories.Create(context.Background(), "admin", repository.Input{Name: "自动检测仓库", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/detect.git", DefaultBranch: "main", AuthType: model.GitAuthNone})
 	if err != nil {
 		t.Fatal(err)
 	}

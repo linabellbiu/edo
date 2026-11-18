@@ -33,7 +33,6 @@ func inventoryPublicAPIRoutes() map[string]int {
 		"POST /api/v1/auth/email/:id/login":   http.StatusBadRequest,
 		"GET /api/v1/auth/oauth/:id/start":    http.StatusNotFound,
 		"GET /api/v1/auth/oauth/:id/callback": http.StatusFound,
-		"POST /api/v1/webhooks/git/:id":       http.StatusNotFound,
 	}
 }
 

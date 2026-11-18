@@ -87,7 +87,7 @@ func TestPipelineTasksWithoutVariablesRecheckExecutionPermission(t *testing.T) {
 					}
 				}
 				probe := &executionAuthorizationCheckout{}
-				service.repositories = repository.NewService(db, service.secrets, nil, probe, 4)
+				service.repositories = repository.NewService(db, service.secrets, nil, probe)
 				var scriptCalls atomic.Int64
 				service.scriptRunner = parallelScriptRunner(func(context.Context, dockerengine.ScriptContainerInput) (dockerengine.ScriptContainerResult, error) {
 					scriptCalls.Add(1)

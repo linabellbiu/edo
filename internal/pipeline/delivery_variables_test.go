@@ -119,7 +119,7 @@ func TestBuildExecutionPersistsFrozenPlanWithoutResolvedSecrets(t *testing.T) {
 	service.repositories = repository.NewService(db, secrets, nil, secretBuildCheckoutStub{
 		buildExecutorCheckoutStub: buildExecutorCheckoutStub{files: map[string]string{"source.txt": "public source"}},
 		refs:                      repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commit}}},
-	}, 4)
+	})
 	store, err := artifact.NewService(db, t.TempDir(), 1024*1024, service.logger)
 	if err != nil {
 		t.Fatal(err)

@@ -18,12 +18,6 @@ interface ToggleSetting {
   enabled: boolean;
   version: number;
 }
-interface WebhookSetting extends ToggleSetting {
-  path_template: string;
-  max_body_bytes: number;
-  providers: string[];
-  events: string[];
-}
 interface LockoutSetting extends ToggleSetting {
   max_failures: number;
   window_seconds: number;
@@ -69,8 +63,7 @@ const route = useRoute(),
   loading = ref(false),
   saving = ref(""),
   passwordSaving = ref(false);
-const webhook = ref<WebhookSetting | null>(null),
-  lockout = ref<LockoutSetting | null>(null),
+const lockout = ref<LockoutSetting | null>(null),
   runtimeLogging = ref<RuntimeLoggingSetting | null>(null),
   runtimeDirectories = ref<RuntimeDirectorySetting | null>(null),
   retention = ref<RetentionSetting | null>(null),
@@ -156,21 +149,20 @@ async function load(directoryDraft?: RuntimeDirectorySetting, expectedVersion = 
   const read = ++directoryReadRevision, revision = directoryRevision;
   loading.value = true;
   try {
-    const [a, b, c, d, e] = await Promise.all([client.get<WebhookSetting>("/settings/external-git-webhook"), client.get<LockoutSetting>("/settings/login-lockout"), client.get<RuntimeLoggingSetting>("/settings/runtime-logging"), client.get<RetentionSetting>("/settings/log-retention"), client.get<RuntimeDirectorySetting>("/settings/runtime-directories")]);
-    webhook.value = a.data;
-    lockout.value = b.data;
-    runtimeLogging.value = c.data;
-    retention.value = d.data;
+    const [lockoutResponse, loggingResponse, retentionResponse, directoriesResponse] = await Promise.all([client.get<LockoutSetting>("/settings/login-lockout"), client.get<RuntimeLoggingSetting>("/settings/runtime-logging"), client.get<RetentionSetting>("/settings/log-retention"), client.get<RuntimeDirectorySetting>("/settings/runtime-directories")]);
+    lockout.value = lockoutResponse.data;
+    runtimeLogging.value = loggingResponse.data;
+    retention.value = retentionResponse.data;
     if (isCurrentDirectoryRead(revision, read) && (!directoryDraft || runtimeDirectories.value === directoryDraft)) {
       // 失败回读更新实际用量；草稿仍绑定原版本，只有显式刷新才接纳新配置。
       runtimeDirectories.value = directoryDraft ? {
-        ...e.data,
+        ...directoriesResponse.data,
         workspace_directory: directoryDraft.workspace_directory,
         build_directory: directoryDraft.build_directory,
         cache_directory: directoryDraft.cache_directory,
         local_artifact_directory: directoryDraft.local_artifact_directory,
         version: expectedVersion ?? directoryDraft.version,
-      } : e.data;
+      } : directoriesResponse.data;
     }
   } catch (error) {
     if (isCurrentDirectoryRead(revision, read)) message.error(apiErrorMessage(error));
@@ -194,18 +186,16 @@ function refreshActiveSection() {
   else if (active.value === "storage") void loadRuntimeDirectories();
   else void load();
 }
-async function toggle(kind: "webhook" | "lockout") {
-  const current = kind === "webhook" ? webhook.value : lockout.value;
+async function toggleLockout() {
+  const current = lockout.value;
   if (!current || !canUpdate.value) return;
-  saving.value = kind;
+  saving.value = "lockout";
   try {
-    const path = kind === "webhook" ? "/settings/external-git-webhook" : "/settings/login-lockout";
-    const response = await client.put(path, {
+    const response = await client.put<LockoutSetting>("/settings/login-lockout", {
       enabled: !current.enabled,
       expected_version: current.version,
     });
-    if (kind === "webhook") webhook.value = response.data;
-    else lockout.value = response.data;
+    lockout.value = response.data;
     message.success("设置已保存");
   } catch (error) {
     message.error(apiErrorMessage(error));
@@ -413,41 +403,10 @@ onMounted(() => {
         <header>
           <span><ShieldCheck /></span>
           <div>
-            <h3>Git Webhook API</h3>
-            <p>允许外部 Git 平台把代码事件发送给 EDO，并继续执行签名校验与投递去重。</p>
-          </div>
-          <a-switch :checked="webhook?.enabled" :loading="saving === 'webhook'" :disabled="!canUpdate" @change="toggle('webhook')" />
-        </header>
-        <dl>
-          <div>
-            <dt>请求地址</dt>
-            <dd>
-              <code>{{ webhook?.path_template || "/api/v1/webhooks/git/{repository_id}" }}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>支持平台</dt>
-            <dd>
-              {{ webhook?.providers?.join("、") || "GitHub、GitLab、Gitea、Gitee、普通 Git" }}
-            </dd>
-          </div>
-          <div>
-            <dt>请求上限</dt>
-            <dd>
-              {{ Math.round((webhook?.max_body_bytes || 2097152) / 1048576) }}
-              MiB
-            </dd>
-          </div>
-        </dl>
-      </article>
-      <article class="setting-card vben-card">
-        <header>
-          <span><ShieldCheck /></span>
-          <div>
             <h3>登录失败锁定</h3>
             <p>默认关闭；开启后，同一用户名和来源地址连续失败会被暂时锁定。</p>
           </div>
-          <a-switch :checked="lockout?.enabled" :loading="saving === 'lockout'" :disabled="!canUpdate" @change="toggle('lockout')" />
+          <a-switch :checked="lockout?.enabled" :loading="saving === 'lockout'" :disabled="!canUpdate" @change="toggleLockout" />
         </header>
         <dl>
           <div>

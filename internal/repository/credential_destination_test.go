@@ -18,13 +18,13 @@ func TestRepositoryDestinationChangeCannotReuseOtherOwnersPersonalToken(t *testi
 		t.Fatal(err)
 	}
 	input := Input{Name: "shared-repository", Provider: model.GitProviderGeneric, CloneURL: "https://original.invalid/team/repo.git", AuthType: model.GitAuthToken, CredentialID: &ownerCredential.ID}
-	repo, _, err := service.Create(ctx, "token-owner", input)
+	repo, err := service.Create(ctx, "token-owner", input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	input.CredentialID = nil
 	input.CloneURL = "https://new-destination.invalid/team/repo.git"
-	if _, _, err = service.Update(ctx, "different-editor", repo.ID, input); !errors.Is(err, ErrCredentialRebindRequired) {
+	if _, err = service.Update(ctx, "different-editor", repo.ID, input); !errors.Is(err, ErrCredentialRebindRequired) {
 		t.Fatalf("地址变更仍继承他人个人凭据: %v", err)
 	}
 	var stored model.GitRepository
@@ -32,12 +32,12 @@ func TestRepositoryDestinationChangeCannotReuseOtherOwnersPersonalToken(t *testi
 		t.Fatalf("被拒绝的更新改变原地址或凭据: err=%v", err)
 	}
 	input.CredentialID = &ownerCredential.ID
-	if _, _, err = service.Update(ctx, "different-editor", repo.ID, input); !errors.Is(err, ErrInvalidCredential) {
+	if _, err = service.Update(ctx, "different-editor", repo.ID, input); !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("显式提供他人凭据引用仍被接受: %v", err)
 	}
 	input.CredentialID = nil
 	input.CloneURL, input.Name, input.DefaultBranch = "https://ORIGINAL.invalid:443/team/other.git", "renamed repository", "develop"
-	if _, _, err = service.Update(ctx, "different-editor", repo.ID, input); err != nil {
+	if _, err = service.Update(ctx, "different-editor", repo.ID, input); err != nil {
 		t.Fatalf("相同认证目的地的普通修改不应要求读取原凭据: %v", err)
 	}
 	newSecret := "synthetic-editor-git-token"
@@ -46,7 +46,7 @@ func TestRepositoryDestinationChangeCannotReuseOtherOwnersPersonalToken(t *testi
 		t.Fatal(err)
 	}
 	input.CloneURL, input.CredentialID = "https://new-destination.invalid/team/repo.git", &editorCredential.ID
-	updated, _, err := service.Update(ctx, "different-editor", repo.ID, input)
+	updated, err := service.Update(ctx, "different-editor", repo.ID, input)
 	if err != nil || updated.CredentialID == nil || *updated.CredentialID != editorCredential.ID {
 		t.Fatalf("更换为本人显式选择的凭据失败: err=%v", err)
 	}
@@ -59,16 +59,16 @@ func TestRepositoryDestinationChangeCannotReuseHiddenOrProviderAPICredential(t *
 			ctx := context.Background()
 			synthetic := "synthetic-hidden-git-token"
 			input := Input{Name: "hidden-token-repo", Provider: model.GitProviderGeneric, CloneURL: "https://original.invalid/team/repo.git", AuthType: model.GitAuthToken, Credential: &synthetic}
-			repo, _, err := service.Create(ctx, "owner", input)
+			repo, err := service.Create(ctx, "owner", input)
 			if err != nil {
 				t.Fatal(err)
 			}
 			input.CloneURL, input.Credential, input.AllowInsecureHTTP = target, nil, true
-			if _, _, err = service.Update(ctx, "owner", repo.ID, input); !errors.Is(err, ErrCredentialRebindRequired) {
+			if _, err = service.Update(ctx, "owner", repo.ID, input); !errors.Is(err, ErrCredentialRebindRequired) {
 				t.Fatalf("隐藏凭据可隐式发送到新认证目的地: %v", err)
 			}
 			input.Credential = &synthetic
-			if _, _, err = service.Update(ctx, "owner", repo.ID, input); err != nil {
+			if _, err = service.Update(ctx, "owner", repo.ID, input); err != nil {
 				t.Fatalf("重新提供凭据后不能变更认证目的地: %v", err)
 			}
 		})
@@ -81,16 +81,16 @@ func TestRepositoryDestinationChangeCannotReuseHiddenOrProviderAPICredential(t *
 		t.Fatal(err)
 	}
 	input := Input{Name: "api-bound-repo", Provider: model.GitProviderGitLab, CloneURL: "https://original.invalid/team/repo.git", AuthType: model.GitAuthNone, APICredentialID: &api.ID}
-	repo, _, err := service.Create(ctx, "owner", input)
+	repo, err := service.Create(ctx, "owner", input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	input.CloneURL, input.APICredentialID = "https://new-destination.invalid/team/repo.git", nil
-	if _, _, err = service.Update(ctx, "owner", repo.ID, input); !errors.Is(err, ErrCredentialRebindRequired) {
+	if _, err = service.Update(ctx, "owner", repo.ID, input); !errors.Is(err, ErrCredentialRebindRequired) {
 		t.Fatalf("平台 API 凭据随新地址隐式复用: %v", err)
 	}
 	input.APICredentialID = &api.ID
-	if _, _, err = service.Update(ctx, "owner", repo.ID, input); err != nil {
+	if _, err = service.Update(ctx, "owner", repo.ID, input); err != nil {
 		t.Fatalf("本人明确重绑平台 API 凭据失败: %v", err)
 	}
 }

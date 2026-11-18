@@ -60,7 +60,7 @@ func testRepositoryAPIUpdateAfterAccountMutation(t *testing.T, operation string)
 		UserID: owner.ID, DepartmentID: owner.DepartmentID, ProjectID: database.DefaultProjectID(owner.DepartmentID),
 	})
 	input := Input{Name: "a02-api-update-original", Provider: model.GitProviderGitea, CloneURL: "https://example.invalid/a02/api-update.git", DefaultBranch: "main", AuthType: model.GitAuthNone}
-	repository, _, err := s.Create(ctx, owner.ID, input)
+	repository, err := s.Create(ctx, owner.ID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func testRepositoryAPIUpdateAfterAccountMutation(t *testing.T, operation string)
 	updateLaunched = true
 	go func() {
 		defer close(updateDone)
-		updated, _, updateErr = s.Update(updateContext, owner.ID, repository.ID, input)
+		updated, updateErr = s.Update(updateContext, owner.ID, repository.ID, input)
 	}()
 	select {
 	case <-entered:

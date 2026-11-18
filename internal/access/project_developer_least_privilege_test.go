@@ -52,7 +52,7 @@ func TestProjectDeveloperPresetDoesNotInheritNewWriteActions(t *testing.T) {
 	for _, code := range []string{
 		"environment_policy.update", "deployment.create", "deployment.update", "cluster.create", "cluster.update",
 		"delivery_variable.create", "delivery_variable.update", "application_database.create", "application_database.update",
-		"repository.secret.read", "host.terminal.open", "terminal.open", "deployment.review", "user.update",
+		"host.terminal.open", "terminal.open", "deployment.review", "user.update",
 		"application.sensitive.create", "workflow.sensitive.update", "future_resource.create", "future_resource.update",
 	} {
 		if projectDeveloperWritePermission(code) {
@@ -97,7 +97,7 @@ func TestProjectDeveloperPresetReconcilesLegacyPermissionsAndPreservesAssociatio
 		t.Fatal(err)
 	}
 	// 模拟已有实例中的旧模板，并额外证明不会保留模板中的敏感及平台权限。
-	legacy := append(projectDeveloperExpectedPermissionsForTest(), "environment_policy.update", "deployment.create", "deployment.update", "cluster.create", "cluster.update", "delivery_variable.update", "application_database.update", "repository.secret.read", "host.terminal.open", "deployment.review", "user.update")
+	legacy := append(projectDeveloperExpectedPermissionsForTest(), "environment_policy.update", "deployment.create", "deployment.update", "cluster.create", "cluster.update", "delivery_variable.update", "application_database.update", "host.terminal.open", "deployment.review", "user.update")
 	if _, err := service.UpdateRolePermissions(ctx, projectDeveloperRoleIDForTest, legacy); err != nil {
 		t.Fatal(err)
 	}

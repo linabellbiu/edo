@@ -546,7 +546,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}
 	credentialService := credential.NewService(resources.Database, secretManager)
 	dnsService := dnsmanager.NewService(resources.Database, secretManager, dnsmanager.NewRegistry())
-	repositoryService, err := newRepositoryService(resources.Database, cfg, secretManager, credentialService, configurationService)
+	repositoryService, err := newRepositoryService(resources.Database, cfg, secretManager, credentialService)
 	if err != nil {
 		logger.Error("初始化代码仓库服务失败", "operation", "repository_bootstrap", "err", err)
 		return errors.New("代码仓库服务初始化失败")
@@ -611,7 +611,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	sqlChanges.ConfigureRunner(sqlchange.NewRuntime(cfg.Runtime, logger))
 	sqlChanges.ConfigureLocks(redislock.New(resources.Redis.Client()), resources.Redis.Key("lock", "database-migration"))
 	taskWorker, err := newBackgroundTaskWorker(
-		resources, cfg, logger, repositoryService, pipelineService, deploymentService,
+		resources, cfg, logger, pipelineService, deploymentService,
 		notificationService, monitorService, schedulerService, sqlChanges,
 	)
 	if err != nil {
@@ -846,7 +846,6 @@ func newBackgroundTaskWorker(
 	resources *bootstrap.Resources,
 	cfg config.Config,
 	logger *slog.Logger,
-	repositoryService *repository.Service,
 	pipelineService *pipeline.Service,
 	deploymentService *deployment.Service,
 	notificationService *notification.Service,
@@ -861,25 +860,6 @@ func newBackgroundTaskWorker(
 	}
 	if err := registry.Register("system.noop", func(context.Context, task.Message) error { return nil }); err != nil {
 		logger.Error("注册内置任务处理器失败", "operation", "worker_register", "kind", "system.noop", "err", err)
-		return nil, errors.New("后台任务初始化失败")
-	}
-	if err := registry.Register("repository.webhook", func(ctx context.Context, message task.Message) error {
-		if err := repositoryService.ProcessWebhookTask(ctx, message.Payload); err != nil {
-			if errors.Is(err, repository.ErrInvalidTaskPayload) {
-				return worker.NewPermanentError("invalid_webhook_task", repository.ErrInvalidTaskPayload.Error(), err)
-			}
-			return worker.NewRetryableError("webhook_database_unavailable", "Webhook 事件处理暂时失败", err)
-		}
-		var payload repository.WebhookTaskPayload
-		if err := json.Unmarshal(message.Payload, &payload); err != nil {
-			return worker.NewPermanentError("invalid_webhook_task", repository.ErrInvalidTaskPayload.Error(), err)
-		}
-		if err := pipelineService.HandleRepositoryEvent(ctx, payload); err != nil {
-			return worker.NewRetryableError("application_webhook_update_failed", "应用监听状态暂时更新失败", err)
-		}
-		return nil
-	}); err != nil {
-		logger.Error("注册 Webhook 任务处理器失败", "operation", "worker_register", "kind", "repository.webhook", "err", err)
 		return nil, errors.New("后台任务初始化失败")
 	}
 	if err := registry.Register("pipeline.deploy", func(ctx context.Context, message task.Message) error {
@@ -1010,12 +990,9 @@ func newRepositoryService(
 	cfg config.Config,
 	secretManager *secret.Manager,
 	credentialService *credential.Service,
-	configurationService *configuration.Service,
 ) (*repository.Service, error) {
 	return repository.NewService(
-		db, secretManager, credentialService, repository.NewGitClient(cfg.Git), cfg.NATS.MaxAttempts,
-		repository.WithWebhookGate(configurationService),
-		repository.WithCheckoutDirectory(cfg.Git.Directory),
+		db, secretManager, credentialService, repository.NewGitClient(cfg.Git), repository.WithCheckoutDirectory(cfg.Git.Directory),
 		repository.WithCacheDirectory(cfg.Git.CacheDirectory),
 	), nil
 }

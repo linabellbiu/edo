@@ -563,11 +563,3 @@ func defaultTokenUsername(provider model.GitProvider) string {
 		return "git"
 	}
 }
-
-func truncateString(value string, max int) string {
-	runes := []rune(value)
-	if len(runes) <= max {
-		return value
-	}
-	return string(runes[:max])
-}

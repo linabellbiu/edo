@@ -405,7 +405,7 @@ func newArtifactTestService(t *testing.T, maxBytes int64) (*Service, *gorm.DB, m
 	repository := model.GitRepository{
 		ID: "repository-1", Name: "制品测试仓库", Provider: model.GitProviderGeneric,
 		CloneURL: "https://example.com/team/service.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
-		CredentialCiphertext: "", WebhookSecretCiphertext: "", IsActive: true,
+		CredentialCiphertext: "", IsActive: true,
 		CreatedBy: "user-1", CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(&repository).Error; err != nil {

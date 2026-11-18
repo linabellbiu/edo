@@ -317,7 +317,7 @@ func createRepositoryForDepartmentTest(t *testing.T, router http.Handler, cookie
 	t.Helper()
 	response := performJSONRequest(t, router, http.MethodPost, "/api/v1/repositories", map[string]any{
 		"name": name, "provider": "generic", "clone_url": "https://git.example.com/" + name + ".git",
-		"auth_type": "none", "webhook_enabled": false,
+		"auth_type": "none",
 	}, cookie)
 	var payload struct {
 		Repository struct {

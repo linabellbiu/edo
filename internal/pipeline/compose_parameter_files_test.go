@@ -33,7 +33,7 @@ func newComposeParameterTest(t *testing.T, files map[string]string) (*Service, *
 	node := model.WorkflowNode{ID: "compose-parameters", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{DeploymentParameters: "--env-file .env"}}
 	snapshot := workflowSnapshot{SchemaVersion: model.WorkflowSchemaVersion, AuthorityID: "admin", Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger}, Stages: []model.WorkflowStage{{ID: "deploy", Tasks: []model.WorkflowNode{node}}}}
 	s, db, _, run := newBuildExecutorTestRun(t, node, snapshot, files)
-	s.repositories = repository.NewService(db, s.secrets, nil, buildExecutorCheckoutStub{files: files}, 4, repository.WithCheckoutDirectory(t.TempDir()))
+	s.repositories = repository.NewService(db, s.secrets, nil, buildExecutorCheckoutStub{files: files}, repository.WithCheckoutDirectory(t.TempDir()))
 	directory, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestComposeParameterFilesAllowHostFilesAndRequireExecutionAuthority(t *test
 		t.Fatal("不存在于仓库的文件应留给执行主机检查", err)
 	}
 	probe := &composeDetectionCheckout{files: map[string]string{".env": "VALUE=canary\n"}}
-	s.repositories = repository.NewService(s.db, s.secrets, nil, probe, 4, repository.WithCheckoutDirectory(t.TempDir()))
+	s.repositories = repository.NewService(s.db, s.secrets, nil, probe, repository.WithCheckoutDirectory(t.TempDir()))
 	if err := s.prepareComposeParameterFiles(context.Background(), prepared); err == nil || probe.calls != 0 {
 		t.Fatal("缺少执行授权时读取了代码文件")
 	}
@@ -245,7 +245,7 @@ func TestComposeParameterFilesRealGitAndTransfer(t *testing.T) {
 	if err := s.db.Model(&model.GitRepository{}).Where("uuid = ?", prepared.component.RepositoryID).Update("clone_url", directory).Error; err != nil {
 		t.Fatal(err)
 	}
-	s.repositories = repository.NewService(s.db, s.secrets, credential.NewService(s.db, s.secrets), repository.NewGitClient(config.Git{Timeout: 10 * time.Second}), 4, repository.WithCheckoutDirectory(t.TempDir()))
+	s.repositories = repository.NewService(s.db, s.secrets, credential.NewService(s.db, s.secrets), repository.NewGitClient(config.Git{Timeout: 10 * time.Second}), repository.WithCheckoutDirectory(t.TempDir()))
 	prepared.run.CommitSHA = pinned.String()
 	if err := s.prepareComposeParameterFiles(ctx, prepared); err != nil {
 		t.Fatal(err)

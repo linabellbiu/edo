@@ -23,7 +23,7 @@ func (c *commitAuthorClient) CachedCommitAuthorAt(context.Context, string, strin
 func TestRunCommitAuthorUsesFrozenRepositoryAndDeduplicatesCommit(t *testing.T) {
 	s, _, secrets, repoID := newPipelineTestService(t)
 	client := &commitAuthorClient{}
-	s.repositories = repository.NewService(s.db, secrets, credential.NewService(s.db, secrets), client, 4)
+	s.repositories = repository.NewService(s.db, secrets, credential.NewService(s.db, secrets), client)
 	commit := strings.Repeat("a", 40)
 	runs := []model.PipelineRun{
 		{ID: "one", CommitSHA: commit, CreatedBy: "发布人", Repositories: []model.PipelineRunRepository{{RepositoryID: repoID}}},

@@ -16,7 +16,7 @@ func TestWorkflowTaskSaveHTTPPreservesStateAndIsolation(t *testing.T) {
 	defer f.close()
 	admin := loginForDepartmentTest(t, f.router, "admin")
 	ctx := context.Background()
-	repo, _, err := f.repositories.Create(ctx, "admin", repository.Input{Name: "独立任务仓库", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/tasks.git", DefaultBranch: "main", AuthType: model.GitAuthNone})
+	repo, err := f.repositories.Create(ctx, "admin", repository.Input{Name: "独立任务仓库", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/tasks.git", DefaultBranch: "main", AuthType: model.GitAuthNone})
 	if err != nil {
 		t.Fatal(err)
 	}

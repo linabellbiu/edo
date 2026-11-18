@@ -8,5 +8,5 @@ func (s *Service) MetadataTransaction(tx *gorm.DB) *Service {
 	if s == nil {
 		return nil
 	}
-	return &Service{db: tx, secrets: s.secrets, credentials: s.credentials, defaultMaxAttempts: s.defaultMaxAttempts}
+	return &Service{db: tx, secrets: s.secrets, credentials: s.credentials}
 }

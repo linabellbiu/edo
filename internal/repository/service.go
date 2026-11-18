@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -37,15 +36,8 @@ var (
 	ErrInvalidCredential        = errors.New("代码仓库凭据配置无效")
 	ErrCredentialRebindRequired = errors.New("更换代码仓库地址后，请重新提供凭据或选择本人保存的令牌")
 	ErrKnownHostsRequired       = errors.New("SSH 仓库必须配置可信 known_hosts 文件")
-	ErrExternalWebhookDisabled  = errors.New("外部 Git Webhook API 未启用")
-	ErrWebhookUnavailable       = errors.New("Git Webhook 服务暂不可用")
-	ErrWebhookDisabled          = errors.New("代码仓库 Webhook 未启用")
-	ErrInvalidSignature         = errors.New("Webhook 签名校验失败")
-	ErrUnsupportedEvent         = errors.New("Webhook 事件类型不受支持")
-	ErrInvalidTaskPayload       = errors.New("Webhook 任务参数无效")
 	ErrPullRequestMetadata      = errors.New("无法读取可靠的 PR/MR 分支元数据")
 	ErrDirectoryBusy            = errors.New("当前有构建正在使用该目录，请稍后重试")
-	ErrTagCommitResolution      = errors.New("无法解析固定 Tag 对应的 Commit，请检查仓库和版本后重试")
 )
 
 var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
@@ -60,24 +52,20 @@ type Input struct {
 	Credential        *string
 	CredentialID      *string
 	APICredentialID   *string
-	WebhookEnabled    bool
-	RegenerateWebhook bool
 	AllowInsecureHTTP bool
 }
 
 type Service struct {
-	db                 *gorm.DB
-	secrets            *secret.Manager
-	git                refLister
-	credentials        *credential.Service
-	webhookGate        webhookGate
-	defaultMaxAttempts int
-	directoriesMu      sync.RWMutex
-	checkoutDirectory  string
-	cacheDirectory     string
-	maintenance        sync.RWMutex
-	checkoutLocksMu    sync.Mutex
-	checkoutLocks      map[string]*checkoutLock
+	db                *gorm.DB
+	secrets           *secret.Manager
+	git               refLister
+	credentials       *credential.Service
+	directoriesMu     sync.RWMutex
+	checkoutDirectory string
+	cacheDirectory    string
+	maintenance       sync.RWMutex
+	checkoutLocksMu   sync.Mutex
+	checkoutLocks     map[string]*checkoutLock
 }
 
 type checkoutLock struct {
@@ -119,17 +107,7 @@ type historicalCommitMessageClient interface {
 	HistoricalCommitMessage(context.Context, model.GitRepository, string, string, string) (string, error)
 }
 
-type webhookGate interface {
-	ExternalGitWebhookEnabled(context.Context) (bool, error)
-}
-
 type Option func(*Service)
-
-func WithWebhookGate(gate webhookGate) Option {
-	return func(service *Service) {
-		service.webhookGate = gate
-	}
-}
 
 func WithCheckoutDirectory(directory string) Option {
 	return func(service *Service) {
@@ -143,9 +121,9 @@ func WithCacheDirectory(directory string) Option {
 	}
 }
 
-func NewService(db *gorm.DB, secrets *secret.Manager, credentials *credential.Service, git refLister, defaultMaxAttempts int, options ...Option) *Service {
+func NewService(db *gorm.DB, secrets *secret.Manager, credentials *credential.Service, git refLister, options ...Option) *Service {
 	service := &Service{
-		db: db, secrets: secrets, credentials: credentials, git: git, defaultMaxAttempts: defaultMaxAttempts,
+		db: db, secrets: secrets, credentials: credentials, git: git,
 		checkoutLocks: make(map[string]*checkoutLock),
 	}
 	for _, option := range options {
@@ -248,39 +226,23 @@ func (s *Service) Find(ctx context.Context, id string) (*model.GitRepository, er
 	return &repository, nil
 }
 
-func (s *Service) ListDeliveries(ctx context.Context, repositoryID string, limit int) ([]model.GitWebhookDelivery, error) {
-	if _, err := s.Find(ctx, repositoryID); err != nil {
-		return nil, err
-	}
-	if limit < 1 || limit > 200 {
-		limit = 50
-	}
-	var deliveries []model.GitWebhookDelivery
-	if err := s.db.WithContext(ctx).Where("repository_id = ?", repositoryID).
-		Order("received_at DESC").Limit(limit).Find(&deliveries).Error; err != nil {
-		return nil, fmt.Errorf("查询 Webhook 投递记录失败: %w", err)
-	}
-	return deliveries, nil
-}
-
-func (s *Service) Create(ctx context.Context, actorID string, input Input) (item *model.GitRepository, webhook string, err error) {
+func (s *Service) Create(ctx context.Context, actorID string, input Input) (item *model.GitRepository, err error) {
 	id := uuid.NewString()
 	defer func() { logRepositoryMutationError(ctx, "repository_create", actorID, id, err) }()
 	normalized, err := s.normalizeInput(ctx, actorID, id, nil, input)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	now := time.Now().UTC()
 	repository := &model.GitRepository{
 		ID: id, Name: normalized.Name, Provider: normalized.Provider,
 		CloneURL: normalized.CloneURL, DefaultBranch: normalized.DefaultBranch,
 		AuthType: normalized.AuthType, Username: normalized.Username,
-		CredentialID:            normalized.credentialID,
-		APICredentialID:         normalized.apiCredentialID,
-		CredentialCiphertext:    normalized.credentialCiphertext,
-		WebhookSecretCiphertext: normalized.webhookCiphertext,
-		WebhookEnabled:          normalized.WebhookEnabled, AllowInsecureHTTP: normalized.AllowInsecureHTTP,
-		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		CredentialID:         normalized.credentialID,
+		APICredentialID:      normalized.apiCredentialID,
+		CredentialCiphertext: normalized.credentialCiphertext,
+		AllowInsecureHTTP:    normalized.AllowInsecureHTTP,
+		IsActive:             true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := credential.LockReferences(tx, normalizedReferenceIDs(normalized)); err != nil {
@@ -293,34 +255,32 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (item
 		return tx.Create(repository).Error
 	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			return nil, "", ErrRepositoryExists
+			return nil, ErrRepositoryExists
 		}
-		return nil, "", fmt.Errorf("创建代码仓库失败: %w", err)
+		return nil, fmt.Errorf("创建代码仓库失败: %w", err)
 	}
-	return repository, normalized.webhookPlaintext, nil
+	return repository, nil
 }
 
-func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (item *model.GitRepository, webhook string, err error) {
+func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (item *model.GitRepository, err error) {
 	defer func() { logRepositoryMutationError(ctx, "repository_update", actorID, id, err) }()
 	existing, err := s.Find(ctx, id)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	normalized, err := s.normalizeInput(ctx, actorID, id, existing, input)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	now := time.Now().UTC()
 	updates := map[string]any{
 		"name": normalized.Name, "provider": normalized.Provider,
 		"clone_url": normalized.CloneURL, "default_branch": normalized.DefaultBranch,
 		"auth_type": normalized.AuthType, "username": normalized.Username,
-		"credential_id":             normalized.credentialID,
-		"api_credential_id":         normalized.apiCredentialID,
-		"credential_ciphertext":     normalized.credentialCiphertext,
-		"webhook_secret_ciphertext": normalized.webhookCiphertext,
-		"webhook_enabled":           normalized.WebhookEnabled,
-		"allow_insecure_http":       normalized.AllowInsecureHTTP, "updated_at": now,
+		"credential_id":         normalized.credentialID,
+		"api_credential_id":     normalized.apiCredentialID,
+		"credential_ciphertext": normalized.credentialCiphertext,
+		"allow_insecure_http":   normalized.AllowInsecureHTTP, "updated_at": now,
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := credential.LockReferences(tx, normalizedReferenceIDs(normalized)); err != nil {
@@ -336,9 +296,9 @@ func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (
 		return tx.Model(existing).Updates(updates).Error
 	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			return nil, "", ErrRepositoryExists
+			return nil, ErrRepositoryExists
 		}
-		return nil, "", fmt.Errorf("更新代码仓库失败: %w", err)
+		return nil, fmt.Errorf("更新代码仓库失败: %w", err)
 	}
 	existing.Name = normalized.Name
 	existing.Provider = normalized.Provider
@@ -349,11 +309,9 @@ func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (
 	existing.CredentialID = normalized.credentialID
 	existing.APICredentialID = normalized.apiCredentialID
 	existing.CredentialCiphertext = normalized.credentialCiphertext
-	existing.WebhookSecretCiphertext = normalized.webhookCiphertext
-	existing.WebhookEnabled = normalized.WebhookEnabled
 	existing.AllowInsecureHTTP = normalized.AllowInsecureHTTP
 	existing.UpdatedAt = now
-	return existing, normalized.webhookPlaintext, nil
+	return existing, nil
 }
 
 func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
@@ -387,9 +345,6 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		}
 		if legacyReferences > 0 || references > 0 {
 			return ErrRepositoryInUse
-		}
-		if err := tx.Where("repository_id = ?", id).Delete(&model.GitWebhookDelivery{}).Error; err != nil {
-			return fmt.Errorf("清理代码仓库 Webhook 投递记录失败: %w", err)
 		}
 		if err := tx.Delete(&existing).Error; err != nil {
 			return fmt.Errorf("删除代码仓库失败: %w", err)
@@ -750,61 +705,6 @@ func (s *Service) commitMessage(ctx context.Context, id, ref, commitSHA string, 
 	return client.CommitMessage(ctx, *repository, credential, ref, commitSHA)
 }
 
-// ResolveTagCommit 校验固定事件对象；原 Tag OID 仅作为进程内迁移线索返回。
-func (s *Service) ResolveTagCommit(ctx context.Context, id, ref, objectSHA string) (string, string, error) {
-	ref, objectSHA = strings.TrimSpace(ref), strings.TrimSpace(objectSHA)
-	validRef := len(ref) <= 512 && plumbing.ReferenceName(ref).IsTag() && plumbing.ReferenceName(ref).Validate() == nil
-	validSHA := plumbing.IsHash(objectSHA) && !plumbing.NewHash(objectSHA).IsZero()
-	fail := func(err error) (string, string, error) {
-		loggedRef, loggedSHA := "invalid", "invalid"
-		if validRef {
-			loggedRef = ref
-		}
-		if validSHA {
-			loggedSHA = objectSHA
-		}
-		slog.ErrorContext(ctx, "解析固定 Tag Commit 失败", "operation", "repository_resolve_tag_commit", "repository_id", id, "ref", loggedRef, "object_sha", loggedSHA, "err", err)
-		return "", "", ErrTagCommitResolution
-	}
-	repository, err := s.Find(ctx, id)
-	if err != nil {
-		return fail(err)
-	}
-	if !repository.IsActive {
-		return fail(ErrRepositoryNotFound)
-	}
-	credential, err := s.resolveCredential(ctx, repository)
-	if err != nil {
-		return fail(err)
-	}
-	if !validRef || !validSHA {
-		return fail(ErrInvalidTaskPayload)
-	}
-	objectSHA = plumbing.NewHash(objectSHA).String()
-	client, ok := s.git.(cachedTagCommitClient)
-	if !ok {
-		return fail(errors.New("Git 客户端未提供固定 Tag 解析能力"))
-	}
-	directory, release, err := s.acquireMetadataCache(ctx, repository.CloneURL)
-	if err != nil {
-		return fail(err)
-	}
-	defer release()
-	commitSHA, err := client.ResolveTagCommitCachedAt(ctx, *repository, credential, ref, objectSHA, directory)
-	if err != nil {
-		return fail(err)
-	}
-	if !plumbing.IsHash(commitSHA) || plumbing.NewHash(commitSHA).IsZero() {
-		return fail(errors.New("Git 客户端未返回有效 Commit"))
-	}
-	commitSHA = plumbing.NewHash(commitSHA).String()
-	rawTagOID := ""
-	if commitSHA != objectSHA {
-		rawTagOID = objectSHA
-	}
-	return commitSHA, rawTagOID, nil
-}
-
 func (s *Service) acquireMetadataCache(ctx context.Context, cloneURL string) (string, func(), error) {
 	return s.metadataCache(ctx, cloneURL, true)
 }
@@ -896,21 +796,6 @@ func (s *Service) TestInput(ctx context.Context, actorID string, input Input) (R
 	}, credentialValue)
 }
 
-func (s *Service) RevealWebhookSecret(ctx context.Context, id string) (string, error) {
-	repository, err := s.Find(ctx, id)
-	if err != nil {
-		return "", err
-	}
-	if !repository.WebhookEnabled || repository.WebhookSecretCiphertext == "" {
-		return "", ErrWebhookDisabled
-	}
-	plaintext, err := s.secrets.Decrypt(repository.WebhookSecretCiphertext, webhookAAD(repository.ID))
-	if err != nil {
-		return "", fmt.Errorf("解密 Webhook 密钥失败: %w", err)
-	}
-	return plaintext, nil
-}
-
 func (s *Service) CredentialIDForUser(ctx context.Context, userID string, repository *model.GitRepository) *string {
 	return s.ownedCredentialID(ctx, userID, repository.CredentialID)
 }
@@ -973,8 +858,6 @@ type normalizedInput struct {
 	credentialID         *string
 	apiCredentialID      *string
 	credentialCiphertext string
-	webhookCiphertext    string
-	webhookPlaintext     string
 }
 
 func (s *Service) normalizeInput(ctx context.Context, actorID, id string, existing *model.GitRepository, input Input) (normalizedInput, error) {
@@ -1038,25 +921,8 @@ func (s *Service) normalizeInput(ctx context.Context, actorID, id string, existi
 		return normalizedInput{}, err
 	}
 
-	webhookCiphertext := ""
-	if existing != nil {
-		webhookCiphertext = existing.WebhookSecretCiphertext
-	}
-	webhookPlaintext := ""
-	shouldGenerate := input.WebhookEnabled && (webhookCiphertext == "" || input.RegenerateWebhook)
-	if shouldGenerate {
-		webhookPlaintext, err = randomSecret()
-		if err != nil {
-			return normalizedInput{}, err
-		}
-		webhookCiphertext, err = s.secrets.Encrypt(webhookPlaintext, webhookAAD(id))
-		if err != nil {
-			return normalizedInput{}, fmt.Errorf("加密 Webhook 密钥失败: %w", err)
-		}
-	}
 	return normalizedInput{
 		Input: input, credentialID: credentialID, apiCredentialID: apiCredentialID, credentialCiphertext: credentialCiphertext,
-		webhookCiphertext: webhookCiphertext, webhookPlaintext: webhookPlaintext,
 	}, nil
 }
 
@@ -1123,12 +989,3 @@ func validAuthType(authType model.GitAuthType) bool {
 }
 
 func credentialAAD(id string) []byte { return []byte("git_repository:" + id + ":credential") }
-func webhookAAD(id string) []byte    { return []byte("git_repository:" + id + ":webhook") }
-
-func randomSecret() (string, error) {
-	value := make([]byte, 32)
-	if _, err := rand.Read(value); err != nil {
-		return "", fmt.Errorf("生成 Webhook 密钥失败: %w", err)
-	}
-	return hex.EncodeToString(value), nil
-}

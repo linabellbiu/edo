@@ -14,29 +14,11 @@ import (
 	"edo/internal/repository"
 )
 
-type tagNormalizationClient struct {
-	pipelineRefLister
-	resolved     map[string]string
-	resolveErr   error
-	resolveCalls int
-}
-
-func (c *tagNormalizationClient) ResolveTagCommitCachedAt(_ context.Context, _ model.GitRepository, _, _ string, objectSHA, _ string) (string, error) {
-	c.resolveCalls++
-	if c.resolveErr != nil {
-		return "", c.resolveErr
-	}
-	if commit, ok := c.resolved[objectSHA]; ok {
-		return commit, nil
-	}
-	return "", errors.New("固定测试对象不存在")
-}
-
-func tagNormalizationFixture(t *testing.T) (*Service, *gorm.DB, *model.Application, *tagNormalizationClient) {
+func tagNormalizationFixture(t *testing.T) (*Service, *gorm.DB, *model.Application, *pipelineRefLister) {
 	t.Helper()
 	service, db, secrets, repositoryID := newPipelineTestService(t)
-	client := &tagNormalizationClient{resolved: make(map[string]string)}
-	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), client, 4)
+	client := &pipelineRefLister{}
+	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), client)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "tag_normalization")
 	workflow, err := service.GetWorkflow(context.Background(), application.ID)
 	if err != nil {
@@ -152,121 +134,6 @@ func TestPolledTagLegacyRunIdentityRemainsImmutable(t *testing.T) {
 	after, _ := json.Marshal(storedAfter)
 	if string(before) != string(after) {
 		t.Fatal("规范新版本时改写了原始运行")
-	}
-}
-
-func TestTagWebhookAndPollShareTargetCommitAndDeduplication(t *testing.T) {
-	for _, sequence := range [][]string{{"poll", "raw", "commit"}, {"raw", "poll", "commit"}, {"commit", "raw", "poll"}} {
-		t.Run(strings.Join(sequence, "_"), func(t *testing.T) {
-			service, db, application, client := tagNormalizationFixture(t)
-			if _, _, err := service.SyncApplication(context.Background(), application.ID, "poll"); err != nil {
-				t.Fatal(err)
-			}
-			raw, commit := strings.Repeat("a", 40), strings.Repeat("b", 40)
-			client.refs.Tags = []repository.GitRef{{Name: "v1", SHA: commit, RawTagOID: raw}}
-			client.resolved[raw], client.resolved[commit] = commit, commit
-			for _, action := range sequence {
-				if action == "poll" {
-					if _, _, err := service.SyncApplication(context.Background(), application.ID, "poll"); err != nil {
-						t.Fatal(err)
-					}
-				} else {
-					object := raw
-					if action == "commit" {
-						object = commit
-					}
-					if err := service.HandleRepositoryEvent(context.Background(), repository.WebhookTaskPayload{RepositoryID: application.RepositoryID, EventType: "tag_push", Ref: "refs/tags/v1", CommitSHA: object}); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			var runs []model.PipelineRun
-			if err := db.Where("application_id = ?", application.ID).Find(&runs).Error; err != nil || len(runs) != 1 || runs[0].CommitSHA != commit {
-				t.Fatalf("不同入口未按实际提交幂等: runs=%+v err=%v", runs, err)
-			}
-			if got := tagObservation(t, db, application.ID).CommitSHA; got != commit {
-				t.Fatalf("Webhook游标未保存目标Commit: %s", got)
-			}
-			if client.resolveCalls != 2 {
-				t.Fatalf("每次事件必须只解析一次固定对象: calls=%d", client.resolveCalls)
-			}
-		})
-	}
-}
-
-func TestTagWebhookLegacyCursorOnlyMigratesCurrentObject(t *testing.T) {
-	for _, current := range []bool{true, false} {
-		t.Run(map[bool]string{true: "当前同一对象", false: "标签已移动"}[current], func(t *testing.T) {
-			service, db, application, client := tagNormalizationFixture(t)
-			raw, commit := strings.Repeat("a", 40), strings.Repeat("b", 40)
-			client.refs.Tags = []repository.GitRef{{Name: "v1", SHA: raw}}
-			if _, _, err := service.SyncApplication(context.Background(), application.ID, "poll"); err != nil {
-				t.Fatal(err)
-			}
-			client.resolved[raw] = commit
-			client.refs.Tags[0] = repository.GitRef{Name: "v1", SHA: commit, RawTagOID: raw}
-			if !current {
-				client.refs.Tags[0] = repository.GitRef{Name: "v1", SHA: strings.Repeat("c", 40), RawTagOID: strings.Repeat("d", 40)}
-			}
-			r, j, o := tagCounts(t, db)
-			if err := service.HandleRepositoryEvent(context.Background(), repository.WebhookTaskPayload{RepositoryID: application.RepositoryID, EventType: "tag_push", Ref: "refs/tags/v1", CommitSHA: raw}); err != nil {
-				t.Fatal(err)
-			}
-			assertTagCounts(t, db, r, j, o)
-			expected := raw
-			if current {
-				expected = commit
-			}
-			if got := tagObservation(t, db, application.ID).CommitSHA; got != expected {
-				t.Fatalf("没有当前对象配对时不得迁移旧游标: got=%s want=%s", got, expected)
-			}
-		})
-	}
-}
-
-func TestTagWebhookResolutionFailureDoesNotMutateApplications(t *testing.T) {
-	service, db, application, client := tagNormalizationFixture(t)
-	if _, err := service.CreateApplication(context.Background(), "admin", ApplicationInput{Name: "second_tag_application", RepositoryID: application.RepositoryID}); err != nil {
-		t.Fatal(err)
-	}
-	client.resolveErr = errors.New("固定对象无法取得")
-	r, j, o := tagCounts(t, db)
-	var before []model.ApplicationRepositoryObservation
-	if err := db.Find(&before).Error; err != nil {
-		t.Fatal(err)
-	}
-	var applicationsBefore []model.Application
-	var linksBefore []model.ApplicationRepository
-	if err := db.Order("id").Find(&applicationsBefore).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Order("id").Find(&linksBefore).Error; err != nil {
-		t.Fatal(err)
-	}
-	err := service.HandleRepositoryEvent(context.Background(), repository.WebhookTaskPayload{RepositoryID: application.RepositoryID, EventType: "tag_push", Ref: "refs/tags/v1", CommitSHA: strings.Repeat("a", 40)})
-	if !errors.Is(err, repository.ErrTagCommitResolution) {
-		t.Fatalf("固定对象错误未安全返回: %v", err)
-	}
-	assertTagCounts(t, db, r, j, o)
-	var after []model.ApplicationRepositoryObservation
-	if err := db.Find(&after).Error; err != nil || len(after) != len(before) {
-		t.Fatalf("解析失败仍更新了游标: before=%d after=%d err=%v", len(before), len(after), err)
-	}
-	var applicationsAfter []model.Application
-	var linksAfter []model.ApplicationRepository
-	if err := db.Order("id").Find(&applicationsAfter).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Order("id").Find(&linksAfter).Error; err != nil {
-		t.Fatal(err)
-	}
-	beforeJSON, _ := json.Marshal([]any{before, applicationsBefore, linksBefore})
-	afterJSON, _ := json.Marshal([]any{after, applicationsAfter, linksAfter})
-	if string(beforeJSON) != string(afterJSON) {
-		t.Fatal("解析失败仍修改了应用或仓库游标")
-	}
-	if client.resolveCalls != 1 {
-		t.Fatalf("事件没有在任何应用写入前失败: calls=%d", client.resolveCalls)
 	}
 }
 

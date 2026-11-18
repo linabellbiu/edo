@@ -12,7 +12,7 @@ import (
 func TestWorkflowInlineDeploymentHTTPPersistsWithoutCreatingLibraryResources(t *testing.T) {
 	f := newReleasePlanExecutionHTTPFixture(t, "0123456789abcdef0123456789abcdef01234567")
 	defer f.close()
-	repo, _, err := f.repositories.Create(context.Background(), "admin", repository.Input{Name: "自定义部署接口仓库", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/inline.git", DefaultBranch: "main", AuthType: model.GitAuthNone})
+	repo, err := f.repositories.Create(context.Background(), "admin", repository.Input{Name: "自定义部署接口仓库", Provider: model.GitProviderGeneric, CloneURL: "https://example.invalid/inline.git", DefaultBranch: "main", AuthType: model.GitAuthNone})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,12 @@ import ts from 'typescript'
 import * as vue from 'vue'
 import { componentHarness } from './acceptanceHarness.mjs'
 
+const settingsReads = [
+  '/settings/login-lockout',
+  '/settings/runtime-logging',
+  '/settings/log-retention',
+  '/settings/runtime-directories',
+]
 const fields = ['workspace_directory', 'build_directory', 'cache_directory', 'local_artifact_directory']
 const usages = ['workspace_usage', 'build_usage', 'cache_usage', 'artifact_usage']
 const paths = prefix => Object.fromEntries(fields.map((key, index) => [key, `/public-test/${prefix}/${index}`]))
@@ -57,7 +63,7 @@ test('存储目录400/5xx/409失败后真实输入保留四路径及原版本，
     await h.state.saveRuntimeDirectories()
     assert.deepEqual(pick(h.state.runtimeDirectories.value), { ...draft, version: 3 })
     assert.deepEqual(h.writes().map(item => item.body), [{ ...draft, expected_version: 3 }])
-    assert.equal(h.reads().length, 5)
+    assert.deepEqual(h.reads().map(item => item.path), settingsReads)
     for (const key of usages) assert.deepEqual(h.state.runtimeDirectories.value[key], dto(8, 'latest')[key])
     const html = await assertInputs(h, fields.map(key => draft[key]))
     assert.match(html, /\/public-test\/latest\/0/)
@@ -72,7 +78,7 @@ test('PUT和失败回读进行中的最新输入都保留，提交体与expected
   const save = h.state.saveRuntimeDirectories()
   h.state.runtimeDirectories.value.workspace_directory = '/public-test/during-put'
   put.reject(failure(400)); await settle()
-  assert.equal(h.reads().length, 5)
+  assert.deepEqual(h.reads().map(item => item.path), settingsReads)
   h.state.runtimeDirectories.value.workspace_directory = '/public-test/during-get'
   h.state.runtimeDirectories.value.cache_directory = '/public-test/latest-cache'
   get.resolve({ data: dto(9, 'fresh') }); await save
@@ -171,7 +177,7 @@ test('显式刷新在失败回读之后发起时优先，旧回读不覆盖新DT
   Object.assign(h.state.runtimeDirectories.value, draft)
   const save = h.state.saveRuntimeDirectories(); await settle()
   h.state.refreshActiveSection(); await settle()
-  assert.equal(h.reads().length, 6)
+  assert.deepEqual(h.reads().map(item => item.path), [...settingsReads, '/settings/runtime-directories'])
   latest.resolve({ data: dto(12, 'manual-refresh') }); await settle()
   old.resolve({ data: dto(11, 'old-recovery') }); await save
   assert.deepEqual(h.state.runtimeDirectories.value, dto(12, 'manual-refresh'))
@@ -349,7 +355,7 @@ test('旧失败回读迟到报错不覆盖重新授权后的实际目录，也�
   assert.deepEqual(h.state.runtimeDirectories.value, dto(22, 'revalidated'))
   assert.deepEqual(h.notifications.map(item => item.value), ['公开测试错误 400'])
   assert.equal(h.writes().length, 1)
-  assert.equal(h.reads().length, 6)
+  assert.deepEqual(h.reads().map(item => item.path), [...settingsReads, '/settings/runtime-directories'])
   await assertInputs(h, fields.map(key => dto(22, 'revalidated')[key]))
 })
 

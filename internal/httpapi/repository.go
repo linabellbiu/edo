@@ -2,25 +2,19 @@ package httpapi
 
 import (
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"edo/internal/access"
 	"edo/internal/model"
 	"edo/internal/repository"
 	"edo/internal/secret"
 )
 
-const maxWebhookBodyBytes = 2 * 1024 * 1024
-
 type repositoryHandler struct {
 	service *repository.Service
-	access  *access.Service
 	logger  *slog.Logger
 }
 
@@ -34,8 +28,6 @@ type repositoryRequest struct {
 	Credential        *string           `json:"credential" binding:"omitempty,max=65536"`
 	CredentialID      *string           `json:"credential_id" binding:"omitempty,max=36"`
 	APICredentialID   *string           `json:"api_credential_id" binding:"omitempty,max=36"`
-	WebhookEnabled    bool              `json:"webhook_enabled"`
-	RegenerateWebhook bool              `json:"regenerate_webhook"`
 	AllowInsecureHTTP bool              `json:"allow_insecure_http"`
 }
 
@@ -54,8 +46,6 @@ type repositoryResponse struct {
 	HasCredential     bool              `json:"has_credential"`
 	CredentialID      *string           `json:"credential_id,omitempty"`
 	APICredentialID   *string           `json:"api_credential_id,omitempty"`
-	WebhookEnabled    bool              `json:"webhook_enabled"`
-	WebhookURL        string            `json:"webhook_url"`
 	AllowInsecureHTTP bool              `json:"allow_insecure_http"`
 	IsActive          bool              `json:"is_active"`
 	CreatedBy         string            `json:"created_by"`
@@ -86,16 +76,13 @@ func (h repositoryHandler) create(c *gin.Context) {
 		return
 	}
 	actor, _ := currentUser(c)
-	repo, webhookSecret, err := h.service.Create(c.Request.Context(), actor.ID, toRepositoryInput(request))
+	repo, err := h.service.Create(c.Request.Context(), actor.ID, toRepositoryInput(request))
 	if err != nil {
 		h.writeServiceError(c, "repository_create", err)
 		return
 	}
 	setAuditResourceID(c, repo.ID)
 	response := gin.H{"repository": h.toRepositoryResponse(c, actor.ID, repo)}
-	if webhookSecret != "" && h.canReadWebhookSecret(c, actor.ID) {
-		response["webhook_secret"] = webhookSecret
-	}
 	c.JSON(http.StatusCreated, response)
 }
 
@@ -107,15 +94,12 @@ func (h repositoryHandler) update(c *gin.Context) {
 		return
 	}
 	actor, _ := currentUser(c)
-	repo, webhookSecret, err := h.service.Update(c.Request.Context(), actor.ID, c.Param("id"), toRepositoryInput(request))
+	repo, err := h.service.Update(c.Request.Context(), actor.ID, c.Param("id"), toRepositoryInput(request))
 	if err != nil {
 		h.writeServiceError(c, "repository_update", err)
 		return
 	}
 	response := gin.H{"repository": h.toRepositoryResponse(c, actor.ID, repo)}
-	if webhookSecret != "" && h.canReadWebhookSecret(c, actor.ID) {
-		response["webhook_secret"] = webhookSecret
-	}
 	c.JSON(http.StatusOK, response)
 }
 
@@ -125,33 +109,6 @@ func (h repositoryHandler) delete(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
-}
-
-func (h repositoryHandler) webhookConfiguration(c *gin.Context) {
-	plaintext, err := h.service.RevealWebhookSecret(c.Request.Context(), c.Param("id"))
-	if err != nil {
-		h.writeServiceError(c, "repository_webhook_reveal", err)
-		return
-	}
-	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, gin.H{
-		"webhook_url":    "/api/v1/webhooks/git/" + c.Param("id"),
-		"webhook_secret": plaintext,
-	})
-}
-
-func (h repositoryHandler) canReadWebhookSecret(c *gin.Context, actorID string) bool {
-	actor, ok := currentUser(c)
-	if !ok || h.access == nil {
-		h.logger.Error("检查 Webhook 密钥读取权限失败", "operation", "repository_webhook_permission_context", "request_id", requestIDFrom(c), "user_id", actorID)
-		return false
-	}
-	allowed, err := h.access.HasPermission(c.Request.Context(), actor, access.PermissionRepositorySecretRead)
-	if err != nil {
-		h.logger.Error("检查 Webhook 密钥读取权限失败", "operation", "repository_webhook_permission", "request_id", requestIDFrom(c), "user_id", actorID, "err", err)
-		return false
-	}
-	return allowed
 }
 
 func (h repositoryHandler) setStatus(c *gin.Context) {
@@ -213,46 +170,6 @@ func (h repositoryHandler) writeTestError(c *gin.Context, operation string, err 
 	}
 }
 
-func (h repositoryHandler) listDeliveries(c *gin.Context) {
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	deliveries, err := h.service.ListDeliveries(c.Request.Context(), c.Param("id"), limit)
-	if err != nil {
-		h.writeServiceError(c, "repository_delivery_list", err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"deliveries": deliveries})
-}
-
-func (h repositoryHandler) webhook(c *gin.Context) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxWebhookBodyBytes)
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		h.logger.Warn("读取 Git Webhook 请求失败", "operation", "repository_webhook_read", "request_id", requestIDFrom(c), "repository_id", c.Param("id"), "err", err)
-		writeError(c, http.StatusRequestEntityTooLarge, "webhook_too_large", "Webhook 请求内容过大")
-		return
-	}
-	result, err := h.service.HandleWebhook(c.Request.Context(), c.Param("id"), c.Request.Header, body)
-	if err != nil {
-		h.logger.Warn("处理 Git Webhook 失败", "operation", "repository_webhook", "request_id", requestIDFrom(c), "repository_id", c.Param("id"), "err", err)
-		switch {
-		case errors.Is(err, repository.ErrRepositoryNotFound), errors.Is(err, repository.ErrWebhookDisabled), errors.Is(err, repository.ErrExternalWebhookDisabled):
-			writeError(c, http.StatusNotFound, "webhook_not_found", "Webhook 不存在或未启用")
-		case errors.Is(err, repository.ErrInvalidSignature):
-			writeError(c, http.StatusUnauthorized, "invalid_webhook_signature", repository.ErrInvalidSignature.Error())
-		case errors.Is(err, repository.ErrUnsupportedEvent):
-			c.Status(http.StatusNoContent)
-		case errors.Is(err, repository.ErrWebhookUnavailable):
-			writeError(c, http.StatusServiceUnavailable, "webhook_unavailable", repository.ErrWebhookUnavailable.Error())
-		default:
-			writeInternalError(c)
-		}
-		return
-	}
-	c.JSON(http.StatusAccepted, gin.H{
-		"delivery_id": result.Delivery.ID, "job_id": result.Delivery.JobID, "duplicate": result.Duplicate,
-	})
-}
-
 func (h repositoryHandler) writeServiceError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("代码仓库操作失败", "operation", operation, "request_id", requestIDFrom(c), "repository_id", c.Param("id"), "err", err)
 	switch {
@@ -274,8 +191,6 @@ func (h repositoryHandler) writeServiceError(c *gin.Context, operation string, e
 		writeError(c, http.StatusNotFound, "repository_not_found", repository.ErrRepositoryNotFound.Error())
 	case errors.Is(err, repository.ErrRepositoryInUse):
 		writeError(c, http.StatusConflict, "repository_in_use", repository.ErrRepositoryInUse.Error())
-	case errors.Is(err, repository.ErrWebhookDisabled):
-		writeError(c, http.StatusNotFound, "webhook_not_found", repository.ErrWebhookDisabled.Error())
 	case errors.Is(err, secret.ErrUnavailable):
 		writeError(c, http.StatusServiceUnavailable, "secrets_unavailable", secret.ErrUnavailable.Error())
 	default:
@@ -289,7 +204,6 @@ func toRepositoryInput(request repositoryRequest) repository.Input {
 		DefaultBranch: request.DefaultBranch, AuthType: request.AuthType,
 		Username: request.Username, Credential: request.Credential,
 		CredentialID: request.CredentialID, APICredentialID: request.APICredentialID,
-		WebhookEnabled: request.WebhookEnabled, RegenerateWebhook: request.RegenerateWebhook,
 		AllowInsecureHTTP: request.AllowInsecureHTTP,
 	}
 }
@@ -301,8 +215,6 @@ func (h repositoryHandler) toRepositoryResponse(c *gin.Context, actorID string, 
 		HasCredential:     repo.CredentialCiphertext != "" || repo.CredentialID != nil,
 		CredentialID:      h.service.CredentialIDForUser(c.Request.Context(), actorID, repo),
 		APICredentialID:   h.service.APICredentialIDForUser(c.Request.Context(), actorID, repo),
-		WebhookEnabled:    repo.WebhookEnabled,
-		WebhookURL:        "/api/v1/webhooks/git/" + repo.ID,
 		AllowInsecureHTTP: repo.AllowInsecureHTTP,
 		IsActive:          repo.IsActive,
 		CreatedBy:         repo.CreatedBy, CreatedAt: repo.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: repo.UpdatedAt.Format(time.RFC3339Nano),

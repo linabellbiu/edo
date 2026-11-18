@@ -23,7 +23,7 @@ func TestExecuteBlockedManualRunWithSelectedCommit(t *testing.T) {
 		db, secrets, credential.NewService(db, secrets),
 		pipelineRefLister{refs: repository.RefResult{
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
-		}}, 4,
+		}},
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "manual_version")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
@@ -51,7 +51,7 @@ func TestExecuteManualRunStartsFromManualCodeTrigger(t *testing.T) {
 		db, secrets, credential.NewService(db, secrets),
 		pipelineRefLister{refs: repository.RefResult{
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
-		}}, 4,
+		}},
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "code_manual_entry")
 	workflowResult, err := service.GetWorkflow(context.Background(), application.ID)
@@ -92,7 +92,7 @@ func TestExecuteManualRunCanSelectPreviousArtifact(t *testing.T) {
 	commitSHA := strings.Repeat("4", 40)
 	service.repositories = repository.NewService(
 		db, secrets, credential.NewService(db, secrets),
-		pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}}}}, 4,
+		pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}}}},
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "manual_existing_artifact")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
@@ -215,7 +215,7 @@ func TestExecuteManualRunRejectsCodeAndArtifactTogether(t *testing.T) {
 	commitSHA := strings.Repeat("5", 40)
 	service.repositories = repository.NewService(
 		db, secrets, credential.NewService(db, secrets),
-		pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}}}}, 4,
+		pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}}}},
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "manual_mixed_artifact")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
@@ -239,7 +239,7 @@ func TestExecuteManualRunRejectsAutomaticOnlyCodeTrigger(t *testing.T) {
 		db, secrets, credential.NewService(db, secrets),
 		pipelineRefLister{refs: repository.RefResult{
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
-		}}, 4,
+		}},
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "reject_auto_entry")
 	result, err := service.GetWorkflow(context.Background(), application.ID)
@@ -278,7 +278,7 @@ func TestExecuteManualRunRejectsStaleCommit(t *testing.T) {
 		db, secrets, credential.NewService(db, secrets),
 		pipelineRefLister{refs: repository.RefResult{
 			Branches: []repository.GitRef{{Name: "main", SHA: remoteCommit}},
-		}}, 4,
+		}},
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "reject_stale_version")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
@@ -305,7 +305,7 @@ func TestExecuteDockerfileBuildWithoutImageRegistryQueuesLocalBuild(t *testing.T
 		db, secrets, credential.NewService(db, secrets),
 		pipelineRefLister{refs: repository.RefResult{
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
-		}}, 4,
+		}},
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "version_before_config")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
@@ -779,7 +779,7 @@ func TestListApplicationRefsReturnsOnlyManualCodeTriggers(t *testing.T) {
 		db, secrets, credential.NewService(db, secrets),
 		pipelineRefLister{refs: repository.RefResult{
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
-		}}, 4,
+		}},
 	)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "manual_entry_list")
 	result, err := service.GetWorkflow(context.Background(), application.ID)

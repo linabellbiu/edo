@@ -12,7 +12,7 @@ import (
 )
 
 func TestCheckoutLocksReclaimCompletedVersions(t *testing.T) {
-	service := NewService(nil, nil, nil, nil, 1)
+	service := NewService(nil, nil, nil, nil)
 	for version := range 10_000 {
 		release, err := service.acquireCheckoutLock(context.Background(), "workspace:"+strconv.Itoa(version))
 		if err != nil {
@@ -27,7 +27,7 @@ func TestCheckoutLocksReclaimCompletedVersions(t *testing.T) {
 }
 
 func TestCheckoutLockCancellationKeepsCurrentHolder(t *testing.T) {
-	service := NewService(nil, nil, nil, nil, 1)
+	service := NewService(nil, nil, nil, nil)
 	const key = "workspace:shared-version"
 	release, err := service.acquireCheckoutLock(context.Background(), key)
 	if err != nil {
@@ -81,7 +81,7 @@ func TestCheckoutLockCancellationKeepsCurrentHolder(t *testing.T) {
 }
 
 func TestCheckoutLockMaintainsMutualExclusionDuringReclamation(t *testing.T) {
-	service := NewService(nil, nil, nil, nil, 1)
+	service := NewService(nil, nil, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var active atomic.Int32
@@ -110,7 +110,7 @@ func TestCheckoutLockMaintainsMutualExclusionDuringReclamation(t *testing.T) {
 }
 
 func TestCheckoutLockAllowsIndependentPathsAndConcurrentRelease(t *testing.T) {
-	service := NewService(nil, nil, nil, nil, 1)
+	service := NewService(nil, nil, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	first, err := service.acquireCheckoutLock(ctx, "workspace:first")
@@ -135,7 +135,7 @@ func TestCheckoutLockAllowsIndependentPathsAndConcurrentRelease(t *testing.T) {
 }
 
 func BenchmarkCheckoutLockUniqueVersions(b *testing.B) {
-	service := NewService(nil, nil, nil, nil, 1)
+	service := NewService(nil, nil, nil, nil)
 	ctx := context.Background()
 	b.ReportAllocs()
 	version := 0
@@ -151,7 +151,7 @@ func BenchmarkCheckoutLockUniqueVersions(b *testing.B) {
 }
 
 func BenchmarkCheckoutLockContended(b *testing.B) {
-	service := NewService(nil, nil, nil, nil, 1)
+	service := NewService(nil, nil, nil, nil)
 	ctx := context.Background()
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {

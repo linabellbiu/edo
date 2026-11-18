@@ -141,7 +141,7 @@ func TestSetDepartmentRequiresRepositoryCredentialHandover(t *testing.T) {
 		ID: "transfer-repository", DepartmentID: "department-source", Name: "部门仓库",
 		Provider: model.GitProviderGitea, CloneURL: "https://git.example.com/team/repository.git",
 		DefaultBranch: "main", AuthType: model.GitAuthToken, CredentialID: &credential.ID,
-		CredentialCiphertext: "", WebhookSecretCiphertext: "", IsActive: true,
+		CredentialCiphertext: "", IsActive: true,
 		CreatedBy: user.ID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(&repository).Error; err != nil {

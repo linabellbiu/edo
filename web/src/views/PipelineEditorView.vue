@@ -1998,7 +1998,6 @@ onBeforeRouteLeave(async () => {
               <a-form-item v-if="selectedNode.config.events?.includes('tag')" label="Tag 规则">
                 <a-input :value="selectedNode.config.tag_pattern" :disabled="!canUpdate" :placeholder="DEFAULT_TAG_PATTERN" @update:value="updateSelectedNode({}, { tag_pattern: String($event) })" />
               </a-form-item>
-              <p class="panel-note">EDO 主动检查远程引用，Webhook 只是可选的低延迟通道。</p>
             </template>
 
             <template v-else-if="selectedNode.type === 'build'">
@@ -2131,7 +2130,7 @@ onBeforeRouteLeave(async () => {
               type="info"
               show-icon
               message="代码检查由 EDO 后台主动执行"
-              description="检查间隔在应用中设置，也可配置 Webhook 及时接收更新。"
+              description="检查间隔在应用中设置。"
             />
             <a-alert v-else-if="!['build','deploy'].includes(selectedNode.type) && !selectedNode.config.check && !selectedNode.config.migration" class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
           </a-form>

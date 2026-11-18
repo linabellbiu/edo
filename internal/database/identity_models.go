@@ -77,7 +77,6 @@ var persistedIdentityModels = []any{
 	&model.ExternalIdentity{},
 	&model.GitCredential{},
 	&model.GitRepository{},
-	&model.GitWebhookDelivery{},
 	&model.ReleaseWorkflow{},
 	&model.ReleaseWorkflowTemplate{},
 	&model.PipelineRunApproval{},

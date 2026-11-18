@@ -17,7 +17,7 @@ func TestRepositoryCanBeUpdatedAndDeleted(t *testing.T) {
 	adminCookie := login.Result().Cookies()[0]
 	created := performJSONRequest(t, router, http.MethodPost, "/api/v1/repositories", map[string]any{
 		"name": "待修改仓库", "provider": "generic", "clone_url": "https://git.example.com/team/old.git",
-		"auth_type": "none", "webhook_enabled": false,
+		"auth_type": "none", "webhook_enabled": true, "regenerate_webhook": true,
 	}, adminCookie)
 	var createdPayload struct {
 		Repository struct {
@@ -27,10 +27,30 @@ func TestRepositoryCanBeUpdatedAndDeleted(t *testing.T) {
 	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &createdPayload) != nil {
 		t.Fatalf("创建代码仓库失败: status=%d body=%s", created.Code, created.Body.String())
 	}
+	for _, key := range []string{`"webhook_enabled"`, `"webhook_url"`, `"webhook_secret"`} {
+		if bytes.Contains(created.Body.Bytes(), []byte(key)) {
+			t.Fatalf("仓库响应仍包含已移除的字段 %s", key)
+		}
+	}
+	repositoryPath := "/api/v1/repositories/" + createdPayload.Repository.ID
+	for _, endpoint := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/webhooks/git/" + createdPayload.Repository.ID},
+		{http.MethodGet, repositoryPath + "/webhook"},
+		{http.MethodGet, repositoryPath + "/webhook-deliveries"},
+		{http.MethodGet, "/api/v1/settings/external-git-webhook"},
+		{http.MethodPut, "/api/v1/settings/external-git-webhook"},
+	} {
+		for _, cookie := range []*http.Cookie{nil, adminCookie} {
+			response := performJSONRequest(t, router, endpoint.method, endpoint.path, nil, cookie)
+			if response.Code != http.StatusNotFound {
+				t.Errorf("已移除的接口 %s %s 返回 %d，预期 404", endpoint.method, endpoint.path, response.Code)
+			}
+		}
+	}
 
 	updated := performJSONRequest(t, router, http.MethodPut, "/api/v1/repositories/"+createdPayload.Repository.ID, map[string]any{
 		"name": "已修改仓库", "provider": "gitea", "clone_url": "https://git.example.com/team/new.git",
-		"default_branch": "develop", "auth_type": "none", "webhook_enabled": true,
+		"default_branch": "develop", "auth_type": "none",
 	}, adminCookie)
 	var updatedPayload struct {
 		Repository struct {
