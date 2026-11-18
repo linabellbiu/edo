@@ -4,7 +4,7 @@ import {useAuthStore} from '@/stores/auth'
 import PipelineDeployFields from '@/components/PipelineDeployFields.vue'
 import {effectiveKubernetesPlan,stageKubernetesOverride,snapshotKubernetesPlan} from '@/utils/kubernetesPlanOverride'
 import type {WorkflowDeploymentPlan,WorkflowDeploymentOverride,WorkflowNode,WorkflowNodeConfig,PipelineBuildPlan} from '@/types/pipeline'
-const props=defineProps<{node:WorkflowNode;plan:WorkflowDeploymentPlan&{id:string;is_active?:boolean};disabled:boolean;applicationID?:string;applicationName?:string;branch?:string;buildNodes:WorkflowNode[];buildPlans?:PipelineBuildPlan[];buildTaskLabels?:Record<string,string>}>()
+const props=defineProps<{node:WorkflowNode;plan:WorkflowDeploymentPlan&{id:string;is_active?:boolean};disabled:boolean;applicationID?:string;applicationName?:string;branch?:string;buildNodes:WorkflowNode[];buildPlans?:PipelineBuildPlan[];buildTaskLabels?:Record<string,string>;basicInfoTarget?:HTMLElement}>()
 const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>];invalid:[error:string];'validation-change':[nodeID:string,issues:string[]]}>()
 const auth=useAuthStore()
 const networkOverrideKeys=['node_port','ports','service_type','external_name']
@@ -31,7 +31,7 @@ function restore(){
  <section class="kubernetes-plan-stage-fields">
   <header><span>本阶段配置 <a-tag v-if="overrideCount">已修改 {{overrideCount}} 项</a-tag></span><a-button v-if="overrideCount" type="link" size="small" :disabled="!canRestore" @click="restore">恢复初始参数</a-button></header>
   <a-alert v-if="plan.is_active===false" type="warning" show-icon message="原部署方案已停用，已保留关联。"/>
-  <PipelineDeployFields @invalid="emit('invalid',$event)" @validation-change="(nodeID,issues)=>emit('validation-change',nodeID,issues)" :node="editableNode" :disabled="!canEdit" :applicationID="applicationID" :applicationName="applicationName" :branch="branch" :build-nodes="buildNodes" :build-plans="buildPlans" :build-task-labels="buildTaskLabels" @change="change"/>
+  <PipelineDeployFields @invalid="emit('invalid',$event)" @validation-change="(nodeID,issues)=>emit('validation-change',nodeID,issues)" :node="editableNode" :disabled="!canEdit" :applicationID="applicationID" :applicationName="applicationName" :branch="branch" :build-nodes="buildNodes" :build-plans="buildPlans" :build-task-labels="buildTaskLabels" :basic-info-target="basicInfoTarget" @change="change"/>
  </section>
 </template>
 <style scoped>

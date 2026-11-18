@@ -172,6 +172,7 @@ const immersive = ref(false)
 const presetOpen = ref(false)
 const panelMode = ref<PanelMode>('closed')
 const propertyTab = ref<PropertyTab>('common')
+const deploymentBasicInfo = ref<HTMLElement>()
 const libraryStageID = ref('')
 const libraryIntent = ref<'initial' | 'parallel'>('parallel')
 const selectedStageID = ref('')
@@ -1953,10 +1954,11 @@ onBeforeRouteLeave(async () => {
             <button type="button" :class="{ active: propertyTab === 'advanced' }" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">{{ selectedNode.type==='deploy' ? '通知' : '通知及高级配置' }}</button>
           </div>
           <a-form v-if="propertyTab === 'common'" layout="vertical">
-            <h3 v-if="selectedNode.type === 'deploy'" class="task-section-heading"><CircleDot :size="15" aria-hidden="true" />基础信息</h3>
+            <h3 v-if="selectedNode.type === 'deploy'" class="task-section-heading"><CircleDot :size="15" aria-hidden="true" />基本信息</h3>
             <a-form-item :label="selectedNode.type === 'trigger' ? '来源名称' : '任务名称'">
               <a-input :value="selectedNode.name" :disabled="!canUpdate" @update:value="updateSelectedNode({ name: String($event) })" />
             </a-form-item>
+            <div v-if="selectedNode.type === 'deploy'" ref="deploymentBasicInfo" class="deployment-basic-info" />
 
             <template v-if="selectedNode.type === 'trigger'">
               <a-form-item label="启动方式">
@@ -2025,14 +2027,14 @@ onBeforeRouteLeave(async () => {
               <a-form-item label="配置来源"><a-radio-group :value="deploymentSource(selectedNode)" :disabled="!canEdit" :options="[{value:'inline',label:'自定义方案'},{value:'plan',label:'选择部署方案'}]" @update:value="changeDeploymentSource($event)"/></a-form-item>
               <a-form-item v-if="deploymentSource(selectedNode)==='plan'"><template #label><span class="linked-deployment-label">部署方案<a-button v-if="selectedNode.config.deployment_plan_id" type="link" size="small" :disabled="!canEdit||!canReadDeploymentPlan" @click="unlockDeploymentPlanSelection">更换方案</a-button><a-button v-if="canCreateDeploymentPlan" type="link" size="small" :disabled="!canEdit" @click="createDeploymentPlan">新建方案</a-button><a v-if="canModifyDeploymentPlan" :href="'/deployment-plans?plan='+encodeURIComponent(selectedLibraryDeploymentPlan?.id||'')+'&amp;edit=1'" aria-label="修改通用部署方案" @click.prevent="modifyLinkedDeploymentPlan">修改方案</a></span></template><a-select :value="selectedNode.config.deployment_plan_id||undefined" :options="deploymentPlanOptions(selectedNode.id)" :loading="resourceStates.deploymentPlans.loading" show-search option-filter-prop="label" :disabled="!canEdit||!canReadDeploymentPlan||!resourceStates.deploymentPlans.ready||Boolean(selectedNode.config.deployment_plan_id&&changingDeploymentPlanNodeID!==selectedNode.id)" placeholder="选择通用部署方案" @update:value="changeLibraryDeploymentPlan(String($event))"/></a-form-item>
 
-              <PipelineDeployFields @invalid="deploymentFieldError" @validation-change="deploymentValidationChanged" v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :key="selectedNode.id" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
+              <PipelineDeployFields @invalid="deploymentFieldError" @validation-change="deploymentValidationChanged" v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :key="selectedNode.id" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" :basic-info-target="deploymentBasicInfo" @change="updateSelectedNode({},$event)"/>
               <template v-else-if="selectedNode.config.inline_deployment_plan">
                 <a-form-item><template #label><span class="linked-deployment-label">原部署配置<a-button type="link" size="small" :disabled="!canUpdate" @click="editInlineDeployment">修改</a-button></span></template><span>{{selectedNode.config.inline_deployment_plan.name}}</span></a-form-item>
                 <DeploymentPlanReferencePreview :plan="{...selectedNode.config.inline_deployment_plan,id:'inline'}" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
               <template v-else-if="selectedNode.config.deployment_plan_id">
                 <p v-if="!selectedLibraryDeploymentPlan" :class="resourceStates.deploymentPlans.ready && !resourceStates.deploymentPlans.error ? 'field-error' : 'panel-note'" role="status">{{ resourceReferenceLabel('deploymentPlans', '原部署方案不可用') }}</p>
-                <KubernetesPlanStageFields @invalid="deploymentFieldError" @validation-change="deploymentValidationChanged" v-if="selectedLibraryDeploymentPlan?.kind==='kubernetes'" :key="selectedNode.id" :node="selectedNode" :plan="selectedLibraryDeploymentPlan" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
+                <KubernetesPlanStageFields @invalid="deploymentFieldError" @validation-change="deploymentValidationChanged" v-if="selectedLibraryDeploymentPlan?.kind==='kubernetes'" :key="selectedNode.id" :node="selectedNode" :plan="selectedLibraryDeploymentPlan" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-task-labels="priorBuildTaskLabels(selectedNode.id)" :build-plans="buildPlans" :basic-info-target="deploymentBasicInfo" @change="updateSelectedNode({},$event)"/>
                 <DeploymentPlanReferencePreview v-else-if="selectedLibraryDeploymentPlan" :plan="selectedLibraryDeploymentPlan" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
             </template>
@@ -2344,6 +2346,7 @@ onBeforeRouteLeave(async () => {
 .panel-tabs.single { grid-template-columns: 1fr; }
 .task-section-heading { display: flex; align-items: center; gap: 8px; margin: 0 -16px 14px; padding: 10px 16px; border-top: 1px solid var(--edo-border); border-bottom: 1px solid var(--edo-border); background: color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface)); color: var(--edo-text); font-size: 14px; font-weight: 600; }
 .task-section-heading > svg { flex-shrink: 0; color: var(--edo-primary); }
+.deployment-basic-info :deep(.kubernetes-deployment-basics) { margin-bottom: 14px; }
 .panel-tabs span, .panel-tabs button { padding: 7px 8px; border: 0; color: var(--edo-muted); background: transparent; text-align: center; }
 .panel-tabs button { cursor: pointer; }
 .panel-tabs span.active, .panel-tabs button.active { color: var(--edo-primary); box-shadow: inset 0 0 0 1px var(--edo-primary); }

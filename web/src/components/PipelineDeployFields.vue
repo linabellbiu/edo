@@ -17,7 +17,7 @@ import KubernetesClusterSelect from '@/components/KubernetesClusterSelect.vue'
 import {deploymentParametersError} from '@/utils/deploymentCommandPreview'
 import {readKubeYaml} from '@/utils/kubernetesYaml'
 import type {WorkflowNode,WorkflowNodeConfig,WorkflowDeploymentPlan,DeploymentExecutionConfig,PipelineBuildPlan} from '@/types/pipeline'
-const props=defineProps<{node:WorkflowNode;disabled:boolean;applicationID?:string;applicationName?:string;branch?:string;buildNodes:WorkflowNode[];buildPlans?:PipelineBuildPlan[];buildTaskLabels?:Record<string,string>}>()
+const props=defineProps<{node:WorkflowNode;disabled:boolean;applicationID?:string;applicationName?:string;branch?:string;buildNodes:WorkflowNode[];buildPlans?:PipelineBuildPlan[];buildTaskLabels?:Record<string,string>;basicInfoTarget?:HTMLElement}>()
 const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>];invalid:[error:string];'validation-change':[nodeID:string,issues:string[]]}>()
 const auth=useAuthStore(),environments=ref<InfrastructureEnvironment[]>([]),configs=ref<Array<{id:string;name:string}>>([]),clusters=ref<InfrastructureCluster[]>([]),error=ref(''),services=ref<string[]>([]),serviceError=ref(''),serviceLoading=ref(false),repoPreviewCommit=ref('')
 const allHosts=ref<InfrastructureHost[]>([])
@@ -184,7 +184,7 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
  <section v-if="plan" class="pipeline-deploy-fields">
   <a-alert v-if="error" type="warning" show-icon :message="error"/>
   <DeploymentHostSelection v-if="plan.kind!=='kubernetes'" :groupID="plan.deployment_target?.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="plan.deployment_target?.host_ids" :legacyHostID="plan.deployment_target?.host_id" :hosts="groupHosts" :all-hosts="allHosts" :host-options="hostTreeOptions" :host-issues="hostIssues" :ready="groupsReady" :disabled="disabled" @validation-change="hostValidationError=$event" @change="target({environment_id:$event.groupID,host_ids:$event.hostIDs,host_id:undefined,runtime_id:undefined})" @update:model-value="target({host_ids:$event,host_id:undefined,runtime_id:undefined})"/>
-  <div ref="registryHost"/>
+  <div v-if="plan.kind!=='kubernetes'" ref="registryHost"/>
   <template v-if="plan.kind==='compose_stack'">
    <a-form-item label="compose.yaml 来源" required><a-radio-group :value="sourceKind" :disabled="disabled" :options="[{value:'repository',label:'仓库文件'},{value:'editor',label:'上传 / 编辑'},{value:'configuration',label:'配置文件'},{value:'upstream',label:'上游产物'}]" @update:value="source(String($event))"/></a-form-item>
    <a-form-item v-if="sourceKind==='repository'" required :help="repositoryDetecting?'正在检测仓库根目录…':repositoryDetectionMessage||undefined" :validate-status="repositoryDetectionMessage?'warning':undefined"><template #label><span>仓库内文件路径 <a-tooltip title="自动检测根目录中的 compose.yaml、compose.yml、docker-compose.yml 或 docker-compose.yaml；也可手动填写仓库相对路径。预览读取当前分支，实际部署读取本次运行固定 Commit。所有来源都要解析 services，读取或解析失败会阻断部署。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="仓库 Compose 文件说明">?</button></a-tooltip></span></template><a-input :value="node.config.compose_source?.path" :disabled="disabled" placeholder="自动检测根目录，也可输入 deploy/compose.yaml" @update:value="repositoryPath(String($event))"/></a-form-item>
@@ -193,7 +193,38 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
    <template v-else><a-form-item label="上游构建产物" required><a-auto-complete :value="node.config.compose_source?.artifact_reference || (node.config.compose_source?.artifact_name?'${'+node.config.compose_source.artifact_name+'}':'')" :disabled="disabled" :options="buildArtifactOptions" placeholder="选择上游构建产物，例如 ${BUILD_ARTIFACT}" @update:value="change({compose_source:{kind:'upstream',artifact_reference:String($event),path:node.config.compose_source?.path||'compose.yaml'}})"/></a-form-item><a-form-item label="产物内文件路径" required><a-input :value="node.config.compose_source?.path" :disabled="disabled" placeholder="deploy/compose.yaml" @update:value="change({compose_source:{...node.config.compose_source!,path:String($event)}})"/></a-form-item></template>
    <a-alert v-if="serviceError" :type="sourceKind==='upstream'?'info':'warning'" show-icon :message="serviceError"/>
   </template>
-  <template v-else-if="plan.kind==='kubernetes'"><DeploymentConfigurationFields report-validation @validation-change="executionFieldIssues=$event" :config="execution" :deploymentPlan="plan" :applicationID="applicationID" :applicationName="applicationName" :build-images="buildImages" :disabled="disabled" edit-permission="workflow.update" :registry-target="registryHost" hide-script @change="updateExecution($event)"/><a-form-item label="集群" required><KubernetesClusterSelect :value="plan.deployment_target?.runtime_id" :disabled="disabled||!auth.canAny(['cluster.read'])" :clusters="clusters" :options="clusterOptions" @update:value="target({runtime_id:$event,environment_id:'',host_ids:undefined,host_id:undefined})"/></a-form-item><a-form-item label="命名空间" required><a-input :value="plan.deployment_target?.namespace" :disabled="disabled" @update:value="target({namespace:String($event)})"/></a-form-item><a-form-item label="Deployment" required><a-input :value="plan.deployment_target?.workload_name" :disabled="disabled" @update:value="target({workload_name:String($event)})"/></a-form-item><KubernetesDeploymentTemplateFields @invalid="kubernetesFieldError=$event;emit('invalid',$event)" :model-value="execution.kubernetes" :disabled="disabled" :k3d="selectedClusterK3d" @update:model-value="updateExecution({kubernetes:$event})"/></template>
+  <template v-else-if="plan.kind==='kubernetes'">
+   <Teleport :to="basicInfoTarget || 'body'" :disabled="!basicInfoTarget">
+    <div class="kubernetes-deployment-basics">
+     <DeploymentConfigurationFields
+      report-validation hide-script
+      :config="execution" :deployment-plan="plan"
+      :applicationID="applicationID" :applicationName="applicationName"
+      :build-images="buildImages" :disabled="disabled" edit-permission="workflow.update"
+      @validation-change="executionFieldIssues=$event"
+      @change="updateExecution($event)"
+     />
+     <a-form-item label="集群" required>
+      <KubernetesClusterSelect
+       :value="plan.deployment_target?.runtime_id" :disabled="disabled||!auth.canAny(['cluster.read'])"
+       :clusters="clusters" :options="clusterOptions"
+       @update:value="target({runtime_id:$event,environment_id:'',host_ids:undefined,host_id:undefined})"
+      />
+     </a-form-item>
+     <a-form-item label="命名空间" required>
+      <a-input :value="plan.deployment_target?.namespace" :disabled="disabled" @update:value="target({namespace:String($event)})"/>
+     </a-form-item>
+     <a-form-item label="Deployment 名称" required>
+      <a-input :value="plan.deployment_target?.workload_name" :disabled="disabled" @update:value="target({workload_name:String($event)})"/>
+     </a-form-item>
+    </div>
+   </Teleport>
+   <KubernetesDeploymentTemplateFields
+    :model-value="execution.kubernetes" :disabled="disabled" :k3d="selectedClusterK3d"
+    @invalid="kubernetesFieldError=$event;emit('invalid',$event)"
+    @update:model-value="updateExecution({kubernetes:$event})"
+   />
+  </template>
   <template v-else>
    <a-form-item required><DeploymentScriptEditor :model-value="plan.script||''" kind="script" :disabled="disabled" edit-permission="workflow.update" @update:model-value="update({script:$event})"/></a-form-item>
    <a-form-item label="工作目录"><a-input :value="plan.deployment_target?.working_directory" :disabled="disabled" placeholder="例如 /srv/my_app" @update:value="target({working_directory:String($event)})"/></a-form-item>
@@ -215,4 +246,8 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
 </template>
 <style scoped>
 .compose-field-header{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:8px}.pipeline-deploy-fields,.runtime-bindings{display:grid;gap:12px;min-width:0}.pipeline-deploy-fields :deep(.ant-form-item){margin-bottom:0}.pipeline-deploy-fields :deep(.ant-form-item-label){padding-bottom:4px}.runtime-bindings>header{display:flex;align-items:center;justify-content:space-between}.field-help{width:20px;height:20px;padding:0;border:1px solid var(--edo-border);border-radius:50%;background:transparent;color:var(--edo-muted);cursor:help}.field-help:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
+.kubernetes-deployment-basics{display:grid;gap:12px;min-width:0}
+.kubernetes-deployment-basics :deep(.ant-form-item){margin-bottom:0}
+.kubernetes-deployment-basics :deep(.ant-form-item-label){padding-bottom:4px}
+.kubernetes-deployment-basics :deep(.kubernetes-image-fields){margin-bottom:0}
 </style>
