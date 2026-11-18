@@ -9,13 +9,14 @@ import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
 import { isAxiosError } from 'axios'
 import { v4 as uuidv4 } from 'uuid'
-import { ArrowUpRight, Box, Boxes, Check, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Search, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
+import { ArrowUpRight, Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Search, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
 
 import client from '@/api/client'
 import { subscribeDeliveryEvents } from '@/utils/deliveryEvents'
 import { apiErrorMessage, isMutationAcknowledged, type ResourceRecord } from '@/api/resources'
 import DeliveryWorkflowDrawer from '@/components/DeliveryWorkflowDrawer.vue'
 import DeploymentRollbackModal from '@/components/DeploymentRollbackModal.vue'
+import WorkloadScalePanel from '@/components/WorkloadScalePanel.vue'
 import type {DeliveryKind} from '@/api/delivery'
 import type {WorkflowResponse} from '@/types/pipeline'
 import BuildPlanWorkspace from '@/components/BuildPlanWorkspace.vue'
@@ -104,11 +105,13 @@ type ApplicationDetailTab='workflows'|'deployments'|'environment'
 const applicationSearch=ref(''),applicationFilter=ref<ApplicationFilter>('all')
 const applicationDetailTabs=ref<Record<string,ApplicationDetailTab>>({}),checkingApplicationIDs=ref<Record<string,boolean>>({})
 const deploymentRuntimeStates=ref<Record<string,DeploymentRuntimeState>>({}),deploymentRuntimeLoading=ref<Record<string,boolean>>({}),deploymentRuntimeErrors=ref<Record<string,string>>({}),deploymentRuntimeAction=ref('')
-const scaleDialog=reactive({open:false,record:null as DeploymentRecord|null,replicas:1,submitting:false})
+const scaleDialog=reactive({open:false,record:null as DeploymentRecord|null,replicas:null as number|null,submitting:false})
 const scaleAutoscaler=reactive({loading:false,error:'',exists:false,min:undefined as number|undefined,max:undefined as number|undefined,current:undefined as number|undefined,cpu:''})
 const scaleRuntime=computed(()=>scaleDialog.record?deploymentRuntimeStates.value[scaleDialog.record.id]:undefined)
-const scaleChanged=computed(()=>Boolean(scaleDialog.record)&&scaleDialog.replicas!==Math.max(0,scaleRuntime.value?.replicas??0))
-const scaleUnavailableReplicas=computed(()=>{const replicas=scaleRuntime.value?.replicas,ready=scaleRuntime.value?.ready_replicas;return replicas===undefined||ready===undefined?'—':String(Math.max(0,replicas-ready))})
+watch(() => scaleRuntime.value?.replicas, replicas => {
+ if(scaleDialog.open&&scaleDialog.replicas===null&&replicas!==undefined)scaleDialog.replicas=replicas
+})
+let scaleAutoscalerRequest:AbortController|undefined
 const canReadKubernetesWorkload=computed(()=>auth.canAny(['kubernetes.workload.read']))
 const kubernetesLogOpening=ref('')
 const shellControlDialog=reactive({open:false,record:null as DeploymentRecord|null,restart_script:'',stop_script:'',timeout_seconds:300,loading:false,saving:false})
@@ -809,15 +812,22 @@ function openInstanceLogs(record:DeploymentRecord){
 }
 async function loadScaleAutoscaler(){
  const record=scaleDialog.record, runtime=record?deploymentRuntimeStates.value[record.id]:undefined
+ scaleAutoscalerRequest?.abort()
+ const request=new AbortController()
+ scaleAutoscalerRequest=request
+ const scope=resourceScopeKey()
+ const current=()=>!request.signal.aborted&&scaleDialog.open&&scaleDialog.record?.id===record?.id&&resourceScopeKey()===scope
  const cluster=record?.runtime_id, namespace=record?.namespace||runtime?.namespace, workload=record?.workload_name||runtime?.name
- scaleAutoscaler.error='';scaleAutoscaler.exists=false;scaleAutoscaler.min=undefined;scaleAutoscaler.max=undefined;scaleAutoscaler.current=undefined;scaleAutoscaler.cpu=''
+ scaleAutoscaler.loading=false;scaleAutoscaler.error='';scaleAutoscaler.exists=false;scaleAutoscaler.min=undefined;scaleAutoscaler.max=undefined;scaleAutoscaler.current=undefined;scaleAutoscaler.cpu=''
  if(!record||!cluster||!namespace||!workload){scaleAutoscaler.error='缺少集群或工作负载信息';return}
  scaleAutoscaler.loading=true
  try{
-  const {data}=await client.get<{object?:Record<string,any>}>('/kubernetes/clusters/'+encodeURIComponent(cluster)+'/resources/horizontalpodautoscalers/'+encodeURIComponent(workload),{params:{namespace}})
+  const {data}=await client.get<{object?:Record<string,any>}>('/kubernetes/clusters/'+encodeURIComponent(cluster)+'/resources/horizontalpodautoscalers/'+encodeURIComponent(workload),{params:{namespace},signal:request.signal})
+  if(!current())return
   const object=data.object
   if(!object){scaleAutoscaler.error='未能读取自动伸缩信息';return}
   const spec=(object.spec||{}) as Record<string,any>, status=(object.status||{}) as Record<string,any>
+  if(spec.scaleTargetRef?.kind!=='Deployment'||spec.scaleTargetRef.name!==workload)return
   scaleAutoscaler.exists=true
   scaleAutoscaler.min=typeof spec.minReplicas==='number'?spec.minReplicas:1
   scaleAutoscaler.max=typeof spec.maxReplicas==='number'?spec.maxReplicas:undefined
@@ -825,24 +835,37 @@ async function loadScaleAutoscaler(){
   const metric=(Array.isArray(spec.metrics)?spec.metrics:[]).find((item:Record<string,any>)=>item?.type==='Resource'&&item?.resource?.name==='cpu')
   scaleAutoscaler.cpu=metric?.resource?.target?.averageUtilization?String(metric.resource.target.averageUtilization)+'%':'未设置'
  }catch(error){
+  if(!current())return
   const status=isAxiosError(error)?error.response?.status:undefined
   if(status!==404)scaleAutoscaler.error=apiErrorMessage(error)
- }finally{scaleAutoscaler.loading=false}
+ }finally{if(current())scaleAutoscaler.loading=false}
 }
+watch([() => scaleDialog.open, resourceScopeKey], ([open, scope], [, previousScope]) => {
+ if (!open || scope !== previousScope) scaleAutoscalerRequest?.abort()
+ if (scope !== previousScope) {
+  scaleDialog.open=false;scaleDialog.record=null;scaleDialog.replicas=null
+  rollbackDialog.open=false;rollbackDialog.sourceID='';rollbackDialog.pipelineRunID=''
+ }
+}, { flush:'sync' })
 function openScaleDialog(record:DeploymentRecord){
+ if(!canControlDeployments.value||deploymentRuntimeAction.value||scaleDialog.submitting||!currentDeploymentIDs.value.has(record.id))return
  const runtime=deploymentRuntimeStates.value[record.id]
- scaleDialog.record=record;scaleDialog.replicas=Math.max(0,runtime?.replicas??1);scaleDialog.open=true
+ scaleDialog.record=record;scaleDialog.replicas=runtime?.replicas??null;scaleDialog.open=true
+ if(runtime?.replicas===undefined)void loadDeploymentRuntime(record,true)
  void loadScaleAutoscaler()
 }
 async function submitScale(){
- const record=scaleDialog.record
- if(!record||!Number.isInteger(scaleDialog.replicas)||scaleDialog.replicas<0||scaleDialog.replicas>1000)return
+ const record=scaleDialog.record,replicas=scaleDialog.replicas,scope=resourceScopeKey(),desired=scaleRuntime.value?.replicas
+ if(!scaleDialog.open||!record||!canControlDeployments.value||!currentDeploymentIDs.value.has(record.id)||deploymentRuntimeAction.value||scaleDialog.submitting||desired===undefined||
+  replicas===null||!Number.isInteger(replicas)||replicas<0||replicas>1000||replicas===desired)return
  scaleDialog.submitting=true
+ const current=()=>scaleDialog.open&&scaleDialog.record?.id===record.id&&resourceScopeKey()===scope&&canControlDeployments.value
  try{
-  const response=await client.post<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime/scale`,{replicas:scaleDialog.replicas},{timeout:3700_000})
+  const response=await client.post<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime/scale`,{replicas},{timeout:3700_000})
+  if(!current())return
   deploymentRuntimeStates.value[record.id]=response.data.runtime
-  message.success(`副本数已调整为 ${scaleDialog.replicas}`);scaleDialog.open=false
- }catch(error){message.error(apiErrorMessage(error))}finally{scaleDialog.submitting=false}
+  message.success(`副本数已调整为 ${replicas}`);scaleDialog.open=false
+ }catch(error){if(current())message.error(apiErrorMessage(error))}finally{scaleDialog.submitting=false}
 }
 function normalizeContainerName(value:string){return value.trim().replace(/^\/+/, '')}
 function deploymentContainerName(record:DeploymentRecord){return normalizeContainerName(record.container_name||record.workload_name||'')}
@@ -2256,7 +2279,7 @@ watch(()=>props.section,connectDeliveryEvents)
 onMounted(()=>{window.addEventListener('edo:projects-changed',syncPlanExecutionProject)})
 onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildEditRequest();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
 onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())controller.abort();runListController?.abort();executionController?.abort();runQueryRevision++;executionRevision++;stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
-onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abort();resetArtifactRequests();formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
+onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();composeContainerController?.abort();resetArtifactRequests();formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
 </script>
 
 <template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
@@ -2816,22 +2839,14 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
  :saving="saving"
  @save="saveReleasePlanEditor"
 />
-<a-modal v-model:open="scaleDialog.open" title="扩缩容" :width="860" :footer="null">
+<a-modal v-model:open="scaleDialog.open" title="扩缩容" centered :width="780" :footer="null" :closable="!scaleDialog.submitting" :keyboard="!scaleDialog.submitting" :mask-closable="!scaleDialog.submitting">
  <div class="scale-dialog">
-  <section class="scale-panel" aria-label="手动伸缩">
-   <header><h3>手动伸缩</h3></header>
-   <div class="scale-manual">
-    <span class="scale-caption">伸缩到</span>
-    <a-input-number v-model:value="scaleDialog.replicas" :min="0" :max="1000" :precision="0" class="scale-input" aria-label="目标副本数"/>
-    <a-button type="primary" :loading="scaleDialog.submitting" :disabled="!scaleChanged" @click="submitScale"><Check/>确认</a-button>
-   </div>
-   <dl class="scale-facts">
-    <div><dt>期望副本数</dt><dd>{{ scaleRuntime?.replicas ?? '—' }}</dd></div>
-    <div><dt>就绪副本数</dt><dd>{{ scaleRuntime?.ready_replicas ?? '—' }}</dd></div>
-    <div><dt>不可用副本数</dt><dd>{{ scaleUnavailableReplicas }}</dd></div>
-   </dl>
-   <p class="scale-hint">设置为 0 会停止工作负载；以后重启时恢复停止前的副本数，设置为大于 0 时等待目标副本就绪。</p>
-  </section>
+  <WorkloadScalePanel v-model="scaleDialog.replicas" :desired="scaleRuntime?.replicas" :ready="scaleRuntime?.ready_replicas"
+    :unavailable="scaleRuntime?.unavailable_replicas" :submitting="scaleDialog.submitting"
+    :disabled="!canControlDeployments || !scaleDialog.record || !currentDeploymentIDs.has(scaleDialog.record.id)" @submit="submitScale">
+    <p v-if="scaleDialog.record && deploymentRuntimeErrors[scaleDialog.record.id]" class="scale-error" role="alert">{{ deploymentRuntimeErrors[scaleDialog.record.id] }}</p>
+    <p v-if="scaleDialog.replicas===0" class="scale-hint">设置为 0 会停止工作负载。</p>
+  </WorkloadScalePanel>
   <section class="scale-panel" aria-label="自动伸缩">
    <header><h3>自动伸缩</h3><a-button size="small" :loading="scaleAutoscaler.loading" @click="loadScaleAutoscaler"><RefreshCw/>刷新</a-button></header>
    <p v-if="scaleAutoscaler.loading" class="scale-muted">正在读取 HorizontalPodAutoscaler…</p>
@@ -2842,10 +2857,10 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
     <div><dt>当前副本数</dt><dd>{{ scaleAutoscaler.current ?? '—' }}</dd></div>
     <div><dt>CPU 目标利用率</dt><dd>{{ scaleAutoscaler.cpu || '—' }}</dd></div>
    </dl>
-   <p v-else class="scale-muted">未检测到自动伸缩（HPA）。在部署配置里启用自动扩缩容后，EDO 会为工作负载创建同名 HorizontalPodAutoscaler。</p>
+   <p v-else class="scale-muted">未找到指向此工作负载的同名 HPA。</p>
   </section>
  </div>
- <div class="scale-footer"><a-button @click="scaleDialog.open=false">关闭</a-button></div>
+ <div class="scale-footer"><a-button :disabled="scaleDialog.submitting" @click="scaleDialog.open=false">关闭</a-button></div>
 </a-modal>
 <a-modal v-model:open="shellControlDialog.open" title="配置 Shell 部署实例运行命令" ok-text="保存" cancel-text="取消" width="720" :confirm-loading="shellControlDialog.saving" :ok-button-props="{disabled:shellControlDialog.loading}" @ok="saveShellControlConfiguration">
  <a-spin :spinning="shellControlDialog.loading">

@@ -59,7 +59,7 @@ func inventoryAPIPath(t *testing.T, pattern, projectID string) string {
 			if strings.HasSuffix(pattern, "/secret") {
 				parts[index] = "secrets"
 			}
-		case ":name":
+		case ":name", ":revision":
 			parts[index] = "inventory-resource"
 		case ":namespace":
 			parts[index] = "default"

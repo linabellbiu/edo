@@ -177,13 +177,10 @@
 @media (prefers-reduced-motion: reduce) {
   .application-deployment-summary > svg, .deployment-details-enter-active, .deployment-details-leave-active { transition: none; }
 }
-.scale-dialog { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 16px; }
-.scale-panel { display: grid; align-content: start; gap: 14px; padding: 16px; border: 1px solid var(--edo-border); border-radius: 10px; background: var(--edo-surface); }
-.scale-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.scale-dialog { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 24px; }
+.scale-panel { display: grid; align-content: start; gap: 14px; min-width: 0; }
+.scale-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 34px; padding-bottom: 8px; border-bottom: 1px solid var(--edo-border); }
 .scale-panel h3 { margin: 0; color: var(--edo-text); font-size: 14px; font-weight: 600; }
-.scale-manual { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.scale-caption { color: var(--edo-muted); font-size: 13px; }
-.scale-input { width: 96px; }
 .scale-facts { display: grid; gap: 10px; margin: 0; }
 .scale-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .scale-facts dt { color: var(--edo-muted); font-size: 13px; }

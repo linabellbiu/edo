@@ -284,6 +284,9 @@ func TestDeploymentReplicaSetEventsRequireExactOwner(t *testing.T) {
 		if _, err := service.DeploymentReplicaSetEvents(ctx, id, "team", "web", target[0], target[1], target[2]); !errors.Is(err, ErrResourceConflict) {
 			t.Fatalf("应拒绝失效或非所属副本集 %v: %v", target, err)
 		}
+		if _, err := service.DeploymentReplicaSetManifest(ctx, id, "team", "web", target[0], target[1], target[2]); !errors.Is(err, ErrResourceConflict) {
+			t.Fatalf("不应读取失效或非所属副本集的 YAML %v: %v", target, err)
+		}
 	}
 	if eventReads.Load() != 0 {
 		t.Fatal("失效目标不应读取事件")
@@ -291,6 +294,10 @@ func TestDeploymentReplicaSetEventsRequireExactOwner(t *testing.T) {
 	events, err := service.DeploymentReplicaSetEvents(ctx, id, "team", "web", "deployment-a", "owned", "rs-a")
 	if err != nil || len(events) != 1 || events[0].Reason != "SuccessfulCreate" || eventReads.Load() != 1 {
 		t.Fatalf("未读取目标副本集事件: %v, %v", events, err)
+	}
+	manifest, err := service.DeploymentReplicaSetManifest(ctx, id, "team", "web", "deployment-a", "owned", "rs-a")
+	if err != nil || manifest.UID != "rs-a" || manifest.Kind != "ReplicaSet" || manifest.APIVersion != "apps/v1" || eventReads.Load() != 1 {
+		t.Fatalf("未读取准确的副本集 YAML: %+v, %v", manifest, err)
 	}
 }
 

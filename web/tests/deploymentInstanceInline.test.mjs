@@ -5,6 +5,7 @@ import { test } from 'node:test'
 const view = readFileSync(new URL('../src/views/DevOpsView.vue', import.meta.url), 'utf8')
 const css = readFileSync(new URL('../src/styles/application-workspace.css', import.meta.url), 'utf8')
 const rollbackModal = readFileSync(new URL('../src/components/DeploymentRollbackModal.vue', import.meta.url), 'utf8')
+const scalePanel = readFileSync(new URL('../src/components/WorkloadScalePanel.vue', import.meta.url), 'utf8')
 
 const itemStart = view.indexOf('<div v-for="record in card.deploymentInstances"')
 const itemEnd = view.indexOf('</Transition>', itemStart)
@@ -46,8 +47,8 @@ test('停止与重启先二次确认，扩缩容使用真实运行时副本与 H
   assert.ok(view.includes("operation:'stop'") === false)
   assert.ok(view.includes("'/resources/horizontalpodautoscalers/'"), '自动伸缩必须读取真实 HPA')
   assert.ok(view.includes('scaleAutoscaler.error=apiErrorMessage(error)') || view.includes('scaleAutoscaler.error=apiErrorMessage(error)'))
-  assert.ok(view.includes('手动伸缩') && view.includes('自动伸缩'))
-  assert.ok(view.includes(':disabled="!scaleChanged"'), '副本数未变化时不能提交')
+  assert.ok(view.includes('<WorkloadScalePanel') && view.includes('自动伸缩'))
+  assert.ok(scalePanel.includes(':disabled="!canSubmit"'), '副本数未变化时不能提交')
 })
 
 test('回退弹窗先列历史版本，点击回退后再二次确认', () => {

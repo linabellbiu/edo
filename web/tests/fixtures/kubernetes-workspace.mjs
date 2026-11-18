@@ -47,6 +47,15 @@ client.defaults.adapter = async config => {
       response.monitoring_state = state
     }
   }
+  else if (workloadActions && /\/resources\/deployments\/[^/]+\/revisions\/[^/]+$/.test(path)) {
+    const revision = data.revisions.find(item => item.uid === params.revision_uid && item.name === decodeURIComponent(path.split('/').at(-1)))
+    const deployment = data.resources.deployments.find(item => item.metadata?.uid === params.uid && item.metadata?.namespace === params.namespace)
+    if (!revision || !deployment) throw new Error('预览副本集不存在')
+    response = { object: { apiVersion: 'apps/v1', kind: 'ReplicaSet', metadata: {
+      uid: revision.uid, name: revision.name, namespace: deployment.metadata.namespace,
+      ownerReferences: [{ kind: 'Deployment', uid: deployment.metadata.uid, controller: true }],
+    }, spec: { replicas: revision.desired, template: deployment.spec.template } } }
+  }
   else {
     const match = path.match(/\/resources\/([^/]+)(?:\/([^/]+))?(?:\/(events|diagnostics))?$/)
     if (match) {

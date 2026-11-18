@@ -8,6 +8,7 @@ import client from '/src/api/client'
 import i18n from '/src/locales'
 import { useAuthStore } from '/src/stores/auth'
 import DevOpsView from '/src/views/DevOpsView.vue'
+import { workflowDeploymentIDs } from '/src/utils/deploymentInstances'
 
 // 仅提供合成读取数据，拒绝真实接口和所有写操作。
 const project = 'devops-applications-preview'
@@ -22,6 +23,16 @@ const apps = [
   { ...app, id: 'admin', name: 'legacy-admin', description: '历史管理后台', workflows: [], is_active: false, last_checked_at: at(600) },
 ]
 const runs = [{ id: 'run-1', application_id: 'app', workflow_id: 'flow', status: 'running', stage: 'building', ref: 'refs/heads/main', commit_sha: '3f9c2ab', commit_message: '修复登录页样式与部署脚本', created_at: at(6) }]
+const showDeployments = new URLSearchParams(location.search).has('deployments')
+const { planID, targetID } = workflowDeploymentIDs(flow.id, 'deploy')
+const images = ['a', 'b', 'c'].map(letter => `registry.example.com/demo/demo-web@sha256:${letter.repeat(64)}`)
+const records = images.map((image, index) => ({
+  id: `preview-deploy-${index}`, application_id: app.id, pipeline_run_id: runs[0].id, deployment_plan_id: planID,
+  deployment_plan_kind: 'kubernetes', target_id: targetID, target_name: '预览集群', platform: 'kubernetes',
+  runtime_id: 'preview-kube', namespace: 'demo', workload_name: 'demo-web', container_name: 'web', kubernetes_uid: 'preview-deployment',
+  operation: 'deploy', status: 'succeeded', created_at: at(20 * index + 2), updated_at: at(20 * index + 2), image,
+}))
+if (showDeployments) flow.stages = [{ id: 'release', name: '部署', tasks: [{ id: 'deploy', type: 'deploy', config: { inline_deployment_plan: { kind: 'kubernetes' } } }] }]
 client.defaults.adapter = async config => {
   const path = config.url.split('?')[0], method = config.method || 'get'
   if (method !== 'get') throw new Error('本地预览不执行写入')
@@ -33,7 +44,15 @@ client.defaults.adapter = async config => {
     '/image-registries': { image_registries: [] },
     '/pipeline-runs': { pipeline_runs: runs },
     '/release-plans': { release_plans: [] },
-    '/deployments': { deployments: [] },
+    '/deployments': { deployments: showDeployments ? records : [] },
+    '/deployments/preview-deploy-0/runtime': { runtime: { kind: 'kubernetes', state: 'running', running: true, replicas: 1, ready_replicas: 1, available_replicas: 1, unavailable_replicas: 0 } },
+    '/deployments/preview-deploy-0/rollback-preview': { rollback: {
+      ...records[0], cluster_name: '预览集群', can_rollback: true, reason: '', source_deployment_id: records[0].id,
+      source_updated_at: records[0].updated_at, current_image: images[0], target_image: images[1],
+    } },
+    '/kubernetes/clusters/preview-kube/resources/horizontalpodautoscalers/demo-web': {
+      object: { spec: { scaleTargetRef: { kind: 'Deployment', name: 'demo-web' }, minReplicas: 1, maxReplicas: 3 }, status: { currentReplicas: 1 } },
+    },
     '/deployment-plans': { deployment_plans: [] },
     '/workflow-templates': { workflow_templates: [] },
     '/artifacts': { artifacts: [] },

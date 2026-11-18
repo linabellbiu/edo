@@ -9,6 +9,6 @@ export interface ContainerControlPreview {
 export interface DeploymentRuntimeState {
   runtime_id?: string; services?: ComposeServiceState[]; deployment_id: string; kind: string
   resource_id?: string; name: string; namespace?: string; state: string; running: boolean; count?: number
-  replicas?: number; ready_replicas?: number; available_replicas?: number
+  replicas?: number; ready_replicas?: number; available_replicas?: number; unavailable_replicas?: number
   restart_configured?: boolean; stop_configured?: boolean; output?: string
 }

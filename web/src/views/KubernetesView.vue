@@ -17,6 +17,7 @@ import KubeResourceCell from '@/components/KubeResourceCell.vue'
 import KubeResourceDetails from '@/components/KubeResourceDetails.vue'
 import KubeDetailTabs from '@/components/KubeDetailTabs.vue'
 import KubeWorkloadSummary from '@/components/KubeWorkloadSummary.vue'
+import WorkloadScalePanel from '@/components/WorkloadScalePanel.vue'
 import KubeResourceEditor from '@/components/KubeResourceEditor.vue'
 import KubeConfigEntries from '@/components/KubeConfigEntries.vue'
 import KubeOverview from '@/components/KubeOverview.vue'
@@ -129,7 +130,14 @@ watch(workloadScope,()=>{imageEdit.value=undefined;manifestObject.value=undefine
 const canEditWorkloadImage=computed(()=>Boolean(imageEdit.value&&detailOpen.value&&!detailError.value&&!detailSyncError.value&&can('kubernetes.workload.read')&&can('kubernetes.workload.update')))
 const detailPresented=computed(()=>detailOpen.value&&!editorOpen.value&&!yamlOpen.value&&!stream.value.open)
 const secretValues = ref<Record<string,string>>(), editorOpen = ref(false), editorLoading=ref(false), editorContext = ref<{cluster:string;namespace:string;type:KubeType;object?:KubeObject}>()
-const stream = ref({open:false,terminal:false,files:false,path:'',title:''}), scaleOpen=ref(false), scaleValue=ref(1), scaleTarget=ref<{object:KubeObject;type:KubeType;cluster:string}>(), selectedContainer=ref<Record<string,string>>({})
+const stream = ref({open:false,terminal:false,files:false,path:'',title:''}), scaleOpen=ref(false), scaleValue=ref<number|null>(null), scaleTarget=ref<{object:KubeObject;type:KubeType;cluster:string;actor:string}>(), selectedContainer=ref<Record<string,string>>({})
+const scaleDesired = computed(() => scaleTarget.value?.object.spec?.replicas as number | undefined)
+const scaleStatus = computed(() => scaleTarget.value?.object.status)
+const scaleReady = computed(() => scaleStatus.value?.readyReplicas ?? (scaleStatus.value?.observedGeneration ? 0 : undefined))
+const scaleUnavailable = computed(() => scaleStatus.value?.unavailableReplicas ?? (
+  scaleTarget.value?.object.kind === 'Deployment' && scaleStatus.value?.observedGeneration ? 0 : undefined
+))
+watch([cluster, workloadActor], () => { scaleOpen.value = false; scaleTarget.value = undefined }, { flush:'sync' })
 let clusterRevision=0,clusterController:AbortController|undefined,namespaceRevision=0,namespaceController:AbortController|undefined,lastNamespaceRefresh=0
 let revision=0, detailRevision=0, controller:AbortController|undefined,detailController:AbortController|undefined, timer:ReturnType<typeof setInterval>|undefined, mounted=true
 let editRevision=0,editController:AbortController|undefined,editBusyKey=''
@@ -393,6 +401,12 @@ function openWorkloadManifest(pod?:KubeObject){
   const object=pod?currentRelatedPod(pod):detail.value
   if(object?.metadata.uid)manifestObject.value=object
 }
+function openRevisionManifest(revision:KubeObject) {
+  const object=detail.value
+  if(!detailPresented.value||detailLoading.value||detailError.value||detailSyncError.value||!can('kubernetes.workload.read')||
+    object?.kind!=='Deployment'||revision.kind!=='ReplicaSet'||!revision.metadata?.uid||nsOf(revision)!==nsOf(object))return
+  if(revision.metadata.ownerReferences?.some((owner:KubeObject)=>owner.controller===true&&owner.kind==='Deployment'&&owner.uid===object.metadata.uid))manifestObject.value=revision
+}
 function editWorkloadManifest(){
   if(manifestObject.value?.metadata.uid!==detail.value?.metadata.uid)return
   manifestObject.value=undefined
@@ -500,8 +514,19 @@ function remove(object:KubeObject,type=activeType.value) {
     catch(err){message.error(kubeErrorMessage(err));throw err}finally{busy.value=''}
   }})
 }
-function showScale(object:KubeObject,type=activeType.value) {if(!type)return;scaleTarget.value={object,type,cluster:cluster.value};scaleValue.value=object.spec?.replicas ?? 1;scaleOpen.value=true}
-async function scale() {const target=scaleTarget.value;if(!target||busy.value)return;if(!Number.isInteger(scaleValue.value)||scaleValue.value<0||scaleValue.value>1000){message.error(t('k8s.invalidReplicas'));return}try{await runAction(target.cluster,target.type,target.object,'scale',scaleValue.value);scaleOpen.value=false}catch{}}
+function showScale(object:KubeObject,type=activeType.value) {
+  if(!type||busy.value||!can(`${type.permission}.execute`))return
+  scaleTarget.value={object,type,cluster:cluster.value,actor:workloadActor()}
+  scaleValue.value=scaleDesired.value??null
+  scaleOpen.value=true
+}
+async function scale() {
+  const target=scaleTarget.value,value=scaleValue.value
+  if(!scaleOpen.value||!target||busy.value||target.cluster!==cluster.value||target.actor!==workloadActor()||
+    !can(`${target.type.permission}.execute`)||scaleDesired.value===undefined||value===null||value===scaleDesired.value)return
+  if(!Number.isInteger(value)||value<0||value>1000){message.error(t('k8s.invalidReplicas'));return}
+  try{await runAction(target.cluster,target.type,target.object,'scale',value);scaleOpen.value=false}catch{}
+}
 function podStreamPath(pod:KubeObject, terminal=false, files=false) {
   const choice=selectedPodContainer(pod),container=choice?.name
   const allowed=files?can('terminal.file.read')&&can('kubernetes.workload.execute'):can('terminal.open')
@@ -752,13 +777,13 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         <a-tab-pane key="basic" :class="{'workload-overview-pane':workloadDetail}" :tab="t(workloadDetail?'k8s.workloadOverview':'k8s.resourceSettings')">
           <KubeWorkloadSummary v-if="workloadDetail" :object="detail" :type="detailType" :events="events" :events-error="eventsError" :events-loading="detailLoading||eventsLoading" @events="detailTab='events'" />
           <KubeWorkloadExplorer v-if="workloadExplorer" v-show="detailTab==='basic'"
-            :visible="detailPresented&&detailTab==='basic'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType"
+            :visible="detailPresented&&detailTab==='basic'" :key="cluster+detail.metadata.uid" :scope-key="workloadScope" :cluster="cluster" :object="detail" :type="detailType"
             :selection="workloadSelections[cluster+detail.metadata.uid]" @selection="value=>workloadSelections[cluster+detail!.metadata.uid]=value"
             :pods="relatedPods" :pods-loading="relatedLoading" :pods-error="relatedError" :pods-partial="relatedPartial"
             :events="events" :events-error="eventsError" :auto-refresh="autoRefresh&&detailPresented&&detailTab==='basic'"
             :refresh-token="detailRefresh" :can="can" :can-follow="canFollow" :disabled="Boolean(busy)||detailLoading||Boolean(detailSyncError)||relatedLoading"
             @follow="followReference" @logs="(pod,container)=>openWorkloadStream(pod,container)" @terminal="(pod,container)=>openWorkloadStream(pod,container,true)"
-            @files="(pod,container)=>openWorkloadStream(pod,container,true,true)" @pod-yaml="openWorkloadManifest" @pod-remove="removeRelatedPod"
+            @files="(pod,container)=>openWorkloadStream(pod,container,true,true)" @pod-yaml="openWorkloadManifest" @revision-yaml="openRevisionManifest" @pod-remove="removeRelatedPod"
             @delete-revision-pods="deleteRevisionPods" @retry-pods="retryRelatedPods" />
           <KubeWorkloadPodRuntime v-else-if="detail.kind==='Pod'&&detailTab==='basic'&&can('kubernetes.workload.read')"
             :key="cluster+detail.metadata.uid" class="pod-detail-runtime" :cluster="cluster" :pod="detail" :container="selectedPodContainerName(detail)"
@@ -816,7 +841,10 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
     <KubeNodeJoinDrawer v-model:open="joinOpen" :cluster="cluster" :endpoint="clusterInfo?.api_server??''" />
     <K3sProvisionDrawer v-model:open="provisionOpen" :action="provisionAction" :cluster="provisionAction==='join'?cluster:''" :endpoint="provisionAction==='join'?clusterInfo?.api_server??'':''" @completed="provisionCompleted" />
     <a-modal :open="Boolean(nodeRemoval)" :title="t('k8s.removeNode')" :confirm-loading="Boolean(busy)" :ok-text="nodeRemovalResult?.status==='succeeded'?'关闭':t('k8s.removeNode')" :cancel-text="t('k8s.cancel')" :cancel-button-props="{style:nodeRemovalResult?.status==='succeeded'?{display:'none'}:undefined}" :ok-button-props="{danger:nodeRemovalResult?.status!=='succeeded',disabled:nodeRemovalResult?.status!=='succeeded'&&(!can('kubernetes.node.delete')||!agentStopped||nodeName!==nodeRemoval?.object.metadata.name)}" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" @cancel="!busy&&(nodeRemoval=undefined)" @ok="removeNode"><a-alert type="warning" show-icon :message="t('k8s.removeNodeHint')" /><p class="node-removal-context">{{ clusterInfo?.name }} / {{ nodeRemoval?.object.metadata.name }}</p><a-alert v-if="nodeRemovalResult" class="node-removal-result" :type="nodeRemovalResult.status==='succeeded'?'success':nodeRemovalResult.status==='failed'?'error':'info'" show-icon :message="nodeRemovalResult.message" role="status" /><template v-if="nodeRemovalResult?.status!=='succeeded'"><p>{{ t('k8s.removeBlocked') }}</p><a-checkbox v-model:checked="agentStopped" :disabled="Boolean(busy)">{{ t('k8s.agentStopped') }}</a-checkbox><a-form-item :label="t('k8s.typeNodeName')" class="node-removal-name"><a-input v-model:value="nodeName" :placeholder="nodeRemoval?.object.metadata.name" :disabled="Boolean(busy)" /></a-form-item></template></a-modal>
-    <a-modal v-model:open="scaleOpen" :title="t('k8s.scaleTitle',{name:scaleTarget?.object.metadata.name??''})" :confirm-loading="Boolean(busy)" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" :ok-text="t('k8s.save')" :cancel-text="t('k8s.cancel')" @ok="scale"><p>{{ clusterInfo?.name }} / {{ scaleTarget?.object.metadata.namespace }}</p><a-form-item :label="t('k8s.replicas')"><a-input-number v-model:value="scaleValue" :min="0" :max="1000" :precision="0" :disabled="Boolean(busy)" /></a-form-item></a-modal>
+    <a-modal v-model:open="scaleOpen" :title="t('k8s.scaleTitle',{name:scaleTarget?.object.metadata.name??''})" centered :width="440" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" :footer="null">
+      <WorkloadScalePanel v-model="scaleValue" :desired="scaleDesired" :ready="scaleReady" :unavailable="scaleUnavailable"
+        :submitting="Boolean(busy)" :disabled="!scaleTarget || !can(`${scaleTarget.type.permission}.execute`)" @submit="scale" />
+    </a-modal>
     <ContainerLogDrawer v-if="!stream.terminal" :key="stream.path" v-model:open="stream.open" :title="stream.title" :path="stream.path" />
     <TerminalDrawer v-else :key="stream.path+(stream.files?'/files':'')" v-model:open="stream.open" :title="stream.title" :path="stream.path" :files-only="stream.files" />
   </div>

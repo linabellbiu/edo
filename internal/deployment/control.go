@@ -37,22 +37,23 @@ type RuntimeControlInput struct {
 }
 
 type RuntimeState struct {
-	RuntimeID         string                             `json:"runtime_id,omitempty"`
-	DeploymentID      string                             `json:"deployment_id"`
-	Kind              string                             `json:"kind"`
-	ResourceID        string                             `json:"resource_id,omitempty"`
-	Name              string                             `json:"name"`
-	Namespace         string                             `json:"namespace,omitempty"`
-	State             string                             `json:"state"`
-	Running           bool                               `json:"running"`
-	Count             int                                `json:"count,omitempty"`
-	Replicas          int32                              `json:"replicas,omitempty"`
-	ReadyReplicas     int32                              `json:"ready_replicas,omitempty"`
-	AvailableReplicas int32                              `json:"available_replicas,omitempty"`
-	RestartConfigured bool                               `json:"restart_configured,omitempty"`
-	StopConfigured    bool                               `json:"stop_configured,omitempty"`
-	Output            string                             `json:"output,omitempty"`
-	Services          []dockerengine.ComposeServiceState `json:"services,omitempty"`
+	RuntimeID           string                             `json:"runtime_id,omitempty"`
+	DeploymentID        string                             `json:"deployment_id"`
+	Kind                string                             `json:"kind"`
+	ResourceID          string                             `json:"resource_id,omitempty"`
+	Name                string                             `json:"name"`
+	Namespace           string                             `json:"namespace,omitempty"`
+	State               string                             `json:"state"`
+	Running             bool                               `json:"running"`
+	Count               int                                `json:"count,omitempty"`
+	Replicas            *int32                             `json:"replicas,omitempty"`
+	ReadyReplicas       *int32                             `json:"ready_replicas,omitempty"`
+	AvailableReplicas   *int32                             `json:"available_replicas,omitempty"`
+	UnavailableReplicas *int32                             `json:"unavailable_replicas,omitempty"`
+	RestartConfigured   bool                               `json:"restart_configured,omitempty"`
+	StopConfigured      bool                               `json:"stop_configured,omitempty"`
+	Output              string                             `json:"output,omitempty"`
+	Services            []dockerengine.ComposeServiceState `json:"services,omitempty"`
 }
 
 type InstanceControlConfigurationInput struct {
@@ -581,8 +582,8 @@ func dockerRuntimeState(deploymentID string, input dockerengine.RuntimeState) *R
 func kubernetesRuntimeState(deploymentID string, input kube.RuntimeState) *RuntimeState {
 	return &RuntimeState{
 		DeploymentID: deploymentID, Kind: input.Kind, Name: input.Name, Namespace: input.Namespace,
-		State: input.State, Running: input.Running, Replicas: input.Replicas,
-		ReadyReplicas: input.ReadyReplicas, AvailableReplicas: input.AvailableReplicas,
+		State: input.State, Running: input.Running, Replicas: &input.Replicas,
+		ReadyReplicas: &input.ReadyReplicas, AvailableReplicas: &input.AvailableReplicas, UnavailableReplicas: &input.UnavailableReplicas,
 	}
 }
 

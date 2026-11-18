@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -26,14 +27,15 @@ const stoppedReplicasAnnotation = "edo.io/stopped-replicas"
 const restartedAtAnnotation = "edo.io/restarted-at"
 
 type RuntimeState struct {
-	Kind              string `json:"kind"`
-	Name              string `json:"name"`
-	Namespace         string `json:"namespace"`
-	State             string `json:"state"`
-	Running           bool   `json:"running"`
-	Replicas          int32  `json:"replicas"`
-	ReadyReplicas     int32  `json:"ready_replicas"`
-	AvailableReplicas int32  `json:"available_replicas"`
+	Kind                string `json:"kind"`
+	Name                string `json:"name"`
+	Namespace           string `json:"namespace"`
+	State               string `json:"state"`
+	Running             bool   `json:"running"`
+	Replicas            int32  `json:"replicas"`
+	ReadyReplicas       int32  `json:"ready_replicas"`
+	AvailableReplicas   int32  `json:"available_replicas"`
+	UnavailableReplicas int32  `json:"unavailable_replicas"`
 }
 
 func (s *Service) DeploymentRuntimeState(ctx context.Context, clusterID, namespace, name string) (RuntimeState, error) {
@@ -49,7 +51,7 @@ func (s *Service) DeploymentRuntimeState(ctx context.Context, clusterID, namespa
 	if err != nil {
 		return RuntimeState{}, fmt.Errorf("%w: %w", ErrRuntimeResourceMissing, err)
 	}
-	return deploymentRuntimeState(current.Namespace, current.Name, current.Spec.Replicas, current.Status.ReadyReplicas, current.Status.AvailableReplicas), nil
+	return deploymentRuntimeState(current), nil
 }
 
 func (s *Service) ControlDeployment(
@@ -158,7 +160,7 @@ func (s *Service) ControlDeployment(
 			return false, nil
 		}
 		lastReadErr = nil
-		lastState = deploymentRuntimeState(current.Namespace, current.Name, current.Spec.Replicas, current.Status.ReadyReplicas, current.Status.AvailableReplicas)
+		lastState = deploymentRuntimeState(current)
 		observed := current.Status.ObservedGeneration >= generation
 		if desired == 0 {
 			return observed && current.Status.ReadyReplicas == 0 && current.Status.AvailableReplicas == 0, nil
@@ -175,11 +177,12 @@ func (s *Service) ControlDeployment(
 	return lastState, nil
 }
 
-func deploymentRuntimeState(namespace, name string, replicas *int32, ready, available int32) RuntimeState {
+func deploymentRuntimeState(deployment *appsv1.Deployment) RuntimeState {
 	desired := int32(1)
-	if replicas != nil {
-		desired = *replicas
+	if deployment.Spec.Replicas != nil {
+		desired = *deployment.Spec.Replicas
 	}
+	ready, available := deployment.Status.ReadyReplicas, deployment.Status.AvailableReplicas
 	state := "running"
 	if desired == 0 {
 		state = "stopped"
@@ -187,8 +190,8 @@ func deploymentRuntimeState(namespace, name string, replicas *int32, ready, avai
 		state = "progressing"
 	}
 	return RuntimeState{
-		Kind: "kubernetes", Name: name, Namespace: namespace, State: state,
+		Kind: "kubernetes", Name: deployment.Name, Namespace: deployment.Namespace, State: state,
 		Running:  desired > 0 && ready >= desired && available >= desired,
-		Replicas: desired, ReadyReplicas: ready, AvailableReplicas: available,
+		Replicas: desired, ReadyReplicas: ready, AvailableReplicas: available, UnavailableReplicas: deployment.Status.UnavailableReplicas,
 	}
 }

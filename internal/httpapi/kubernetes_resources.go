@@ -164,6 +164,21 @@ func (h clusterHandler) resourceEvents(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": result})
 }
 
+func (h clusterHandler) deploymentRevisionManifest(c *gin.Context) {
+	if c.Param("resource") != "deployments" {
+		h.resourceError(c, "kubernetes_revision_manifest", kube.ErrInvalidResource)
+		return
+	}
+	object, err := h.kube.DeploymentReplicaSetManifest(c.Request.Context(), c.Param("id"), c.Query("namespace"),
+		c.Param("name"), c.Query("uid"), c.Param("revision"), c.Query("revision_uid"))
+	if err != nil {
+		h.resourceError(c, "kubernetes_revision_manifest", err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"object": object})
+}
+
 func (h clusterHandler) resourceError(c *gin.Context, operation string, err error) {
 	if writeKubernetesAuthorizationError(c, err) {
 		return

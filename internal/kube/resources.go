@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -437,35 +438,53 @@ func (s *Service) ResourceEvents(ctx context.Context, clusterID, resource, names
 
 // 只读取当前 Deployment 确实拥有的副本集事件。
 func (s *Service) DeploymentReplicaSetEvents(ctx context.Context, clusterID, namespace, name, uid, replicaSet, replicaSetUID string) ([]corev1.Event, error) {
-	if uid == "" || len(uid) > 128 || replicaSetUID == "" || len(replicaSetUID) > 128 ||
-		len(validation.IsDNS1123Subdomain(name)) != 0 || len(validation.IsDNS1123Subdomain(replicaSet)) != 0 {
-		return nil, ErrInvalidResource
-	}
-	ctx, query, err := s.authorizeResourceOperation(ctx, clusterID, "deployments", namespace, "read", false)
+	ctx, queries, _, err := s.readOwnedDeploymentReplicaSet(ctx, clusterID, namespace, name, uid, replicaSet, replicaSetUID)
 	if err != nil {
 		return nil, err
 	}
+	return listEventsForUID(ctx, queries.typed, "replicasets", namespace, replicaSetUID)
+}
+
+func (s *Service) DeploymentReplicaSetManifest(ctx context.Context, clusterID, namespace, name, uid, replicaSet, replicaSetUID string) (*appsv1.ReplicaSet, error) {
+	_, _, result, err := s.readOwnedDeploymentReplicaSet(ctx, clusterID, namespace, name, uid, replicaSet, replicaSetUID)
+	if err != nil {
+		return nil, err
+	}
+	result.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "ReplicaSet"}
+	result.ManagedFields = nil
+	return result, nil
+}
+
+func (s *Service) readOwnedDeploymentReplicaSet(ctx context.Context, clusterID, namespace, name, uid, replicaSet, replicaSetUID string) (context.Context, *clusterQueries, *appsv1.ReplicaSet, error) {
+	if uid == "" || len(uid) > 128 || replicaSetUID == "" || len(replicaSetUID) > 128 ||
+		len(validation.IsDNS1123Subdomain(name)) != 0 || len(validation.IsDNS1123Subdomain(replicaSet)) != 0 {
+		return ctx, nil, nil, ErrInvalidResource
+	}
+	ctx, query, err := s.authorizeResourceOperation(ctx, clusterID, "deployments", namespace, "read", false)
+	if err != nil {
+		return ctx, nil, nil, err
+	}
 	podType, _ := ResourceType("pods")
 	if !query.authorization.permitsResourceOperation(podType, namespace, "read", false) {
-		return nil, ErrRBACForbidden
+		return ctx, nil, nil, ErrRBACForbidden
 	}
 	client := query.typed
 	deployment, err := client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, resourceError("deployments", err)
+		return ctx, nil, nil, resourceError("deployments", err)
 	}
 	if string(deployment.UID) != uid {
-		return nil, ErrResourceConflict
+		return ctx, nil, nil, ErrResourceConflict
 	}
 	rs, err := client.AppsV1().ReplicaSets(namespace).Get(ctx, replicaSet, metav1.GetOptions{})
 	if err != nil {
-		return nil, resourceError("replicasets", err)
+		return ctx, nil, nil, resourceError("replicasets", err)
 	}
 	owner := metav1.GetControllerOf(rs)
 	if string(rs.UID) != replicaSetUID || owner == nil || owner.Kind != "Deployment" || owner.UID != deployment.UID {
-		return nil, ErrResourceConflict
+		return ctx, nil, nil, ErrResourceConflict
 	}
-	return listEventsForUID(ctx, client, "replicasets", namespace, replicaSetUID)
+	return ctx, query, rs, nil
 }
 
 func listEventsForUID(ctx context.Context, client kubernetes.Interface, resource, namespace, uid string) ([]corev1.Event, error) {

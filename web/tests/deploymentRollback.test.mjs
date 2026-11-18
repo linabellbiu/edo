@@ -163,16 +163,19 @@ test('历史版本按镜像去重排序，只有服务端核对的上一镜像�
   try {
     const checked = preview()
     h.props.records = [
-      { id: 'd3', image: 'registry/api@sha256:older', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', created_at: '2026-10-20T00:00:00Z' },
-      { id: 'd2', image: 'registry/api@sha256:good', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', created_at: '2026-10-22T00:00:00Z' },
-      { id: 'd1', image: 'registry/api@sha256:good', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', created_at: '2026-10-21T00:00:00Z' },
-      { id: 'failed-deploy', image: 'registry/api@sha256:bad', status: 'failed', namespace: 'test', workload_name: 'api', container_name: 'api', created_at: '2026-10-23T00:00:00Z' },
-      { id: 'other', image: 'registry/api@sha256:other', status: 'succeeded', namespace: 'test', workload_name: 'other', container_name: 'api', created_at: '2026-10-23T00:00:00Z' },
+      { id: 'd3', image: 'registry/api@sha256:older', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', runtime_id: 'cluster', created_at: '2026-10-20T00:00:00Z' },
+      { id: 'd1', image: 'registry/api@sha256:good', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', runtime_id: 'cluster', created_at: '2026-10-21T00:00:00Z' },
+      { id: 'd2', image: 'registry/api@sha256:good', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', runtime_id: 'cluster', created_at: '2026-10-22T00:00:00Z' },
+      { id: 'failed-deploy', image: 'registry/api@sha256:bad', status: 'failed', namespace: 'test', workload_name: 'api', container_name: 'api', runtime_id: 'cluster', created_at: '2026-10-23T00:00:00Z' },
+      { id: 'other', image: 'registry/api@sha256:other', status: 'succeeded', namespace: 'test', workload_name: 'other', container_name: 'api', runtime_id: 'cluster', created_at: '2026-10-23T00:00:00Z' },
+      { id: 'other-cluster', image: 'registry/api@sha256:good', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', runtime_id: 'other-cluster', created_at: '2026-10-24T00:00:00Z' },
+      { id: 'other-uid', image: 'registry/api@sha256:good', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', runtime_id: 'cluster', kubernetes_uid: 'other-uid', created_at: '2026-10-25T00:00:00Z' },
     ]
     h.gets[0].resolve({ data: { rollback: checked } })
     await flush()
     const entries = h.state.history.value
     assert.deepEqual(entries.map(entry => entry.image), ['registry/api@sha256:good', 'registry/api@sha256:older'])
+    assert.deepEqual(entries.map(entry => entry.id), ['d2','d3'])
     assert.deepEqual(entries.map(entry => entry.rollbackable), [true, false])
     assert.equal(h.state.canSubmit.value, false, '未选择版本时不能直接确认')
     await h.state.submit()

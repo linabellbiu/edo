@@ -2,6 +2,7 @@ package deployment
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -20,9 +21,27 @@ import (
 
 	"edo/internal/access"
 	"edo/internal/database"
+	"edo/internal/kube"
 	"edo/internal/model"
 	"edo/internal/sshdeploy"
 )
+
+func TestKubernetesRuntimeKeepsReportedZeroReplicas(t *testing.T) {
+	state := kubernetesRuntimeState("test-deployment", kube.RuntimeState{Kind: "kubernetes"})
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"replicas", "ready_replicas", "available_replicas", "unavailable_replicas"} {
+		if raw[key] != float64(0) {
+			t.Errorf("运行状态必须保留真实的零值 %s: %v", key, raw[key])
+		}
+	}
+}
 
 type runtimeAuthorizationFixture struct {
 	service *Service
