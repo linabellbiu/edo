@@ -11,15 +11,22 @@
   text-rendering: optimizeLegibility;
   --edo-primary: #4f6ef7;
   --edo-primary-soft: #eef2ff;
+  --edo-primary-soft-strong: #e0e7ff;
   --edo-bg: #f5f6f8;
   --edo-surface: #fff;
   --edo-surface-soft: #f8f9fb;
   --edo-border: #e7e9ee;
   --edo-text: #1f2329;
   --edo-muted: #687182;
-  --edo-nav-active-color: color-mix(in srgb, var(--edo-primary) 84%, var(--edo-text));
-  --edo-nav-hover-bg: color-mix(in srgb, var(--edo-primary) 8%, var(--edo-surface));
-  --edo-nav-selected-bg: color-mix(in srgb, var(--edo-text) 7%, var(--edo-surface));
+  /* 侧栏导航：选中为浅靛蓝实底 + 链接级靛蓝文字，悬停更浅一档；图标降为次要色，避免整列近黑。 */
+  --edo-nav-selected-color: #3f56cf;
+  --edo-nav-selected-bg: var(--edo-primary-soft-strong);
+  --edo-nav-hover-color: var(--edo-text);
+  --edo-nav-hover-bg: var(--edo-primary-soft);
+  --edo-nav-submenu-bg: transparent;
+  --edo-nav-icon-color: var(--edo-muted);
+  --edo-nav-item-radius: 8px;
+  --edo-nav-focus-ring: color-mix(in srgb, var(--edo-primary) 48%, transparent);
   --edo-header: rgb(255 255 255 / 94%);
   --edo-shadow: 0 1px 2px rgb(0 0 0 / 3%), 0 4px 16px rgb(0 0 0 / 3%);
   /* 抽屉投影参照原生窗口：大面积柔和扩散 + 贴边浅影，不使用单一边框替代层次。 */
@@ -33,14 +40,17 @@
   background: #0f1014;
   --edo-primary: #6f8cff;
   --edo-primary-soft: #20294d;
+  --edo-primary-soft-strong: #2a3560;
   --edo-bg: #0f1014;
   --edo-surface: #17181d;
   --edo-surface-soft: #1e2027;
   --edo-border: #2a2c34;
   --edo-text: #eef0f5;
   --edo-muted: #959dab;
-  --edo-nav-hover-bg: color-mix(in srgb, var(--edo-primary) 16%, var(--edo-surface));
-  --edo-nav-selected-bg: color-mix(in srgb, var(--edo-text) 10%, var(--edo-surface));
+  --edo-nav-selected-color: #c7d2ff;
+  --edo-nav-selected-bg: color-mix(in srgb, var(--edo-primary) 26%, var(--edo-surface));
+  --edo-nav-hover-color: var(--edo-text);
+  --edo-nav-hover-bg: var(--edo-primary-soft);
   --edo-header: rgb(23 24 29 / 94%);
   --edo-shadow: 0 8px 24px rgb(0 0 0 / 22%);
   --edo-drawer-shadow-far: rgb(0 0 0 / 52%);
@@ -66,8 +76,22 @@ button { color: inherit; }
 .vben-navigation { min-height: 0; flex: 1; overflow-x: hidden; overflow-y: auto; padding: 8px; scrollbar-width: thin; }
 .vben-navigation .ant-menu { border-inline-end: 0 !important; background: transparent; }
 .vben-navigation .ant-menu-inline-collapsed { width: 48px; }
-.vben-navigation .ant-menu-item, .vben-navigation .ant-menu-submenu-title { height: 40px; margin: 2px 0; line-height: 40px; }
+.vben-navigation .ant-menu-item, .vben-navigation .ant-menu-submenu-title { height: 40px; line-height: 40px; border-radius: var(--edo-nav-item-radius); transition: color 140ms ease, background-color 140ms ease; }
+.vben-navigation .ant-menu:not(.ant-menu-inline-collapsed) .ant-menu-item,
+.vben-navigation .ant-menu:not(.ant-menu-inline-collapsed) .ant-menu-submenu-title { margin: 2px 4px; }
+.vben-navigation .ant-menu-item .ant-menu-item-icon, .vben-navigation .ant-menu-submenu-title .ant-menu-item-icon { color: var(--edo-nav-icon-color); stroke-width: 1.8; transition: color 140ms ease; }
+.vben-navigation .ant-menu-item:not(.ant-menu-item-selected):hover .ant-menu-item-icon, .vben-navigation .ant-menu-submenu-title:hover .ant-menu-item-icon { color: var(--edo-primary); }
+.vben-navigation .ant-menu-item-selected .ant-menu-item-icon { color: var(--edo-nav-selected-color); }
+.vben-navigation .ant-menu-submenu-selected > .ant-menu-submenu-title .ant-menu-item-icon { color: var(--edo-primary); }
 .vben-navigation .ant-menu-item-selected { font-weight: 600; }
+/* 折叠态弹出的子菜单沿用侧栏条目规范：8px 圆角、次要色图标、1.8 线宽。 */
+.ant-menu-submenu-popup .ant-menu-vertical .ant-menu-item, .ant-menu-submenu-popup .ant-menu-vertical .ant-menu-submenu-title { border-radius: var(--edo-nav-item-radius); }
+.ant-menu-submenu-popup .ant-menu-item, .ant-menu-submenu-popup .ant-menu-submenu-title { transition: color 140ms ease, background-color 140ms ease; }
+.ant-menu-submenu-popup .ant-menu-vertical .ant-menu-item .ant-menu-item-icon, .ant-menu-submenu-popup .ant-menu-vertical .ant-menu-submenu-title .ant-menu-item-icon { color: var(--edo-nav-icon-color); stroke-width: 1.8; }
+.ant-menu-submenu-popup .ant-menu-vertical .ant-menu-item:not(.ant-menu-item-selected):hover .ant-menu-item-icon, .ant-menu-submenu-popup .ant-menu-vertical .ant-menu-submenu-title:hover .ant-menu-item-icon { color: var(--edo-primary); }
+.ant-menu-submenu-popup .ant-menu-vertical .ant-menu-item-selected .ant-menu-item-icon { color: var(--edo-nav-selected-color); }
+.vben-navigation .ant-menu-item:focus-visible, .vben-navigation .ant-menu-submenu-title:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--edo-nav-focus-ring); }
+.vben-navigation .ant-menu-item:has(a:focus-visible) { outline: none; box-shadow: inset 0 0 0 2px var(--edo-nav-focus-ring); }
 .sidebar-collapse { display: flex; height: 44px; align-items: center; gap: 12px; margin: 8px; padding: 0 13px; overflow: hidden; border: 0; border-radius: 6px; color: var(--edo-muted); background: transparent; cursor: pointer; white-space: nowrap; }
 .sidebar-collapse:hover { color: var(--edo-primary); background: var(--edo-surface-soft); }
 .collapsed .sidebar-collapse span { display: none; }

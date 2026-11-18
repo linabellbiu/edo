@@ -49,7 +49,7 @@ export const messages = {
       buildArtifacts: '构建与制品', buildPlans: '构建方案', registries: '镜像仓库', releaseManagement: '发布管理', deploymentPlans: '部署方案',
       environments: '主机组', pipelinePlans: '流水线', releasePlans: '发布计划', pipelineRuns: '流水线运行记录', configurationFiles:'配置', deliveryVariables: '变量与密钥', applicationDatabases:'应用数据库',environmentPolicies:'主机组保护',
       platform: '平台管理', infrastructure: '基础设施', sqlAudit: 'SQL 审计', domains: '域名解析', hosts: '主机', containers: '主机与集群',
-      monitor: '系统监控', tasks: '任务中心', logs: '日志', security: '系统与安全', settings: '系统设置', users: '用户管理', roles: '角色与功能', audit: '审计日志',
+      monitor: '系统监控', tasks: '任务中心', logs: '日志', security: '系统与安全', settings: '系统设置', users: '用户管理', roles: '角色与权限', audit: '审计日志',
     },
     hostCluster: { hosts: '主机与接入', resources: '运行资源' },
     hostForm: { installUseSudo: '使用 sudo 执行 Docker / 安装操作', installSudoHint: '用于 K3s 安装及已勾选的受限 Docker 操作；密码认证复用 SSH 密码，私钥认证可填写独立 sudo 密码，留空使用免密 sudo。SSH 部署脚本不会自动提权。', sudoPassword: 'sudo 密码（可选）', sudoPasswordPlaceholder: '仅加密保存，不回显；留空使用免密 sudo', uploadPrivateKey: '上传私钥', privateKeyFileLabel: '选择 SSH 私钥文件', privateKeyRequired: '请粘贴或上传 SSH 私钥', privateKeyFileSize: '请选择非空且不超过 64 KiB 的私钥文件', privateKeyFileFormat: '请选择 OpenSSH 或 PEM 格式的私钥文件', privateKeyLoaded: '私钥已载入，请测试连接', privateKeyReadFailed: '读取私钥文件失败，请重新选择' },

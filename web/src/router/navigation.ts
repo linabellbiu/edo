@@ -1,9 +1,9 @@
 import type { Component } from 'vue'
 import {
   Activity, AppWindow, Boxes, Box, Building2, ChartNoAxesCombined, CloudCog,
-  Container, FileText, GitBranch, KeyRound, ListChecks, PackageCheck,
+  Container, FileText, GitBranch, History, KeyRound, ListChecks, ListTodo, PackageCheck,
   PanelsTopLeft, Play, Rocket, ScrollText, Server, ServerCog, Settings, ShieldCheck,
-  Tags, UsersRound, Workflow, LayoutDashboard, Database, Network,
+  Tags, UserCog, UsersRound, Workflow, LayoutDashboard, Database, Network,
 } from 'lucide-vue-next'
 
 export interface NavItem {
@@ -78,13 +78,15 @@ export const navigation: NavSection[] = [
  {label:'workspace.organization',path:'/organization',permissions:['organization.read','organization.update','department.read','department.create','department.update','department.delete'],icon:Building2},
 ] },
       { key: 'security', label: 'nav.security', icon: ShieldCheck, items: [
+        // 顺序按"系统配置 → 运行观测 → 后台任务 → 账号与权限 → 审计"排列，
+        // 同属 monitor.read 的监控与日志相邻，访问控制页面三个视图与页面页签同序。
         { label: 'nav.settings', path: '/settings', permissions: [], icon: Settings },
         { label: 'nav.monitor', path: '/system-monitor', permissions: ['monitor.read'], icon: Activity },
-        { label: 'nav.tasks', path: '/operations?section=tasks', permissions: ['task.read'], icon: ListChecks },
-        { label: 'nav.logs', path: '/logs', permissions: ['monitor.read'], icon: FileText },
+        { label: 'nav.logs', path: '/logs', permissions: ['monitor.read'], icon: ScrollText },
+        { label: 'nav.tasks', path: '/operations?section=tasks', permissions: ['task.read'], icon: ListTodo },
         { label: 'nav.users', path: '/access?view=users', permissions: ['user.read', 'user.create', 'user.update', 'user.delete', 'department.read', 'department.create', 'department.update', 'department.delete'], icon: UsersRound },
-        { label: 'nav.roles', path: '/access?view=roles', permissions: ['role.read', 'role.create', 'role.update', 'role.delete'], icon: ShieldCheck },
-        { label: 'nav.audit', path: '/access?view=audit', permissions: ['audit.read'], icon: ScrollText },
+        { label: 'nav.roles', path: '/access?view=roles', permissions: ['role.read', 'role.create', 'role.update', 'role.delete'], icon: UserCog },
+        { label: 'nav.audit', path: '/access?view=audit', permissions: ['audit.read'], icon: History },
       ] },
     ],
   },

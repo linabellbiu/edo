@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { ConfigProvider, Modal } from 'ant-design-vue'
+import { Modal } from 'ant-design-vue'
 import {
   Bell, ChevronDown, ChevronLeft, Command, Expand, Languages, LockKeyhole, LogOut,
   Maximize2, Menu, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search,
@@ -14,7 +14,7 @@ import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useTabsStore } from '@/stores/tabs'
 import ProjectSelector from '@/components/ProjectSelector.vue'
-import SidebarNavItem from '@/components/SidebarNavItem.vue'
+import SidebarNavigation, { type SidebarSection } from '@/components/SidebarNavigation.vue'
 import FloatingAssistant from '@/components/FloatingAssistant.vue'
 import GitHubRepositoryLink from '@/components/GitHubRepositoryLink.vue'
 
@@ -24,19 +24,6 @@ const auth = useAuthStore()
 const preferences = usePreferencesStore()
 const tabsStore = useTabsStore()
 const { t } = useI18n()
-
-const sidebarTheme = {
-  components: {
-    Menu: {
-      colorItemBgHover: 'var(--edo-nav-hover-bg)',
-      colorItemTextHover: 'var(--edo-nav-active-color)',
-      colorSubItemBg: 'var(--edo-surface-soft)',
-      colorItemBgSelected: 'var(--edo-nav-selected-bg)',
-      colorItemTextSelected: 'var(--edo-nav-active-color)',
-      colorPrimaryBorder: 'var(--edo-primary)',
-    },
-  },
-}
 
 const searchOpen = ref(false)
 const searchText = ref('')
@@ -82,6 +69,13 @@ const allowedBranches = (sectionIndex: number): NavBranch[] =>
   (navigation[sectionIndex]?.branches ?? [])
     .map((branch) => ({ ...branch, items: visibleNavigationItems(branch.items, permissions => auth.canAny(permissions)) }))
     .filter((branch) => branch.items.length > 0)
+
+const overviewItems = computed(() => (navigation[0]?.items ?? []).filter(allowed))
+const sidebarSections = computed<SidebarSection[]>(() => navigation.slice(1).map((section, index) => ({
+  key: section.label ?? `section-${index}`,
+  branches: allowedBranches(index + 1),
+})))
+const navOpenKeys = computed(() => (preferences.sidebarCollapsed ? collapsedOpenKeys.value : openKeys.value))
 
 const allowedMenuKeys = computed(() => {
   const keys = new Set<string>()
@@ -287,44 +281,18 @@ onBeforeUnmount(() => {
         <strong>EDO</strong>
       </div>
 
-      <ConfigProvider :theme="sidebarTheme">
-        <nav class="vben-navigation" @transitionend="revealCurrentMenu">
-          <a-menu
-            :selected-keys="selectedKeys"
-            :open-keys="preferences.sidebarCollapsed ? collapsedOpenKeys : openKeys"
-            mode="inline"
-            :inline-collapsed="preferences.sidebarCollapsed"
-            :trigger-sub-menu-action="preferences.sidebarCollapsed ? 'click' : 'hover'"
-            @open-change="updateOpenKeys"
-          >
-            <a-menu-item v-for="item in navigation[0]?.items?.filter(allowed)" :key="item.path">
-              <template #icon><component :is="item.icon" :size="18" /></template>
-              <a :href="item.path" @click.left.exact.prevent="navigate(item.path)">{{ t(item.label) }}</a>
-            </a-menu-item>
-          </a-menu>
-
-          <template v-for="(section, sectionIndex) in navigation.slice(1)" :key="section.label">
-            <a-menu
-              :selected-keys="selectedKeys"
-              :open-keys="preferences.sidebarCollapsed ? collapsedOpenKeys : openKeys"
-              mode="inline"
-              :inline-indent="16"
-              :inline-collapsed="preferences.sidebarCollapsed"
-              :trigger-sub-menu-action="preferences.sidebarCollapsed ? 'click' : 'hover'"
-              @open-change="updateOpenKeys"
-            >
-              <a-sub-menu v-for="branch in allowedBranches(sectionIndex + 1)" :key="branch.key">
-                <template #icon>
-                  <button v-if="preferences.sidebarCollapsed" type="button" class="navigation-group-icon" :aria-label="t(branch.label)" :aria-expanded="collapsedOpenKeys.includes(branch.key)" aria-haspopup="menu" @click.stop="toggleNavigationBranch(branch.key)"><component :is="branch.icon" :size="18" /></button>
-                  <component :is="branch.icon" v-else :size="18" />
-                </template>
-                <template #title><button v-if="!preferences.sidebarCollapsed" type="button" class="navigation-group-title" :aria-expanded="openKeys.includes(branch.key)" @click.stop="toggleNavigationBranch(branch.key)">{{ t(branch.label) }}</button><span v-else>{{ t(branch.label) }}</span></template>
-                <SidebarNavItem v-for="item in branch.items" :key="item.path" :item="item" @navigate="navigate" />
-              </a-sub-menu>
-            </a-menu>
-          </template>
-        </nav>
-      </ConfigProvider>
+      <nav class="vben-navigation" @transitionend="revealCurrentMenu">
+        <SidebarNavigation
+          :overview-items="overviewItems"
+          :sections="sidebarSections"
+          :selected-keys="selectedKeys"
+          :open-keys="navOpenKeys"
+          :collapsed="preferences.sidebarCollapsed"
+          @navigate="navigate"
+          @open-change="updateOpenKeys"
+          @toggle-branch="toggleNavigationBranch"
+        />
+      </nav>
 
       <button class="sidebar-collapse" type="button" :aria-label="t(preferences.sidebarCollapsed ? 'common.expandNavigation' : 'common.collapseNavigation')" @click="preferences.toggleSidebar()">
         <PanelLeftOpen v-if="preferences.sidebarCollapsed" :size="18" />
@@ -456,9 +424,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.navigation-group-title,.navigation-group-icon{padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:inherit}
-.navigation-group-icon{display:inline-flex;align-items:center;vertical-align:middle}
-.navigation-group-title:focus-visible,.navigation-group-icon:focus-visible{outline:1px solid var(--edo-primary);outline-offset:3px;border-radius:2px}
 @media(max-width:600px){
   .vben-header{gap:8px;padding:0 10px}
   .header-left{flex:1;min-width:0;gap:4px}

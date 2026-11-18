@@ -71,6 +71,11 @@ function menuHarness(t) {
     {key: 'system', label: 'nav.systemSecurity', icon, items: [{path: '/system-monitor', label: 'nav.systemMonitor', permissions: ['monitor.read']}]},
   ]}]
   const pass = {setup: (_props, {slots}) => () => vue.h('div', slots.default?.())}
+  const sidebar = compiled('../src/components/SidebarNavigation.vue', {
+    vue, 'vue-i18n': {useI18n: () => ({t: key => key})},
+    'ant-design-vue': {ConfigProvider: pass},
+    '@/components/SidebarNavItem.vue': {__esModule: true, default: {render: () => null}},
+  })
   const component = compiled('../src/layouts/AppLayout.vue', {
     vue: {...vue, Transition: pass}, 'vue-i18n': {useI18n: () => ({t: key => key})},
     'vue-router': {useRoute: () => route, useRouter: () => ({resolve: () => ({name: 'projects', meta: {}}), replace: async () => {}, push: async () => {}})},
@@ -79,6 +84,7 @@ function menuHarness(t) {
     '@/stores/auth': {useAuthStore: () => auth}, '@/stores/preferences': {usePreferencesStore: () => preferences},
     '@/stores/tabs': {useTabsStore: () => ({tabs: [], recent: () => [], canGoBack: () => false, visit() {}, add() {}})},
     '@/components/ProjectSelector.vue': {__esModule: true, default: {render: () => null}},
+    '@/components/SidebarNavigation.vue': {__esModule: true, default: sidebar},
     '@/components/SidebarNavItem.vue': {__esModule: true, default: {render: () => null}},
     '@/components/FloatingAssistant.vue': {__esModule: true, default: {render: () => null}},
     '@/components/GitHubRepositoryLink.vue': {__esModule: true, default: {render: () => null}},

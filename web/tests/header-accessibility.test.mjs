@@ -60,6 +60,8 @@ function mount(t, {locale = 'zh-CN', theme = 'light', connecting = false} = {}) 
     '@/stores/preferences': {usePreferencesStore: () => preferences},
     '@/stores/tabs': {useTabsStore: () => ({tabs: [{key: '/', path: '/', title: 'nav.overview', pinned: true}, {key: '/projects', path: '/projects', title: 'nav.overview', pinned: false}], recent: () => [], canGoBack: () => canBack.value, visit() {}, add() {}, back: () => { calls.back++ }, togglePin() {}, close() {}})},
     '@/components/ProjectSelector.vue': {__esModule: true, default: {render: () => null}},
+    // 侧栏菜单结构由 navigation-accessibility 与 sidebar-navigation-design 覆盖，这里只验证页头与标签栏。
+    '@/components/SidebarNavigation.vue': {__esModule: true, default: {render: () => null}},
     '@/components/SidebarNavItem.vue': {__esModule: true, default: {render: () => null}},
     '@/components/FloatingAssistant.vue': {__esModule: true, default: {render: () => null}},
     '@/components/GitHubRepositoryLink.vue': {__esModule: true, default: {render: () => null}},
