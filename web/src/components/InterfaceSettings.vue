@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { Github, RefreshCw } from 'lucide-vue-next'
+import { Github, PanelLeft, RefreshCw } from 'lucide-vue-next'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
-import { useInterfaceSettingsStore, type GitHubLogoSettings } from '@/stores/interfaceSettings'
+import { useInterfaceSettingsStore, type DeliveryControlsMenuSettings, type GitHubLogoSettings } from '@/stores/interfaceSettings'
 const auth = useAuthStore(), settings = useInterfaceSettingsStore()
 const enabled = ref(true), version = ref(0), loaded = ref(false), loading = ref(false), saving = ref(false), error = ref(''), status = ref('')
+const deliveryEnabled = ref(false), deliveryVersion = ref(0), deliveryLoaded = ref(false), deliverySaving = ref(false), deliveryError = ref(''), deliveryStatus = ref('')
 const canRead = computed(() => auth.authorizationState === 'ready' && auth.canAny(['config.read']))
 const canUpdate = computed(() => canRead.value && auth.canAny(['config.update']))
 const identity = () => JSON.stringify([auth.user?.id, auth.user?.permissions, auth.authorizationState, canRead.value, canUpdate.value])
@@ -14,10 +15,13 @@ let revision = 0, controller: AbortController | undefined, disposed = false
 async function load() {
   const request = ++revision, scope = identity()
   loaded.value = false; loading.value = true; error.value = ''; status.value = ''
+  deliveryLoaded.value = false; deliveryError.value = ''; deliveryStatus.value = ''
   if (!canRead.value) { loading.value = false; return }
-  const value = await settings.load()
+  const [value, delivery] = await Promise.all([settings.load(), settings.loadDeliveryControls()])
   if (disposed || scope !== identity() || request !== revision) return
   loading.value = false
+  if (delivery) { deliveryEnabled.value = delivery.enabled; deliveryVersion.value = delivery.version; deliveryLoaded.value = true }
+  else deliveryError.value = settings.deliveryError || '无法读取交付控制入口设置，请重试'
   if (!value) { error.value = settings.error || '无法读取界面设置，请重试'; return }
   enabled.value = value.enabled; version.value = value.version; loaded.value = true
 }
@@ -34,7 +38,20 @@ async function save() {
   } catch (cause) { if (!disposed && !signal.aborted && scope === identity() && request === revision) error.value = apiErrorMessage(cause) }
   finally { if (request === revision) saving.value = false }
 }
-watch(identity, () => { revision++; controller?.abort(); saving.value = false; void load() }, { immediate: true })
+async function saveDelivery() {
+  if (!deliveryLoaded.value || !canUpdate.value || deliverySaving.value) return
+  controller?.abort(); controller = new AbortController()
+  const scope = identity(), request = ++revision, signal = controller.signal
+  deliverySaving.value = true; deliveryError.value = ''; deliveryStatus.value = ''
+  try {
+    const { data } = await client.put<DeliveryControlsMenuSettings>('/settings/delivery-controls-menu', { enabled: deliveryEnabled.value, expected_version: deliveryVersion.value }, { signal })
+    if (disposed || signal.aborted || scope !== identity() || request !== revision) return
+    settings.applyDeliveryControls(data); deliveryEnabled.value = data.enabled; deliveryVersion.value = data.version
+    deliveryStatus.value = '交付控制入口已保存，侧栏立即生效'
+  } catch (cause) { if (!disposed && !signal.aborted && scope === identity() && request === revision) deliveryError.value = apiErrorMessage(cause) }
+  finally { if (request === revision) deliverySaving.value = false }
+}
+watch(identity, () => { revision++; controller?.abort(); saving.value = false; deliverySaving.value = false; void load() }, { immediate: true })
 onBeforeUnmount(() => { disposed = true; revision++; controller?.abort() })
 </script>
 <template>
@@ -43,6 +60,12 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort() })
     <a-alert v-if="error" type="error" show-icon :message="error" />
     <a-alert v-if="status" type="success" show-icon :message="status" />
     <a-form layout="vertical"><a-form-item label="显示 GitHub 标识"><a-switch v-model:checked="enabled" :disabled="!loaded||!canUpdate||loading||saving" aria-label="显示 GitHub 标识" /></a-form-item><a-button type="primary" :loading="saving" :disabled="!loaded||!canUpdate||loading" @click="save">保存设置</a-button></a-form>
+  </article>
+  <article class="interface-settings vben-card" aria-label="交付控制入口">
+    <header><PanelLeft :size="22" /><div><h3>交付控制入口</h3><p>控制侧栏是否显示「应用数据库」和「主机组保护」。默认隐藏；开启后所有用户可见，路由与权限不变。</p></div></header>
+    <a-alert v-if="deliveryError" type="error" show-icon :message="deliveryError" />
+    <a-alert v-if="deliveryStatus" type="success" show-icon :message="deliveryStatus" />
+    <a-form layout="vertical"><a-form-item label="显示「应用数据库」和「主机组保护」入口"><a-switch v-model:checked="deliveryEnabled" :disabled="!deliveryLoaded||!canUpdate||loading||deliverySaving" aria-label="显示应用数据库和主机组保护入口" /></a-form-item><a-button type="primary" :loading="deliverySaving" :disabled="!deliveryLoaded||!canUpdate||loading" @click="saveDelivery">保存设置</a-button></a-form>
   </article>
 </template>
 <style scoped>

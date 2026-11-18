@@ -11,7 +11,7 @@ export interface NavItem {
   path: string
   permissions: string[]
   icon?: Component
-  /** 暂时从侧栏与搜索入口隐藏，路由与权限仍保留。 */
+  /** 由「系统设置 → 界面设置」的显示开关控制，默认隐藏；路由与权限仍保留。 */
   hidden?: boolean
   children?: NavItem[]
 }
@@ -104,15 +104,21 @@ export function flatNavigation() {
 }
 
 /** 侧栏与搜索可展示的入口，隐藏项仍在路由与标题解析中生效。 */
-export function menuNavigation() {
-  return flatNavigation().filter(item => !item.hidden)
+export function menuNavigation(showHidden = false) {
+  return flatNavigation().filter(item => showHidden || !item.hidden)
 }
 
-export function visibleNavigationItems(items: NavItem[], canAny: (permissions: string[]) => boolean): NavItem[] {
+export interface NavVisibilityOptions {
+  /** 界面设置里开启了「显示应用数据库与主机组保护入口」。 */
+  showHidden?: boolean
+}
+
+export function visibleNavigationItems(items: NavItem[], canAny: (permissions: string[]) => boolean, options: NavVisibilityOptions = {}): NavItem[] {
+  const showHidden = options.showHidden === true
   return items.flatMap(item => {
-    if (item.hidden) return []
+    if (item.hidden && !showHidden) return []
     if (!item.children) return canAny(item.permissions) ? [item] : []
-    const children = visibleNavigationItems(item.children, canAny)
+    const children = visibleNavigationItems(item.children, canAny, options)
     return children.length ? [{ ...item, children }] : []
   })
 }

@@ -5,8 +5,8 @@ export type AssistantNavigationPart =
   | { kind: 'link' | 'unavailable'; labelKey: string; path: string }
 
 // 只识别已有菜单的站内导航，不解析 HTML 或通用 Markdown。
-export function assistantNavigationParts(content: string, canAny: (permissions: string[]) => boolean): AssistantNavigationPart[] {
-  const targets = new Map(menuNavigation().map(item => [item.path, item]))
+export function assistantNavigationParts(content: string, canAny: (permissions: string[]) => boolean, showHidden = false): AssistantNavigationPart[] {
+  const targets = new Map(menuNavigation(showHidden).map(item => [item.path, item]))
   const parts: AssistantNavigationPart[] = []
   const links = /(?<!!)\[([^\]\r\n]{1,100})\]\((\/[^\s()]{1,512})\)/g
   let start = 0

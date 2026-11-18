@@ -5,9 +5,9 @@ import {loadFrontend} from './acceptanceHarness.mjs'
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
-function storeHarness(get=async()=>({data:{enabled:true,version:0}})){
+function storeHarness(get=async path=>({data:path==='/settings/delivery-controls-menu'?{enabled:false,version:0}:{enabled:true,version:0}})){
  const reads=[]
- const module=loadFrontend('../src/stores/interfaceSettings.ts',{vue,pinia:{defineStore:(_id,setup)=>setup},'@/api/client':{__esModule:true,default:{get:(path,options)=>{reads.push({path,options});return get()}}},'@/api/resources':{apiErrorMessage:()=> '读取界面设置失败'}})
+ const module=loadFrontend('../src/stores/interfaceSettings.ts',{vue,pinia:{defineStore:(_id,setup)=>setup},'@/api/client':{__esModule:true,default:{get:(path,options)=>{reads.push({path,options});return get(path)}}},'@/api/resources':{apiErrorMessage:()=> '读取界面设置失败'}})
  return {store:vue.reactive(module.useInterfaceSettingsStore()),reads}
 }
 
@@ -32,7 +32,7 @@ test('全站显示状态读取失败保留已确认值，初始失败不闪现�
 function editorHarness(t,permissions=['config.read','config.update'],put=async()=>({data:{enabled:false,version:1}})){
  const auth=vue.reactive({authorizationState:'ready',user:{id:'admin',permissions},canAny(codes){return codes.some(code=>this.user?.permissions.includes(code))}})
  const h=storeHarness(),writes=[],unmounts=[]
- const component=loadFrontend('../src/components/InterfaceSettings.vue',{vue:{...vue,onBeforeUnmount:fn=>unmounts.push(fn)},'@/stores/auth':{useAuthStore:()=>auth},'@/stores/interfaceSettings':{useInterfaceSettingsStore:()=>h.store},'@/api/client':{__esModule:true,default:{put:(path,body,options)=>{writes.push({path,body,options});return put()}}},'@/api/resources':{apiErrorMessage:()=> '保存失败'}}).default
+ const component=loadFrontend('../src/components/InterfaceSettings.vue',{vue:{...vue,onBeforeUnmount:fn=>unmounts.push(fn)},'@/stores/auth':{useAuthStore:()=>auth},'@/stores/interfaceSettings':{useInterfaceSettingsStore:()=>h.store},'@/api/client':{__esModule:true,default:{put:(path,body,options)=>{writes.push({path,body,options});return put(path)}}},'@/api/resources':{apiErrorMessage:()=> '保存失败'}}).default
  const scope=vue.effectScope(),state=scope.run(()=>component.setup({}, {expose(){}}))
  t.after(()=>{unmounts.forEach(fn=>fn());scope.stop()})
  return {...h,auth,state,writes}
@@ -53,4 +53,38 @@ test('只读、撤权及保存失败均不能显示保存成功或应用未确�
  changed.state.enabled.value=false;const save=changed.state.save();changed.auth.user.permissions=[];await settle()
  waiting.resolve({data:{enabled:false,version:1}});await save
  assert.equal(changed.writes[0].options.signal.aborted,true);assert.equal(changed.state.status.value,'');assert.equal(changed.store.showGitHubLogo,true)
+})
+test('交付控制入口读取开启后才显示，默认隐藏且失败不改变已确认值',async()=>{
+ const waiting=deferred(),h=storeHarness(path=>path==='/settings/delivery-controls-menu'?waiting.promise:Promise.resolve({data:{enabled:true,version:0}}))
+ assert.equal(h.store.showDeliveryControls,false)
+ const first=h.store.loadDeliveryControls(),second=h.store.loadDeliveryControls()
+ assert.equal(first,second)
+ assert.equal(h.reads.filter(read=>read.path==='/settings/delivery-controls-menu').length,1)
+ h.store.applyDeliveryControls({enabled:false,version:1})
+ waiting.resolve({data:{enabled:true,version:0}});await first
+ assert.equal(h.store.showDeliveryControls,false);assert.equal(h.store.deliveryControlsMenu.version,1)
+ assert.equal(h.reads.at(-1).options.signal.aborted,true)
+ h.store.applyDeliveryControls({enabled:true,version:2});assert.equal(h.store.showDeliveryControls,true)
+ h.store.reset();assert.equal(h.store.showDeliveryControls,false);assert.equal(h.store.deliveryControlsMenu,null)
+})
+test('交付控制入口读取失败保留默认隐藏并记录错误',async()=>{
+ const h=storeHarness(path=>path==='/settings/delivery-controls-menu'?Promise.reject(Error('failed')):Promise.resolve({data:{enabled:true,version:0}}))
+ await h.store.loadDeliveryControls()
+ assert.equal(h.store.showDeliveryControls,false);assert.match(h.store.deliveryError,/读取/)
+})
+test('界面设置保存交付控制入口开关，使用版本号并立即生效',async t=>{
+ const h=editorHarness(t,undefined,async path=>({data:path==='/settings/delivery-controls-menu'?{enabled:true,version:1}:{enabled:false,version:1}}))
+ await settle()
+ assert.equal(h.state.deliveryEnabled.value,false);assert.equal(h.state.deliveryLoaded.value,true)
+ h.state.deliveryEnabled.value=true;await h.state.saveDelivery()
+ const write=h.writes.find(item=>item.path==='/settings/delivery-controls-menu')
+ assert.deepEqual(write.body,{enabled:true,expected_version:0})
+ assert.equal(h.store.showDeliveryControls,true);assert.match(h.state.deliveryStatus.value,/已保存/)
+})
+test('交付控制入口只读或保存失败不显示成功也不改变侧栏',async t=>{
+ const readonly=editorHarness(t,['config.read']);await settle();await readonly.state.saveDelivery()
+ assert.equal(readonly.writes.length,0)
+ const failure=editorHarness(t,undefined,async()=>{throw Error('failed')});await settle()
+ failure.state.deliveryEnabled.value=true;await failure.state.saveDelivery()
+ assert.equal(failure.store.showDeliveryControls,false);assert.equal(failure.state.deliveryStatus.value,'');assert.match(failure.state.deliveryError.value,/保存失败/)
 })

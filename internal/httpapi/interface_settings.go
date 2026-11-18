@@ -18,6 +18,40 @@ func (h settingsHandler) githubLogo(c *gin.Context) {
 	c.JSON(http.StatusOK, settings)
 }
 
+func (h settingsHandler) deliveryControlsMenu(c *gin.Context) {
+	settings, err := h.service.GetDeliveryControlsMenuSettings(c.Request.Context())
+	if err != nil {
+		h.logger.Error("读取交付控制入口设置失败", "operation", "settings_delivery_controls_read", "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	c.JSON(http.StatusOK, settings)
+}
+
+func (h settingsHandler) updateDeliveryControlsMenu(c *gin.Context) {
+	var request booleanSettingUpdateRequest
+	if err := c.ShouldBindJSON(&request); err != nil || request.Enabled == nil {
+		h.logger.Warn("修改交付控制入口设置参数无效", "operation", "settings_delivery_controls_bind", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_settings", configuration.ErrInvalidConfiguration.Error())
+		return
+	}
+	actor, _ := currentUser(c)
+	settings, err := h.service.UpdateDeliveryControlsMenuSettings(c.Request.Context(), actor.ID, *request.Enabled, request.ExpectedVersion)
+	if err != nil {
+		h.logger.Error("修改交付控制入口设置失败", "operation", "settings_delivery_controls_update", "request_id", requestIDFrom(c), "actor_id", actor.ID, "err", err)
+		switch {
+		case errors.Is(err, configuration.ErrVersionConflict):
+			writeError(c, http.StatusConflict, "settings_version_conflict", configuration.ErrVersionConflict.Error())
+		case errors.Is(err, configuration.ErrInvalidConfiguration):
+			writeError(c, http.StatusBadRequest, "invalid_settings", configuration.ErrInvalidConfiguration.Error())
+		default:
+			writeInternalError(c)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, settings)
+}
+
 func (h settingsHandler) updateGitHubLogo(c *gin.Context) {
 	var request booleanSettingUpdateRequest
 	if err := c.ShouldBindJSON(&request); err != nil || request.Enabled == nil {

@@ -423,6 +423,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	// 只返回非敏感的全局显示开关，普通登录用户也需要读取顶部入口状态。
 	protected.GET("/settings/github-logo", settingsAPI.githubLogo)
 	protected.PUT("/settings/github-logo", auditAction(deps.Audits, deps.Logger, "settings.github_logo.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), settingsAPI.updateGitHubLogo)
+	// 交付控制入口的显示开关同样只需登录即可读取，修改仍要求平台配置权限。
+	protected.GET("/settings/delivery-controls-menu", settingsAPI.deliveryControlsMenu)
+	protected.PUT("/settings/delivery-controls-menu", auditAction(deps.Audits, deps.Logger, "settings.delivery_controls_menu.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), settingsAPI.updateDeliveryControlsMenu)
 	protected.GET("/settings/builtin-variables", requireAnyPermission(deps.Access, deps.Logger, access.PermissionConfigRead, "application.read", "workflow.read", "build_plan.read", "deployment_plan.read"), settingsAPI.builtinVariables)
 	protected.GET("/settings/login-lockout", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.loginLockout)
 	protected.PUT("/settings/login-lockout", auditAction(deps.Audits, deps.Logger, "settings.login_lockout.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), settingsAPI.updateLoginLockout)

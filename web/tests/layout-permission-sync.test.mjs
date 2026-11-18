@@ -20,7 +20,7 @@ function harness() {
     'vue-router': { useRoute: () => route, useRouter: () => ({ replace: path => replacements.push(path), resolve: () => ({ name: 'projects', meta: {} }) }) },
     'ant-design-vue': {Modal:{destroyAll(){}}},
     '@/router/navigation': nav, '@/stores/auth': { useAuthStore: () => auth },
-    '@/stores/preferences': { usePreferencesStore: () => ({ sidebarCollapsed: false }) },
+    '@/stores/preferences': { usePreferencesStore: () => ({ sidebarCollapsed: false }) },'@/stores/interfaceSettings':{useInterfaceSettingsStore:()=>({showDeliveryControls:false,loadDeliveryControls:()=>Promise.resolve()})},
     '@/stores/tabs': { useTabsStore: () => ({ tabs: [{ path: '/hosts' }, { path: '/projects' }], recent: () => [], canGoBack: () => false, visit() {}, add() {} }) },
   }, { window: { addEventListener() {}, removeEventListener() {} } }).default
   const scope = vue.effectScope(); let state

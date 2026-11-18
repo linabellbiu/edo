@@ -81,7 +81,7 @@ function menuHarness(t) {
     'vue-router': {useRoute: () => route, useRouter: () => ({resolve: () => ({name: 'projects', meta: {}}), replace: async () => {}, push: async () => {}})},
     'ant-design-vue': {ConfigProvider: pass, Modal: {destroyAll(){}}}, 'lucide-vue-next': new Proxy({}, {get: () => icon}),
     '@/router/navigation': {navigation, flatNavigation: () => navigation[1].branches.flatMap(branch => branch.items), navigationTrail: () => [], findNavigationItem: () => undefined, visibleNavigationItems: (items, allowed) => items.filter(item => allowed(item.permissions))},
-    '@/stores/auth': {useAuthStore: () => auth}, '@/stores/preferences': {usePreferencesStore: () => preferences},
+    '@/stores/auth': {useAuthStore: () => auth}, '@/stores/preferences': {usePreferencesStore: () => preferences},'@/stores/interfaceSettings':{useInterfaceSettingsStore:()=>({showDeliveryControls:false,loadDeliveryControls:()=>Promise.resolve()})},
     '@/stores/tabs': {useTabsStore: () => ({tabs: [], recent: () => [], canGoBack: () => false, visit() {}, add() {}})},
     '@/components/ProjectSelector.vue': {__esModule: true, default: {render: () => null}},
     '@/components/SidebarNavigation.vue': {__esModule: true, default: sidebar},

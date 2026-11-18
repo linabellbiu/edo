@@ -66,7 +66,7 @@ function layoutHarness() {
     vue:{...vue,onMounted(){},onBeforeUnmount(){}}, 'vue-i18n':{useI18n:()=>({t:key=>key})},
     'vue-router':{useRoute:()=>route,useRouter:()=>({push:path=>pushes.push(path),resolve:()=>({name:'unknown',meta:{permissions:['no-access']}})})},
     '@/router/navigation':nav, '@/stores/auth':{useAuthStore:()=>({canAny:permissions=>!permissions.length||permissions.some(item=>['kubernetes.config.read','kubernetes.storage.read'].includes(item))})},
-    '@/stores/preferences':{usePreferencesStore:()=>preferences}, '@/stores/tabs':{useTabsStore:()=>({tabs:[],recent:()=>[],canGoBack:()=>false,visit:()=>visits.push(route.fullPath),add(){}})},
+    '@/stores/preferences':{usePreferencesStore:()=>preferences},'@/stores/interfaceSettings':{useInterfaceSettingsStore:()=>({showDeliveryControls:false,loadDeliveryControls:()=>Promise.resolve()})}, '@/stores/tabs':{useTabsStore:()=>({tabs:[],recent:()=>[],canGoBack:()=>false,visit:()=>visits.push(route.fullPath),add(){}})},
   }).default
   let state
   scope.run(()=>{state=component.setup({}, {expose(){}})})

@@ -41,3 +41,31 @@ func TestGitHubLogoDefaultsVisibleAndPersistsGloballyWithRevision(t *testing.T) 
 		t.Fatal("设置修订没有保存", revisions, err)
 	}
 }
+func TestDeliveryControlsMenuDefaultsHiddenAndPersistsGloballyWithRevision(t *testing.T) {
+	s := newConfigurationTestService(t)
+	initial, err := s.GetDeliveryControlsMenuSettings(context.Background())
+	if err != nil || initial.Enabled || initial.Version != 0 {
+		t.Fatal("默认应隐藏交付控制入口", initial, err)
+	}
+	shown, err := s.UpdateDeliveryControlsMenuSettings(context.Background(), "admin", true, 0)
+	if err != nil || !shown.Enabled || shown.Version != 1 {
+		t.Fatal(shown, err)
+	}
+	if _, err = s.UpdateDeliveryControlsMenuSettings(context.Background(), "admin", false, 0); !errors.Is(err, ErrVersionConflict) {
+		t.Fatal("旧版本不能覆盖新设置", err)
+	}
+	ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{DepartmentID: "another-department", ProjectID: "another-project", UserID: "viewer"})
+	reopened := NewService(s.db, s.secrets)
+	saved, err := reopened.GetDeliveryControlsMenuSettings(ctx)
+	if err != nil || saved != shown {
+		t.Fatal("设置未持久化或不属于全站", saved, err)
+	}
+	var item model.Configuration
+	if err = s.db.Where("namespace = ? AND key = ?", systemNamespace, deliveryControlsMenuSettingKey).First(&item).Error; err != nil {
+		t.Fatal(err)
+	}
+	revisions, err := s.Revisions(context.Background(), item.ID, 10)
+	if err != nil || len(revisions) != 1 {
+		t.Fatal("设置修订没有保存", revisions, err)
+	}
+}

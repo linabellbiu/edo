@@ -207,12 +207,13 @@ func TestAPIRouteUnprivilegedActionInventory(t *testing.T) {
 	public := inventoryPublicAPIRoutes()
 	// 个人会话、项目成员及非敏感界面状态查询不要求业务动作；密码使用空请求，仅验证必填校验。
 	selfService := map[string]int{
-		"GET /api/v1/auth/events/ws":       http.StatusBadRequest,
-		"GET /api/v1/auth/me":              http.StatusOK,
-		"PUT /api/v1/auth/password":        http.StatusBadRequest,
-		"GET /api/v1/projects":             http.StatusOK,
-		"GET /api/v1/projects/:id":         http.StatusOK,
-		"GET /api/v1/settings/github-logo": http.StatusOK,
+		"GET /api/v1/auth/events/ws":                  http.StatusBadRequest,
+		"GET /api/v1/auth/me":                         http.StatusOK,
+		"PUT /api/v1/auth/password":                   http.StatusBadRequest,
+		"GET /api/v1/projects":                        http.StatusOK,
+		"GET /api/v1/projects/:id":                    http.StatusOK,
+		"GET /api/v1/settings/github-logo":            http.StatusOK,
+		"GET /api/v1/settings/delivery-controls-menu": http.StatusOK,
 	}
 	seenSelfService := make(map[string]bool)
 	deniedCount, selfCount, publicCount := 0, 0, 0

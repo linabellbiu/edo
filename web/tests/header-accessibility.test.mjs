@@ -57,7 +57,7 @@ function mount(t, {locale = 'zh-CN', theme = 'light', connecting = false} = {}) 
     'lucide-vue-next': new Proxy({}, {get: () => icon}),
     '@/router/navigation': {navigation: [{items: []}], flatNavigation: () => [], navigationTrail: () => [], findNavigationItem: () => undefined, visibleNavigationItems: items => items},
     '@/stores/auth': {useAuthStore: () => auth},
-    '@/stores/preferences': {usePreferencesStore: () => preferences},
+    '@/stores/preferences': {usePreferencesStore: () => preferences},'@/stores/interfaceSettings':{useInterfaceSettingsStore:()=>({showDeliveryControls:false,loadDeliveryControls:()=>Promise.resolve()})},
     '@/stores/tabs': {useTabsStore: () => ({tabs: [{key: '/', path: '/', title: 'nav.overview', pinned: true}, {key: '/projects', path: '/projects', title: 'nav.overview', pinned: false}], recent: () => [], canGoBack: () => canBack.value, visit() {}, add() {}, back: () => { calls.back++ }, togglePin() {}, close() {}})},
     '@/components/ProjectSelector.vue': {__esModule: true, default: {render: () => null}},
     // 侧栏菜单结构由 navigation-accessibility 与 sidebar-navigation-design 覆盖，这里只验证页头与标签栏。

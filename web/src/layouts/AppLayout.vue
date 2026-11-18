@@ -11,6 +11,7 @@ import {
 
 import { flatNavigation, menuNavigation, navigation, findNavigationItem, navigationTrail, visibleNavigationItems, type NavBranch, type NavItem } from '@/router/navigation'
 import { useAuthStore } from '@/stores/auth'
+import { useInterfaceSettingsStore } from '@/stores/interfaceSettings'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useTabsStore } from '@/stores/tabs'
 import ProjectSelector from '@/components/ProjectSelector.vue'
@@ -22,6 +23,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const preferences = usePreferencesStore()
+const interfaceSettings = useInterfaceSettingsStore()
 const tabsStore = useTabsStore()
 const { t } = useI18n()
 
@@ -67,7 +69,7 @@ function updateOpenKeys(keys: string[]) {
 const allowed = (item: NavItem) => auth.canAny(item.permissions)
 const allowedBranches = (sectionIndex: number): NavBranch[] =>
   (navigation[sectionIndex]?.branches ?? [])
-    .map((branch) => ({ ...branch, items: visibleNavigationItems(branch.items, permissions => auth.canAny(permissions)) }))
+    .map((branch) => ({ ...branch, items: visibleNavigationItems(branch.items, permissions => auth.canAny(permissions), { showHidden: interfaceSettings.showDeliveryControls }) }))
     .filter((branch) => branch.items.length > 0)
 
 const overviewItems = computed(() => (navigation[0]?.items ?? []).filter(allowed))
@@ -116,7 +118,7 @@ const breadcrumbs = computed(() => {
   return trail.length ? trail : [{ label: String(route.meta.title || 'nav.overview') }]
 })
 
-const searchableItems = computed(() => menuNavigation()
+const searchableItems = computed(() => menuNavigation(interfaceSettings.showDeliveryControls)
   .filter(allowed)
   .filter((item) => t(item.label).toLowerCase().includes(searchText.value.trim().toLowerCase())))
 
@@ -233,6 +235,7 @@ watch(() => JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.
 
 watch(() => auth.authorizationReady, ready => {
   if (ready) {
+    void interfaceSettings.loadDeliveryControls()
     if (permissionSyncStarted) contentInitialized.value = true
     if (auth.user && !allowedHistoryPath(route.fullPath)) void router.replace('/projects')
     return
@@ -253,6 +256,7 @@ watch(() => JSON.stringify([route.path, auth.user?.id, auth.user?.department_id,
 }, { flush: 'sync' })
 
 onMounted(() => {
+  void interfaceSettings.loadDeliveryControls()
   window.addEventListener('keydown', keyboard)
   permissionSyncStarted = true
   stopPermissionSync = auth.startPermissionSync()

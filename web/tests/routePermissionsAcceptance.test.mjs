@@ -85,9 +85,15 @@ test('侧栏全部叶子按精确有效权限过滤，无权限父级不会残�
   const sections=baseline.navigation.navigation
   const visible=h=>sections.flatMap(section=>[...flatten(h.navigation.visibleNavigationItems(section.items||[],h.auth.canAny)),...(section.branches||[]).flatMap(branch=>flatten(h.navigation.visibleNavigationItems(branch.items,h.auth.canAny)))])
   assert.deepEqual(visible(baseline).map(item=>item.path).sort(),['/projects','/settings'])
-  // 隐藏入口（应用数据库、主机组保护）不进侧栏，但路由与权限保留。
+  // 应用数据库与主机组保护默认隐藏（系统设置 → 界面设置里可开启），路由与权限保留。
   const hidden=leaves.filter(item=>item.hidden)
   assert.deepEqual(hidden.map(item=>item.path).sort(),['/application-databases','/environment-policies'])
+  const shown=h=>sections.flatMap(section=>[...flatten(h.navigation.visibleNavigationItems(section.items||[],h.auth.canAny,{showHidden:true})),...(section.branches||[]).flatMap(branch=>flatten(h.navigation.visibleNavigationItems(branch.items,h.auth.canAny,{showHidden:true})))])
+  for(const item of hidden) {
+    const allowed=shown(routeHarness([...item.permissions])).map(entry=>entry.path)
+    assert.ok(allowed.includes(item.path),'界面设置开启后应显示隐藏入口')
+  }
+  assert.ok(baseline.navigation.menuNavigation(true).some(item=>item.path==='/application-databases'),'搜索入口打开开关后同样包含隐藏项')
   const menuLeaves=leaves.filter(item=>!item.hidden)
   for(const code of new Set(menuLeaves.flatMap(item=>item.permissions))) {
     const h=routeHarness([code]),actual=visible(h).map(item=>item.path).sort()

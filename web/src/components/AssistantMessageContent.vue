@@ -3,11 +3,13 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ArrowUpRight } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
+import { useInterfaceSettingsStore } from '@/stores/interfaceSettings'
 import { assistantNavigationParts } from '@/utils/assistantNavigation'
 
 const props = defineProps<{ content: string }>()
 const { t } = useI18n(), auth = useAuthStore()
-const parts = computed(() => assistantNavigationParts(props.content, permissions => auth.canAny(permissions)))
+const interfaceSettings = useInterfaceSettingsStore()
+const parts = computed(() => assistantNavigationParts(props.content, permissions => auth.canAny(permissions), interfaceSettings.showDeliveryControls))
 const hasLinks = computed(() => parts.value.some(part => part.kind === 'link'))
 </script>
 
