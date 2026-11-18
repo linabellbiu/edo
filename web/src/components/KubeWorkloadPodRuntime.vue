@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Box, CheckCircle2, ChevronRight, FileText, TerminalSquare } from 'lucide-vue-next'
+import { Box, Bug, CheckCircle2, ChevronRight, Download, FileCode2, FileText, Folder, TerminalSquare, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import { message } from 'ant-design-vue'
 import client from '@/api/client'
 import { kubeErrorMessage, kubeTypes, resourceURL, type KubeObject } from '@/api/kubernetes'
 import { resourceStatus, type KubeReference } from '@/utils/kubernetesPresentation'
@@ -9,8 +10,10 @@ import { podRuntimeContainers } from '@/utils/kubernetesDiagnostics'
 import { podContainerChoices } from '@/utils/kubernetesWorkspace'
 import { podExplorerEvents, workloadConditionTone, type WorkloadContainerTarget } from '@/utils/kubernetesWorkloadExplorer'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
+import { PodLogDownloadLimit, readPodLogSnapshot } from '@/utils/podLogDownload'
 import KubeResourceDiagnostics from './KubeResourceDiagnostics.vue'
 import KubeWorkloadEvents from './KubeWorkloadEvents.vue'
+import KubePodDebugContainer from './KubePodDebugContainer.vue'
 import SessionAction from './SessionAction.vue'
 
 const props = defineProps<{
@@ -20,6 +23,7 @@ const props = defineProps<{
   autoRefresh: boolean
   refreshToken: number
   disabled?: boolean
+  podActions?: boolean
   can: (permission: string) => boolean
   canFollow: (reference: KubeReference) => boolean
 }>()
@@ -28,6 +32,10 @@ const emit = defineEmits<{
   container: [target: WorkloadContainerTarget]
   logs: [target: WorkloadContainerTarget]
   terminal: [target: WorkloadContainerTarget]
+  files: [target: WorkloadContainerTarget]
+  yaml: [pod: KubeObject]
+  remove: [pod: KubeObject]
+  podChanged: []
 }>()
 const { t } = useI18n()
 const podType = kubeTypes.find(type => type.resource === 'pods')!
@@ -37,6 +45,11 @@ const containers = computed(() => readable.value ? podRuntimeContainers(props.po
 const state = computed(() => resourceStatus(props.pod, t))
 const events = ref<KubeObject[]>([]), eventsLoading = ref(false), eventsError = ref('')
 const eventsExpanded = ref(false), warningCount = computed(() => events.value.filter(event => event.type === 'Warning').length)
+const canBrowseFiles = computed(() => props.can('terminal.file.read') && props.can('kubernetes.workload.execute'))
+const canDebug = computed(() => readable.value && props.can('kubernetes.workload.update') && props.can('kubernetes.workload.execute'))
+const debugTarget = ref<{ pod: KubeObject; container: string }>()
+const downloading = ref(false)
+let downloadRequest: AbortController | undefined
 let eventsDisclosureTouched = false
 const missingContainer = computed(() => Boolean(props.container) && !containers.value.some(item => item.name === props.container))
 let revision = 0, disposed = false, controller: AbortController | undefined, timer: ReturnType<typeof setInterval> | undefined
@@ -55,6 +68,10 @@ function allowedContainer(name: string) {
 function allowedTerminal(name: string) {
   return allowedContainer(name) && props.can('terminal.open') && !props.pod.metadata.deletionTimestamp
     && podContainerChoices(props.pod).find(container => container.name === name)?.running === true
+}
+function allowedFiles(name: string) {
+  return allowedContainer(name) && canBrowseFiles.value && !props.pod.metadata.deletionTimestamp
+    && podContainerChoices(props.pod).some(container => container.name === name && container.running)
 }
 function containerTarget(name: string): WorkloadContainerTarget {
   return { cluster: props.cluster, namespace: props.pod.metadata.namespace, podUID: props.pod.metadata.uid, container: name }
@@ -77,6 +94,44 @@ function openLogs(name: string, terminal = false) {
   if (terminal) emit('terminal', target)
   else emit('logs', target)
 }
+function browseFiles(name: string) {
+  if (allowedFiles(name)) emit('files', containerTarget(name))
+}
+function allowedDebug(name: string) {
+  return canDebug.value && name === props.container && !props.pod.metadata.deletionTimestamp
+    && props.pod.status?.phase === 'Running'
+    && podContainerChoices(props.pod).some(container => container.name === name && container.kind === 'app' && container.running)
+}
+function openDebug() {
+  if (!props.disabled && allowedDebug(props.container)) debugTarget.value = { pod: JSON.parse(JSON.stringify(props.pod)), container: props.container }
+}
+watch([context, () => props.container, canDebug], () => { debugTarget.value = undefined }, { flush: 'sync' })
+async function downloadLogs(name: string) {
+  const path = streamPath()
+  if (downloading.value || name !== props.container || !allowedContainer(name) || !path) return
+  const request = new AbortController(), identity = context.value
+  const project = localStorage.getItem('edo.project') ?? ''
+  const fileName = `${props.pod.metadata.name}-${name}.log`
+  const current = () => !request.signal.aborted && readable.value && identity === context.value && name === props.container
+    && project === (localStorage.getItem('edo.project') ?? '')
+  downloadRequest = request
+  downloading.value = true
+  try {
+    const content = await readPodLogSnapshot(path, request.signal)
+    if (!current()) return
+    const href = URL.createObjectURL(content)
+    const link = document.createElement('a')
+    link.href = href
+    link.download = fileName
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(href), 1000)
+  } catch (error) {
+    if (current()) message.error(t(error instanceof PodLogDownloadLimit ? 'k8s.workloadDownloadLogsLimit' : 'k8s.workloadDownloadLogsFailed'))
+  } finally {
+    if (downloadRequest === request) { downloadRequest = undefined; downloading.value = false }
+  }
+}
+watch([context, () => props.container, readable], () => { downloadRequest?.abort() }, { flush: 'sync' })
 function follow(reference: KubeReference) {
   if (!props.disabled && readable.value && props.canFollow(reference)) emit('follow', reference, containerTarget(props.container))
 }
@@ -106,7 +161,7 @@ watch([warningCount, eventsError], ([warnings, error]) => { if ((warnings > 0 ||
 watch(() => props.refreshToken, () => { void loadEvents() })
 function syncVisible() { if (!document.hidden && props.autoRefresh && !props.disabled && !eventsLoading.value) void loadEvents() }
 onMounted(() => { timer = setInterval(syncVisible, 30_000); document.addEventListener('visibilitychange', syncVisible) })
-onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (timer) clearInterval(timer); document.removeEventListener('visibilitychange', syncVisible) })
+onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); downloadRequest?.abort(); if (timer) clearInterval(timer); document.removeEventListener('visibilitychange', syncVisible) })
 </script>
 
 <template>
@@ -120,7 +175,11 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
     <section class="runtime-pod-card">
       <header class="runtime-pod-title">
         <Box :size="15" /><span>容器组：</span><span class="pod-title-main"><strong :title="pod.metadata.name">{{ pod.metadata.name }}</strong><span class="pod-age" :title="formatDateTime(pod.metadata.creationTimestamp)">{{ formatRelativeTime(pod.metadata.creationTimestamp) }}</span></span>
-        <button v-if="canFollow({resource:'pods',name:pod.metadata.name,namespace:pod.metadata.namespace,uid:pod.metadata.uid})" class="pod-detail-link" :disabled="disabled" @click="follow({resource:'pods',name:pod.metadata.name,namespace:pod.metadata.namespace,uid:pod.metadata.uid})">完整详情 <ChevronRight :size="13" /></button>
+        <div v-if="podActions" class="runtime-pod-actions">
+          <a-button class="kube-action kube-action-yaml" size="small" :disabled="disabled || !readable" @click="emit('yaml',pod)"><FileCode2 :size="13" aria-hidden="true" />YAML</a-button>
+          <a-button v-if="can('kubernetes.workload.delete')" class="kube-action kube-action-remove" size="small" danger :disabled="disabled || Boolean(pod.metadata.deletionTimestamp)" @click="emit('remove',pod)"><Trash2 :size="13" aria-hidden="true" />{{ t('k8s.remove') }}</a-button>
+          <button v-if="canFollow({resource:'pods',name:pod.metadata.name,namespace:pod.metadata.namespace,uid:pod.metadata.uid})" type="button" class="pod-detail-link" :disabled="disabled" @click="follow({resource:'pods',name:pod.metadata.name,namespace:pod.metadata.namespace,uid:pod.metadata.uid})">完整详情 <ChevronRight :size="13" /></button>
+        </div>
       </header>
       <dl class="runtime-pod-facts">
         <div><dt>所在节点</dt><dd><button v-if="pod.spec?.nodeName && canFollow({resource:'nodes',name:pod.spec.nodeName})" class="runtime-link" :disabled="disabled" @click="follow({resource:'nodes',name:pod.spec.nodeName})">{{ pod.spec.nodeName }}</button><span v-else>{{ pod.spec?.nodeName || '未调度' }}</span></dd></div>
@@ -149,13 +208,21 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
             <p v-if="containerState(item).exit!==undefined" class="runtime-message">退出码 {{ containerState(item).exit }}</p>
             <div v-if="item.runtime?.lastState?.terminated" class="previous-state"><span>上次退出</span><strong>{{ item.runtime.lastState.terminated.reason || '—' }}</strong><span>exit {{ item.runtime.lastState.terminated.exitCode ?? '—' }}</span><time>{{ formatDateTime(item.runtime.lastState.terminated.finishedAt) }}</time></div>
             <div class="runtime-actions" :aria-label="`${item.name} 容器操作`">
-              <div class="container-action-bar"><SessionAction kind="container-log" :path="streamPath()" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedContainer(container)"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" />追踪日志</a-button></SessionAction><SessionAction v-if="can('terminal.open')" kind="terminal" :path="streamPath(true)" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedTerminal(container)"><a-button :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" />终端</a-button></SessionAction></div>
+              <div class="container-action-bar">
+                <SessionAction kind="container-log" :path="streamPath()" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedContainer(container)"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" aria-hidden="true" />追踪日志</a-button></SessionAction>
+                <a-button :disabled="!allowedContainer(container)" :loading="downloading" @click="downloadLogs(container)"><Download v-if="!downloading" :size="14" aria-hidden="true" />{{ t('k8s.workloadDownloadLogs') }}</a-button>
+                <a-button v-if="canBrowseFiles" :disabled="!allowedFiles(container)" @click="browseFiles(container)"><Folder :size="14" aria-hidden="true" />{{ t('k8s.workloadContainerFiles') }}</a-button>
+                <SessionAction v-if="can('terminal.open')" kind="terminal" :path="streamPath(true)" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedTerminal(container)"><a-button :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" aria-hidden="true" />终端</a-button></SessionAction>
+                <a-button v-if="canDebug&&item.containerKind==='app'" :disabled="disabled||!allowedDebug(container)" @click="openDebug"><Bug :size="14" aria-hidden="true" />{{ t('k8s.workloadDebug') }}</a-button>
+              </div>
             </div>
             <p v-if="container && !missingContainer && can('terminal.open') && !allowedTerminal(container)" class="runtime-action-hint">{{ containers.find(item=>item.name===container)?.containerKind==='init' ? 'Init 容器只支持查看日志，不支持终端。' : '所选容器未运行或当前不可操作，终端暂不可用。' }}</p>
           </template>
         </article>
       </div>
     </section>
+    <KubePodDebugContainer v-if="debugTarget" :cluster="cluster" :pod="debugTarget.pod" :target="debugTarget.container"
+      :allowed="allowedDebug(debugTarget.container)" @close="debugTarget=undefined" @created="emit('podChanged')" />
   </div>
 </template>
 
@@ -172,7 +239,9 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-events>summary:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
 .runtime-events { padding-bottom: 10px; }
 .runtime-pod-card { overflow: hidden; border: 0; border-radius: 12px; background: var(--workload-column); }
-.runtime-pod-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 10px 12px; background: var(--workload-bar); color: var(--workload-on-bar); font-size: 12px; }
+.runtime-pod-title { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; padding: 10px 12px; background: var(--workload-bar); color: var(--workload-on-bar); font-size: 13px; }
+.runtime-pod-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.runtime-pod-actions :deep(.ant-btn) { height: 26px; padding-inline: 7px; font-size: 12px; }
 .pod-age { flex: none; color: var(--workload-on-bar); font-size: 12px; opacity: .85; text-decoration: underline dashed; text-underline-offset: 4px; white-space: nowrap; }
 .pod-title-main { display: flex; align-items: baseline; flex: 1; gap: 10px; min-width: 0; }
 .pod-title-main>strong { min-width: 0; font-weight: 600; white-space: normal; overflow-wrap: anywhere; font-family: var(--edo-font-mono, ui-monospace, monospace); }
@@ -182,7 +251,7 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-pod-facts { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,.7fr); gap: 12px; margin: 0; padding: 16px 12px; }
 .runtime-pod-facts>div { min-width: 0; }
 .runtime-pod-facts dt { margin-bottom: 4px; color: var(--workload-muted); font-size: 12px; }
-.runtime-pod-facts dd { margin: 0; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.runtime-pod-facts dd { margin: 0; color: var(--workload-title); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .runtime-pod-facts :deep(.ant-tag) { margin: 0; }
 .runtime-link { padding: 0; border: 0; background: none; color: var(--workload-link); font: inherit; text-align: left; cursor: pointer; }
 .runtime-link:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
@@ -205,20 +274,20 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-container:not(.selected) .container-heading:hover:not(:disabled) { background: var(--workload-hover); }
 .container-chevron { transition: transform 150ms ease; }
 .runtime-container.selected .container-chevron { transform: rotate(90deg); }
-.container-heading>strong { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.container-heading>strong { flex: 1; min-width: 0; font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
 .runtime-container.selected .container-heading>strong { color: var(--workload-title); }
 .runtime-container:not(.selected) .container-heading:hover:not(:disabled)>strong { color: var(--workload-link); text-decoration: underline; text-underline-offset: 3px; }
 .container-heading :deep(.ant-tag) { margin: 0; font-size: 12px; }
 .container-heading>svg { flex: none; color: var(--workload-muted); }
 .container-image { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; margin: 0; padding: 8px 12px; color: var(--workload-muted); font-size: 12px; line-height: 1.6; }
 .container-image>span:last-child { min-width: 0; overflow-wrap: anywhere; }
-.container-image code { font: inherit; }
+.container-image code { color: var(--workload-text); font-family: var(--edo-font-mono, ui-monospace, monospace); font-size: 13px; }
 .container-current-state,.previous-state { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 0 12px; padding: 8px; border-radius: 8px; background: var(--workload-stripe); color: var(--workload-muted); font-size: 12px; }
 .container-current-state :deep(.ant-tag) { margin: 0; font-size: 12px; line-height: 17px; }
 .previous-state { margin-top: 4px; }
 .runtime-message { margin: 8px 12px; font-size: 12px; overflow-wrap: anywhere; }
-.container-action-bar { display: flex; gap: 8px; margin-top: 8px; }
-.container-action-bar :deep(.ant-btn) { display: flex; align-items: center; gap: 5px; height: 30px; border: 0; border-radius: 8px; box-shadow: none; font-size: 12px; }
+.container-action-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.container-action-bar :deep(.ant-btn) { display: flex; align-items: center; gap: 5px; height: 32px; border: 0; border-radius: 7px; box-shadow: none; font-size: 13px; font-weight: 600; }
 .container-action-bar :deep(.ant-btn:not(:disabled)) { background: var(--workload-idle); color: var(--workload-link); }
 .container-action-bar :deep(.ant-btn:not(:disabled):hover) { background: var(--workload-hover); color: var(--workload-link); }
 .container-action-bar :deep(.session-action-corner) { color: var(--workload-muted); }

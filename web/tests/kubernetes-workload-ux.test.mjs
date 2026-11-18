@@ -96,7 +96,9 @@ test('紧凑事件可用原生details读取完整原因、绝对时间及消息�
  const descriptor=parse(source('KubeWorkloadEvents')).descriptor
  const code=compileScript(descriptor,{id:'events-ux',inlineTemplate:true}).content
  const output=ts.transpileModule(code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,module={exports:{}}
- new Function('require','module','exports',output)(name=>name==='vue'?vue:name==='@/utils/time'?time:{},module,module.exports)
+ const translations={'k8s.workloadEventReason':'原因','k8s.workloadEventTime':'时间','k8s.workloadEventCount':'次数','k8s.workloadEventMessage':'消息'}
+ const dependencies={vue,'@/utils/time':time,'vue-i18n':{useI18n:()=>({t:key=>translations[key]})}}
+ new Function('require','module','exports',output)(name=>dependencies[name]??{},module,module.exports)
  const message='完整挂载失败原因'.repeat(60),app=vue.createSSRApp(module.exports.default,{compact:true,events:[{metadata:{uid:'event'},reason:'FailedMount',message,eventTime:'2026-10-28T01:00:00Z'}]})
  app.component('a-spin',{setup:(_props,{slots})=>()=>vue.h('div',slots.default?.())})
  app.component('a-alert',{setup:(_props,{slots})=>()=>vue.h('div',slots.default?.())})

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { KubeObject } from '@/api/kubernetes'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
 
@@ -12,6 +13,7 @@ const props = withDefaults(defineProps<{
   emptyText?: string
   title?: string
 }>(), { error: false, loading: false, compact: false, emptyText: '暂无事件', title: '事件' })
+const { t } = useI18n()
 
 const rows = computed(() => props.events.map((event, index) => ({
   key: event.metadata?.uid || `${event.reason ?? 'event'}-${index}`,
@@ -33,9 +35,9 @@ const rows = computed(() => props.events.map((event, index) => ({
     <a-spin :spinning="loading">
       <div class="event-table-scroll" tabindex="0" :aria-label="`${title}列表，可滚动查看`">
         <table class="event-table">
-          <thead><tr><th scope="col">Reason</th><th scope="col">Time</th><th scope="col">Count</th><th scope="col">Message</th></tr></thead>
+          <thead><tr><th scope="col">{{ t('k8s.workloadEventReason') }}</th><th scope="col">{{ t('k8s.workloadEventTime') }}</th><th scope="col">{{ t('k8s.workloadEventCount') }}</th><th scope="col">{{ t('k8s.workloadEventMessage') }}</th></tr></thead>
           <tbody>
-            <tr v-for="event in rows" :key="event.key" :class="{ 'warning-event': event.warning }"><td><span class="event-reason" :title="event.reason"><i v-if="event.warning" aria-label="警告" />{{ event.reason }}</span></td><td class="event-time" :title="event.time">{{ compact ? event.relativeTime : event.time }}</td><td class="event-count">{{ event.count }}</td><td class="event-message" :title="event.message"><details v-if="compact" class="event-details"><summary><span>{{ event.message }}</span><span class="event-disclosure">详情</span></summary><dl class="event-full"><dt>原因</dt><dd>{{ event.reason }}</dd><dt>时间</dt><dd>{{ event.time }}</dd><dt>消息</dt><dd>{{ event.message }}</dd></dl></details><template v-else>{{ event.message }}</template></td></tr>
+            <tr v-for="event in rows" :key="event.key" :class="{ 'warning-event': event.warning }"><td><span class="event-reason" :title="event.reason"><i v-if="event.warning" aria-label="警告" />{{ event.reason }}</span></td><td class="event-time" :title="event.time">{{ compact ? event.relativeTime : event.time }}</td><td class="event-count">{{ event.count }}</td><td class="event-message" :title="event.message"><details v-if="compact" class="event-details"><summary><span>{{ event.message }}</span><span class="event-disclosure">详情</span></summary><dl class="event-full"><dt>{{ t('k8s.workloadEventReason') }}</dt><dd>{{ event.reason }}</dd><dt>{{ t('k8s.workloadEventTime') }}</dt><dd>{{ event.time }}</dd><dt>{{ t('k8s.workloadEventCount') }}</dt><dd>{{ event.count }}</dd><dt>{{ t('k8s.workloadEventMessage') }}</dt><dd>{{ event.message }}</dd></dl></details><template v-else>{{ event.message }}</template></td></tr>
             <tr v-if="!rows.length"><td colspan="4" class="events-empty">{{ loading ? '正在读取事件…' : error ? '事件暂不可用' : emptyText }}</td></tr>
           </tbody>
         </table>
@@ -48,7 +50,7 @@ const rows = computed(() => props.events.map((event, index) => ({
 <style scoped>
 .workload-events { min-width: 0; overflow: hidden; border: 0; border-radius: 12px; background: var(--workload-column); color: var(--workload-text); }
 .events-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 5px 10px; background: var(--workload-column); }
-.events-heading h4 { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--workload-title); font-size: 13px; font-weight: 650; line-height: 22px; }
+.events-heading h4 { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--workload-title); font-size: 14px; font-weight: 650; line-height: 22px; }
 .events-count { color: var(--workload-muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .events-actions { display: flex; align-items: center; gap: 6px; }
 .events-actions :deep(.ant-btn) { height: 25px; padding-inline: 4px; color: var(--workload-link); font-size: 12px; }
@@ -56,7 +58,7 @@ const rows = computed(() => props.events.map((event, index) => ({
 .event-table-scroll { height: auto; max-height: 260px; overflow: auto; scrollbar-gutter: stable; }
 .event-table-scroll:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: -2px; }
 .event-table { width: 100%; min-width: 480px; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; line-height: 1.5; }
-.event-table th { position: sticky; top: 0; z-index: 1; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--workload-border); background: var(--workload-header); color: var(--workload-on-header); font-size: 12px; font-weight: 600; letter-spacing: .01em; text-align: left; }
+.event-table th { position: sticky; top: 0; z-index: 1; overflow: hidden; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--workload-border); background: var(--workload-header); color: var(--workload-on-header); font-size: 12px; font-weight: 600; letter-spacing: .01em; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 /* 表头圆角由卡片裁切统一处理，避免内外两层圆角出现白边。 */
 .event-table th:nth-child(1) { width: 24%; }
 .event-table th:nth-child(2) { width: 27%; }
@@ -75,12 +77,14 @@ const rows = computed(() => props.events.map((event, index) => ({
 .events-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; padding: 5px 10px; background: var(--workload-stripe); color: var(--workload-muted); font-size: 12px; }
 .compact .events-heading { min-height: 30px; padding-block: 3px; }
 .compact .event-table-scroll { height: auto; max-height: 184px; }
+.compact .event-table { min-width: 0; }
 .compact .event-table td { padding-block: 5px; }
 .compact .event-table td.events-empty { height: 56px; }
 .compact .event-table th:nth-child(1) { width: 23%; }
-.compact .event-table th:nth-child(2) { width: 14%; }
-.compact .event-table th:nth-child(3) { width: 9%; }
-.compact .event-table th:nth-child(4) { width: 54%; }
+.compact .event-table th:nth-child(2) { width: 20%; }
+.compact .event-table th:nth-child(3) { width: 46px; }
+.compact .event-table th:nth-child(4) { width: auto; }
+.compact .event-table :is(th,td) { padding-inline: 6px; overflow-wrap: anywhere; }
 .compact .event-time,.compact .event-reason { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .event-details>summary { display: flex; align-items: baseline; gap: 8px; min-height: 24px; cursor: pointer; }
 .event-details>summary::before { content: ''; align-self: center; flex: none; width: 6px; height: 6px; border-right: 1px solid var(--workload-muted); border-bottom: 1px solid var(--workload-muted); transform: rotate(-45deg); }
@@ -94,4 +98,9 @@ const rows = computed(() => props.events.map((event, index) => ({
 .compact .event-reason { display: block; }
 .compact .event-reason i { margin-right: 4px; }
 @media(max-width:680px) { .event-table-scroll { max-height: 220px; } .event-table { min-width: 500px; } }
+@media(max-width:540px) {
+  .compact .event-table :is(th:nth-child(2),th:nth-child(3),td.event-time,td.event-count) { display: none; }
+  .compact .event-table th:first-child { width: 42%; }
+  .compact .event-details>summary { gap: 4px; }
+}
 </style>

@@ -8,6 +8,7 @@ import (
 	"edo/internal/access"
 	"edo/internal/kube"
 	"github.com/gin-gonic/gin"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func requireKubernetesResource(service *access.Service, logger *slog.Logger, action string) gin.HandlerFunc {
@@ -123,10 +124,14 @@ func (h clusterHandler) resourceValidateCreate(c *gin.Context) {
 }
 
 func (h clusterHandler) resourceAction(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 8*1024)
 	var input kube.ResourceAction
 	if err := c.ShouldBindJSON(&input); err != nil {
 		h.resourceError(c, "kubernetes_resource_action_bind", kube.ErrInvalidResource)
 		return
+	}
+	if input.Action == "debug" {
+		setAuditMetadata(c, map[string]any{"action": "debug"})
 	}
 	result, err := h.kube.ResourceAction(c.Request.Context(), c.Param("id"), c.Param("resource"), c.Query("namespace"), c.Param("name"), input)
 	if err != nil {
@@ -137,15 +142,25 @@ func (h clusterHandler) resourceAction(c *gin.Context) {
 }
 
 func (h clusterHandler) resourceEvents(c *gin.Context) {
-	if c.Param("resource") == "secrets" {
-		h.resourceError(c, "kubernetes_secret_events", kube.ErrInvalidResource)
+	resource, clusterID := c.Param("resource"), c.Param("id")
+	namespace, name, uid := c.Query("namespace"), c.Param("name"), c.Query("uid")
+	replicaSet, replicaSetUID := c.Query("replica_set"), c.Query("replica_set_uid")
+	if resource == "secrets" || (replicaSet != "" || replicaSetUID != "") && resource != "deployments" {
+		h.resourceError(c, "kubernetes_resource_events_target", kube.ErrInvalidResource)
 		return
 	}
-	result, err := h.kube.ResourceEvents(c.Request.Context(), c.Param("id"), c.Param("resource"), c.Query("namespace"), c.Param("name"), c.Query("uid"))
+	var result []corev1.Event
+	var err error
+	if replicaSet != "" || replicaSetUID != "" {
+		result, err = h.kube.DeploymentReplicaSetEvents(c.Request.Context(), clusterID, namespace, name, uid, replicaSet, replicaSetUID)
+	} else {
+		result, err = h.kube.ResourceEvents(c.Request.Context(), clusterID, resource, namespace, name, uid)
+	}
 	if err != nil {
 		h.resourceError(c, "kubernetes_resource_events", err)
 		return
 	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{"items": result})
 }
 

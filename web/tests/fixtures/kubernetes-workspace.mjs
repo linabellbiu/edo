@@ -15,6 +15,7 @@ import { createKubernetesPreviewData } from './kubernetes-preview-data.mjs'
 
 // 测试入口使用真实页面和内存适配器；任何未登记请求及写操作都不得触达后端。
 const data = createKubernetesPreviewData()
+const workloadActions = new URLSearchParams(location.search).get('workload_actions') === '1'
 const inventoryClusters = [{ id: 'local-preview', name: '本地预览集群', api_server: 'https://preview.invalid:6443', default_namespace: 'preview', is_active: true, mode: 'kubeconfig', hosts: [], updated_at: new Date().toISOString() }]
 client.defaults.adapter = async config => {
   config.signal?.throwIfAborted()
@@ -24,6 +25,9 @@ client.defaults.adapter = async config => {
   const path = url.pathname
   let response
   if (path === '/kubernetes/clusters') response = { clusters: inventoryClusters }
+  else if (workloadActions && path.endsWith('/files') && data.pods.some(pod => params.pod_uid === pod.metadata.uid)) {
+    response = { directory: { path: params.path || '/', entries: params.path === '/' ? [{ name: 'app', path: '/app', kind: 'directory', size: 0 }, { name: 'preview.log', path: '/preview.log', kind: 'file', size: 1024 }] : [], truncated: false } }
+  }
   else if (/^\/kubernetes\/clusters\/[^/]+\/namespaces$/.test(path)) {
     const delay = Math.min(5000, Math.max(0, Number(new URLSearchParams(location.search).get('namespace_refresh_ms')) || 0))
     if (params.fresh && delay) await new Promise(resolve => setTimeout(resolve, delay))
@@ -51,7 +55,10 @@ client.defaults.adapter = async config => {
       const object = rows.find(row => row.metadata.name === decodeURIComponent(encodedName || ''))
       if (!encodedName) response = { items: rows, continue: '' }
       else if (!object) throw new Error('预览资源不存在')
-      else if (operation === 'events') response = { items: data.eventsFor(object) }
+      else if (operation === 'events') {
+        const revision = data.revisions.find(item => item.uid === params.replica_set_uid && item.name === params.replica_set)
+        response = { items: params.replica_set_uid ? data.eventsForRevision(revision) : data.eventsFor(object) }
+      }
       else if (operation === 'diagnostics') response = object.kind === 'Deployment' ? { uid: object.metadata.uid, state: 'ok', revisions: data.revisions } : object.kind === 'Service' ? { uid: object.metadata.uid, state: 'ok', endpoints: [] } : { uid: object.metadata.uid, state: 'ok', metrics_at: new Date().toISOString(), containers: object.status?.phase === 'Running' ? [{ name: 'web', cpu: .021, memory: 162 * 1024 ** 2 }, { name: 'metrics', cpu: .002, memory: 18 * 1024 ** 2 }] : [] }
       else response = { object }
     } else if (/\/nodes\/[^/]+\/metrics$/.test(path)) response = data.nodeHistory(decodeURIComponent(path.split('/').at(-2)))
@@ -77,9 +84,17 @@ window.WebSocket = class PreviewWebSocket extends EventTarget {
   static CLOSING = 2
   static CLOSED = 3
   readyState = 3
-  constructor() {
+  constructor(path, protocol) {
     super()
     queueMicrotask(() => {
+      const endpoint = new URL(path, location.href)
+      if (workloadActions && protocol === 'edo-container-logs-v1' && endpoint.searchParams.get('follow') === 'false'
+        && data.pods.some(pod => endpoint.searchParams.get('pod_uid') === pod.metadata.uid)) {
+        this.onmessage?.({ data: '{"type":"ready"}' })
+        this.onmessage?.({ data: new TextEncoder().encode('本地预览日志\n').buffer })
+        this.onmessage?.({ data: '{"type":"complete"}' })
+        return
+      }
       const event = new CloseEvent('close', { code: 1008, reason: '本地预览不连接真实日志或终端' })
       this.onclose?.(event)
       this.dispatchEvent(event)
@@ -91,6 +106,8 @@ window.WebSocket = class PreviewWebSocket extends EventTarget {
 const pinia = createPinia()
 const auth = useAuthStore(pinia)
 auth.user = { id: 'local-preview-user', username: 'preview', nickname: '本地预览', project_id: localStorage.getItem('edo.project') ?? '', is_superuser: false, permissions: ['cluster.read', 'cluster.create', 'cluster.execute', 'cluster.update', 'terminal.open', 'kubernetes.rbac.read', 'kubernetes.rbac.update', ...['node', 'workload', 'config', 'storage', 'network'].flatMap(resource => ['read', 'update'].map(action => `kubernetes.${resource}.${action}`))] }
+if (workloadActions) auth.user.permissions.push('kubernetes.workload.execute', 'kubernetes.workload.delete', 'terminal.file.read',
+  'application.read', 'application.update', 'workflow.create', 'workflow.read', 'deployment_plan.create', 'deployment_plan.read', 'build_plan.read', 'deployment.read')
 auth.loaded = true
 auth.authorizationState = 'ready'
 const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/kubernetes', component: KubernetesView }, { path: '/hosts', component: { render: () => h(ClusterInventory, { clusters: inventoryClusters, hosts: [], loading: false }) } }] })

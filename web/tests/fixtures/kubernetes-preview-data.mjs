@@ -26,6 +26,9 @@ export function createKubernetesPreviewData() {
     if (object.metadata.uid === pods[1].metadata.uid) return [event(object.metadata.uid, 'Failed', 'Failed to pull image "registry.example.com/team/web:2026.10.28": connection timed out while waiting for the image registry response. Check the repository address and image pull credentials before retrying.', 0, true)]
     return ['Started', 'Created', 'Pulled', 'Scheduled'].map((reason, index) => event(object.metadata.uid, reason, `${reason} container web`, index))
   }
+  function eventsForRevision(revision) {
+    return revision?.current ? [event(revision.uid, 'SuccessfulCreate', `Created pod: ${pods[0].metadata.name}`)] : []
+  }
   function overview(namespace = '') {
     const visiblePods = pods.filter(pod => !namespace || pod.metadata.namespace === namespace)
     return {
@@ -41,5 +44,5 @@ export function createKubernetesPreviewData() {
     if (!node) throw new Error('预览节点不存在')
     return { uid: node.metadata.uid, from: ago(900_000), to: ago(0), interval_seconds: 30, points: Array.from({ length: 31 }, (_, index) => ({ collected_at: ago((30 - index) * 30_000), metrics_at: ago((30 - index) * 30_000), cpu: .8 + index % 5 * .04, memory: (2.4 + index % 7 * .02) * 1024 ** 3, cpu_allocatable: 7.8, memory_allocatable: 15 * 1024 ** 3, pod_capacity: 110, pods: 8, allocation: { cpu_requests: 1.4, cpu_limits: 4, memory_requests: 3 * 1024 ** 3, memory_limits: 6 * 1024 ** 3 }, metrics_state: 'ok', pods_state: 'ok' })) }
   }
-  return { resources, deployment, revisions, pods, nodes, eventsFor, overview, nodeHistory }
+  return { resources, deployment, revisions, pods, nodes, eventsFor, eventsForRevision, overview, nodeHistory }
 }

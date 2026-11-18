@@ -1,4 +1,4 @@
-/* 工作负载参考 Kuboard，以填充色、留白和标题分区；状态标签独立表达真实健康状态。 */
+/* 工作负载以文字层级、浅色分区和选中态组织信息。 */
 :root {
   --workload-accent: #4a66f0;
   --workload-accent-hover: #4060e8;
@@ -133,17 +133,34 @@
 /* 详情占满可用高度，长内容由所属模块滚动，不再撑高整个抽屉。 */
 
 /* 工作负载详情头部的操作做成实底按钮，按“修改 / 运行”区分颜色，比列表里的轻量按钮更醒目。 */
-.kube-workload-drawer .resource-detail-compact-actions .resource-row-actions { display: flex; align-items: center; gap: 6px; }
-.kube-workload-drawer .resource-detail-compact-actions .resource-row-actions .ant-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding-inline: 12px; border-radius: 8px; font-size: 12px; font-weight: 650; }
+.kube-workload-drawer .resource-detail-compact-header { gap: 12px; }
+.kube-workload-drawer .resource-detail-compact-title { max-width: min(32%, 380px); color: var(--workload-title); font-size: 17px; font-weight: 700; line-height: 1.35; }
+.kube-workload-drawer .resource-detail-compact-actions .detail-context { margin: 0; color: var(--workload-muted); font-size: 13px; font-weight: 500; }
+.kube-workload-drawer .resource-detail-compact-actions .ant-tag { margin-inline-end: 0; }
+.kube-workload-drawer .resource-detail-compact-actions .workload-detail-refresh { display: inline-grid; width: 30px; height: 30px; place-items: center; color: var(--workload-muted); }
+.kube-workload-drawer .resource-detail-compact-actions .resource-row-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-inline-start: auto; }
+.kube-workload-drawer .resource-detail-compact-actions .resource-row-actions .ant-btn,
+.workload-pod-runtime .runtime-pod-actions .ant-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding-inline: 10px; border-radius: 7px; font-size: 13px; font-weight: 600; }
 .kube-workload-drawer .resource-detail-compact-actions .resource-row-actions .ant-btn svg { flex: none; }
 .kube-workload-drawer .resource-detail-compact-actions .kube-action-edit.ant-btn:not(:disabled),
-.kube-workload-drawer .resource-detail-compact-actions .kube-action-scale.ant-btn:not(:disabled) { border-color: var(--workload-selected); background: var(--workload-selected); color: var(--workload-on-selected); }
+.kube-workload-drawer .resource-detail-compact-actions .kube-action-images.ant-btn:not(:disabled) { border-color: var(--workload-selected); background: var(--workload-selected); color: var(--workload-on-selected); }
 .kube-workload-drawer .resource-detail-compact-actions .kube-action-edit.ant-btn:not(:disabled):hover,
-.kube-workload-drawer .resource-detail-compact-actions .kube-action-scale.ant-btn:not(:disabled):hover { border-color: color-mix(in srgb, var(--workload-selected) 86%, #000); background: color-mix(in srgb, var(--workload-selected) 86%, #000); color: var(--workload-on-selected); }
+.kube-workload-drawer .resource-detail-compact-actions .kube-action-images.ant-btn:not(:disabled):hover { border-color: color-mix(in srgb, var(--workload-selected) 86%, #000); background: color-mix(in srgb, var(--workload-selected) 86%, #000); color: var(--workload-on-selected); }
 .kube-workload-drawer .resource-detail-compact-actions .kube-action-run.ant-btn:not(:disabled) { border-color: var(--workload-action-run); background: var(--workload-action-run); color: #fff; }
 .kube-workload-drawer .resource-detail-compact-actions .kube-action-run.ant-btn:not(:disabled):hover { border-color: color-mix(in srgb, var(--workload-action-run) 86%, #000); background: color-mix(in srgb, var(--workload-action-run) 86%, #000); color: #fff; }
+.kube-workload-drawer .resource-detail-compact-actions :is(.kube-action-scale,.kube-action-yaml,.kube-action-link).ant-btn:not(:disabled),
+.workload-pod-runtime .runtime-pod-actions .kube-action-yaml.ant-btn:not(:disabled) { border-color: var(--workload-border); background: var(--workload-column); color: var(--workload-text); }
+.kube-workload-drawer .resource-detail-compact-actions :is(.kube-action-scale,.kube-action-yaml,.kube-action-link).ant-btn:not(:disabled):hover,
+.workload-pod-runtime .runtime-pod-actions .kube-action-yaml.ant-btn:not(:disabled):hover { border-color: var(--workload-selected-border); background: var(--workload-idle); color: var(--workload-link); }
+:is(.kube-workload-drawer .resource-detail-compact-actions,.workload-pod-runtime .runtime-pod-actions) .kube-action-remove.ant-btn:not(:disabled) { border-color: var(--workload-error-border); background: var(--workload-error-bg); color: var(--workload-error-text); }
+:is(.kube-workload-drawer .resource-detail-compact-actions,.workload-pod-runtime .runtime-pod-actions) .kube-action-remove.ant-btn:not(:disabled):hover { border-color: var(--workload-error-text); color: var(--workload-error-text); }
+.workload-toolbar-replicas { border-radius: 4px; padding-inline: 5px; background: var(--workload-neutral-bg); color: var(--workload-neutral-text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.workload-toolbar-replicas[data-tone='success'] { background: var(--workload-ready-bg); color: var(--workload-ready-text); }
+.workload-toolbar-replicas[data-tone='warning'] { background: var(--workload-warning-bg); color: var(--workload-warning-text); }
+.workload-toolbar-replicas[data-tone='danger'] { background: var(--workload-error-bg); color: var(--workload-error-text); }
 .kube-workload-drawer .resource-detail-compact-actions .kube-action.ant-btn:focus-visible,
-.kube-workload-drawer .resource-detail-compact-actions .resource-more-button.ant-btn:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
+.kube-workload-drawer .resource-detail-compact-actions .resource-more-button.ant-btn:focus-visible,
+.kube-workload-drawer .resource-detail-compact-actions .workload-detail-refresh:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
 .kube-workload-drawer .resource-detail-compact-actions .resource-more-button.ant-btn:not(:disabled) { color: var(--workload-link); border-color: var(--workload-border); background: var(--workload-column); }
 .kube-workload-drawer .resource-detail-compact-actions .resource-more-button.ant-btn:not(:disabled):hover { color: var(--workload-link); border-color: var(--workload-selected-border); background: var(--workload-idle); }
 .kube-workload-drawer .ant-drawer-header { flex: none; min-height: 48px; padding: 8px 12px; }
@@ -160,7 +177,7 @@
 .kube-workload-drawer .detail-tabs > .ant-tabs-content-holder > .ant-tabs-content { height: 100%; }
 .kube-workload-drawer .detail-tabs .ant-tabs-tabpane { height: 100%; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .kube-workload-drawer .detail-tabs .ant-tabs-tabpane.workload-overview-pane { display: flex; flex-direction: column; gap: 10px; overflow: hidden; padding: 8px 10px 10px; background: var(--workload-page); }
-.kube-workload-drawer .workload-overview-pane .workload-summary { flex: 0 0 clamp(124px, 19dvh, 164px); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; min-height: 0; margin: 0; }
+.kube-workload-drawer .workload-overview-pane .workload-summary { flex: 0 0 clamp(112px, 16dvh, 146px); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; min-height: 0; margin: 0; }
 .kube-workload-drawer .workload-summary > .workload-identity { min-height: 0; height: 100%; overflow: auto; overscroll-behavior: contain; padding: 10px 12px; }
 .kube-workload-drawer .workload-summary .identity-facts { padding-bottom: 6px; gap: 4px 16px; }
 .kube-workload-drawer .workload-summary .metadata-controls { min-height: 0; margin-top: 0; }
@@ -182,9 +199,16 @@
   .kube-workload-drawer .workload-explorer.is-deployment .pod-detail-column { grid-column: 1 / -1; }
 }
 @media (max-width: 680px) {
+  .kube-workload-drawer .ant-drawer-header-title { align-items: flex-start; }
+  .kube-workload-drawer .resource-detail-compact-title { max-width: 100%; font-size: 16px; }
+  .kube-workload-drawer .resource-detail-compact-actions .detail-context { flex-basis: auto; font-size: 12px; }
+  .kube-workload-drawer .resource-detail-compact-actions .resource-row-actions { flex-basis: 100%; justify-content: flex-start; gap: 4px; margin-inline-start: 0; }
+  .kube-workload-drawer .resource-detail-compact-actions .resource-row-actions .ant-btn { min-height: 32px; padding-inline: 6px; font-size: 12px; }
+  .kube-workload-drawer .resource-detail-compact-actions .resource-row-actions .ant-btn svg { inline-size: 12px; block-size: 12px; }
   .kube-workload-drawer.resource-detail-drawer .resource-detail-content { padding: 6px 8px 8px; }
-  .kube-workload-drawer .workload-overview-pane .workload-summary { flex-basis: clamp(120px, 23dvh, 180px); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 8px; }
+  .kube-workload-drawer .workload-overview-pane .workload-summary { flex-basis: clamp(116px, 17dvh, 145px); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 8px; }
   .kube-workload-drawer .workload-summary > .workload-identity { padding: 8px; }
   .kube-workload-drawer .workload-overview-pane > .workload-explorer { gap: 8px; padding: 8px; }
+  .kube-workload-drawer.resource-detail-drawer .workload-explorer.is-deployment { grid-template-rows: minmax(124px, .55fr) minmax(0, 1fr); }
   .kube-workload-drawer .workload-explorer:not(.is-deployment) { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(90px, .38fr) minmax(0, 1fr); }
 }

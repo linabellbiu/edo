@@ -1,4 +1,8 @@
-import type { KubeObject } from '@/api/kubernetes'
+import type { KubeObject, KubeType } from '@/api/kubernetes'
+
+export function supportsWorkloadImageEdit(type: KubeType) {
+  return type.update && ['deployments', 'statefulsets', 'daemonsets', 'cronjobs'].includes(type.resource)
+}
 
 export interface WorkloadExplorerSelection {
   revisionUID: string

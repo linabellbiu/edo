@@ -132,6 +132,9 @@ func rbacRules(permissions map[string]bool, namespace string, clusterScope bool)
 			add("apps", "statefulsets", "get", "patch")
 			add("apps", "daemonsets", "get", "patch")
 			add("batch", "cronjobs", "get", "patch")
+			if permissions["kubernetes.workload.update"] && permissions["kubernetes.workload.read"] {
+				add("", "pods/ephemeralcontainers", "update")
+			}
 		}
 		if permissions["kubernetes.secret.read"] {
 			verbs := []string{"get", "list", "watch"}

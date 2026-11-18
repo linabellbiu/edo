@@ -190,7 +190,7 @@ test('关联导航每次检查读取权限、目标权限与禁用状态',()=>{
 
 function eventsHarness(events){
  const props=vue.reactive({events,error:false,loading:false,compact:false,emptyText:'暂无事件',title:'事件'})
- const component=loadFrontend('../src/components/KubeWorkloadEvents.vue',{vue,'@/utils/time':time}).default
+ const component=loadFrontend('../src/components/KubeWorkloadEvents.vue',{vue,'@/utils/time':time,'vue-i18n':{useI18n:()=>({t:key=>key})}}).default
  const scope=vue.effectScope();let state
  scope.run(()=>{state=component.setup(props,{expose(){}})})
  return {state,props,stop:()=>scope.stop()}

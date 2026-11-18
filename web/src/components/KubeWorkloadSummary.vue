@@ -41,6 +41,7 @@ const settings=computed(()=>{
 <template>
  <div class="workload-summary">
   <section class="workload-identity identity-compact" tabindex="0" aria-label="工作负载资料">
+   <h4>{{ t('k8s.workloadBasicInfo') }}</h4>
    <dl class="identity-facts identity-inline"><div><dt>{{ t('k8s.namespace') }}</dt><dd :title="object.metadata.namespace">{{ object.metadata.namespace||'—' }}</dd></div><div><dt>{{ t('k8s.name') }}</dt><dd :title="object.metadata.name">{{ object.metadata.name||'—' }}</dd></div><div><dt>ResourceVersion</dt><dd>{{ object.metadata.resourceVersion||'—' }}</dd></div><div><dt>创建时间</dt><dd :title="formatDateTime(object.metadata.creationTimestamp)">{{ formatRelativeTime(object.metadata.creationTimestamp) }}</dd></div></dl>
    <div class="workload-metadata" :class="{expanded:metadataExpanded}">
     <div class="metadata-group"><span class="metadata-label">标签</span><div class="metadata-chips"><span v-for="[key,value] in labels" :key="key" class="metadata-chip" :title="`${key}=${value}`">{{ key }}={{ value }}</span><span v-if="!labels.length" class="metadata-empty">—</span></div></div>
@@ -56,11 +57,12 @@ const settings=computed(()=>{
 <style scoped>
 .workload-summary { display: grid; grid-template-columns: minmax(0,3fr) minmax(0,2fr); align-items: start; gap: 16px; margin-bottom: 16px; }
 .workload-identity { min-width: 0; padding: 14px 16px; border: 0; border-radius: 12px; background: var(--workload-column); color: var(--workload-text); }
+.workload-identity h4 { margin: 0 0 6px; color: var(--workload-title); font-size: 14px; font-weight: 650; line-height: 20px; }
 .identity-facts { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 18px; margin: 0; padding: 0 0 12px; }
 .identity-facts>div { display: flex; align-items: baseline; gap: 7px; max-width: 100%; min-width: 0; }
 dt { margin: 0; color: var(--workload-muted); font-size: 12px; white-space: nowrap; }
 dd { margin: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
-.identity-facts dd { max-width: 360px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.identity-facts dd { max-width: 360px; color: var(--workload-title); font-weight: 600; font-variant-numeric: tabular-nums; }
 .workload-metadata { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; margin-top: 4px; }
 .metadata-group { display: grid; grid-template-columns: 30px minmax(0,1fr); align-items: start; gap: 7px; min-width: 0; }
 .metadata-label,.metadata-empty { color: var(--workload-muted); font-size: 12px; line-height: 22px; }

@@ -164,8 +164,15 @@ test('四个工作负载 SFC 模板与局部样式可编译，标题、数据和
   assert.deepEqual(compileTemplate({source:component.template,filename:`${name}.vue`,id:'workload-density-test',compilerOptions:{bindingMetadata:script.bindings}}).errors,[],name)
   for(const style of component.descriptor.styles)assert.deepEqual(compileStyle({source:style.content,filename:`${name}.vue`,id:'workload-density-test',scoped:style.scoped}).errors,[],name)
  }
- for(const [name,selector] of [['KubeWorkloadExplorer','.explorer-column h4'],['KubeWorkloadExplorer','.revision-heading strong'],['KubeWorkloadExplorer','.pod-heading strong'],['KubeWorkloadEvents','.events-heading h4'],['KubeWorkloadPodRuntime','.container-heading>strong']])assert.equal(declarationsFor(components[name].styles,selector)['font-size'],'13px',`${name}/${selector}`)
- for(const [name,selector] of [['KubeWorkloadExplorer','.replica-counts b'],['KubeWorkloadEvents','.event-table'],['KubeWorkloadPodRuntime','.runtime-pod-facts dd']])assert.equal(declarationsFor(components[name].styles,selector)['font-size'],'12px',`${name}/${selector}`)
+ for(const [name,selector] of [['KubeWorkloadExplorer','.explorer-column h4'],['KubeWorkloadEvents','.events-heading h4'],['KubeWorkloadPodRuntime','.container-heading>strong'],['KubeWorkloadSummary','.workload-identity h4']]){
+  const heading = declarationsFor(components[name].styles,selector)
+  assert.equal(heading['font-size'],'14px',`${name}/${selector}`)
+  assert.ok(Number(heading['font-weight'])>=600)
+ }
+ for(const [name,selector] of [['KubeWorkloadExplorer','.revision-heading strong'],['KubeWorkloadExplorer','.pod-heading strong'],['KubeWorkloadPodRuntime','.runtime-pod-facts dd']])assert.equal(declarationsFor(components[name].styles,selector)['font-size'],'13px',`${name}/${selector}`)
+ for(const [name,selector] of [['KubeWorkloadExplorer','.replica-counts b'],['KubeWorkloadEvents','.event-table']])assert.equal(declarationsFor(components[name].styles,selector)['font-size'],'12px',`${name}/${selector}`)
+ const titleSizes=rules([shared]).filter(rule=>rule.selectors.includes('.kube-workload-drawer .resource-detail-compact-title')).map(rule=>rule.declarations['font-size'])
+ assert.deepEqual(titleSizes,['17px','16px'])
  assert.equal(declarationsFor(components.KubeWorkloadSummary.styles,'dd')['font-size'],'13px')
  for(const [name,selector] of [['KubeWorkloadExplorer','.revision-created'],['KubeWorkloadExplorer','.pod-placement'],['KubeWorkloadExplorer','.pod-created'],['KubeWorkloadEvents','.event-time'],['KubeWorkloadSummary','dt']])assert.equal(declarationsFor(components[name].styles,selector)['font-size'],'12px',`${name}/${selector}`)
  assert.equal(declarationsFor(components.KubeWorkloadExplorer.styles,'.revision-entry').margin,'0 0 12px')
@@ -228,7 +235,7 @@ test('真实渲染的事件计数仅显示已知条数，加载与失败保留�
  const script=compileScript(components.KubeWorkloadEvents.descriptor,{id:'workload-events-render-test',inlineTemplate:true}).content
  const output=ts.transpileModule(script,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,module={exports:{}}
  const time=loadFrontend('../src/utils/time.ts')
- new Function('require','module','exports',output)(name=>{if(name==='vue')return vue;if(name==='@/utils/time')return time;throw new Error(`意外的事件测试依赖：${name}`)},module,module.exports)
+ new Function('require','module','exports',output)(name=>{if(name==='vue')return vue;if(name==='@/utils/time')return time;if(name==='vue-i18n')return {useI18n:()=>({t:key=>key})};throw new Error(`意外的事件测试依赖：${name}`)},module,module.exports)
  const render=async props=>{
   const app=vue.createSSRApp(module.exports.default,props)
   app.component('a-spin',{setup:(_props,{slots})=>()=>vue.h('div',slots.default?.())})

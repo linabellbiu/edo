@@ -15,8 +15,10 @@ import (
 
 	"edo/internal/database"
 	"edo/internal/model"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
 func resourceTestServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
@@ -251,5 +253,119 @@ func TestResourceEventsNormalizesEmptyLists(t *testing.T) {
 	body, _ := json.Marshal(events)
 	if string(body) != "[]" {
 		t.Fatalf("无事件不应返回 null: %s", body)
+	}
+}
+
+func TestDeploymentReplicaSetEventsRequireExactOwner(t *testing.T) {
+	var eventReads atomic.Int32
+	server := resourceTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/apps/v1/namespaces/team/deployments/web":
+			_, _ = io.WriteString(w, `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"web","uid":"deployment-a"}}`)
+		case "/apis/apps/v1/namespaces/team/replicasets/owned":
+			_, _ = io.WriteString(w, `{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"uid":"rs-a","ownerReferences":[{"kind":"Deployment","uid":"deployment-a","controller":true}]}}`)
+		case "/apis/apps/v1/namespaces/team/replicasets/other":
+			_, _ = io.WriteString(w, `{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"uid":"rs-b","ownerReferences":[{"kind":"Deployment","uid":"deployment-b","controller":true}]}}`)
+		case "/api/v1/namespaces/team/events":
+			eventReads.Add(1)
+			if r.URL.Query().Get("fieldSelector") != "involvedObject.uid=rs-a" {
+				t.Error("副本集事件未按 UID 查询", r.URL)
+			}
+			_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"EventList","items":[{"reason":"SuccessfulCreate","involvedObject":{"uid":"rs-a"}}]}`)
+		default:
+			t.Error("意外的集群请求", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	service := newKubeTestService(t, time.Second)
+	id := createKubeTestCluster(t, service, server)
+	ctx := context.Background()
+	for _, target := range [][3]string{{"deployment-a", "other", "rs-b"}, {"deployment-a", "owned", "replaced-rs"}, {"replaced-deployment", "owned", "rs-a"}} {
+		if _, err := service.DeploymentReplicaSetEvents(ctx, id, "team", "web", target[0], target[1], target[2]); !errors.Is(err, ErrResourceConflict) {
+			t.Fatalf("应拒绝失效或非所属副本集 %v: %v", target, err)
+		}
+	}
+	if eventReads.Load() != 0 {
+		t.Fatal("失效目标不应读取事件")
+	}
+	events, err := service.DeploymentReplicaSetEvents(ctx, id, "team", "web", "deployment-a", "owned", "rs-a")
+	if err != nil || len(events) != 1 || events[0].Reason != "SuccessfulCreate" || eventReads.Load() != 1 {
+		t.Fatalf("未读取目标副本集事件: %v, %v", events, err)
+	}
+}
+
+func TestResourceDebugUsesEphemeralSubresourceWithDryRunAndIdentity(t *testing.T) {
+	const podPath = "/api/v1/namespaces/team/pods/web"
+	const pod = `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"web","namespace":"team","uid":"pod-a","resourceVersion":"7"},"spec":{"containers":[{"name":"app","image":"app:stable"}],"ephemeralContainers":[{"name":"earlier","image":"busybox:stable"}]},"status":{"phase":"Running","containerStatuses":[{"name":"app","state":{"running":{}}}]}}`
+	var writes atomic.Int32
+	server := resourceTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET " + podPath:
+			_, _ = io.WriteString(w, pod)
+		case "PUT " + podPath + "/ephemeralcontainers":
+			dryRun := r.URL.Query().Get("dryRun")
+			if call := writes.Add(1); call == 1 && dryRun != "All" || call == 2 && dryRun != "" {
+				t.Errorf("非预期的干运行顺序: %v %q", call, dryRun)
+			}
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			object, _, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			updated := object.(*corev1.Pod)
+			containers := updated.Spec.EphemeralContainers
+			if string(updated.UID) != "pod-a" || updated.ResourceVersion != "7" || len(containers) != 2 || containers[0].Name != "earlier" {
+				t.Error("提交必须保留 UID、版本与已有调试容器")
+				return
+			}
+			debug := containers[1]
+			if debug.Name != "inspect" || debug.Image != "busybox:stable" || debug.TargetContainerName != "app" || debug.SecurityContext == nil ||
+				debug.SecurityContext.AllowPrivilegeEscalation == nil || *debug.SecurityContext.AllowPrivilegeEscalation ||
+				len(debug.VolumeMounts) != 0 || len(debug.Env) != 0 {
+				t.Error("调试容器目标或配置错误")
+			}
+			_, _ = io.WriteString(w, pod)
+		default:
+			t.Error("意外的集群请求", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	service := newKubeTestService(t, time.Second)
+	id := createKubeTestCluster(t, service, server)
+	ctx := context.Background()
+	input := ResourceAction{ResourceIdentity: ResourceIdentity{UID: "replaced-pod", ResourceVersion: "7"}, Action: "debug", Debug: &PodDebugContainer{Name: "inspect", Image: "busybox:stable", Container: "app"}}
+	if _, err := service.ResourceAction(ctx, id, "pods", "team", "web", input); !errors.Is(err, ErrResourceConflict) || writes.Load() != 0 {
+		t.Fatalf("旧 Pod 不能添加调试容器: %v", err)
+	}
+	input.UID = "pod-a"
+	if _, err := service.ResourceAction(ctx, id, "pods", "team", "web", input); err != nil || writes.Load() != 2 {
+		t.Fatalf("临时容器未通过子资源校验和提交: %v, %v", err, writes.Load())
+	}
+}
+
+func TestResourceDebugRequiresUpdateWithMappingDisabled(t *testing.T) {
+	server := resourceTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("无更新权限不应访问 Pod", r.Method, r.URL)
+		w.WriteHeader(http.StatusForbidden)
+	})
+	service := newKubeTestService(t, time.Second)
+	id := createKubeTestCluster(t, service, server)
+	service.authorizationResolver = func(context.Context, *model.KubernetesCluster, bool) (*clusterAuthorization, error) {
+		return &clusterAuthorization{
+			CacheKey: "operator", Version: "read-and-execute",
+			Permissions: map[string][]string{"": {"kubernetes.workload.read", "kubernetes.workload.execute"}},
+		}, nil
+	}
+	input := ResourceAction{
+		ResourceIdentity: ResourceIdentity{UID: "pod-a", ResourceVersion: "7"},
+		Action:           "debug", Debug: &PodDebugContainer{Name: "inspect", Image: "busybox:stable", Container: "app"},
+	}
+	if _, err := service.ResourceAction(context.Background(), id, "pods", "team", "web", input); !errors.Is(err, ErrRBACForbidden) {
+		t.Fatalf("关闭原生映射时仍应校验项目更新权限: %v", err)
 	}
 }

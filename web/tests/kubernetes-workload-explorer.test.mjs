@@ -15,21 +15,21 @@ function pod(uid,owner='rs-current',namespace='team'){
 }
 const flush=async()=>{await Promise.resolve();await vue.nextTick();await Promise.resolve();await vue.nextTick()}
 function harness(overrides={}){
- const requests=[],events=[],selections=[],permissions=vue.reactive(new Set(['kubernetes.workload.read','terminal.open']))
+ const requests=[],eventRequests=[],events=[],selections=[],permissions=vue.reactive(new Set(['kubernetes.workload.read','terminal.open']))
  const props=vue.reactive({cluster:'cluster-a',object:structuredClone(deployment),type:api.kubeTypes.find(type=>type.resource==='deployments'),pods:[pod('pod-a'),pod('pod-b'),pod('pod-old','rs-old')],podsLoading:false,podsError:'',podsPartial:false,events:[],eventsError:false,autoRefresh:false,refreshToken:0,can:permission=>permissions.has(permission),canFollow:()=>true,disabled:false,...overrides})
  let unmount
  const component=loadFrontend('../src/components/KubeWorkloadExplorer.vue',{
   vue:{...vue,onMounted(){},onBeforeUnmount(fn){unmount=fn}},
   'vue-i18n':{useI18n:()=>({t:key=>key})},
   '@/api/kubernetes':{...api,kubeErrorMessage:error=>error.message},
-  '@/api/client':{__esModule:true,default:{get:(url,options)=>new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}))}},
+  '@/api/client':{__esModule:true,default:{get:(url,options)=>new Promise((resolve,reject)=>(url.endsWith('/events')?eventRequests:requests).push({url,options,resolve,reject}))}},
   '@/utils/kubernetesPresentation':presentation,
   '@/utils/kubernetesWorkspace':workspace,
   '@/utils/kubernetesWorkloadExplorer':helpers,
  },{document:{removeEventListener(){}}}).default
  const scope=vue.effectScope();let state
  scope.run(()=>{state=component.setup(props,{expose(){},emit:(name,...args)=>name==='selection'?selections.push(args[0]):events.push({name,args})})})
- return {state,props,requests,events,selections,permissions,async history(index=0,revisions=[revision('rs-old'),revision('rs-current',true)],uid=props.object.metadata.uid){requests[index].resolve({data:{uid,state:'ok',revisions}});await flush()},stop(){unmount?.();scope.stop()}}
+ return {state,props,requests,eventRequests,events,selections,permissions,async history(index=0,revisions=[revision('rs-old'),revision('rs-current',true)],uid=props.object.metadata.uid){requests[index].resolve({data:{uid,state:'ok',revisions}});await flush()},stop(){unmount?.();scope.stop()}}
 }
 
 test('副本组使用控制器 UID 与命名空间关联；同标签、同名重建和非控制器引用不能混入',()=>{
@@ -71,6 +71,19 @@ test('当前版本、首个 Pod 和普通容器自动联动，非 Deployment 首
  const standalone=harness({object:{...deployment,kind:'StatefulSet'},type:api.kubeTypes.find(type=>type.resource==='statefulsets')})
  assert.equal(standalone.requests.length,0);assert.equal(standalone.state.podUID.value,'pod-a');assert.equal(standalone.state.containerName.value,'app')
  standalone.stop()
+})
+
+test('副本集事件仅回填选中版本，切换时中止旧请求并过滤其他 UID', async () => {
+ const h=harness();await h.history()
+ const first=h.eventRequests[0]
+ assert.deepEqual(first.options.params, {namespace:'team',uid:'deployment-a',replica_set:'rs-current',replica_set_uid:'rs-current'})
+ h.state.chooseRevision(h.state.revisions.value.find(item=>item.uid==='rs-old'));await flush()
+ assert.equal(first.options.signal.aborted,true)
+ first.resolve({data:{items:[{involvedObject:{uid:'rs-current'},reason:'Late'}]}})
+ h.eventRequests[1].resolve({data:{items:[{involvedObject:{uid:'rs-current'},reason:'Foreign'},{involvedObject:{uid:'rs-old'},reason:'Current'}]}})
+ await flush()
+ assert.deepEqual(h.state.revisionEvents.value.map(event=>event.reason),['Current'])
+ h.stop()
 })
 
 test('初始加载及禁用期间不选中资源，解除后自动选择首个 Pod 和容器',async()=>{

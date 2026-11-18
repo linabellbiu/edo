@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Box, ChevronRight, Network, RefreshCw, Server } from 'lucide-vue-next'
+import { Box, ChevronRight, Network, RefreshCw, Server, Trash2 } from 'lucide-vue-next'
 import client from '@/api/client'
 import { kubeErrorMessage, resourceURL, type KubeObject, type KubeType } from '@/api/kubernetes'
 import { resourceStatus, type KubeReference } from '@/utils/kubernetesPresentation'
 import { podContainerChoices } from '@/utils/kubernetesWorkspace'
-import { initialWorkloadRevisionUID, revisionOwnedPods, selectedWorkloadPod, selectedWorkloadRevision, sortWorkloadRevisions, type WorkloadContainerTarget, type WorkloadExplorerSelection, type WorkloadRevision } from '@/utils/kubernetesWorkloadExplorer'
+import { initialWorkloadRevisionUID, podExplorerEvents, revisionOwnedPods, selectedWorkloadPod, selectedWorkloadRevision, sortWorkloadRevisions, type WorkloadContainerTarget, type WorkloadExplorerSelection, type WorkloadRevision } from '@/utils/kubernetesWorkloadExplorer'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
+import KubeWorkloadEvents from './KubeWorkloadEvents.vue'
 
 const KubeWorkloadPodRuntime = defineAsyncComponent(() => import('./KubeWorkloadPodRuntime.vue'))
 const props = defineProps<{
@@ -32,6 +33,10 @@ const emit = defineEmits<{
   follow: [reference: KubeReference]
   logs: [pod: KubeObject, container: string]
   terminal: [pod: KubeObject, container: string]
+  files: [pod: KubeObject, container: string]
+  podYaml: [pod: KubeObject]
+  podRemove: [pod: KubeObject]
+  deleteRevisionPods: [item: WorkloadRevision, pods: KubeObject[]]
   retryPods: []
   selection: [snapshot: WorkloadExplorerSelection]
 }>()
@@ -41,10 +46,12 @@ const readable = computed(() => props.can('kubernetes.workload.read'))
 const namespace = computed(() => String(props.object.metadata?.namespace ?? ''))
 const revisions = ref<WorkloadRevision[]>([]), historyLoading = ref(false), historyError = ref(''), historyState = ref('')
 const revisionUID = ref(''), podUID = ref(''), containerName = ref(''), podTab = ref('summary')
+const revisionEvents = ref<KubeObject[]>([]), revisionEventsLoading = ref(false), revisionEventsError = ref('')
 const root = ref<HTMLElement>()
 let restoreRevision = false, restorePod = false
 let revisionChosen = false, podChosen = false, disposed = false, revision = 0
 let request: AbortController | undefined, timer: ReturnType<typeof setInterval> | undefined
+let eventRequest: AbortController | undefined
 const context = computed(() => `${props.cluster}/${props.type.resource}/${namespace.value}/${props.object.metadata?.uid ?? ''}`)
 const selectedRevision = computed(() => selectedWorkloadRevision(revisions.value, revisionUID.value))
 const visiblePods = computed(() => !readable.value ? [] : deployment.value
@@ -55,6 +62,9 @@ const podMissing = computed(() => podChosen && Boolean(podUID.value) && !selecte
 const choices = computed(() => selectedPod.value ? podContainerChoices(selectedPod.value) : [])
 const selectedContainer = computed(() => choices.value.find(container => container.name === containerName.value))
 const actionDisabled = computed(() => Boolean(props.disabled) || props.podsLoading || Boolean(props.podsError) || deployment.value && Boolean(historyError.value) || !readable.value || !selectedPod.value || !selectedContainer.value)
+const podActionsDisabled = computed(() => props.disabled || props.podsLoading || Boolean(props.podsError) || Boolean(historyError.value) || !readable.value)
+const mayDeleteRevisionPods = computed(() => !podActionsDisabled.value && !props.podsPartial && !historyLoading.value && historyState.value === 'ok'
+  && selectedRevision.value && visiblePods.value.length > 0 && visiblePods.value.every(pod => !pod.metadata.deletionTimestamp))
 
 function count(value: unknown) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? String(value) : '—' }
 function imageSummary(item: WorkloadRevision) {
@@ -132,6 +142,22 @@ function chooseRuntimeContainer(target: WorkloadContainerTarget) {
 function openRuntimeContainer(target: WorkloadContainerTarget, terminal = false) {
   if (matchesContainerTarget(target)) openNamedContainer(target.container, terminal)
 }
+function openRuntimeFiles(target: WorkloadContainerTarget) {
+  const pod = selectedPod.value
+  if (pod && matchesContainerTarget(target) && !actionDisabled.value && !pod.metadata.deletionTimestamp
+    && props.can('terminal.file.read') && props.can('kubernetes.workload.execute')
+    && choices.value.some(choice => choice.name === target.container && choice.running)) emit('files', pod, target.container)
+}
+function usePodAction(action: 'yaml' | 'remove', pod: KubeObject) {
+  if (podActionsDisabled.value || pod.metadata.uid !== selectedPod.value?.metadata.uid) return
+  if (action === 'yaml') emit('podYaml', pod)
+  else if (props.can('kubernetes.workload.delete') && !pod.metadata.deletionTimestamp) emit('podRemove', pod)
+}
+function requestDeleteRevisionPods() {
+  if (mayDeleteRevisionPods.value && props.can('kubernetes.workload.delete') && selectedRevision.value) {
+    emit('deleteRevisionPods', selectedRevision.value, visiblePods.value)
+  }
+}
 function followRuntimeReference(reference: KubeReference, target: WorkloadContainerTarget) {
   if (matchesContainerTarget(target) && !props.disabled && readable.value && props.canFollow(reference)) emit('follow', reference)
 }
@@ -158,6 +184,29 @@ async function loadHistory() {
     if (!disposed && current === revision && key === context.value && !controller.signal.aborted) historyError.value = kubeErrorMessage(error)
   } finally { if (!disposed && current === revision) historyLoading.value = false }
 }
+async function loadRevisionEvents() {
+  const item = selectedRevision.value
+  if (!deployment.value || !item || !props.cluster || !readable.value) return
+  eventRequest?.abort()
+  const controller = new AbortController(), key = context.value
+  const current = () => !disposed && !controller.signal.aborted && key === context.value && revisionUID.value === item.uid && readable.value
+  eventRequest = controller
+  revisionEventsLoading.value = true
+  try {
+    const { data } = await client.get(`${resourceURL(props.cluster, props.type, props.object.metadata.name)}/events`, {
+      params: { namespace: namespace.value, uid: props.object.metadata.uid, replica_set: item.name, replica_set_uid: item.uid },
+      signal: controller.signal,
+    })
+    if (current()) {
+      revisionEvents.value = podExplorerEvents(Array.isArray(data.items) ? data.items : [], item.uid)
+      revisionEventsError.value = ''
+    }
+  } catch (error) {
+    if (current()) revisionEventsError.value = kubeErrorMessage(error)
+  } finally {
+    if (eventRequest === controller) { revisionEventsLoading.value = false; eventRequest = undefined }
+  }
+}
 watch(context, () => {
   revision++; request?.abort(); historyLoading.value = false; historyError.value = ''; historyState.value = ''; revisions.value = []
   const saved = props.selection
@@ -176,14 +225,22 @@ watch(choices, containers => {
   if (!containerName.value && containers.length) containerName.value = containers.find(container => container.kind === 'app')?.name ?? containers[0]!.name
 }, { immediate: true })
 watch([revisionUID, podUID, historyLoading, () => props.podsLoading, readable, () => props.disabled, () => props.visible], () => { void restoreVisibleSelection() }, { flush: 'post' })
-watch(() => props.refreshToken, () => { if (deployment.value) void loadHistory() })
+watch([context, () => selectedRevision.value?.uid, readable], () => {
+  eventRequest?.abort(); revisionEvents.value = []; revisionEventsError.value = ''; revisionEventsLoading.value = false
+  void loadRevisionEvents()
+})
+watch(() => props.refreshToken, () => { if (deployment.value) { void loadHistory(); void loadRevisionEvents() } })
 watch(readable, value => {
   if (value) { if (deployment.value) void loadHistory() }
   else { revision++; request?.abort(); historyLoading.value = false; historyState.value = ''; revisions.value = []; revisionUID.value = ''; podUID.value = ''; containerName.value = ''; revisionChosen = false; podChosen = false }
 })
-function syncVisible() { if (!document.hidden && props.autoRefresh && !props.disabled && !historyLoading.value && deployment.value) void loadHistory() }
+function syncVisible() {
+  if (document.hidden || !props.autoRefresh || props.disabled || !deployment.value) return
+  if (!historyLoading.value) void loadHistory()
+  if (!revisionEventsLoading.value) void loadRevisionEvents()
+}
 onMounted(() => { void restoreVisibleSelection(); timer = setInterval(syncVisible, 30_000); document.addEventListener('visibilitychange', syncVisible) })
-onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer) clearInterval(timer); document.removeEventListener('visibilitychange', syncVisible) })
+onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); eventRequest?.abort(); if (timer) clearInterval(timer); document.removeEventListener('visibilitychange', syncVisible) })
 </script>
 
 <template>
@@ -202,6 +259,9 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
               <span class="replica-counts"><span>期望<b>{{ count(item.desired) }}</b></span><span>当前<b>{{ count(item.replicas) }}</b></span><span>就绪<b>{{ count(item.ready) }}</b></span></span>
               <span class="replica-meter" :class="`tone-${revisionTone(item)}`" role="img" :aria-label="`就绪 ${count(item.ready)} / 期望 ${count(item.desired)}`"><i :style="{ width: replicaWidth(item) }" /></span>
             </button>
+            <KubeWorkloadEvents v-if="item.uid===revisionUID" class="revision-events" :title="t('k8s.workloadReplicaSetEvents')" :events="revisionEvents" :error="Boolean(revisionEventsError)" :error-text="revisionEventsError" :loading="revisionEventsLoading" compact>
+              <template v-if="revisionEventsError" #actions><a-button size="small" type="text" :disabled="disabled||revisionEventsLoading" @click="loadRevisionEvents">重试</a-button></template>
+            </KubeWorkloadEvents>
           </div>
         </div>
         <a-empty v-else-if="!historyLoading && !historyError" :description="!readable ? '没有查看工作负载的权限' : historyState==='partial' || historyState==='pods_unavailable' ? '历史数据尚未完整获取' : '暂无历史版本'" :image-style="{ height: '40px' }" />
@@ -211,7 +271,11 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 
     <section class="explorer-column pod-column" tabindex="0" aria-label="对应容器组">
       <header><h4>对应容器组 <span class="heading-count">{{ podsError||podsLoading?'—':`${visiblePods.length}${podsPartial?'+':''}` }}</span></h4><span class="column-header-action"><a-button size="small" type="text" :disabled="disabled || !readable" :aria-busy="podsLoading" :class="{ 'is-busy': podsLoading }" aria-label="刷新关联 Pod" @click="emit('retryPods')"><RefreshCw :size="13" /></a-button></span></header>
-      <p v-if="selectedRevision" class="selected-revision">副本集 <strong :title="selectedRevision.name">{{ selectedRevision.name }}</strong></p>
+      <div v-if="selectedRevision" class="revision-pod-context">
+        <p class="selected-revision">副本集 <strong :title="selectedRevision.name">{{ selectedRevision.name }}</strong></p>
+        <a-button v-if="can('kubernetes.workload.delete')" class="revision-pods-delete" type="text" size="small" danger :disabled="!mayDeleteRevisionPods"
+          :aria-label="t('k8s.workloadDeleteReplicaPods')" :title="t('k8s.workloadDeleteReplicaPods')" @click="requestDeleteRevisionPods"><Trash2 :size="13" aria-hidden="true" /><span>{{ t('k8s.workloadDeleteReplicaPods') }}</span></a-button>
+      </div>
       <a-alert v-if="podsError" class="column-alert" type="error" show-icon :message="podsError"><template #action><a-button size="small" :disabled="disabled" @click="emit('retryPods')">重试</a-button></template></a-alert>
       <a-alert v-else-if="podsPartial" class="column-alert" type="warning" show-icon message="关联 Pod 尚未完整加载" />
       <a-spin :spinning="podsLoading">
@@ -229,7 +293,11 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 
     <section class="explorer-column pod-detail-column" tabindex="0" aria-label="所选 Pod 事件与运行状态">
       <a-alert v-if="podMissing" class="column-alert" type="warning" show-icon message="所选 Pod 已删除或不在当前副本组中，请重新选择 Pod。" />
-      <KubeWorkloadPodRuntime v-if="selectedPod && readable" :key="`${cluster}/${selectedPod.metadata.uid}`" :cluster="cluster" :pod="selectedPod" :container="containerName" :auto-refresh="autoRefresh" :refresh-token="refreshToken" :can="can" :can-follow="canFollow" :disabled="Boolean(disabled)||Boolean(podsError)||deployment&&Boolean(historyError)" @container="chooseRuntimeContainer" @logs="target=>openRuntimeContainer(target)" @terminal="target=>openRuntimeContainer(target,true)" @follow="followRuntimeReference" />
+      <KubeWorkloadPodRuntime v-if="selectedPod && readable"
+        :key="`${cluster}/${selectedPod.metadata.uid}`" :cluster="cluster" :pod="selectedPod" :container="containerName"
+        :auto-refresh="autoRefresh" :refresh-token="refreshToken" :can="can" :can-follow="canFollow" :disabled="podActionsDisabled" pod-actions
+        @container="chooseRuntimeContainer" @logs="target=>openRuntimeContainer(target)" @terminal="target=>openRuntimeContainer(target,true)"
+        @files="openRuntimeFiles" @yaml="pod=>usePodAction('yaml',pod)" @remove="pod=>usePodAction('remove',pod)" @follow="followRuntimeReference" @pod-changed="emit('retryPods')" />
       <a-empty v-else-if="!podMissing" :description="readable ? '选择 Pod 查看运行状态' : '没有查看工作负载的权限'" :image-style="{ height: '40px' }" />
     </section>
   </section>
@@ -251,7 +319,9 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 .workload-explorer.is-deployment { grid-template-columns: minmax(190px, .9fr) minmax(210px, .9fr) minmax(0, 2.2fr); }
 .explorer-column { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding-top: 48px; background: var(--workload-column); }
 .explorer-column>header { display: flex; position: sticky; top: 0; z-index: 1; box-sizing: border-box; align-items: center; justify-content: space-between; gap: 6px; min-height: 36px; padding: 5px 10px; border-bottom: 1px solid var(--workload-border); background: var(--workload-heading); color: var(--workload-title); }
-.explorer-column h4 { margin: 0; font-size: 13px; font-weight: 650; line-height: 22px; }
+.explorer-column h4 { margin: 0; font-size: 14px; font-weight: 650; line-height: 22px; }
+.revision-events { margin-top: 6px; }
+.revision-pods-delete { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: auto; min-height: 28px; margin: 0 8px 8px; padding-inline: 6px; white-space: normal; text-align: start; }
 .heading-count { margin-left: 4px; color: var(--workload-muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .history-limit { margin-left: auto; padding: 1px 7px; border: 1px solid var(--workload-border); border-radius: 8px; background: var(--workload-column); color: var(--workload-muted); font-size: 12px; line-height: 18px; white-space: nowrap; }
 .column-header-action { display: flex; flex: 0 0 auto; align-self: stretch; align-items: center; justify-content: center; min-height: 24px; }
@@ -326,5 +396,19 @@ button:disabled { opacity: .6; cursor: not-allowed; }
   .explorer-column,.is-deployment .revision-column,.is-deployment .pod-column { max-height: none; overflow: visible; }
   .pod-column,.pod-detail-column { padding-top: 0; padding-left: 0; }
   .pod-detail-column { grid-column: auto; max-height: none; overflow: visible; }
+  .explorer-column h4 { flex: 1; white-space: nowrap; }
+  .history-limit { display: none; }
+  .revision-pod-context { display: flex; align-items: center; justify-content: space-between; }
+  .selected-revision { margin: 0; padding: 4px 6px; }
+  .revision-pods-delete { flex: none; align-self: start; margin: 0 3px 4px 0; }
+  .revision-pods-delete>span { display: none; }
+  .revision-list { padding: 3px 6px 8px 14px; }
+  .revision-list::before { left: 6px; }
+  .revision-entry::before { left: -11px; }
+  .revision-item,.pod-item { gap: 4px; padding: 6px; }
+  .revision-heading,.pod-heading { flex-wrap: wrap; column-gap: 4px; }
+  .revision-heading strong,.pod-heading strong { flex-basis: 100%; }
+  .pod-heading>svg { display: none; }
+  .replica-counts,.replica-counts>span { gap: 3px; }
 }
 </style>

@@ -34,9 +34,21 @@ if (params.get('containers') === 'single') {
 }
 const event = (uid, reason, message, index) => ({ metadata: { uid: `event-${uid}-${index}`, creationTimestamp: created }, involvedObject: { uid }, type: 'Normal', reason, count: 1, lastTimestamp: new Date(Date.now() - (index + 1) * 90_000).toISOString(), message })
 const events = ['Scaled down replica set demo-web-6576849cbf from 2 to 0', 'Scaled up replica set demo-web-85568b959f from 0 to 2'].map((message, index) => event(object.metadata.uid, 'ScalingReplicaSet', message, index))
+client.defaults.adapter = async () => { throw new Error('视觉夹具禁止请求真实接口') }
+const NativeWebSocket = window.WebSocket
+window.WebSocket = class extends NativeWebSocket {
+  constructor(path, protocol) {
+    if (new URL(path, location.href).pathname.startsWith('/api/')) throw new Error('视觉夹具不连接真实日志或终端')
+    super(path, protocol)
+  }
+}
 client.get = async (url, options = {}) => {
   options.signal?.throwIfAborted()
   if (url.includes('/deployments/') && url.endsWith('/diagnostics')) return { data: { uid: object.metadata.uid, state: 'ok', revisions } }
+  if (url.includes('/deployments/') && url.endsWith('/events') && options.params?.replica_set_uid) {
+    const revision = revisions.find(item => item.uid === options.params.replica_set_uid)
+    return { data: { items: revision?.current ? [event(revision.uid, 'SuccessfulCreate', `Created pod: ${pods[0].metadata.name}`, 0)] : [] } }
+  }
   const pod = pods.find(item => url.includes(`/${item.metadata.name}/`))
   if (pod && url.endsWith('/events')) return { data: { items: ['Started', 'Pulled', 'Created', 'Scheduled', 'Pulling'].map((reason, index) => event(pod.metadata.uid, reason, `${reason} container web · 本地视觉测试事件`, index)) } }
   if (pod && url.endsWith('/diagnostics')) return { data: { uid: pod.metadata.uid, state: 'ok', metrics_at: new Date().toISOString(), containers: [{ name: 'web', cpu: .002, memory: 23 * 1024 ** 2 }, { name: 'metrics', cpu: .0002, memory: 8 * 1024 ** 2 }] } }

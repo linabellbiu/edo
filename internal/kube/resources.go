@@ -353,8 +353,9 @@ func (s *Service) DeleteResource(ctx context.Context, clusterID, resource, names
 
 type ResourceAction struct {
 	ResourceIdentity
-	Action   string `json:"action"`
-	Replicas int64  `json:"replicas"`
+	Action   string             `json:"action"`
+	Replicas int64              `json:"replicas"`
+	Debug    *PodDebugContainer `json:"debug,omitempty"`
 }
 
 func (s *Service) ResourceAction(ctx context.Context, clusterID, resource, namespace, name string, input ResourceAction) (map[string]any, error) {
@@ -387,6 +388,11 @@ func (s *Service) ResourceAction(ctx context.Context, clusterID, resource, names
 			return nil, ErrInvalidResource
 		}
 		spec["suspend"] = input.Action == "suspend"
+	case "debug":
+		if resource != "pods" || input.Debug == nil {
+			return nil, ErrInvalidResource
+		}
+		return s.addPodDebugContainer(ctx, clusterID, namespace, name, input.ResourceIdentity, *input.Debug)
 	default:
 		return nil, ErrInvalidResource
 	}
@@ -426,6 +432,43 @@ func (s *Service) ResourceEvents(ctx context.Context, clusterID, resource, names
 	if err != nil {
 		return nil, err
 	}
+	return listEventsForUID(ctx, client, resource, namespace, uid)
+}
+
+// 只读取当前 Deployment 确实拥有的副本集事件。
+func (s *Service) DeploymentReplicaSetEvents(ctx context.Context, clusterID, namespace, name, uid, replicaSet, replicaSetUID string) ([]corev1.Event, error) {
+	if uid == "" || len(uid) > 128 || replicaSetUID == "" || len(replicaSetUID) > 128 ||
+		len(validation.IsDNS1123Subdomain(name)) != 0 || len(validation.IsDNS1123Subdomain(replicaSet)) != 0 {
+		return nil, ErrInvalidResource
+	}
+	ctx, query, err := s.authorizeResourceOperation(ctx, clusterID, "deployments", namespace, "read", false)
+	if err != nil {
+		return nil, err
+	}
+	podType, _ := ResourceType("pods")
+	if !query.authorization.permitsResourceOperation(podType, namespace, "read", false) {
+		return nil, ErrRBACForbidden
+	}
+	client := query.typed
+	deployment, err := client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, resourceError("deployments", err)
+	}
+	if string(deployment.UID) != uid {
+		return nil, ErrResourceConflict
+	}
+	rs, err := client.AppsV1().ReplicaSets(namespace).Get(ctx, replicaSet, metav1.GetOptions{})
+	if err != nil {
+		return nil, resourceError("replicasets", err)
+	}
+	owner := metav1.GetControllerOf(rs)
+	if string(rs.UID) != replicaSetUID || owner == nil || owner.Kind != "Deployment" || owner.UID != deployment.UID {
+		return nil, ErrResourceConflict
+	}
+	return listEventsForUID(ctx, client, "replicasets", namespace, replicaSetUID)
+}
+
+func listEventsForUID(ctx context.Context, client kubernetes.Interface, resource, namespace, uid string) ([]corev1.Event, error) {
 	events, err := client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{FieldSelector: "involvedObject.uid=" + uid, Limit: 200})
 	if err != nil {
 		return nil, resourceError(resource, err)
