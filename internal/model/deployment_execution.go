@@ -20,6 +20,7 @@ type DeploymentExecutionConfig struct {
 	ArtifactNodeIDs        []string                      `json:"artifact_node_ids,omitempty"`
 	ComposeImages          []ComposeImageBinding         `json:"compose_images,omitempty"`
 	Compose                *ComposeDeploymentSettings    `json:"compose,omitempty"`
+	ComposeSource          *WorkflowComposeSource        `json:"compose_source,omitempty"`
 }
 
 // NodeConfig 返回独立副本，运行解析不能修改共享方案或其他任务。

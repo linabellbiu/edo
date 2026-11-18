@@ -10,6 +10,7 @@ import (
 	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/shellcheck"
+
 	"gorm.io/gorm"
 )
 
@@ -69,12 +70,20 @@ func (s *Service) validateDeploymentExecutionReferences(ctx context.Context, con
 			return err
 		}
 	}
+	if source := config.ComposeSource; source != nil && source.Kind == "configuration" {
+		return check(&model.DeliveryVariable{}, source.ConfigurationID)
+	}
 	return nil
 }
 
 func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML string, config *model.DeploymentExecutionConfig) error {
 	if config == nil {
 		return nil
+	}
+	source := config.ComposeSource
+	if source != nil && (kind != model.DeploymentPlanComposeStack || !validComposeSource(source) || source.ArtifactNodeID != "") {
+		slog.Warn("部署方案 Compose 来源无效", "operation", "deployment_plan_compose_source", "err", ErrComposeSource)
+		return ErrComposeSource
 	}
 	if config.Kubernetes != nil {
 		if kind != model.DeploymentPlanKubernetes {
@@ -86,6 +95,8 @@ func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML str
 		}
 	}
 	node := model.WorkflowNode{ID: "deployment-plan", Name: "部署方案", Type: model.WorkflowNodeDeploy, Config: config.NodeConfig()}
+	// 通用方案的动态来源由部署任务引用。保留来源，任务级校验在选用时执行。
+	node.Config.ComposeSource = nil
 	if len(config.DeploymentRegistryID) > 36 {
 		slog.Warn("部署镜像仓库标识无效", "operation", "deployment_registry_normalize", "err", ErrInvalidDeploymentPlan)
 		return ErrInvalidDeploymentPlan
@@ -133,6 +144,7 @@ func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML str
 		node.Config.Compose.TagVariable = "${" + composeTagName(node.Config.Compose.TagVariable) + "}"
 	}
 	*config = *model.DeploymentExecutionFromNode(node.Config)
+	config.ComposeSource = source
 	return nil
 }
 

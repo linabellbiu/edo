@@ -286,6 +286,11 @@ const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
 const kindNames: Record<PlanKind, string> = { ...Object.fromEntries(kindOptions.map(item => [item.value, item.label])), compose: 'Docker Compose' } as Record<PlanKind, string>
 function planIcon(kind: PlanKind) { return kind === 'compose_stack' ? 'docker' : planPlatform(kind) }
 function kindName(plan: DeploymentPlan) { return kindNames[plan.kind] }
+function composeSourceLabel(source?: DeploymentExecutionConfig['compose_source']) {
+  if (source?.kind === 'repository') return `代码仓库 · ${source.path}`
+  if (source?.kind === 'upstream') return `上游构建产物 · ${source.artifact_reference}/${source.path}`
+  return '配置文件'
+}
 const canCreate = computed(() => auth.canAny([props.inline?'workflow.update':'deployment_plan.create']))
 const canUpdate = computed(() => auth.canAny([props.inline?'workflow.update':'deployment_plan.update']))
 const canDelete = computed(() => auth.canAny(['deployment_plan.delete']))
@@ -570,7 +575,7 @@ function edit(plan: DeploymentPlan) {
     description: plan.description || '',
     kind: plan.kind,
     script: plan.kind==='script' ? (plan.execution_config || legacyExecutionHandoff(plan))?.deployment_script || plan.script || '' : plan.script || '',
-    compose_yaml: plan.compose_yaml || defaultComposeYAML,
+    compose_yaml: plan.execution_config?.compose_source ? '' : plan.compose_yaml || defaultComposeYAML,
     service_name: plan.kind === 'compose' ? plan.service_name || '' : '',
     environment_id: target?.environment_id || '',
     host_ids: target?.host_ids ? [...target.host_ids] : undefined,
@@ -862,7 +867,7 @@ function validate() {
   if(form.kind==='kubernetes'&&kubernetesEditorError.value)return kubernetesEditorError.value
   if(form.kind==='kubernetes'&&form.execution_config?.kubernetes){const error=kubernetesDeploymentRuntimeError(form.execution_config.kubernetes);if(error)return error}
   if(['docker','compose','compose_stack'].includes(form.kind)&&!savedDeploymentRegistry(form.execution_config))return '请选择并保存镜像仓库'
-  if (form.kind === 'compose_stack') {
+  if (form.kind === 'compose_stack' && !form.execution_config?.compose_source) {
     const parsed = readKubeYaml(form.compose_yaml)
     if (parsed.issues.length) return `Docker Compose YAML 无效：第 ${parsed.issues[0]!.line} 行，第 ${parsed.issues[0]!.column} 列`
     if (!parsed.object?.services) return 'Docker Compose 必须包含 services'
@@ -1141,7 +1146,12 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ detailPlan.description || '—' }}</dd></div>
         </dl>
       </section>
-      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly fullscreen collapsible default-collapsed label="compose.yaml"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
+      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml || detailPlan.execution_config?.compose_source)" class="resource-detail-section">
+        <h4>{{ t('deploymentList.configuration') }}</h4>
+        <YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly fullscreen collapsible default-collapsed label="compose.yaml"/>
+        <p v-else-if="detailPlan.execution_config?.compose_source">{{ composeSourceLabel(detailPlan.execution_config.compose_source) }}</p>
+        <pre v-else class="resource-code">{{ detailPlan.script }}</pre>
+      </section>
       <a-form v-if="detailPlan?.execution_config" layout="vertical"><KubernetesDeploymentTemplateFields v-if="detailPlan.kind==='kubernetes'" :model-value="detailPlan.execution_config.kubernetes" disabled/><DeploymentExecutionFields kubernetes-registry-only :model-value="detailPlan.execution_config" :plan="detailPlan" disabled :hide-script="detailPlan.kind==='script' && !detailPlan.execution_config.deployment_script" /></a-form>
     </ResourceDetailDrawer>
 
@@ -1302,7 +1312,10 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           </template>
           <template v-if="form.kind === 'compose' || form.kind === 'compose_stack'">
 
-            <a-form-item required>
+            <a-form-item v-if="form.execution_config?.compose_source" label="Compose 文件来源">
+              <a-input :value="composeSourceLabel(form.execution_config.compose_source)" readonly />
+            </a-form-item>
+            <a-form-item v-else required>
               <YamlCodeEditor v-model="form.compose_yaml" fullscreen collapsible default-collapsed label="compose.yaml" @format="formatCompose"><template #toolbar>
                 <span>compose.yaml<DeploymentFieldHelp v-if="form.kind==='compose'" text="镜像来自上游构建制品；部署时自动填入流水线镜像，无需填写 image，请勿填写固定镜像地址或 build 配置。" label="Compose 镜像配置说明" /></span>
                 <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />

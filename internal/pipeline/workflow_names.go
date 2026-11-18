@@ -7,6 +7,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"edo/internal/configfile"
 	"edo/internal/model"
 )
 
@@ -46,7 +47,11 @@ func workflowNameAvailable(tx *gorm.DB, applicationID, workflowID, name string) 
 
 func (s *Service) workflowMutationError(ctx context.Context, operation, applicationID, workflowID string, err error) error {
 	if errors.Is(err, ErrWorkflowExists) || errors.Is(err, ErrWorkflowRevisionConflict) ||
-		errors.Is(err, ErrWorkflowNotFound) || errors.Is(err, ErrApplicationNotFound) || errors.Is(err, ErrKubernetesTemplatePermission) || errors.Is(err, model.ErrDeploymentOverride) || errors.Is(err, model.ErrKubernetesDeploymentSettings) {
+		errors.Is(err, ErrWorkflowNotFound) || errors.Is(err, ErrApplicationNotFound) || errors.Is(err, ErrKubernetesTemplatePermission) ||
+		errors.Is(err, model.ErrDeploymentOverride) || errors.Is(err, model.ErrKubernetesDeploymentSettings) ||
+		errors.Is(err, ErrInvalidDeploymentPlan) || errors.Is(err, ErrDeploymentPlanExists) ||
+		errors.Is(err, ErrDeploymentShortcutPermission) || errors.Is(err, ErrDeploymentShortcutUpstream) ||
+		errors.Is(err, ErrComposeSource) || errors.Is(err, ErrDeploymentInputs) || errors.Is(err, configfile.ErrParameters) {
 		if s.logger != nil {
 			s.logger.WarnContext(ctx, "应用流水线修改被拒绝", "operation", operation, "application_id", applicationID, "workflow_id", workflowID, "err", err)
 		}

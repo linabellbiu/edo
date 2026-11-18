@@ -28,9 +28,10 @@ type WorkflowTemplateInput struct {
 }
 
 type WorkflowTemplateResult struct {
-	WorkflowTemplate *model.ReleaseWorkflowTemplate `json:"workflow_template"`
-	Valid            bool                           `json:"valid"`
-	Issues           []WorkflowIssue                `json:"issues"`
+	ReusableDeploymentPlanID string                         `json:"reusable_deployment_plan_id,omitempty"`
+	WorkflowTemplate         *model.ReleaseWorkflowTemplate `json:"workflow_template"`
+	Valid                    bool                           `json:"valid"`
+	Issues                   []WorkflowIssue                `json:"issues"`
 }
 
 func (s *Service) CreateWorkflowTemplateFromPreset(ctx context.Context, actorID, presetKey, runtimeVersion string) (*WorkflowTemplateResult, error) {
@@ -210,6 +211,7 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 	stagesJSON, _ := json.Marshal(input.Stages)
 	now := time.Now().UTC()
 	var saved model.ReleaseWorkflowTemplate
+	var reusablePlanID string
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 与应用名称锁相同：SQLite先取得写锁，其他方言锁定本模板后再读取当前版本。
 		if err := tx.Model(&model.ReleaseWorkflowTemplate{}).Where("uuid = ?", id).
@@ -251,6 +253,11 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		if err := tx.First(&saved, "uuid = ?", id).Error; err != nil {
 			return err
 		}
+		var err error
+		reusablePlanID, err = s.saveDeploymentShortcut(ctx, tx, actorID, input.WorkflowInput)
+		if err != nil {
+			return err
+		}
 		if saved.IsActive {
 			return s.syncLinkedApplicationWorkflows(tx, &saved, actorID, now)
 		}
@@ -262,7 +269,7 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		}
 		return nil, err
 	}
-	return &WorkflowTemplateResult{WorkflowTemplate: &saved, Valid: len(issues) == 0, Issues: issues}, nil
+	return &WorkflowTemplateResult{WorkflowTemplate: &saved, Valid: len(issues) == 0, Issues: issues, ReusableDeploymentPlanID: reusablePlanID}, nil
 }
 
 func (s *Service) syncLinkedApplicationWorkflows(tx *gorm.DB, template *model.ReleaseWorkflowTemplate, actorID string, now time.Time) error {

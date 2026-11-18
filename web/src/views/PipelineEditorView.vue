@@ -139,7 +139,7 @@ const buildFieldErrors=reactive<Record<string,string>>({})
 const deploymentValidationIssues=reactive<Record<string,string[]>>({})
 const deploymentPlans = ref<DeploymentPlan[]>([])
 const inlineDeploymentOpen=ref(false),inlineDeploymentNodeID=ref('')
-const inlineDeploymentDrafts=new Map<string,WorkflowDeploymentPlan>()
+const inlineDeploymentDrafts = new Map<string, { plan: WorkflowDeploymentPlan; composeSource?: WorkflowNodeConfig['compose_source'] }>()
 const libraryDeploymentDrafts=new Map<string,string>()
 const libraryDeploymentOverrides=new Map<string,WorkflowDeploymentOverride|undefined>()
 const changingDeploymentPlanNodeID=ref('')
@@ -166,6 +166,9 @@ const saving = ref(false)
 const autoSaving = ref(false)
 const saveConfirmOpen = ref(false)
 const saveConfirmSubmitting = ref(false)
+const deploymentShortcutTaskID = ref('')
+const deploymentShortcutName = ref('')
+const deploymentShortcutChoice = ref<'reusable' | 'task' | ''>('')
 const dirty = ref(false)
 const autoSaveFailed = ref(false)
 const immersive = ref(false)
@@ -220,6 +223,7 @@ function resetScope(reload=true) {
   window.clearTimeout(autoSaveTimer);destroySortables();stageRemovalDialog?.destroy();stageRemovalDialog=undefined;discardResolve?.(false);discardResolve=undefined;discardDialog?.destroy();discardDialog=undefined
   applications.value=[];templates.value=[];buildPlans.value=[];deploymentPlans.value=[];notificationChannels.value=[];builtinVariables.value=[];workflow.value=null;sources.value=[];stages.value=[];issues.value=[]
   selectedNodeID.value='';selectedStageID.value='';libraryStageID.value='';panelMode.value='closed';propertyTab.value='common';presetOpen.value=false;presetContext='';saveConfirmOpen.value=false;saveConfirmSubmitting.value=false
+  deploymentShortcutTaskID.value='';deploymentShortcutName.value='';deploymentShortcutChoice.value=''
   notificationChannelModalOpen.value=false;notificationChannelSubmitting.value=false;notificationChannelForm.name='';notificationChannelForm.endpoint='';notificationChannelForm.token='';notificationChannelForm.title=defaultNotificationTitle;notificationChannelForm.message=defaultNotificationMessage;notificationChannelForm.allow_http=false
   for(const values of [environmentVariableTexts,environmentVariableErrors,buildFieldErrors,notificationTemplateTargets,taskSaveErrors,deploymentValidationIssues])Object.keys(values).forEach(key=>delete values[key])
   dirty.value=false;editVersion++;saving.value=false;autoSaving.value=false;autoSaveFailed.value=false;switching.value=false;loading.value=false;builtinVariableLoading.value=false;builtinVariableError.value=''
@@ -315,7 +319,7 @@ const buildPlanOptions = computed(() => activeBuildPlans.value.map(item => ({
   detail: `制品类型：${item.kind === 'dockerfile' ? 'OCI 镜像' : '文件制品'}`,
 })))
 const activeDeploymentPlans = computed(() => deploymentPlans.value.filter(item =>
-  item.is_active && (item.kind==='kubernetes'||!applicationID.value || Boolean(item.deployment_target_id || item.deployment_target?.id)) && item.deployment_target?.is_active !== false))
+  item.is_active && item.deployment_target?.is_active !== false))
 const activeNotificationChannels = computed(() => notificationChannels.value.filter(item => item.is_active))
 const notificationTemplateVariables = computed(() => builtinVariables.value
   .filter(item => item.kind === 'template' && item.scopes.includes('notification_template'))
@@ -366,7 +370,7 @@ function markDirty() {
 
 function scheduleAutoSave() {
   window.clearTimeout(autoSaveTimer)
-  if (!scopeCan('workflow.update') || !workflow.value || workflow.value.is_active || saving.value) return
+  if (!scopeCan('workflow.update') || !workflow.value || workflow.value.is_active || saving.value || deploymentShortcutTaskID.value) return
   autoSaveTimer = window.setTimeout(() => void save(false, true), 1200)
 }
 
@@ -816,9 +820,9 @@ async function validateGraph() {
   }
 }
 
-async function save(activate: boolean, automatic = false, taskID = ''): Promise<boolean> {
+async function save(activate: boolean, automatic = false, taskID = '', reusablePlanName = ''): Promise<boolean> {
   if (!scopeCan('workflow.update') || !workflow.value || saving.value || !draftReady(!automatic)) return false
-  if (automatic && (activate || workflow.value.is_active)) return false
+  if (automatic && (activate || workflow.value.is_active || deploymentShortcutTaskID.value)) return false
   if (!ensureEnvironmentVariablesValid(!automatic, taskID)) {
     if (automatic) autoSaveFailed.value = true
     return false
@@ -827,6 +831,7 @@ async function save(activate: boolean, automatic = false, taskID = ''): Promise<
   const requestVersion = editVersion
   const requestWorkflowID = workflow.value.id
   const requestPayload = payload(activate, taskID)
+  if (reusablePlanName) requestPayload.reusable_deployment_plan_name = reusablePlanName
   if (taskID) delete taskSaveErrors[taskID]
   const previousTemplateID = selectedTemplateID.value
   autoSaving.value = automatic
@@ -878,7 +883,17 @@ async function save(activate: boolean, automatic = false, taskID = ''): Promise<
     }
     if (!automatic) {
       if (taskID) {
-        message.success('任务已保存')
+        if (reusablePlanName && !result.data.reusable_deployment_plan_id) {
+          taskSaveErrors[taskID] = '任务已保存，快捷部署方案未创建，请确认后端已更新后重试。'
+          message.error(taskSaveErrors[taskID])
+          return false
+        }
+        message.success(reusablePlanName ? '任务和快捷部署方案已保存' : '任务已保存')
+        if (reusablePlanName && canReadDeploymentPlan.value) {
+          const pending = resourceRequests.get('deploymentPlans')
+          if (pending) void pending.then(() => loadEditorResource('deploymentPlans', scope))
+          else void loadEditorResource('deploymentPlans', scope)
+        }
       } else if (!isPublic && previousTemplateID && !saved.workflow_template_id) {
         message.success('应用流水线已保存为自定义配置，后续不再跟随原流水线更新。')
       } else {
@@ -888,8 +903,9 @@ async function save(activate: boolean, automatic = false, taskID = ''): Promise<
     savedSuccessfully = true
     return true
   } catch (error) {
-    if(failedScope(error,scope))return false
-    const responseIssues = (error as { response?: { data?: { issues?: WorkflowIssue[] } } }).response?.data?.issues
+    const errorData = (error as { response?: { data?: { code?: string; issues?: WorkflowIssue[] } } }).response?.data
+    if(!currentScope(scope) || errorData?.code !== 'deployment_shortcut_permission_denied' && failedScope(error,scope))return false
+    const responseIssues = errorData?.issues
     if (responseIssues?.length) {
       if (editVersion === requestVersion && workflow.value?.id === requestWorkflowID) issues.value = responseIssues
       if (!automatic) {
@@ -928,9 +944,47 @@ function draftDiffersFromSaved(saved: Workflow) {
 }
 
 function requestTaskSave() {
-  if (selectedTask.value) void save(false, false, selectedTask.value.id)
-  else requestSave()
+  if (saving.value || deploymentShortcutTaskID.value || !canUpdate.value) return
+  const task = selectedTask.value
+  if (!task) {
+    requestSave()
+    return
+  }
+  if (task.type !== 'deploy' || !task.config.inline_deployment_plan) {
+    void save(false, false, task.id)
+    return
+  }
+  if (!draftReady(true) || !ensureEnvironmentVariablesValid(true, task.id)) return
+  window.clearTimeout(autoSaveTimer)
+  delete taskSaveErrors[task.id]
+  deploymentShortcutName.value = task.name.trim()
+  deploymentShortcutTaskID.value = task.id
 }
+
+function closeDeploymentShortcut() {
+  if (deploymentShortcutChoice.value) return
+  deploymentShortcutTaskID.value = ''
+  deploymentShortcutName.value = ''
+}
+
+async function confirmDeploymentShortcut(choice: 'reusable' | 'task') {
+  const taskID = deploymentShortcutTaskID.value
+  const planName = choice === 'reusable' ? deploymentShortcutName.value.trim() : ''
+  if (!canUpdate.value || saving.value || deploymentShortcutChoice.value || !taskID || selectedTask.value?.id !== taskID ||
+    !selectedTask.value.config.inline_deployment_plan || choice === 'reusable' && (!canCreateDeploymentPlan.value || !planName)) return
+  const scope = captureScope()
+  deploymentShortcutChoice.value = choice
+  try {
+    if (await save(false, false, taskID, planName) && currentScope(scope)) {
+      deploymentShortcutTaskID.value = ''
+      deploymentShortcutName.value = ''
+    }
+  } finally {
+    if (currentScope(scope)) deploymentShortcutChoice.value = ''
+  }
+}
+
+watch(selectedNodeID, closeDeploymentShortcut, { flush: 'sync' })
 
 function focusFirstTaskIssue() {
   const task = stages.value.flatMap(stage => stage.tasks).find(task => taskIssuesByID.value[task.id]?.length)
@@ -938,7 +992,7 @@ function focusFirstTaskIssue() {
 }
 
 function requestSave() {
-  if(!scopeCan('workflow.update')||saving.value)return
+  if(!scopeCan('workflow.update')||saving.value||deploymentShortcutTaskID.value)return
   if (!workflow.value?.is_active) {
     void save(false)
     return
@@ -1345,7 +1399,8 @@ function deploymentPlanOptions(taskID: string) {
   const options=items.map(item => ({
     value: item.id,
     label: item.id===currentID?currentNode?.config.deployment_override?.plan_snapshot?.name||item.name:item.name,
-    detail: `部署方式：${deploymentKindNames[item.kind]}`,
+    detail: !item.deployment_target_id && !item.deployment_target && item.kind !== 'kubernetes'
+      ? `${deploymentKindNames[item.kind]} · 套用后选择执行目标` : `部署方式：${deploymentKindNames[item.kind]}`,
     disabled: !selectableIDs.has(item.id),
   }))
   if(currentID&&!current)options.unshift({value:currentID,label:canReadDeploymentPlan.value?resourceReferenceLabel('deploymentPlans','原部署方案不可用'):'无权查看原部署方案',detail:'',disabled:true})
@@ -1479,11 +1534,14 @@ function changeDeploymentSource(value:'inline'|'plan'){
   if(!node||node.type!=='deploy'||!canEdit.value)return
   if(deploymentSource(node)===value)return
   delete deploymentValidationIssues[node.id]
-  if(node.config.inline_deployment_plan)inlineDeploymentDrafts.set(node.id,JSON.parse(JSON.stringify(node.config.inline_deployment_plan)))
-  if(value==='inline'&&!inlineDeploymentDrafts.has(node.id)&&selectedLibraryDeploymentPlan.value){const base=selectedLibraryDeploymentPlan.value;inlineDeploymentDrafts.set(node.id,JSON.parse(JSON.stringify(base.kind==='kubernetes'?effectiveKubernetesPlan(base,node.config.deployment_override):base)))}
+  if (node.config.inline_deployment_plan) {
+    inlineDeploymentDrafts.set(node.id, cloneWorkflowValue({ plan: node.config.inline_deployment_plan, composeSource: node.config.compose_source }))
+  }
+  if(value==='inline'&&!inlineDeploymentDrafts.has(node.id)&&selectedLibraryDeploymentPlan.value){const base=selectedLibraryDeploymentPlan.value;inlineDeploymentDrafts.set(node.id,{plan:cloneWorkflowValue(base.kind==='kubernetes'?effectiveKubernetesPlan(base,node.config.deployment_override):base)})}
   if(node.config.deployment_plan_id){libraryDeploymentDrafts.set(node.id,node.config.deployment_plan_id);libraryDeploymentOverrides.set(node.id+'/'+node.config.deployment_plan_id,node.config.deployment_override?JSON.parse(JSON.stringify(node.config.deployment_override)):undefined)}
   changingDeploymentPlanNodeID.value=''
-  updateSelectedNode({}, {deployment_source:value,deployment_plan_id:value==='plan'?libraryDeploymentDrafts.get(node.id):undefined,deployment_override:value==='plan'?libraryDeploymentOverrides.get(node.id+'/'+libraryDeploymentDrafts.get(node.id)):undefined,inline_deployment_plan:value==='inline'?inlineDeploymentDrafts.get(node.id):undefined})
+  const draft = value === 'inline' ? inlineDeploymentDrafts.get(node.id) : undefined
+  updateSelectedNode({}, {deployment_source:value,deployment_plan_id:value==='plan'?libraryDeploymentDrafts.get(node.id):undefined,deployment_override:value==='plan'?libraryDeploymentOverrides.get(node.id+'/'+libraryDeploymentDrafts.get(node.id)):undefined,inline_deployment_plan:draft?.plan,compose_source:draft?.composeSource})
 }
 function changeLibraryDeploymentPlan(value:string){
   if(!canLeaveDeploymentDraft())return
@@ -1493,6 +1551,20 @@ function changeLibraryDeploymentPlan(value:string){
   if(node.config.deployment_plan_id&&changingDeploymentPlanNodeID.value!==node.id)return
   const plan=activeDeploymentPlans.value.find(plan=>plan.id===value)
   if(!plan||!compatibleDeploymentPlans(node.id).some(item=>item.id===value))return
+  if (!plan.deployment_target_id && !plan.deployment_target && plan.kind !== 'kubernetes') {
+    const { name, kind, description, script, compose_yaml, service_name, docker_config, timeout_seconds } = plan
+    const { compose_source, ...execution_config } = cloneWorkflowValue(plan.execution_config || {})
+    const platform = kind === 'script' || kind === 'compose_stack' ? 'ssh' : 'docker'
+    const inline = {
+      name, kind, description, script, compose_yaml, service_name, docker_config, timeout_seconds, execution_config,
+      deployment_target: { platform, environment_id: '' },
+    } satisfies WorkflowDeploymentPlan
+    changingDeploymentPlanNodeID.value = ''
+    updateSelectedNode({}, { ...clearTaskDeploymentExecution(), deployment_source: 'inline', deployment_plan_id: undefined,
+      deployment_override: undefined, inline_deployment_plan: inline, compose_source })
+    if (kind === 'docker' || kind === 'compose') editInlineDeployment()
+    return
+  }
   if(node.config.deployment_plan_id)libraryDeploymentOverrides.set(node.id+'/'+node.config.deployment_plan_id,node.config.deployment_override?JSON.parse(JSON.stringify(node.config.deployment_override)):undefined)
   libraryDeploymentDrafts.set(node.id,value);changingDeploymentPlanNodeID.value=''
   updateSelectedNode({}, {deployment_source:'plan',inline_deployment_plan:undefined,deployment_plan_id:value,deployment_override:libraryDeploymentOverrides.get(node.id+'/'+value)||(plan.kind==='kubernetes'?{plan_snapshot:snapshotKubernetesPlan(plan)}:undefined)})
@@ -1608,6 +1680,7 @@ function toggleImmersive() {
 }
 
 function handleKeydown(event: KeyboardEvent) {
+  if (deploymentShortcutTaskID.value) return
   if (event.key === 'Escape' && immersive.value) {
     event.preventDefault()
     immersive.value = false
@@ -2160,6 +2233,30 @@ onBeforeRouteLeave(async () => {
       <template #footer>
         <a-button html-type="button" :disabled="saveConfirmSubmitting" @click="saveConfirmOpen = false">取消</a-button>
         <a-button type="primary" html-type="button" :loading="saveConfirmSubmitting" :disabled="!canUpdate" @click.stop="confirmSaveUpdate">保存并更新</a-button>
+      </template>
+    </a-modal>
+    <a-modal
+      :open="Boolean(deploymentShortcutTaskID)"
+      title="是否保存为快捷部署方案？"
+      centered
+      :width="460"
+      :closable="!deploymentShortcutChoice"
+      :keyboard="!deploymentShortcutChoice"
+      :mask-closable="false"
+      @cancel="closeDeploymentShortcut"
+    >
+      <p class="save-confirm-copy">保存后可在其他部署任务中复用。</p>
+      <a-form v-if="canCreateDeploymentPlan" layout="vertical">
+        <a-form-item label="方案名称" html-for="deployment-shortcut-name" required>
+          <a-input id="deployment-shortcut-name" v-model:value="deploymentShortcutName" :maxlength="128" :disabled="Boolean(deploymentShortcutChoice)" @pressEnter.prevent="confirmDeploymentShortcut('reusable')" />
+        </a-form-item>
+      </a-form>
+      <p v-else class="save-confirm-copy">当前权限只允许保存任务。</p>
+      <p v-if="taskSaveErrors[deploymentShortcutTaskID]" class="field-error" role="alert">{{ taskSaveErrors[deploymentShortcutTaskID] }}</p>
+      <template #footer>
+        <a-button html-type="button" :disabled="Boolean(deploymentShortcutChoice)" @click="closeDeploymentShortcut">取消</a-button>
+        <a-button html-type="button" :loading="deploymentShortcutChoice === 'task'" :disabled="!canUpdate || deploymentShortcutChoice === 'reusable'" @click="confirmDeploymentShortcut('task')">直接保存（不需要）</a-button>
+        <a-button type="primary" html-type="button" :loading="deploymentShortcutChoice === 'reusable'" :disabled="!canUpdate || !canCreateDeploymentPlan || !deploymentShortcutName.trim() || deploymentShortcutChoice === 'task'" @click="confirmDeploymentShortcut('reusable')">是</a-button>
       </template>
     </a-modal>
     <a-modal

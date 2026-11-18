@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"edo/internal/cicd"
+	"edo/internal/configfile"
 	"edo/internal/deployment"
 	"edo/internal/kube"
 	"edo/internal/model"
@@ -40,26 +41,28 @@ type workflowCreateRequest struct {
 }
 
 type workflowRequest struct {
-	SaveOnly      bool                  `json:"save_only"`
-	TaskID        string                `json:"task_id" binding:"max=64"`
-	SchemaVersion uint16                `json:"schema_version" binding:"required,eq=1"`
-	Name          string                `json:"name" binding:"required_without=TaskID,max=128"`
-	Revision      uint64                `json:"revision"`
-	Activate      bool                  `json:"activate"`
-	Source        model.WorkflowNode    `json:"source" binding:"required"`
-	Stages        []model.WorkflowStage `json:"stages" binding:"max=50"`
+	ReusableDeploymentPlanName string                `json:"reusable_deployment_plan_name" binding:"max=128"`
+	SaveOnly                   bool                  `json:"save_only"`
+	TaskID                     string                `json:"task_id" binding:"max=64"`
+	SchemaVersion              uint16                `json:"schema_version" binding:"required,eq=1"`
+	Name                       string                `json:"name" binding:"required_without=TaskID,max=128"`
+	Revision                   uint64                `json:"revision"`
+	Activate                   bool                  `json:"activate"`
+	Source                     model.WorkflowNode    `json:"source" binding:"required"`
+	Stages                     []model.WorkflowStage `json:"stages" binding:"max=50"`
 }
 
 type workflowTemplateRequest struct {
-	SaveOnly      bool                  `json:"save_only"`
-	TaskID        string                `json:"task_id" binding:"max=64"`
-	SchemaVersion uint16                `json:"schema_version" binding:"required,eq=1"`
-	Name          string                `json:"name" binding:"required_without=TaskID,max=128"`
-	Description   string                `json:"description" binding:"max=500"`
-	Revision      uint64                `json:"revision"`
-	Activate      bool                  `json:"activate"`
-	Source        model.WorkflowNode    `json:"source" binding:"required"`
-	Stages        []model.WorkflowStage `json:"stages" binding:"max=50"`
+	ReusableDeploymentPlanName string                `json:"reusable_deployment_plan_name" binding:"max=128"`
+	SaveOnly                   bool                  `json:"save_only"`
+	TaskID                     string                `json:"task_id" binding:"max=64"`
+	SchemaVersion              uint16                `json:"schema_version" binding:"required,eq=1"`
+	Name                       string                `json:"name" binding:"required_without=TaskID,max=128"`
+	Description                string                `json:"description" binding:"max=500"`
+	Revision                   uint64                `json:"revision"`
+	Activate                   bool                  `json:"activate"`
+	Source                     model.WorkflowNode    `json:"source" binding:"required"`
+	Stages                     []model.WorkflowStage `json:"stages" binding:"max=50"`
 }
 
 type workflowTemplatePresetRequest struct {
@@ -291,6 +294,9 @@ func (h pipelineHandler) saveWorkflow(c *gin.Context) {
 		return
 	}
 	setAuditResourceID(c, result.Workflow.ID)
+	if result.ReusableDeploymentPlanID != "" {
+		setAuditMetadata(c, map[string]any{"created_deployment_plan_id": result.ReusableDeploymentPlanID})
+	}
 	c.JSON(http.StatusOK, result)
 }
 
@@ -419,6 +425,9 @@ func (h pipelineHandler) saveWorkflowTemplate(c *gin.Context) {
 		return
 	}
 	setAuditResourceID(c, result.WorkflowTemplate.ID)
+	if result.ReusableDeploymentPlanID != "" {
+		setAuditMetadata(c, map[string]any{"created_deployment_plan_id": result.ReusableDeploymentPlanID})
+	}
 	c.JSON(http.StatusOK, result)
 }
 
@@ -794,6 +803,12 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusBadGateway, "image_registry_connection_failed", pipeline.ErrRegistryConnectionFailed.Error())
 	case errors.Is(err, pipeline.ErrKubernetesTemplatePermission):
 		writeError(c, http.StatusForbidden, "kubernetes_template_permission_denied", pipeline.ErrKubernetesTemplatePermission.Error())
+	case errors.Is(err, pipeline.ErrDeploymentShortcutPermission):
+		writeError(c, http.StatusForbidden, "deployment_shortcut_permission_denied", pipeline.ErrDeploymentShortcutPermission.Error())
+	case errors.Is(err, pipeline.ErrDeploymentShortcutUpstream):
+		writeError(c, http.StatusBadRequest, "invalid_deployment_shortcut_upstream", pipeline.ErrDeploymentShortcutUpstream.Error())
+	case errors.Is(err, configfile.ErrParameters):
+		writeError(c, http.StatusBadRequest, "invalid_deployment_parameters", configfile.ErrParameters.Error())
 	case errors.Is(err, model.ErrDeploymentOverride):
 		writeError(c, http.StatusBadRequest, "invalid_deployment_override", model.ErrDeploymentOverride.Error())
 	case errors.Is(err, model.ErrKubernetesDeploymentSettings):
@@ -914,7 +929,8 @@ func toWorkflowTemplateInput(request workflowTemplateRequest) pipeline.WorkflowT
 	return pipeline.WorkflowTemplateInput{
 		Description: request.Description,
 		WorkflowInput: pipeline.WorkflowInput{
-			SaveOnly: request.SaveOnly, TaskID: request.TaskID,
+			ReusableDeploymentPlanName: request.ReusableDeploymentPlanName,
+			SaveOnly:                   request.SaveOnly, TaskID: request.TaskID,
 			SchemaVersion: request.SchemaVersion, Name: request.Name, Revision: request.Revision, Activate: request.Activate,
 			Source: request.Source, Stages: request.Stages,
 		},
@@ -923,7 +939,8 @@ func toWorkflowTemplateInput(request workflowTemplateRequest) pipeline.WorkflowT
 
 func toWorkflowInput(request workflowRequest) pipeline.WorkflowInput {
 	return pipeline.WorkflowInput{
-		SaveOnly: request.SaveOnly, TaskID: request.TaskID,
+		ReusableDeploymentPlanName: request.ReusableDeploymentPlanName,
+		SaveOnly:                   request.SaveOnly, TaskID: request.TaskID,
 		SchemaVersion: request.SchemaVersion, Name: request.Name, Revision: request.Revision, Activate: request.Activate,
 		Source: request.Source, Stages: request.Stages,
 	}

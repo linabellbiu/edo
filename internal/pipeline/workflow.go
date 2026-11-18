@@ -50,14 +50,15 @@ var (
 )
 
 type WorkflowInput struct {
-	SaveOnly      bool
-	TaskID        string
-	SchemaVersion uint16
-	Name          string
-	Revision      uint64
-	Activate      bool
-	Source        model.WorkflowNode
-	Stages        []model.WorkflowStage
+	ReusableDeploymentPlanName string
+	SaveOnly                   bool
+	TaskID                     string
+	SchemaVersion              uint16
+	Name                       string
+	Revision                   uint64
+	Activate                   bool
+	Source                     model.WorkflowNode
+	Stages                     []model.WorkflowStage
 }
 
 type WorkflowCreateInput struct {
@@ -74,9 +75,10 @@ type WorkflowIssue struct {
 }
 
 type WorkflowResult struct {
-	Workflow *model.ReleaseWorkflow `json:"workflow"`
-	Valid    bool                   `json:"valid"`
-	Issues   []WorkflowIssue        `json:"issues"`
+	ReusableDeploymentPlanID string                 `json:"reusable_deployment_plan_id,omitempty"`
+	Workflow                 *model.ReleaseWorkflow `json:"workflow"`
+	Valid                    bool                   `json:"valid"`
+	Issues                   []WorkflowIssue        `json:"issues"`
 	// BuildImages 与 BuildArtifacts 是构建任务静态确定的产物名称，部署阶段据此提供下拉选择。
 	BuildImages    []WorkflowBuildImage    `json:"build_images"`
 	BuildArtifacts []WorkflowBuildArtifact `json:"build_artifacts"`
@@ -446,6 +448,7 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 		return nil, ErrInvalidWorkflow
 	}
 	var saved model.ReleaseWorkflow
+	var reusablePlanID string
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockWorkflowApplication(tx, application.ID); err != nil {
 			return err
@@ -486,6 +489,10 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 		if result.RowsAffected != 1 {
 			return ErrWorkflowRevisionConflict
 		}
+		reusablePlanID, err = s.saveDeploymentShortcut(ctx, tx, actorID, input)
+		if err != nil {
+			return err
+		}
 		return tx.First(&saved, "uuid = ?", existing.ID).Error
 	})
 	if err != nil {
@@ -497,7 +504,8 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 	}
 	issues = uniqueIssues(append(issues, buildIssues...))
 	return &WorkflowResult{
-		Workflow: &saved, Valid: len(issues) == 0, Issues: issues,
+		ReusableDeploymentPlanID: reusablePlanID,
+		Workflow:                 &saved, Valid: len(issues) == 0, Issues: issues,
 		BuildImages: images, BuildArtifacts: artifacts,
 	}, nil
 }

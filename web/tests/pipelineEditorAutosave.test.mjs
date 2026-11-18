@@ -20,6 +20,7 @@ function harness(t, { active = false, publicMode = false, routeGuards = false, c
   const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', permissions: [...permissions], is_superuser: false }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
   let timerID = 0, now = 0
   const modules = {
+    '@/utils/deploymentExecution': loadFrontend('../src/utils/deploymentExecution.ts'),
  '@/utils/kubernetesDeployment': loadFrontend('../src/utils/kubernetesDeployment.ts'),
  '@/utils/kubernetesPlanOverride': loadFrontend('../src/utils/kubernetesPlanOverride.ts'),
     '@/utils/buildTarget': loadFrontend('../src/utils/buildTarget.ts'),
@@ -60,10 +61,10 @@ function harness(t, { active = false, publicMode = false, routeGuards = false, c
   state.loadGraph(initial, [])
   state.loading.value = false
   t.after(() => { timers.clear(); scope.stop() })
-  function succeed(index, issues = []) {
+  function succeed(index, issues = [], reusablePlanID) {
     const request = requests[index]
     const saved = { ...structuredClone(initial), ...structuredClone(request.payload), revision: Number(request.payload.revision) + 1, is_active: request.payload.save_only ? initial.is_active : request.payload.activate, workflow_template_id: '' }
-    request.resolve({ data: { workflow: saved, workflow_template: saved, issues } })
+    request.resolve({ data: { workflow: saved, workflow_template: saved, issues, reusable_deployment_plan_id: reusablePlanID } })
   }
   const flush = () => new Promise(resolve => setImmediate(resolve))
   async function advance(milliseconds) {
@@ -122,6 +123,88 @@ test('任务独立保存不触发启用，不被其他任务错误阻断，也�
     assert.equal(h.requests.length, 1, '独立保存后不应连带提交其他任务草稿')
     assert.ok(h.messages.some(item => item.value === '任务已保存'))
   }
+})
+
+test('自定义部署保存先询问，取消保留草稿且不触发自动保存，直接保存只提交任务', async t => {
+  const h = harness(t)
+  const task = h.state.createTaskNode('deploy')
+  h.state.stages.value[0].tasks.push(task)
+  h.state.selectNode(task.id)
+  h.state.updateSelectedNode({ name: '自定义发布' })
+  h.state.requestTaskSave()
+  assert.equal(h.state.deploymentShortcutTaskID.value, task.id)
+  assert.equal(h.state.deploymentShortcutName.value, '自定义发布')
+  await h.advance(2000)
+  assert.equal(h.requests.length, 0)
+  h.state.closeDeploymentShortcut()
+  await h.advance(2000)
+  assert.equal(h.requests.length, 0)
+  assert.equal(h.state.selectedNode.value.name, '自定义发布')
+
+  h.state.requestTaskSave()
+  await h.state.confirmDeploymentShortcut('reusable')
+  assert.equal(h.requests.length, 0, '没有创建方案权限时仍可直接保存任务')
+  const pending = h.state.confirmDeploymentShortcut('task')
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.requests[0].payload.task_id, task.id)
+  assert.equal(h.requests[0].payload.reusable_deployment_plan_name, undefined)
+  h.succeed(0)
+  await pending
+  assert.equal(h.state.deploymentShortcutTaskID.value, '')
+})
+
+test('快捷方案与任务同一次提交，重名保留弹窗和名称，成功后关闭', async t => {
+  for (const publicMode of [false, true]) {
+    const h = harness(t, { publicMode, active: true, permissions: ['workflow.read', 'workflow.update', 'deployment_plan.create'] })
+    const task = h.state.createTaskNode('deploy')
+    h.state.stages.value[0].tasks.push(task)
+    h.state.selectNode(task.id)
+    h.state.requestTaskSave()
+    h.state.deploymentShortcutName.value = '复用部署'
+    const failed = h.state.confirmDeploymentShortcut('reusable')
+    await h.state.confirmDeploymentShortcut('reusable')
+    assert.equal(h.requests.length, 1)
+    assert.equal(h.requests[0].payload.reusable_deployment_plan_name, '复用部署')
+    assert.equal(h.requests[0].payload.task_id, task.id)
+    assert.equal(h.requests[0].payload.activate, false)
+    h.requests[0].reject({ response: { status: 409, data: { message: '部署方案名称已存在' } } })
+    await failed
+    assert.equal(h.state.deploymentShortcutTaskID.value, task.id)
+    assert.equal(h.state.deploymentShortcutName.value, '复用部署')
+    assert.equal(h.state.taskSaveErrors[task.id], '部署方案名称已存在')
+    h.state.deploymentShortcutName.value = '复用部署一'
+    const confirmed = h.state.confirmDeploymentShortcut('reusable')
+    h.succeed(1, [], 'new-shortcut')
+    await confirmed
+    assert.equal(h.state.deploymentShortcutTaskID.value, '')
+    assert.ok(h.state.selectedNode.value.config.inline_deployment_plan)
+    assert.ok(h.messages.some(item => item.value === '任务和快捷部署方案已保存'))
+  }
+})
+
+test('选择无固定目标的 Compose 方案时套用文件来源和参数，执行目标由当前任务选择', t => {
+  const h = harness(t, { active: true, permissions: ['workflow.read', 'workflow.update', 'deployment_plan.read'] })
+  const task = h.state.createTaskNode('deploy', h.state.taskDefinitions.find(item => item.id === 'compose-deploy'))
+  h.state.stages.value[0].tasks.push(task)
+  h.state.selectNode(task.id)
+  h.state.deploymentPlans.value = [{
+    id: 'compose-shortcut', name: '仓库 Compose', kind: 'compose_stack', is_active: true, timeout_seconds: 300,
+    execution_config: {
+      compose_source: { kind: 'repository', path: 'deploy/compose.yaml' },
+      deployment_registry_id: 'selected-registry',
+    },
+  }]
+  h.state.changeDeploymentSource('plan')
+  h.state.changeLibraryDeploymentPlan('compose-shortcut')
+  const config = h.state.selectedNode.value.config
+  assert.equal(config.deployment_plan_id, undefined)
+  assert.equal(config.inline_deployment_plan.deployment_target.environment_id, '')
+  assert.equal(config.inline_deployment_plan.execution_config.deployment_registry_id, 'selected-registry')
+  assert.equal(config.compose_source.path, 'deploy/compose.yaml')
+  h.state.changeDeploymentSource('plan')
+  assert.equal(h.state.selectedNode.value.config.compose_source, undefined)
+  h.state.changeDeploymentSource('inline')
+  assert.equal(h.state.selectedNode.value.config.compose_source.path, 'deploy/compose.yaml')
 })
 
 test('新任务默认开启，关闭保存后重开、修改及再次保存保持关闭', async t => {

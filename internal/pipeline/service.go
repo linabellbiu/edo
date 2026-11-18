@@ -886,7 +886,7 @@ func normalizeDeploymentPlanInput(input DeploymentPlanInput) (DeploymentPlanInpu
 		input.TimeoutSeconds = 600
 	}
 	validKind := (input.Kind == model.DeploymentPlanScript && strings.TrimSpace(input.Script) != "") ||
-		(input.Kind == model.DeploymentPlanComposeStack && input.ComposeYAML != "") ||
+		(input.Kind == model.DeploymentPlanComposeStack && (input.ComposeYAML != "" || input.Reusable && input.ExecutionConfig != nil && input.ExecutionConfig.ComposeSource != nil)) ||
 		input.Kind == model.DeploymentPlanKubernetes ||
 		(input.Kind == model.DeploymentPlanCompose && input.ComposeYAML != "" && input.ServiceName != "") ||
 		input.Kind == model.DeploymentPlanDocker
@@ -901,8 +901,14 @@ func normalizeDeploymentPlanInput(input DeploymentPlanInput) (DeploymentPlanInpu
 		if input.TimeoutSeconds < 60 {
 			return input, ErrInvalidDeploymentPlan
 		}
-		if _, err := parseComposeStack(input.ComposeYAML); err != nil {
-			return input, err
+		if input.ExecutionConfig != nil && input.ExecutionConfig.ComposeSource != nil {
+			if !input.Reusable || input.ComposeYAML != "" {
+				return input, ErrInvalidDeploymentPlan
+			}
+		} else {
+			if _, err := parseComposeStack(input.ComposeYAML); err != nil {
+				return input, err
+			}
 		}
 	case model.DeploymentPlanScript:
 		input.ComposeYAML, input.ServiceName, input.DockerConfig = "", "", model.DockerContainerConfig{}
@@ -928,12 +934,16 @@ func normalizeDeploymentPlanInput(input DeploymentPlanInput) (DeploymentPlanInpu
 }
 
 func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, input DeploymentPlanInput) (*model.DeploymentPlan, error) {
+	return s.createDeploymentPlan(ctx, s.db, actorID, input)
+}
+
+func (s *Service) createDeploymentPlan(ctx context.Context, db *gorm.DB, actorID string, input DeploymentPlanInput) (*model.DeploymentPlan, error) {
 	input, err := normalizeDeploymentPlanInput(input)
 	if err != nil {
 		s.logger.WarnContext(ctx, "部署方案参数无效", "operation", "deployment_plan_normalize", "err", err)
 		return nil, err
 	}
-	if err := s.validateDeploymentExecutionReferences(ctx, input.ExecutionConfig); err != nil {
+	if err := s.validateDeploymentExecutionReferences(ctx, input.ExecutionConfig, db); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -944,7 +954,7 @@ func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, inpu
 		DockerConfig: input.DockerConfig, ExecutionConfig: input.ExecutionConfig,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if input.Reusable {
 			return tx.Create(plan).Error
 		}

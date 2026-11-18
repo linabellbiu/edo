@@ -108,7 +108,7 @@ export interface WorkflowNodeConfig {
 export type DeploymentExecutionConfig = Pick<WorkflowNodeConfig,
   | 'deployment_input_version' | 'deployment_inputs' | 'deployment_script' | 'deployment_tag_reference'
   | 'deployment_registry_id' | 'configuration_files' | 'deployment_parameters' | 'environment_variables' | 'variable_names'
-  | 'artifact_node_id' | 'artifact_build_plan_id' | 'artifact_node_ids' | 'compose_images' | 'compose' | 'kubernetes'>
+  | 'artifact_node_id' | 'artifact_build_plan_id' | 'artifact_node_ids' | 'compose_images' | 'compose' | 'compose_source' | 'kubernetes'>
 
 export interface WorkflowDeploymentPlan {
   execution_config?:DeploymentExecutionConfig
@@ -168,12 +168,14 @@ export interface WorkflowIssue {
 }
 
 export interface WorkflowResponse {
+  reusable_deployment_plan_id?: string
   workflow: Workflow
   valid: boolean
   issues: WorkflowIssue[]
 }
 
 export interface WorkflowTemplateResponse {
+  reusable_deployment_plan_id?: string
   workflow_template: Workflow
   valid: boolean
   issues: WorkflowIssue[]
