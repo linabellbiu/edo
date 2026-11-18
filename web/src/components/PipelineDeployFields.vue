@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed,onBeforeUnmount,ref,watch} from 'vue'
+import {computed,nextTick,onBeforeUnmount,ref,useId,watch} from 'vue'
 import {PlusCircle,MinusCircle} from 'lucide-vue-next'
 import client from '@/api/client'
 import {apiErrorMessage} from '@/api/resources'
@@ -8,7 +8,7 @@ import {listEnvironments,listHosts,environmentIDsOf,type InfrastructureHost,type
 import DeploymentConfigurationFields from '@/components/DeploymentConfigurationFields.vue'
 import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vue'
 import KubernetesDeploymentTemplateFields from '@/components/KubernetesDeploymentTemplateFields.vue'
-import {kubernetesResourceName,kubernetesContainerDefault,workflowBuildImageNames,workflowBuildArtifactNames} from '@/utils/kubernetesDeployment'
+import {kubernetesResourceName,kubernetesDeploymentTargetNameError,kubernetesContainerDefault,workflowBuildImageNames,workflowBuildArtifactNames} from '@/utils/kubernetesDeployment'
 import DeploymentHostSelection from '@/components/DeploymentHostSelection.vue'
 import {deploymentHostUnavailableReason} from '@/utils/deploymentHostAvailability'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
@@ -32,6 +32,16 @@ const hostTreeOptions=computed(()=>Object.fromEntries(environments.value.filter(
 const hostIssues=computed(()=>{const available=new Set(availableHosts.value.map(host=>host.id));return Object.fromEntries(allHosts.value.filter(host=>!available.has(host.id)).map(host=>[host.id,deploymentHostUnavailableReason(host,plan.value?.kind||'',true)]))})
 const groupHosts=computed(()=>hostOptions.value[plan.value?.deployment_target?.environment_id||'']||[])
 const execution=computed(()=>plan.value?.execution_config||{})
+const targetNamesEditing = ref(false)
+const targetNameID = useId()
+const targetNames = [
+ { key: 'namespace', label: '命名空间' },
+ { key: 'workload_name', label: 'Deployment 名称' },
+] as const
+const targetNameFields = computed(() => targetNames.map(field => {
+ const value = plan.value?.deployment_target?.[field.key] ?? ''
+ return { ...field, value, error: kubernetesDeploymentTargetNameError(field.key, value, Boolean(execution.value.kubernetes)) }
+}))
 const parametersError=computed(()=>deploymentParametersError(execution.value))
 const sourceKind=computed(()=>props.node.config.compose_source?.kind||'editor')
 const runtimeServices=computed(()=>props.node.config.runtime_services||[])
@@ -77,6 +87,9 @@ const clusterOptions=computed(()=>{
 let controller:AbortController|undefined,previewController:AbortController|undefined,timer:ReturnType<typeof setTimeout>|undefined
 const identity=()=>JSON.stringify([auth.user?.id,auth.user?.project_id,auth.user?.permissions,localStorage.getItem('edo.project')])
 const targetIdentity=()=>JSON.stringify([identity(),props.node.id,plan.value?.kind])
+watch([targetIdentity, () => props.node.config.deployment_plan_id, () => props.disabled], () => {
+ targetNamesEditing.value = false
+}, { flush: 'sync' })
 watch(targetIdentity,async()=>{
  controller?.abort();previewController?.abort();controller=new AbortController()
  const current=targetIdentity(),signal=controller.signal,isKubernetes=plan.value?.kind==='kubernetes'
@@ -102,13 +115,23 @@ function change(patch:Partial<WorkflowNodeConfig>){if(!props.disabled)emit('chan
 function update(patch:Partial<WorkflowDeploymentPlan>){if(plan.value)change({inline_deployment_plan:{...plan.value,...patch,name:props.node.name}})}
 function updateExecution(patch:Partial<DeploymentExecutionConfig>){update({execution_config:{...execution.value,...patch}})}
 function target(patch:Record<string,unknown>){if(plan.value?.deployment_target)update({deployment_target:{...plan.value.deployment_target,...patch}})}
+function toggleTargetNames() {
+ if (props.disabled || plan.value?.kind !== 'kubernetes') return
+ if (targetNamesEditing.value && targetNameFields.value.some(field => field.error)) return
+ targetNamesEditing.value = !targetNamesEditing.value
+ if (targetNamesEditing.value) void nextTick(() => document.getElementById(`${targetNameID}-namespace`)?.focus())
+}
+function updateTargetName(field: typeof targetNames[number]['key'], value: string) {
+ if (!targetNamesEditing.value || props.disabled || plan.value?.kind !== 'kubernetes') return
+ target({ [field]: value })
+}
 watch(()=>JSON.stringify([props.node.id,props.applicationName,execution.value.artifact_node_id,execution.value.artifact_build_plan_id,execution.value.deployment_registry_id,execution.value.deployment_inputs,props.buildNodes,plan.value?.kind,plan.value?.deployment_target?.namespace,plan.value?.deployment_target?.workload_name,plan.value?.deployment_target?.container_name]),()=>{
  if(props.disabled||plan.value?.kind!=='kubernetes')return
  const current=plan.value.deployment_target;if(!current)return
  const patch:Record<string,unknown>={}
  if(props.applicationName){
-  if(!current.namespace)patch.namespace=kubernetesResourceName(props.applicationName)
-  if(!current.workload_name)patch.workload_name=kubernetesResourceName(props.applicationName)
+  if(current.namespace===undefined)patch.namespace=kubernetesResourceName(props.applicationName)
+  if(current.workload_name===undefined)patch.workload_name=kubernetesResourceName(props.applicationName)
  }
  const container=desiredContainerName.value
  if(container&&container!==(current.container_name||''))patch.container_name=container
@@ -175,6 +198,7 @@ const validationIssues=computed(()=>[...new Set([
  plan.value?.kind==='compose_stack'?serviceValidationError.value:'',
  plan.value?.kind==='compose_stack'&&sourceKind.value==='repository'&&!props.node.config.compose_source?.path?repositoryDetectionMessage.value:'',
  plan.value?.kind==='kubernetes'?kubernetesFieldError.value:'',
+ ...(plan.value?.kind==='kubernetes'?targetNameFields.value.map(field=>field.error):[]),
 ].filter(Boolean))])
 watch(()=>[props.node.id,validationIssues.value] as const,([nodeID,issues])=>emit('validation-change',nodeID,issues),{immediate:true})
 onBeforeUnmount(()=>{stopRepositoryDetection();controller?.abort();previewController?.abort();clearTimeout(timer)})
@@ -211,12 +235,21 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
        @update:value="target({runtime_id:$event,environment_id:'',host_ids:undefined,host_id:undefined})"
       />
      </a-form-item>
-     <a-form-item label="命名空间" required>
-      <a-input :value="plan.deployment_target?.namespace" :disabled="disabled" @update:value="target({namespace:String($event)})"/>
-     </a-form-item>
-     <a-form-item label="Deployment 名称" required>
-      <a-input :value="plan.deployment_target?.workload_name" :disabled="disabled" @update:value="target({workload_name:String($event)})"/>
-     </a-form-item>
+     <div class="kubernetes-target-names">
+      <a-form-item v-for="field in targetNameFields" :key="field.key" :label="field.label" required :html-for="`${targetNameID}-${field.key}`" :validate-status="field.error ? 'error' : undefined">
+       <a-input
+        :id="`${targetNameID}-${field.key}`"
+        :value="field.value" :disabled="disabled || !targetNamesEditing"
+        :aria-invalid="Boolean(field.error)" :aria-describedby="field.error ? `${targetNameID}-${field.key}-error` : undefined"
+        autocomplete="off" :spellcheck="false"
+        @update:value="updateTargetName(field.key, String($event ?? ''))"
+       />
+       <template v-if="field.error" #help><span :id="`${targetNameID}-${field.key}-error`">{{ field.error }}</span></template>
+      </a-form-item>
+      <a-button class="kubernetes-target-edit" html-type="button" :disabled="disabled || (targetNamesEditing && targetNameFields.some(field => field.error))" @click="toggleTargetNames">
+       {{ targetNamesEditing ? '完成' : '修改' }}
+      </a-button>
+     </div>
     </div>
    </Teleport>
    <KubernetesDeploymentTemplateFields
@@ -250,4 +283,7 @@ function binding(index:number,patch:Partial<{name:string;restart_script:string;r
 .kubernetes-deployment-basics :deep(.ant-form-item){margin-bottom:0}
 .kubernetes-deployment-basics :deep(.ant-form-item-label){padding-bottom:4px}
 .kubernetes-deployment-basics :deep(.kubernetes-image-fields){margin-bottom:0}
+.kubernetes-target-names{display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) auto;align-items:start;gap:8px 12px;min-width:0}
+.kubernetes-target-edit{margin-top:26px}
+@media(max-width:360px){.kubernetes-target-names{grid-template-columns:repeat(2,minmax(0,1fr))}.kubernetes-target-edit{grid-column:2;justify-self:end;margin-top:0}}
 </style>

@@ -21,6 +21,21 @@ export function kubernetesDeploymentServiceError(config:KubernetesDeploymentSett
  return ''
 }
 export function kubernetesResourceName(value:string){return value.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,63).replace(/-+$/g,'')}
+
+// 与 Kubernetes 的 DNS-1123 校验及 EDO 同名 Service 模板约束保持一致。
+export function kubernetesDeploymentTargetNameError(field: 'namespace' | 'workload_name', value: string, template = false): string {
+ const namespace = field === 'namespace'
+ const label = namespace ? '命名空间' : 'Deployment 名称'
+ if (!value) return `请输入${label}`
+ const dnsLabel = namespace || template
+ const parts = dnsLabel ? [value] : value.split('.')
+ const limit = dnsLabel ? 63 : 253
+ const valid = value.length <= limit && parts.every(part => !/[^a-z0-9-]/.test(part) && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(part))
+ if (valid) return ''
+ if (dnsLabel) return `${label}须为 1–63 位小写英文字母、数字或连字符（-），以字母或数字开头和结尾`
+ return `${label}须为 1–253 位小写英文字母、数字、连字符（-）或点（.），各段以字母或数字开头和结尾`
+}
+
 export function kubernetesContainerDefault(applicationName:string,build?:WorkflowNode){
  const image=(build?.config.image_name||applicationName).replaceAll('${EDO_APPLICATION_NAME}',applicationName)
  if(image.includes('${'))return ''

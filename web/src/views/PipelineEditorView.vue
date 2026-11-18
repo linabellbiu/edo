@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import Sortable from 'sortablejs'
-import {defaultKubernetesDeployment,kubernetesResourceName,kubernetesDeploymentRuntimeError} from '@/utils/kubernetesDeployment'
+import {defaultKubernetesDeployment,kubernetesResourceName,kubernetesDeploymentRuntimeError,kubernetesDeploymentTargetNameError} from '@/utils/kubernetesDeployment'
 import { v4 as uuidv4 } from 'uuid'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type ComponentPublicInstance } from 'vue'
 import { message, Modal } from 'ant-design-vue'
@@ -761,6 +761,17 @@ function taskFormIssue(task: WorkflowNode) {
     const base = deploymentPlans.value.find(plan => plan.id === task.config.deployment_plan_id)
     const deployment = task.config.inline_deployment_plan || (base && (task.config.deployment_override?.plan_snapshot?.kind || base.kind) === 'kubernetes' ? effectiveKubernetesPlan(base, task.config.deployment_override) : undefined)
     const cfg = deployment?.execution_config?.kubernetes
+    if (deployment?.kind === 'kubernetes') {
+      const target = deployment.deployment_target
+      const defaultName = kubernetesResourceName(editorApplication.value?.name || '')
+      const namespace = target?.namespace ?? defaultName
+      const workloadName = target?.workload_name ?? defaultName
+      // 公共流水线模板可以在绑定应用时再补齐部署目标。
+      const namespaceError = namespace || !publicMode.value ? kubernetesDeploymentTargetNameError('namespace', namespace) : ''
+      const workloadError = workloadName || !publicMode.value ? kubernetesDeploymentTargetNameError('workload_name', workloadName, Boolean(cfg)) : ''
+      const nameError = namespaceError || workloadError
+      if (nameError) return { task, error: nameError, tab: 'common' as const }
+    }
     const runtimeError = cfg ? kubernetesDeploymentRuntimeError(cfg) : ''
     if (runtimeError) return { task, error: runtimeError, tab: 'common' as const }
   }

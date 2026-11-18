@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 import * as vue from 'vue'
-import {componentHarness} from './acceptanceHarness.mjs'
+import {componentHarness,loadFrontend} from './acceptanceHarness.mjs'
 const mutationEvents=h=>h.events.filter(event=>event.name!=='validation-change')
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
 function harness({codes=['workflow.read','workflow.update','cluster.read'],selected='',kind='kubernetes'}={}){
@@ -71,6 +71,32 @@ test('命名空间与Deployment默认应用名，容器名称始终等于镜像�
  const latest=mutationEvents(h).at(-1).args[0].inline_deployment_plan.deployment_target
  assert.equal(latest.namespace,'manual','手动填写的命名空间仍保留')
  assert.equal(latest.container_name,'changed','容器名称跟随镜像产物，不再保留单独填写的值')
+})
+
+test('部署目标按 DNS 标签或子域名校验，并保留清空字段让用户重新填写',async t=>{
+ const {kubernetesDeploymentTargetNameError: nameError}=loadFrontend('../src/utils/kubernetesDeployment.ts')
+ assert.equal(nameError('namespace','team-2'),'')
+ assert.equal(nameError('namespace','a'.repeat(63)),'')
+ for(const invalid of ['team.api','中文','Team-1','team_1','-team','team-','team\n','a'.repeat(64)]){
+  assert.notEqual(nameError('namespace',invalid),'',invalid)
+ }
+ assert.equal(nameError('workload_name','api.v2'),'')
+ assert.notEqual(nameError('workload_name','api.v2',true),'')
+ assert.notEqual(nameError('workload_name','api..v2'),'')
+ assert.equal(nameError('workload_name','a'.repeat(253)),'')
+ assert.notEqual(nameError('workload_name','a'.repeat(254)),'')
+
+ const h=harness();t.after(h.stop);await settle()
+ const target=h.props.node.config.inline_deployment_plan.deployment_target
+ h.props.applicationName='preview-api'
+ Object.assign(target,{namespace:'preview-api',workload_name:'preview-api',container_name:'preview-api'})
+ await settle()
+ h.state.updateTargetName('namespace','locked-write')
+ assert.deepEqual(mutationEvents(h),[])
+ target.namespace='';await settle()
+ assert.equal(h.state.targetNameFields.value[0].value,'')
+ assert.equal(h.state.targetNameFields.value[0].error,'请输入命名空间')
+ assert.deepEqual(mutationEvents(h),[])
 })
 test('标准模板使用约定资源，默认端口全部关闭；无RBAC不能通过事件修改网络',async t=>{
  const {loadFrontend}=await import('./acceptanceHarness.mjs')
