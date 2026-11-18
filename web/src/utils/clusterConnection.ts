@@ -17,132 +17,164 @@ export interface ClusterConnection {
   message: string
   checked_at?: string
   expires_at?: string
+  checking?: boolean
+  refreshing?: boolean
 }
 
 const readPermissions = ['cluster.read', 'kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read', 'kubernetes.rbac.read', 'kubernetes.rbac.update']
+const snapshotsByProfile = new WeakMap<object, Map<string, ClusterConnection>>()
+const snapshotLimit = 1024
+const passivePollInterval = 5_000
+const refreshPollInterval = 1_000
 
-// 后台检查最长容忍窗口：一次检查包含 5 秒超时加调度余量；超过后不再显示“检测中”，
-// 改为明确的检测超时结论并降低轮询频率，避免页面一直转圈或持续重试。
-export const connectionCheckingLimit = 8_000
-const checkingPollDelay = 2_000
-const stalledPollDelay = 10_000
-
-export const stalledConnectionMessage = '连接检测超时，请重试'
+export function clusterConnectionExpired(connection?: ClusterConnection) {
+  return Boolean(connection?.expires_at && Date.parse(connection.expires_at) <= Date.now())
+}
 
 export function clusterConnectionLabel(cluster: ConnectionCluster, connection?: ClusterConnection) {
   if (connection?.reason === 'missing') return '不可用'
   if (!cluster.is_active) return '已停用'
   if (!connection) return '未检测'
   if (connection.reason === 'stalled') return '检测超时'
-  return { unknown: '未检测', checking: '检测中', connected: '已连接', unreachable: '未连接', restricted: '访问受限' }[connection.status]
+  const label = { unknown: '未检测', checking: '后台检测中', connected: '已连接', unreachable: '未连接', restricted: '访问受限' }[connection.status]
+  return clusterConnectionExpired(connection) ? `${label}（上次）` : label
 }
 
-function stalledStatus(clusterID: string): ClusterConnection {
-  return { cluster_id: clusterID, status: 'unknown', reason: 'stalled', message: stalledConnectionMessage }
+function connectionSnapshots(profile: object) {
+  let snapshots = snapshotsByProfile.get(profile)
+  if (!snapshots) {
+    snapshots = new Map()
+    snapshotsByProfile.set(profile, snapshots)
+  }
+  return snapshots
 }
 
 export function useClusterConnections(clusters: () => ConnectionCluster[], enabled: () => boolean = () => true) {
   const auth = useAuthStore()
   const statuses = ref<Record<string, ClusterConnection>>({})
-  const error = ref(''), pending = ref(false), projectRevision = ref(0)
-  const stallSince = new Map<string, number>(), stalled = new Set<string>()
-  let disposed = false, revision = 0, controller: AbortController | undefined, timer: ReturnType<typeof setTimeout> | undefined
+  const error = ref('')
+  const reading = ref(false)
+  const projectRevision = ref(0)
+  const manualIDs = new Set<string>()
+  let disposed = false
+  let revision = 0
+  let controller: AbortController | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
   const project = () => typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || ''
-  const identity = () => JSON.stringify([projectRevision.value, auth.user?.id, auth.user?.project_id, auth.user?.is_superuser, auth.user?.permissions, auth.authorizationReady, project()])
+  const identity = () => JSON.stringify([projectRevision.value, auth.user?.id, auth.user?.project_id, auth.user?.department_id, auth.user?.is_superuser, auth.user?.permissions, auth.authorizationReady, project()])
+  const snapshotKey = (cluster: ConnectionCluster) => JSON.stringify([identity(), cluster.id, cluster.is_active, cluster.updated_at])
+  const visible = () => typeof document === 'undefined' || !document.hidden
   const allowed = () => enabled() && auth.authorizationReady !== false && Boolean(auth.user?.id && auth.user?.project_id === project()) && auth.canAny(readPermissions)
   const scope = () => JSON.stringify([identity(), enabled(), clusters().map(cluster => [cluster.id, cluster.is_active, cluster.updated_at])])
+  const pending = computed(() => Object.values(statuses.value).some(status => status.refreshing))
+
   function cancel() {
     revision++
     controller?.abort()
     clearTimeout(timer)
-    pending.value = false
+    reading.value = false
   }
+
   function schedule(delay: number) {
     clearTimeout(timer)
-    if (!disposed && allowed()) timer = setTimeout(() => { void refresh(false) }, delay)
+    if (!disposed && allowed() && visible()) timer = setTimeout(() => { void refresh(false) }, delay)
   }
-  // 检测中的结论有上限：超过窗口即按真实结果展示为检测超时，需要显式刷新才会重新开始计时。
-  function guard(entries: Record<string, ClusterConnection>, now: number) {
-    const ids = new Set(Object.keys(entries))
-    for (const id of [...stallSince.keys()]) if (!ids.has(id)) stallSince.delete(id)
-    for (const id of [...stalled]) if (!ids.has(id)) stalled.delete(id)
-    for (const [id, status] of Object.entries(entries)) {
-      if (status.status !== 'checking') {
-        stallSince.delete(id)
-        stalled.delete(id)
-        continue
-      }
-      if (stalled.has(id)) {
-        entries[id] = stalledStatus(id)
-        continue
-      }
-      const since = stallSince.get(id)
-      if (since === undefined) {
-        stallSince.set(id, now)
-        continue
-      }
-      if (now - since < connectionCheckingLimit) continue
-      stalled.add(id)
-      stallSince.delete(id)
-      entries[id] = stalledStatus(id)
-    }
-    return entries
+
+  function showSnapshots(snapshots: Map<string, ClusterConnection>) {
+    statuses.value = Object.fromEntries(clusters().map(cluster => {
+      const previous = statuses.value[cluster.id] ?? snapshots.get(snapshotKey(cluster))
+      const value: ClusterConnection = !cluster.is_active
+        ? { cluster_id: cluster.id, status: 'unknown', reason: 'disabled', message: '集群已停用' }
+        : previous ?? { cluster_id: cluster.id, status: 'unknown', reason: 'not_checked', message: '尚无连接检测结果，等待后台检测' }
+      return [cluster.id, { ...value, refreshing: manualIDs.has(cluster.id) }]
+    }))
   }
-  function scheduleNext() {
-    const values = Object.values(statuses.value)
-    const active = values.filter(status => status.reason !== 'disabled')
-    const nextExpiry = Math.min(...active.map(status => Date.parse(status.expires_at || '')).filter(Number.isFinite))
-    schedule(active.some(status => status.status === 'checking') ? checkingPollDelay : active.some(status => status.reason === 'stalled') ? stalledPollDelay : Number.isFinite(nextExpiry) ? Math.max(1_000, nextExpiry - Date.now()) : 30_000)
-  }
+
   async function refresh(force = true) {
+    if (disposed || !auth.user || !allowed() || !visible() || !clusters().length || (!force && reading.value)) return
+    if (force && pending.value) return
     cancel()
-    if (disposed || !allowed() || !clusters().length) return
-    // 手动刷新是用户明确要求重新检测：清掉上限结论，重新显示检测中并立即重查。
+    const requested = clusters()
+    const snapshots = connectionSnapshots(auth.user)
     if (force) {
-      stallSince.clear()
-      stalled.clear()
+      error.value = ''
+      for (const cluster of requested) if (cluster.is_active) manualIDs.add(cluster.id)
     }
-    const currentScope = scope(), currentRevision = revision, startedAt = Date.now()
+    showSnapshots(snapshots)
+    const currentScope = scope(), activeRevision = revision
     controller = new AbortController()
     const signal = controller.signal
-    const current = () => !disposed && !signal.aborted && revision === currentRevision && scope() === currentScope && allowed()
-    pending.value = true
-    error.value = ''
-    // 过期的成功状态不能继续显示为当前已连接，刷新期间保留其余列表与选择。
-    const seeded: Record<string, ClusterConnection> = {}
-    for (const cluster of clusters()) {
-      const previous = statuses.value[cluster.id]
-      const expired = previous?.expires_at && Date.parse(previous.expires_at) <= Date.now()
-      seeded[cluster.id] = !cluster.is_active
-        ? { cluster_id: cluster.id, status: 'unknown', reason: 'disabled', message: '集群已停用' }
-        : force || !previous || expired
-          ? { cluster_id: cluster.id, status: 'checking', reason: '', message: '正在检测集群连接' }
-          : previous
-    }
-    statuses.value = guard(seeded, startedAt)
+    const current = () => !disposed && !signal.aborted && revision === activeRevision && scope() === currentScope && allowed()
+    reading.value = true
     try {
       const { data } = await client.get<{ statuses: ClusterConnection[] }>('/kubernetes/clusters/connection-statuses', {
-        params: { ids: clusters().map(cluster => cluster.id).join(','), ...(force ? { refresh: true } : {}) },
+        params: { ids: requested.map(cluster => cluster.id).join(','), ...(force ? { refresh: true } : {}) },
         headers: { 'X-EDO-Project-ID': project() }, signal,
       })
       if (!current()) return
-      const ids = new Set(clusters().map(cluster => cluster.id))
-      const received: Record<string, ClusterConnection> = {}
-      for (const status of data.statuses || []) if (ids.has(status.cluster_id)) received[status.cluster_id] = status
-      statuses.value = guard(received, Date.now())
-      scheduleNext()
+      const received = new Map(data.statuses.map(status => [status.cluster_id, status]))
+      const next: Record<string, ClusterConnection> = {}
+      for (const cluster of requested) {
+        const value = received.get(cluster.id)
+        if (!value?.checking) manualIDs.delete(cluster.id)
+        if (!value) {
+          snapshots.delete(snapshotKey(cluster))
+          continue
+        }
+        next[cluster.id] = { ...value, refreshing: manualIDs.has(cluster.id) }
+        if (value.checked_at) snapshots.set(snapshotKey(cluster), value)
+        else snapshots.delete(snapshotKey(cluster))
+      }
+      while (snapshots.size > snapshotLimit) {
+        const oldest = snapshots.keys().next()
+        if (!oldest.done) snapshots.delete(oldest.value)
+      }
+      statuses.value = next
+      error.value = ''
     } catch (cause) {
       if (!current()) return
       error.value = apiErrorMessage(cause)
-      statuses.value = Object.fromEntries(clusters().map(cluster => [cluster.id, { cluster_id: cluster.id, status: 'unknown', reason: 'status_unavailable', message: '连接状态读取失败，请重试' }]))
-      schedule(30_000)
+      manualIDs.clear()
+      const code = (cause as { response?: { status?: number } } | undefined)?.response?.status
+      if (code === 401 || code === 403) {
+        for (const cluster of requested) snapshots.delete(snapshotKey(cluster))
+        statuses.value = {}
+      } else {
+        showSnapshots(snapshots)
+      }
     } finally {
-      if (current()) pending.value = false
+      if (current()) {
+        reading.value = false
+        schedule(pending.value ? refreshPollInterval : passivePollInterval)
+      }
     }
   }
-  watch(scope, () => { cancel(); statuses.value = {}; error.value = ''; stallSince.clear(); stalled.clear(); void refresh(false) }, { immediate: true, flush: 'sync' })
+
+  watch(scope, () => {
+    cancel()
+    statuses.value = {}
+    error.value = ''
+    manualIDs.clear()
+    void refresh(false)
+  }, { immediate: true, flush: 'sync' })
   const projectChanged = () => { projectRevision.value++ }
-  if (typeof window !== 'undefined') window.addEventListener('edo:projects-changed', projectChanged)
-  onScopeDispose(() => { disposed = true; cancel(); if (typeof window !== 'undefined') window.removeEventListener('edo:projects-changed', projectChanged) })
-  return { statuses, error, pending, refresh, cancel, allowed: computed(allowed) }
+  const resume = () => {
+    if (visible()) void refresh(false)
+    else cancel()
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('edo:projects-changed', projectChanged)
+    window.addEventListener('focus', resume)
+  }
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', resume)
+  onScopeDispose(() => {
+    disposed = true
+    cancel()
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('edo:projects-changed', projectChanged)
+      window.removeEventListener('focus', resume)
+    }
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', resume)
+  })
+  return { statuses, error, pending, refresh }
 }

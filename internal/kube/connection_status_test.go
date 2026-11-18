@@ -42,14 +42,14 @@ func awaitConnectionStatus(t *testing.T, s *Service, ctx context.Context, id str
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		values, err := s.ConnectionStatuses(ctx, []string{id}, false)
+		values, err := s.connectionStatuses(ctx, []string{id}, false, true)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(values) != 1 {
 			t.Fatalf("缺少集群状态: %+v", values)
 		}
-		if values[0].Status == want {
+		if values[0].Status == want && !values[0].Checking {
 			return values[0]
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -89,7 +89,7 @@ func TestConnectionStatusesAreIndependentAndNeverReadNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	values, err := f.service.ConnectionStatuses(f.adminCtx, nil, false)
+	values, err := f.service.connectionStatuses(f.adminCtx, nil, false, true)
 	if err != nil || len(values) != 2 {
 		t.Fatalf("批量状态失败: %+v %v", values, err)
 	}
@@ -155,7 +155,7 @@ func TestConnectionStatusesClassifyAPIAndNetworkFailures(t *testing.T) {
 func TestConnectionStatusesRecheckIdentityConfigurationAndActivation(t *testing.T) {
 	f := newRBACFixture(t)
 	awaitConnectionStatus(t, f.service, f.adminCtx, f.cluster.ID, "connected")
-	values, err := f.service.ConnectionStatuses(f.userCtx, []string{f.cluster.ID}, false)
+	values, err := f.service.connectionStatuses(f.userCtx, []string{f.cluster.ID}, false, true)
 	if err != nil || values[0].Status != "checking" {
 		t.Fatalf("不同操作者不能借用管理员缓存: %+v %v", values, err)
 	}
@@ -163,13 +163,13 @@ func TestConnectionStatusesRecheckIdentityConfigurationAndActivation(t *testing.
 	if err := f.service.db.Where("role_id = ?", f.roleID).Delete(&model.RolePermission{}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.ConnectionStatuses(f.userCtx, []string{f.cluster.ID}, false); !errors.Is(err, ErrRBACForbidden) {
+	if _, err := f.service.connectionStatuses(f.userCtx, []string{f.cluster.ID}, false, true); !errors.Is(err, ErrRBACForbidden) {
 		t.Fatalf("撤销权限后仍读取旧缓存: %v", err)
 	}
 	if err := f.service.db.Model(f.cluster).Update("is_active", false).Error; err != nil {
 		t.Fatal(err)
 	}
-	values, err = f.service.ConnectionStatuses(f.adminCtx, []string{f.cluster.ID}, false)
+	values, err = f.service.connectionStatuses(f.adminCtx, []string{f.cluster.ID}, false, true)
 	if err != nil || values[0].Status != "unknown" || values[0].Reason != "disabled" {
 		t.Fatalf("停用状态仍显示连接正常: %+v %v", values, err)
 	}
@@ -179,7 +179,7 @@ func TestConnectionStatusesRecheckIdentityConfigurationAndActivation(t *testing.
 	server := connectionStatusTestServer(t, func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, `{"gitVersion":"v1.35.5"}`) })
 	setConnectionStatusServer(t, f, server)
 	server.Close()
-	values, err = f.service.ConnectionStatuses(f.adminCtx, []string{f.cluster.ID}, false)
+	values, err = f.service.connectionStatuses(f.adminCtx, []string{f.cluster.ID}, false, true)
 	if err != nil || values[0].Status != "checking" {
 		t.Fatalf("连接修改后命中旧结果: %+v %v", values, err)
 	}
@@ -187,7 +187,7 @@ func TestConnectionStatusesRecheckIdentityConfigurationAndActivation(t *testing.
 	if err := f.service.db.Model(&model.User{}).Where("uuid = ?", f.adminID).Update("is_active", false).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.ConnectionStatuses(f.adminCtx, nil, false); !errors.Is(err, ErrRBACForbidden) {
+	if _, err := f.service.connectionStatuses(f.adminCtx, nil, false, true); !errors.Is(err, ErrRBACForbidden) {
 		t.Fatalf("禁用管理员仍可以读状态: %v", err)
 	}
 }
@@ -217,7 +217,7 @@ func TestConnectionStatusesQueriesStayConstantWithClusterCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = f.service.db.Callback().Query().Remove("connection_test_count") })
-	if _, err := f.service.ConnectionStatuses(f.userCtx, nil, false); err != nil {
+	if _, err := f.service.connectionStatuses(f.userCtx, nil, false, true); err != nil {
 		t.Fatal(err)
 	}
 	one := queries.Load()
@@ -230,7 +230,7 @@ func TestConnectionStatusesQueriesStayConstantWithClusterCount(t *testing.T) {
 		}
 	}
 	queries.Store(0)
-	values, err := f.service.ConnectionStatuses(f.userCtx, nil, false)
+	values, err := f.service.connectionStatuses(f.userCtx, nil, false, true)
 	if err != nil || len(values) != 9 {
 		t.Fatalf("批量读取失败: %v %v", len(values), err)
 	}
@@ -249,9 +249,9 @@ func TestConnectionStatusExpirationAndBoundedChecks(t *testing.T) {
 		entry.value.ExpiresAt = &past
 	}
 	cache.mu.Unlock()
-	values, err := f.service.ConnectionStatuses(f.adminCtx, nil, false)
-	if err != nil || values[0].Status != "checking" {
-		t.Fatalf("过期状态仍显示连接正常: %+v %v", values, err)
+	values, err := f.service.connectionStatuses(f.adminCtx, nil, false, true)
+	if err != nil || values[0].Status != "connected" || !values[0].Checking || values[0].ExpiresAt == nil || values[0].ExpiresAt.After(time.Now()) {
+		t.Fatalf("后台更新须保留上次结果及其过期时间: %+v %v", values, err)
 	}
 	awaitConnectionStatus(t, f.service, f.adminCtx, f.cluster.ID, "connected")
 	f.service.invalidateConnectionStatuses(f.cluster.ID)
@@ -259,7 +259,7 @@ func TestConnectionStatusExpirationAndBoundedChecks(t *testing.T) {
 	for range maxConnectionChecks {
 		held = append(held, cache.checks.acquire())
 	}
-	values, err = f.service.ConnectionStatuses(f.adminCtx, nil, false)
+	values, err = f.service.connectionStatuses(f.adminCtx, nil, false, true)
 	if err != nil || values[0].Reason != "queued" {
 		t.Fatalf("并发满后没有立即排队返回: %+v %v", values, err)
 	}
@@ -307,7 +307,7 @@ func TestConnectionStatusesQueueStartsBeforeExpiredResults(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := f.service.ConnectionStatuses(f.adminCtx, nil, false); err != nil {
+	if _, err := f.service.connectionStatuses(f.adminCtx, nil, false, true); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -345,13 +345,13 @@ func TestConnectionStatusesQueueStartsBeforeExpiredResults(t *testing.T) {
 	for range maxConnectionChecks {
 		held = append(held, cache.checks.acquire())
 	}
-	if _, err := f.service.ConnectionStatuses(f.adminCtx, nil, false); err != nil {
+	if _, err := f.service.connectionStatuses(f.adminCtx, nil, false, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, lease := range held {
 		cache.checks.release(lease)
 	}
-	if _, err := f.service.ConnectionStatuses(f.adminCtx, nil, false); err != nil {
+	if _, err := f.service.connectionStatuses(f.adminCtx, nil, false, true); err != nil {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(time.Second)
@@ -393,7 +393,7 @@ func TestConnectionStatusesDiscardOldConfigurationResult(t *testing.T) {
 		_, _ = io.WriteString(w, `{"gitVersion":"v1.35.5"}`)
 	})
 	setConnectionStatusServer(t, f, old)
-	if _, err := f.service.ConnectionStatuses(f.adminCtx, nil, false); err != nil {
+	if _, err := f.service.connectionStatuses(f.adminCtx, nil, false, true); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -416,26 +416,100 @@ func TestConnectionStatusesDiscardOldConfigurationResult(t *testing.T) {
 
 func TestConnectionStatusesManualRefreshRechecksWithoutDuplicateRequests(t *testing.T) {
 	f := newRBACFixture(t)
-	awaitConnectionStatus(t, f.service, f.adminCtx, f.cluster.ID, "connected")
+	f.service.refreshConnectionMonitoring(context.Background())
+	waitForCachedConnection(t, f, f.adminCtx, "connected")
 	before := f.peer.requests.Load()
-	values, err := f.service.ConnectionStatuses(f.adminCtx, nil, true)
+	values, err := f.service.connectionStatuses(f.adminCtx, nil, true, true)
 	if err != nil || values[0].Status != "connected" || f.peer.requests.Load() != before {
 		t.Fatal("短时间重复刷新没有合并")
 	}
 	cache := f.service.connections
 	cache.mu.Lock()
 	prior := time.Now().Add(-3 * time.Second)
-	for _, entry := range cache.entries {
+	for _, entry := range cache.monitorEntries {
 		entry.value.CheckedAt = &prior
 	}
 	cache.mu.Unlock()
-	values, err = f.service.ConnectionStatuses(f.adminCtx, nil, true)
-	if err != nil || values[0].Status != "checking" {
-		t.Fatalf("手动刷新没有重检: %+v %v", values, err)
+	held := make([]*connectionCheckLease, 0, maxConnectionChecks)
+	for range maxConnectionChecks {
+		held = append(held, cache.checks.acquire())
 	}
-	awaitConnectionStatus(t, f.service, f.adminCtx, f.cluster.ID, "connected")
+	values, err = f.service.ConnectionStatuses(f.adminCtx, nil, true)
+	if err != nil || len(values) != 1 || values[0].Status != "connected" || !values[0].Checking {
+		t.Fatalf("手动刷新应排队并保留原状态: %+v %v", values, err)
+	}
+	for _, lease := range held {
+		cache.checks.release(lease)
+	}
+	f.service.refreshConnectionMonitoring(context.Background())
+	waitForCachedConnection(t, f, f.adminCtx, "connected")
 	if f.peer.requests.Load() != before+1 {
 		t.Fatal("刷新应产生一次真实请求")
+	}
+}
+
+func waitForCachedConnection(t *testing.T, f rbacFixture, ctx context.Context, want string) ConnectionStatus {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		values, err := f.service.ConnectionStatuses(ctx, []string{f.cluster.ID}, false)
+		if err != nil || len(values) != 1 {
+			t.Fatalf("读取缓存失败: %+v %v", values, err)
+		}
+		if values[0].Status == want && !values[0].Checking {
+			return values[0]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("未读到缓存状态 %s", want)
+	return ConnectionStatus{}
+}
+
+func TestConnectionMonitorProbesWithoutStatusReads(t *testing.T) {
+	f := newRBACFixture(t)
+	var requests atomic.Int32
+	probed := make(chan struct{}, 1)
+	peer := connectionStatusTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		select {
+		case probed <- struct{}{}:
+		default:
+		}
+		_, _ = io.WriteString(w, `{"gitVersion":"v1.35.5"}`)
+	})
+	setConnectionStatusServer(t, f, peer)
+	f.service.refreshConnectionMonitoring(context.Background())
+	select {
+	case <-probed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("没有页面请求时后台未探测集群")
+	}
+	admin := waitForCachedConnection(t, f, f.adminCtx, "connected")
+	member := waitForCachedConnection(t, f, f.userCtx, "connected")
+	if !admin.CheckedAt.Equal(*member.CheckedAt) || requests.Load() != 1 {
+		t.Fatalf("普通读取应复用同一次后台物理连接结果: %+v %+v %d", admin, member, requests.Load())
+	}
+}
+
+func TestConnectionMonitorUsesCurrentSyncedIdentityForNativeRBAC(t *testing.T) {
+	f := newRBACFixture(t)
+	policy := f.enable(t)
+	if _, err := f.service.SyncClusterRBAC(f.adminCtx, f.adminID, f.cluster.ID, policy.Revision); err != nil {
+		t.Fatal(err)
+	}
+	f.service.refreshConnectionMonitoring(context.Background())
+	waitForCachedConnection(t, f, f.userCtx, "connected")
+	f.service.connections.mu.Lock()
+	actors, base := len(f.service.connections.entries), len(f.service.connections.monitorEntries)
+	f.service.connections.mu.Unlock()
+	if actors != 1 || base != 1 {
+		t.Fatalf("后台原生授权结果应与基础连接分开缓存: actor=%d base=%d", actors, base)
+	}
+	if err := f.service.db.Where("role_id = ?", f.roleID).Delete(&model.RolePermission{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.ConnectionStatuses(f.userCtx, nil, false); !errors.Is(err, ErrRBACForbidden) {
+		t.Fatalf("撤权后读到了旧结果: %v", err)
 	}
 }
 
@@ -478,7 +552,7 @@ func TestConnectionStatusesReapStalledCheckAndRetry(t *testing.T) {
 		_, _ = io.WriteString(w, `{"gitVersion":"v1.35.5+k3s1"}`)
 	})
 	setConnectionStatusServer(t, f, server)
-	values, err := f.service.ConnectionStatuses(f.adminCtx, []string{f.cluster.ID}, false)
+	values, err := f.service.connectionStatuses(f.adminCtx, []string{f.cluster.ID}, false, true)
 	if err != nil || values[0].Status != "checking" {
 		t.Fatalf("首次检查没有立即返回检测中: %+v %v", values, err)
 	}
@@ -499,7 +573,7 @@ func TestConnectionStatusesReapStalledCheckAndRetry(t *testing.T) {
 	}
 	entry.startedAt = time.Now().UTC().Add(-connectionCheckStaleAfter - time.Second)
 	cache.mu.Unlock()
-	values, err = f.service.ConnectionStatuses(f.adminCtx, []string{f.cluster.ID}, false)
+	values, err = f.service.connectionStatuses(f.adminCtx, []string{f.cluster.ID}, false, true)
 	if err != nil || values[0].Reason != "stalled" {
 		t.Fatalf("卡住的检查没有被回收: %+v %v", values, err)
 	}
@@ -539,7 +613,7 @@ func TestPingRefreshesConnectionStatusWithoutClearingCache(t *testing.T) {
 		t.Fatalf("探测集群失败: %s %v", version, err)
 	}
 	before := requests.Load()
-	values, err := f.service.ConnectionStatuses(f.adminCtx, []string{f.cluster.ID}, false)
+	values, err := f.service.connectionStatuses(f.adminCtx, []string{f.cluster.ID}, false, true)
 	if err != nil || values[0].Status != "connected" {
 		t.Fatalf("Ping 后连接状态被清空: %+v %v", values, err)
 	}
@@ -551,7 +625,7 @@ func TestPingRefreshesConnectionStatusWithoutClearingCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	values, err = f.service.ConnectionStatuses(f.adminCtx, []string{f.cluster.ID}, false)
+	values, err = f.service.connectionStatuses(f.adminCtx, []string{f.cluster.ID}, false, true)
 	if err != nil || values[0].Status != "connected" {
 		t.Fatalf("重复探测后不再是已连接: %+v %v", values, err)
 	}

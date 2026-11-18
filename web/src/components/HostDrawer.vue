@@ -88,7 +88,7 @@ function localCapabilityHint(kind: 'docker' | 'local_exec') {
     if (kind === 'docker' && option.version) return `已检测到 Docker ${option.version}`
     return kind === 'docker' ? '已检测到本地 Docker' : '当前运行方式支持直接终端执行'
   }
-  return option?.reason || '当前运行环境不支持此能力'
+  return option?.reason || '等待后台检测'
 }
 
 watch(form, () => {

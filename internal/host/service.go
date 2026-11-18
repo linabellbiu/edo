@@ -184,9 +184,6 @@ func NewService(db *gorm.DB, secrets *secret.Manager, docker dockerProbe, kubern
 }
 
 func (s *Service) List(ctx context.Context) ([]Detail, error) {
-	if err := s.refreshLocalCapabilities(ctx, false); err != nil {
-		return nil, err
-	}
 	var hosts []model.Host
 	if err := s.db.WithContext(ctx).Order("is_builtin DESC, name ASC").Find(&hosts).Error; err != nil {
 		return nil, fmt.Errorf("查询主机列表失败: %w", err)
@@ -206,7 +203,7 @@ func (s *Service) List(ctx context.Context) ([]Detail, error) {
 			Capabilities: capabilities[hosts[i].ID],
 		}
 		if hosts[i].ID == model.BuiltinLocalHostID {
-			s.decorateLocalDetail(ctx, &detail)
+			s.decorateLocalDetail(&detail)
 		}
 		if err := s.readCredentialSummary(ctx, &detail); err != nil {
 			return nil, err
@@ -217,9 +214,6 @@ func (s *Service) List(ctx context.Context) ([]Detail, error) {
 }
 
 func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
-	if err := s.refreshLocalCapabilities(ctx, false); err != nil {
-		return nil, err
-	}
 	var hosts []model.Host
 	if err := s.db.WithContext(ctx).Select("uuid", "is_active").Order("is_builtin DESC, name ASC").Find(&hosts).Error; err != nil {
 		return nil, fmt.Errorf("查询主机状态失败: %w", err)
@@ -240,11 +234,6 @@ func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
 
 func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {
 	id = strings.TrimSpace(id)
-	if id == model.BuiltinLocalHostID {
-		if err := s.refreshLocalCapabilities(ctx, false); err != nil {
-			return nil, err
-		}
-	}
 	var current model.Host
 	if err := s.db.WithContext(ctx).First(&current, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -265,7 +254,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {
 		Capabilities: capabilities[current.ID],
 	}
 	if current.ID == model.BuiltinLocalHostID {
-		s.decorateLocalDetail(ctx, detail)
+		s.decorateLocalDetail(detail)
 	}
 	if err := s.readCredentialSummary(ctx, detail); err != nil {
 		return nil, err
@@ -522,26 +511,11 @@ func (s *Service) refreshLocalCapabilities(ctx context.Context, force bool) erro
 	})
 }
 
-func (s *Service) decorateLocalDetail(ctx context.Context, detail *Detail) {
-	if detail == nil {
-		return
-	}
-	detail.CapabilityOptions = s.probeLocalCapabilityOptions(ctx, false)
-	options := make(map[model.HostCapabilityKind]CapabilityOption, len(detail.CapabilityOptions))
-	for i := range detail.CapabilityOptions {
-		options[detail.CapabilityOptions[i].Kind] = detail.CapabilityOptions[i]
-	}
-	for i := range detail.Capabilities {
-		option, exists := options[detail.Capabilities[i].Kind]
-		if !exists {
-			continue
-		}
-		detail.Capabilities[i].Status = model.HostCapabilityUnreachable
-		if option.Available {
-			detail.Capabilities[i].Status = model.HostCapabilityReady
-		}
-		detail.Capabilities[i].Version = option.Version
-	}
+func (s *Service) decorateLocalDetail(detail *Detail) {
+	// 普通列表及详情仅使用后台留下的能力快照，不在打开页面时连接 Docker。
+	s.mu.Lock()
+	detail.CapabilityOptions = append([]CapabilityOption(nil), s.localOptions...)
+	s.mu.Unlock()
 }
 
 func (s *Service) probeLocalCapabilityOptions(ctx context.Context, force bool) []CapabilityOption {
@@ -1027,7 +1001,7 @@ func (s *Service) updateLocal(ctx context.Context, existing *model.Host, input I
 		Host: *existing, EnvironmentIDs: environmentIDs[existing.ID],
 		Capabilities: capabilities, CapabilityOptions: options,
 	}
-	s.decorateLocalDetail(ctx, detail)
+	s.decorateLocalDetail(detail)
 	return detail, nil
 }
 

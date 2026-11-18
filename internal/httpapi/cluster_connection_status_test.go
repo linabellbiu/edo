@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -38,7 +39,8 @@ func TestKubernetesConnectionStatusesHTTPPermissionsScopeAndRefresh(t *testing.T
 	}))
 	t.Cleanup(server.Close)
 	var db *gorm.DB
-	router, cleanup := newAuthTestRouter(t, func(_ *Dependencies, value *gorm.DB) { db = value })
+	var kubernetesService *kube.Service
+	router, cleanup := newAuthTestRouter(t, func(deps *Dependencies, value *gorm.DB) { db, kubernetesService = value, deps.Kubernetes })
 	t.Cleanup(cleanup)
 	admin := loginForDepartmentTest(t, router, "admin")
 	created := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/clusters", map[string]any{"name": "connection-http", "mode": "kubeconfig", "default_namespace": "default", "kubeconfig": kubeconfigForHTTPTest(server)}, admin)
@@ -103,7 +105,7 @@ func TestKubernetesConnectionStatusesHTTPPermissionsScopeAndRefresh(t *testing.T
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
 			value := read(cookie, path)[0]
-			if value.Status == want {
+			if value.Status == want && !value.Checking {
 				return value
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -111,10 +113,21 @@ func TestKubernetesConnectionStatusesHTTPPermissionsScopeAndRefresh(t *testing.T
 		t.Fatalf("状态未变为 %s", want)
 		return kube.ConnectionStatus{}
 	}
+	beforeRead := requests.Load()
 	values := read(reader, path+","+foreign.ID)
-	if values[0].Status != "checking" {
-		t.Fatalf("首次检查应异步返回: %+v", values)
+	if values[0].Status != "unknown" || requests.Load() != beforeRead {
+		t.Fatalf("普通读取不应启动检测: %+v", values)
 	}
+	monitorCtx, stopMonitor := context.WithCancel(context.Background())
+	monitorDone := make(chan struct{})
+	go func() {
+		defer close(monitorDone)
+		_ = kubernetesService.RunConnectionMonitoring(monitorCtx)
+	}()
+	defer func() {
+		stopMonitor()
+		<-monitorDone
+	}()
 	wait(reader, "connected")
 	if err := db.Where("project_id = ? AND user_id = ?", database.DefaultProjectID(database.DefaultDepartmentID), userID).Delete(&model.ProjectMember{}).Error; err != nil {
 		t.Fatal(err)
@@ -134,7 +147,7 @@ func TestKubernetesConnectionStatusesHTTPPermissionsScopeAndRefresh(t *testing.T
 	if read(admin, path)[0].Status != "connected" {
 		t.Fatal("普通轮询意外跳过缓存")
 	}
-	if read(admin, path+"&refresh=true")[0].Status != "checking" {
+	if !read(admin, path+"&refresh=true")[0].Checking {
 		t.Fatal("手动刷新没有触发异步重检")
 	}
 	failed := wait(admin, "restricted")

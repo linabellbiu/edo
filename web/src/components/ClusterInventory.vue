@@ -20,8 +20,8 @@ import { useResourceList } from '@/utils/resourceList'
 import { hostsForCluster } from '@/utils/infrastructureRelations'
 import { formatDateTime } from '@/utils/time'
 
-const props = defineProps<{ clusters: InfrastructureCluster[]; hosts: InfrastructureHost[]; loading: boolean; error?: string; hostError?: string }>()
-const emit = defineEmits<{ refresh: []; provision: [] }>()
+const props = defineProps<{ clusters: InfrastructureCluster[]; hosts: InfrastructureHost[]; loading: boolean; refreshing?: boolean; error?: string; hostError?: string }>()
+const emit = defineEmits<{ refresh: [manual?: boolean]; provision: [] }>()
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
@@ -171,14 +171,14 @@ onBeforeUnmount(() => { mounted = false })
           <a-select v-model:value="association" :disabled="!canFilterAssociations" aria-label="按主机关联筛选" :options="[{ label: '全部集群', value: 'all' }, { label: '已关联主机', value: 'linked' }, { label: '未关联主机', value: 'standalone' }]" />
         </div>
         <div class="cluster-toolbar-actions">
-          <a-button :loading="loading" @click="emit('refresh');refreshConnections()"><RefreshCw :size="15" />刷新</a-button>
+          <a-button :disabled="loading || connectionPending" :class="{ 'is-busy': refreshing || connectionPending }" :aria-busy="refreshing || connectionPending" @click="emit('refresh', true);refreshConnections()"><RefreshCw :size="15" aria-hidden="true" />刷新</a-button>
           <a-button v-if="canCreateK3s" @click="emit('provision')"><Plus :size="15" />创建集群</a-button>
           <a-button v-if="auth.canAny(['cluster.create'])" type="primary" :disabled="Boolean(error)" @click="openCreate"><Link2 :size="15" />接入集群</a-button>
         </div>
       </header>
       <a-alert v-if="error" class="cluster-load-error" type="error" show-icon message="集群列表加载失败" :description="error"><template #action><a-button size="small" @click="emit('refresh')">重试</a-button></template></a-alert>
       <div v-if="connectionError" class="connection-load-error" role="status"><span>连接状态读取失败：{{ connectionError }}</span><a-button size="small" type="link" :loading="connectionPending" @click="refreshConnections()">重试</a-button></div>
-      <a-table :columns="columns" :data-source="filtered" :loading="loading" :pagination="pagination" :scroll="{ x: 1110 }" :row-class-name="(record: InfrastructureCluster) => route.query.cluster === record.id ? 'resource-selected' : ''" table-layout="fixed" class="cluster-table resource-list-table" row-key="id" size="middle" @change="changePage">
+      <a-table :columns="columns" :data-source="filtered" :pagination="pagination" :scroll="{ x: 1110 }" :row-class-name="(record: InfrastructureCluster) => route.query.cluster === record.id ? 'resource-selected' : ''" table-layout="fixed" class="cluster-table resource-list-table" row-key="id" size="middle" @change="changePage">
         <template #bodyCell="{ column, record }: { column: { key: string }, record: InfrastructureCluster }">
           <template v-if="column.key === 'name'">
             <div class="cluster-identity">
@@ -229,7 +229,7 @@ onBeforeUnmount(() => { mounted = false })
             </ResourceRowActions>
           </template>
         </template>
-        <template #emptyText><a-empty :description="error ? '集群列表加载失败' : query || association !== 'all' ? '没有匹配的集群' : '暂无 Kubernetes 集群'" /></template>
+        <template #emptyText><a-empty :description="error ? '集群列表加载失败' : loading ? '正在读取集群' : query || association !== 'all' ? '没有匹配的集群' : '暂无 Kubernetes 集群'" /></template>
       </a-table>
       <ClusterHostDrawer v-model:open="associationOpen" :cluster="associationCluster" :clusters="clusters" :hosts="hosts" @saved="emit('refresh')" />
       <KubernetesClusterDrawer v-model:open="createOpen" :can-test="auth.canAny(['cluster.execute'])" @created="clusterCreated" />

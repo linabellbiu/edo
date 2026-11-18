@@ -6,7 +6,7 @@ import { componentHarness, loadFrontend } from './acceptanceHarness.mjs'
 const settle = () => new Promise(resolve => setImmediate(resolve))
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const cluster = (id, is_active = true) => ({ id, name: id, is_active })
-const status = (cluster_id, state, message = '', expires_at = '2030-01-01T00:00:00Z') => ({ cluster_id, status: state, reason: '', message, expires_at })
+const status = (cluster_id, state, message = '', expires_at = '2030-01-01T00:00:00Z') => ({ cluster_id, status: state, reason: '', message, expires_at, checked_at: state === 'checking' ? undefined : '2026-11-18T00:00:00Z', checking: state === 'checking' })
 function harness(t, read) {
   const storage = { project: 'project-a' }, auth = vue.reactive({ authorizationReady: true, user: { id: 'operator', project_id: 'project-a', permissions: ['cluster.read'] }, canAny: codes => codes.includes('cluster.read') })
   const calls = [], timers = new Map(), callbacks = new Map()
@@ -29,22 +29,26 @@ test('慢集群检测不会阻塞快集群回填；使用批量接口并独立�
   assert.equal(h.state.statuses.value.fast.status, 'connected')
   assert.equal(h.state.statuses.value.slow.status, 'checking')
   assert.equal(h.state.pending.value, false)
-  assert.equal([...h.timers.values()][0].delay, 2000)
+  assert.equal(h.state.statuses.value.slow.refreshing, false)
+  assert.equal([...h.timers.values()][0].delay, 5000)
   await h.state.refresh()
   assert.equal(h.calls[1].options.params.refresh, true)
   assert.equal(h.state.statuses.value.fast.status, 'connected')
   assert.equal(h.state.statuses.value.slow.status, 'unreachable')
 })
 
-test('过期结果刷新时不冒充已连接，读取失败显示未知并可单独重试', async t => {
+test('刷新和读取失败都保留上次结果及过期时间，只有手动刷新显示动画', async t => {
   const next = deferred()
   const h = harness(t, call => call === 1 ? Promise.resolve({ data: { statuses: [status('fast', 'connected', '连接正常', '2000-01-01T00:00:00Z')] } }) : next.promise)
   await settle()
   const pending = h.state.refresh()
-  assert.equal(h.state.statuses.value.fast.status, 'checking')
+  assert.equal(h.state.statuses.value.fast.status, 'connected')
+  assert.equal(h.state.statuses.value.fast.expires_at, '2000-01-01T00:00:00Z')
+  assert.equal(h.state.statuses.value.fast.refreshing, true)
   next.reject(new Error('暂时无法读取连接状态'))
   await pending
-  assert.equal(h.state.statuses.value.fast.status, 'unknown')
+  assert.equal(h.state.statuses.value.fast.status, 'connected')
+  assert.equal(h.state.statuses.value.fast.refreshing, false)
   assert.equal(h.state.error.value, '暂时无法读取连接状态')
   assert.equal(h.state.pending.value, false)
 })
@@ -102,26 +106,26 @@ test('大目录只探测搜索前100项和当前目标，搜索与异步状态�
   assert.deepEqual(h.events, [])
 })
 
-test('检测中超过窗口后显示检测超时并降低轮询频率，手动刷新重新检测', async t => {
-  const realNow = Date.now
-  let clock = realNow()
-  Date.now = () => clock
-  t.after(() => { Date.now = realNow })
-  const checkingSlow = () => ({ cluster_id: 'slow', status: 'checking', reason: 'checking', message: '正在检查连接' })
-  const h = harness(t, () => Promise.resolve({ data: { statuses: [status('fast', 'connected', '连接正常'), checkingSlow()] } }))
+test('首屏读取和后台更新只显示静态状态，手动刷新动画在结果完成时停止', async t => {
+  const initial = deferred(), manual = deferred()
+  const last = status('fast', 'connected', '连接正常')
+  const h = harness(t, call => call === 1 ? initial.promise : call === 2 ? manual.promise : Promise.resolve({ data: { statuses: [status('fast', 'unreachable', '连接失败')] } }))
+  assert.equal(h.state.statuses.value.fast.status, 'unknown')
+  assert.equal(h.state.pending.value, false)
+  initial.resolve({ data: { statuses: [{ ...last, checking: true }] } })
   await settle()
-  assert.equal(h.state.statuses.value.slow.status, 'checking')
-  assert.equal([...h.timers.values()][0].delay, 2000)
-  clock += 8000
-  const scheduled = [...h.timers.values()].at(-1)
+  assert.equal(h.state.statuses.value.fast.status, 'connected')
+  assert.equal(h.state.statuses.value.fast.refreshing, false)
+  const refreshing = h.state.refresh()
+  assert.equal(h.state.pending.value, true)
+  manual.resolve({ data: { statuses: [{ ...last, checking: true }] } })
+  await refreshing
+  assert.equal(h.state.pending.value, true)
+  const scheduled = [...h.timers.values()][0]
+  assert.equal(scheduled.delay, 1000)
   scheduled.callback()
   await settle()
-  assert.equal(h.state.statuses.value.slow.status, 'unknown')
-  assert.equal(h.state.statuses.value.slow.reason, 'stalled')
-  assert.equal(h.state.statuses.value.slow.message, '连接检测超时，请重试')
-  assert.equal(h.api.clusterConnectionLabel({ id: 'slow', name: 'slow', is_active: true }, h.state.statuses.value.slow), '检测超时')
-  assert.equal([...h.timers.values()].at(-1).delay, 10000)
-  await h.state.refresh()
-  assert.equal(h.state.statuses.value.slow.status, 'checking')
-  assert.equal(h.state.statuses.value.slow.reason, 'checking')
+  assert.equal(h.calls[2].options.params.refresh, undefined)
+  assert.equal(h.state.statuses.value.fast.status, 'unreachable')
+  assert.equal(h.state.pending.value, false)
 })

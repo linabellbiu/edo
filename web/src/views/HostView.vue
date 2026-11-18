@@ -97,6 +97,7 @@ const expandedGroupKeys = ref<string[]>([])
 const searchQuery = ref('')
 const statusFilter = ref<HostStatusFilter>('all')
 const loading = ref(false)
+const refreshingInventory = ref(false)
 const resourceRevision = ref(0)
 const drawerOpen = ref(false)
 const detailOpen = ref(false)
@@ -382,6 +383,16 @@ async function refreshStatuses() {
 
 function refreshVisibleStatuses() {
   if (!document.hidden) void refreshStatuses()
+}
+
+async function refreshFromToolbar() {
+  if (loading.value || refreshingInventory.value) return
+  refreshingInventory.value = true
+  try {
+    await refresh()
+  } finally {
+    refreshingInventory.value = false
+  }
 }
 
 function create() {
@@ -727,7 +738,7 @@ function hostRuntimeState(host: InfrastructureHost) {
     return { className: 'unavailable', label: '运行时不可达', color: 'error' }
   }
   if (runtimes.some(capability => capability.status !== 'ready')) {
-    return { className: 'unchecked', label: '正在检查', color: 'warning' }
+    return { className: 'unchecked', label: '等待后台检测', color: 'warning' }
   }
   if (runtimes.length > 0) return { className: 'ready', label: '运行时已连接', color: 'success' }
   return { className: 'neutral', label: '未关联运行时', color: 'default' }
@@ -802,7 +813,7 @@ onBeforeUnmount(() => {
       <router-link v-if="canReadClusters" to="/hosts?view=clusters" :class="{ active: activeWorkspace === 'clusters' }"><RuntimeBrandIcon kind="kubernetes" />集群<span>{{ clusters.length }}</span></router-link>
     </nav>
 
-    <ClusterInventory v-if="activeWorkspace === 'clusters'" :clusters="clusters" :hosts="hosts" :loading="loading" :error="clusterLoadError" :host-error="hostLoadError" @refresh="refresh" @provision="clusterProvisionOpen = true" />
+    <ClusterInventory v-if="activeWorkspace === 'clusters'" :clusters="clusters" :hosts="hosts" :loading="loading" :refreshing="refreshingInventory" :error="clusterLoadError" :host-error="hostLoadError" @refresh="manual => manual ? refreshFromToolbar() : refresh()" @provision="clusterProvisionOpen = true" />
 
     <div v-else class="host-workspace vben-card">
       <aside v-if="canReadGroups" class="host-group-tree" aria-label="主机组">
@@ -845,7 +856,7 @@ onBeforeUnmount(() => {
             />
           </div>
           <div class="table-actions">
-            <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
+            <a-button :disabled="loading" :class="{ 'is-busy': refreshingInventory }" :aria-busy="refreshingInventory" @click="refreshFromToolbar"><RefreshCw :size="15" aria-hidden="true" />刷新</a-button>
             <a-button v-if="auth.canAny(['cluster.create'])" type="primary" @click="create"><Plus :size="15" />添加主机</a-button>
           </div>
         </header>
@@ -853,7 +864,6 @@ onBeforeUnmount(() => {
         <a-table
           :columns="tableColumns"
           :data-source="filteredHosts"
-          :loading="loading"
           :pagination="{ ...hostPagination, showSizeChanger: false }" @change="changeHostPage"
           :scroll="{ x: 1304 }"
           table-layout="fixed"
@@ -933,7 +943,7 @@ onBeforeUnmount(() => {
               </ResourceRowActions>
             </template>
           </template>
-          <template #emptyText><a-empty :description="hostLoadError ? '主机列表加载失败' : '当前筛选条件下没有主机'" /></template>
+          <template #emptyText><a-empty :description="hostLoadError ? '主机列表加载失败' : loading ? '正在读取主机' : '当前筛选条件下没有主机'" /></template>
         </a-table>
         <label class="host-page-size">每页条数<select :value="hostPagination.pageSize" aria-label="每页条数" @change="changeHostPage({ current: 1, pageSize: Number(($event.target as HTMLSelectElement).value) })"><option v-for="size in [10, 20, 50, 100]" :key="size" :value="size">{{ size }}</option></select></label>
       </main>

@@ -25,8 +25,7 @@ import (
 const (
 	connectionStatusTTL    = 30 * time.Second
 	connectionCheckTimeout = 5 * time.Second
-	// 后台检查超过窗口仍未回写即视为卡住：撤销本次检查、回收名额并允许立即重试，
-	// 避免缓存条目永久停留在“检测中”让页面一直转圈。
+	// 探测超时仍未退出时回收名额，避免后续目标无法得到检测。
 	connectionCheckStaleAfter  = connectionCheckTimeout + 2*time.Second
 	maxConnectionChecks        = 4
 	maxConnectionStatusEntries = 512
@@ -42,11 +41,13 @@ type ConnectionStatus struct {
 	Message   string     `json:"message"`
 	CheckedAt *time.Time `json:"checked_at,omitempty"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Checking  bool       `json:"checking,omitempty"`
 }
 
 type connectionStatusEntry struct {
 	value     ConnectionStatus
 	checking  bool
+	requested bool
 	stalled   bool
 	startedAt time.Time
 	sequence  uint64
@@ -97,13 +98,20 @@ func (g *connectionCheckGate) activeCount() int {
 }
 
 type connectionStatusCache struct {
-	mu      sync.Mutex
-	entries map[string]*connectionStatusEntry
-	checks  *connectionCheckGate
+	mu             sync.Mutex
+	entries        map[string]*connectionStatusEntry
+	monitorEntries map[string]*connectionStatusEntry
+	subjectRetries map[string]time.Time
+	checks         *connectionCheckGate
 }
 
 func newConnectionStatusCache() *connectionStatusCache {
-	return &connectionStatusCache{entries: map[string]*connectionStatusEntry{}, checks: newConnectionCheckGate(maxConnectionChecks)}
+	return &connectionStatusCache{
+		entries:        map[string]*connectionStatusEntry{},
+		monitorEntries: map[string]*connectionStatusEntry{},
+		subjectRetries: map[string]time.Time{},
+		checks:         newConnectionCheckGate(maxConnectionChecks),
+	}
 }
 
 type connectionAuthorization struct {
@@ -111,21 +119,67 @@ type connectionAuthorization struct {
 	err           error
 }
 
-// ConnectionStatuses 批量读取当前权限和快照，网络检查独立、有界运行。
-// 请求不等待远程集群；单个慢集群不会阻塞其他状态或集群列表。
+// ConnectionStatuses 批量读取当前权限和快照。只有显式刷新才请求重新检测。
 func (s *Service) ConnectionStatuses(ctx context.Context, ids []string, refresh bool) ([]ConnectionStatus, error) {
+	return s.connectionStatuses(ctx, ids, refresh, refresh)
+}
+
+func (s *Service) connectionStatuses(ctx context.Context, ids []string, refresh, probe bool) ([]ConnectionStatus, error) {
+	clusters, authorizations, err := s.loadConnectionTargets(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]ConnectionStatus, len(clusters))
+	order := make([]int, len(clusters))
+	for i := range order {
+		order[i] = i
+	}
+	if probe {
+		order = s.prioritizeConnectionChecks(clusters, authorizations)
+	}
+	for _, i := range order {
+		cluster := &clusters[i]
+		if !cluster.IsActive {
+			result[i] = ConnectionStatus{ClusterID: cluster.ID, Status: "unknown", Reason: "disabled", Message: "集群已停用"}
+			continue
+		}
+		auth := authorizations[cluster.ID]
+		if auth.err != nil {
+			if !errors.Is(auth.err, ErrRBACForbidden) && !errors.Is(auth.err, ErrRBACSyncPending) {
+				slog.WarnContext(ctx, "读取集群连接状态授权失败", "operation", "kubernetes_connection_status_cluster_authorization", "cluster_id", cluster.ID, "err", auth.err)
+			}
+			result[i] = connectionFailureStatus(cluster.ID, auth.err)
+			continue
+		}
+		result[i] = s.readCachedConnectionStatus(cluster, auth.authorization)
+		if probe {
+			target := auth.authorization
+			if refresh && !target.enforced() {
+				target = nil
+			}
+			value := s.cachedConnectionStatus(ctx, cluster, target, refresh)
+			result[i] = newerConnectionStatus(result[i], value)
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) loadConnectionTargets(ctx context.Context, ids []string) ([]model.KubernetesCluster, map[string]connectionAuthorization, error) {
 	scope, ok := database.DepartmentScopeFromContext(ctx)
 	if !ok || scope.UserID == "" || scope.ProjectID == "" || scope.DepartmentID == "" {
 		slog.WarnContext(ctx, "查询集群连接状态缺少操作者范围", "operation", "kubernetes_connection_status", "err", ErrRBACForbidden)
-		return nil, ErrRBACForbidden
+		return nil, nil, ErrRBACForbidden
 	}
 	var clusters []model.KubernetesCluster
 	var authorizations map[string]connectionAuthorization
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		fresh, err := access.FreshProjectPermissions(tx, ctx, scope.UserID, scope.ProjectID)
+		if errors.Is(err, access.ErrAccessDelegationDenied) {
+			return ErrRBACForbidden
+		}
 		if err != nil {
 			slog.WarnContext(ctx, "核验集群连接状态读取权限失败", "operation", "kubernetes_connection_status_authorization", "user_id", scope.UserID, "project_id", scope.ProjectID, "err", err)
-			return ErrRBACForbidden
+			return err
 		}
 		if !canReadConnectionStatuses(fresh) {
 			return ErrRBACForbidden
@@ -145,29 +199,54 @@ func (s *Service) ConnectionStatuses(ctx context.Context, ids []string, refresh 
 	})
 	if err != nil {
 		slog.WarnContext(ctx, "查询集群连接状态失败", "operation", "kubernetes_connection_status", "user_id", scope.UserID, "project_id", scope.ProjectID, "err", err)
-		return nil, err
+		return nil, nil, err
 	}
-	result := make([]ConnectionStatus, len(clusters))
-	// 等待槽位的目标优先于已完成结果的刷新，避免慢集群持续挤占尾部目标。
-	for _, i := range s.prioritizeConnectionChecks(clusters, authorizations) {
-		cluster := &clusters[i]
-		if !cluster.IsActive {
-			result[i] = ConnectionStatus{ClusterID: cluster.ID, Status: "unknown", Reason: "disabled", Message: "集群已停用"}
-			continue
+	return clusters, authorizations, nil
+}
+
+func (s *Service) readCachedConnectionStatus(cluster *model.KubernetesCluster, authorization *clusterAuthorization) ConnectionStatus {
+	value := ConnectionStatus{ClusterID: cluster.ID, Status: "unknown", Reason: "not_checked", Message: "尚无连接检测结果，等待后台检测"}
+	if s.connections != nil {
+		s.connections.mu.Lock()
+		defer s.connections.mu.Unlock()
+		// 未启用原生身份映射时，使用独立后台任务以集群连接凭据取得的基础结果。
+		// 该快照与人工检测及模拟用户的结果分开，不能替代当前操作者的权限判断。
+		if !authorization.enforced() {
+			if entry := s.connections.monitorEntries[connectionStatusKey(cluster, nil)]; entry != nil {
+				value = entry.status()
+			}
 		}
-		auth := authorizations[cluster.ID]
-		if auth.err != nil {
-			slog.WarnContext(ctx, "集群连接状态授权不可用", "operation", "kubernetes_connection_status_cluster_authorization", "cluster_id", cluster.ID, "user_id", scope.UserID, "err", auth.err)
-			result[i] = connectionFailureStatus(cluster.ID, auth.err)
-			continue
+		if entry := s.connections.entries[connectionStatusKey(cluster, authorization)]; entry != nil {
+			value = newerConnectionStatus(value, entry.status())
 		}
-		result[i] = s.cachedConnectionStatus(ctx, cluster, auth.authorization, refresh)
 	}
-	return result, nil
+	return value
+}
+
+func (e *connectionStatusEntry) status() ConnectionStatus {
+	value := e.value
+	value.Checking = e.checking || e.requested
+	return value
+}
+
+func newerConnectionStatus(previous, next ConnectionStatus) ConnectionStatus {
+	checking := previous.Checking || next.Checking
+	if previous.CheckedAt == nil || next.CheckedAt != nil && !next.CheckedAt.Before(*previous.CheckedAt) {
+		previous = next
+	}
+	previous.Checking = checking
+	return previous
 }
 
 func connectionStatusKey(cluster *model.KubernetesCluster, authorization *clusterAuthorization) string {
-	return fmt.Sprintf("%s/%x", authorization.CacheKey, authorizedQueryVersion(cluster, authorization, false))
+	return connectionStatusVersionKey(clusterQueryVersion(cluster), authorization)
+}
+
+func connectionStatusVersionKey(version [32]byte, authorization *clusterAuthorization) string {
+	if authorization == nil {
+		return fmt.Sprintf("monitor/%x", version)
+	}
+	return fmt.Sprintf("actor/%s/%s/%x", authorization.CacheKey, authorization.Version, version)
 }
 
 func (s *Service) prioritizeConnectionChecks(clusters []model.KubernetesCluster, authorizations map[string]connectionAuthorization) []int {
@@ -279,7 +358,11 @@ func (s *Service) cachedConnectionStatus(ctx context.Context, cluster *model.Kub
 	now := time.Now().UTC()
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	entry := cache.entries[key]
+	entries := cache.entries
+	if authorization == nil {
+		entries = cache.monitorEntries
+	}
+	entry := entries[key]
 	if entry != nil {
 		entry.lastUsed = now
 		if entry.checking && !entry.startedAt.IsZero() && now.Sub(entry.startedAt) > connectionCheckStaleAfter {
@@ -287,28 +370,34 @@ func (s *Service) cachedConnectionStatus(ctx context.Context, cluster *model.Kub
 			slog.WarnContext(ctx, "集群连接检查超时未完成，已回收并重试", "operation", "kubernetes_connection_check_stalled", "cluster_id", cluster.ID, "elapsed_ms", now.Sub(entry.startedAt).Milliseconds(), "active_checks", cache.checks.activeCount())
 			cache.abandonCheck(entry, now)
 		}
-		refreshAllowed := refresh && entry.value.CheckedAt != nil && now.Sub(*entry.value.CheckedAt) >= 2*time.Second
-		if entry.checking || !refreshAllowed && entry.value.ExpiresAt != nil && now.Before(*entry.value.ExpiresAt) {
-			return entry.value
+		refreshAllowed := refresh && (entry.value.CheckedAt == nil || now.Sub(*entry.value.CheckedAt) >= 2*time.Second)
+		if entry.checking || !entry.requested && !refreshAllowed && entry.value.ExpiresAt != nil && now.Before(*entry.value.ExpiresAt) {
+			return entry.status()
 		}
 	}
 	if entry == nil {
-		cache.trim(now)
-		if len(cache.entries) >= maxConnectionStatusEntries {
-			return ConnectionStatus{ClusterID: cluster.ID, Status: "checking", Reason: "queued", Message: "等待检查连接"}
+		if authorization != nil {
+			cache.trim(now)
+			if len(cache.entries) >= maxConnectionStatusEntries {
+				return ConnectionStatus{ClusterID: cluster.ID, Status: "unknown", Reason: "not_checked", Message: "等待后台检测"}
+			}
 		}
-		entry = &connectionStatusEntry{lastUsed: now}
-		cache.entries[key] = entry
+		entry = &connectionStatusEntry{value: ConnectionStatus{ClusterID: cluster.ID}, lastUsed: now}
+		entries[key] = entry
 	}
-	// 已占满时由下一次批量读取重试，不创建等待队列或无限 goroutine。
+	// 已占满时由下一轮后台扫描重试。
 	lease := cache.checks.acquire()
 	if lease == nil {
-		if !entry.stalled {
+		entry.requested = entry.requested || refresh
+		if !entry.stalled && entry.value.CheckedAt == nil {
 			entry.value = ConnectionStatus{ClusterID: cluster.ID, Status: "checking", Reason: "queued", Message: "等待检查连接", CheckedAt: entry.value.CheckedAt}
 		}
-		return entry.value
+		return entry.status()
 	}
 	parent := context.WithoutCancel(ctx)
+	if monitor, ok := ctx.Value(connectionMonitorContextKey{}).(context.Context); ok {
+		parent = monitor
+	}
 	if s.queries != nil {
 		s.queries.mu.Lock()
 		if s.queries.ctx != nil {
@@ -320,10 +409,10 @@ func (s *Service) cachedConnectionStatus(ctx context.Context, cluster *model.Kub
 	entry.sequence++
 	sequence := entry.sequence
 	// 卡住后的重试保留“检测超时”结论，避免页面在重试期间继续转圈。
-	if !entry.stalled {
+	if !entry.stalled && entry.value.CheckedAt == nil {
 		entry.value = ConnectionStatus{ClusterID: cluster.ID, Status: "checking", Reason: "checking", Message: "正在检查连接", CheckedAt: entry.value.CheckedAt}
 	}
-	entry.cancel, entry.checking, entry.startedAt, entry.lease = cancel, true, now, lease
+	entry.cancel, entry.checking, entry.requested, entry.startedAt, entry.lease = cancel, true, false, now, lease
 	clusterSnapshot := *cluster
 	authorizationSnapshot := cloneClusterAuthorization(authorization)
 	go func() {
@@ -336,11 +425,11 @@ func (s *Service) cachedConnectionStatus(ctx context.Context, cluster *model.Kub
 		cache.mu.Lock()
 		defer cache.mu.Unlock()
 		// 被回收或被替换的旧检查不能覆盖新结果。
-		if cache.entries[key] == entry && entry.sequence == sequence {
+		if entries[key] == entry && entry.sequence == sequence {
 			entry.value, entry.checking, entry.stalled, entry.cancel, entry.lease, entry.startedAt = value, false, false, nil, nil, time.Time{}
 		}
 	}()
-	return entry.value
+	return entry.status()
 }
 
 // recordConnectionSuccess 用一次真实成功的探测回填连接状态缓存。
@@ -352,7 +441,7 @@ func (s *Service) recordConnectionSuccess(connection *clusterQueries) {
 	}
 	now := time.Now().UTC()
 	expires := now.Add(connectionStatusTTL)
-	key := fmt.Sprintf("%s/%x", connection.authorization.CacheKey, connection.connectionVersion)
+	key := connectionStatusVersionKey(connection.connectionVersion, connection.authorization)
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	entry := cache.entries[key]
@@ -370,7 +459,7 @@ func (s *Service) recordConnectionSuccess(connection *clusterQueries) {
 		cache.checks.release(entry.lease)
 	}
 	entry.sequence++
-	entry.checking, entry.stalled, entry.cancel, entry.lease, entry.startedAt = false, false, nil, nil, time.Time{}
+	entry.checking, entry.requested, entry.stalled, entry.cancel, entry.lease, entry.startedAt = false, false, false, nil, nil, time.Time{}
 	entry.lastUsed = now
 	entry.value = ConnectionStatus{ClusterID: connection.clusterID, Status: "connected", Reason: "connected", Message: "连接正常", CheckedAt: &now, ExpiresAt: &expires}
 }
@@ -414,12 +503,15 @@ func (s *Service) invalidateConnectionStatuses(id string) {
 	}
 	s.connections.mu.Lock()
 	defer s.connections.mu.Unlock()
-	for key, entry := range s.connections.entries {
-		if entry.value.ClusterID == id {
-			if entry.cancel != nil {
-				entry.cancel()
+	for _, entries := range []map[string]*connectionStatusEntry{s.connections.entries, s.connections.monitorEntries} {
+		for key, entry := range entries {
+			if entry.value.ClusterID == id {
+				if entry.cancel != nil {
+					entry.cancel()
+				}
+				s.connections.checks.release(entry.lease)
+				delete(entries, key)
 			}
-			delete(s.connections.entries, key)
 		}
 	}
 }

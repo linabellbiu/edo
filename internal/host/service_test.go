@@ -55,9 +55,10 @@ func (kubernetesProbeStub) ValidateHostForSave(context.Context, string, model.Ho
 }
 
 type recordingDockerProbe struct {
-	fingerprint string
-	input       dockerengine.Input
-	dockerErr   error
+	fingerprint  string
+	input        dockerengine.Input
+	dockerErr    error
+	builderPings int
 }
 
 func (s *recordingDockerProbe) TestSSH(_ context.Context, input dockerengine.Input) (dockerengine.SSHTestResult, error) {
@@ -80,7 +81,10 @@ func (s *recordingDockerProbe) PingForMonitor(context.Context, string) (mobyclie
 	return mobyclient.PingResult{APIVersion: "27.2.0"}, nil
 }
 
-func (s *recordingDockerProbe) PingBuilder(context.Context) error { return s.dockerErr }
+func (s *recordingDockerProbe) PingBuilder(context.Context) error {
+	s.builderPings++
+	return s.dockerErr
+}
 
 type blockingDockerProbe struct {
 	fingerprint string
@@ -724,6 +728,32 @@ func TestListStatusesReturnsOnlyCurrentHostState(t *testing.T) {
 	if !first.IsActive || len(first.Capabilities) != 1 || first.Capabilities[0].RuntimeID != capability.RuntimeID ||
 		first.Capabilities[0].Status != model.HostCapabilityReady || !first.Capabilities[0].UseSudo {
 		t.Fatalf("轻量状态丢失运行时能力: %+v", first)
+	}
+}
+
+func TestHostReadsDoNotProbeLocalDocker(t *testing.T) {
+	_, db, secrets := newHostTestService(t)
+	probe := &recordingDockerProbe{}
+	service := NewService(db, secrets, probe, kubernetesProbeStub{})
+	ctx := context.Background()
+	if _, err := service.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Get(ctx, model.BuiltinLocalHostID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ListStatuses(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if probe.builderPings != 0 {
+		t.Fatalf("读取主机启动了 %d 次 Docker 检测", probe.builderPings)
+	}
+	if _, err := service.RefreshRuntimeStatuses(ctx); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.Get(ctx, model.BuiltinLocalHostID)
+	if err != nil || len(detail.CapabilityOptions) == 0 || !detail.CapabilityOptions[0].Available || probe.builderPings != 1 {
+		t.Fatalf("后台检查未写入快照，或详情读取再次连接 Docker: %+v %v pings=%d", detail, err, probe.builderPings)
 	}
 }
 

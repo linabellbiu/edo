@@ -21,7 +21,7 @@ const clusters = ref([
   { id: 'disabled', name: '已停用集群', is_active: false },
 ].map((cluster, index) => ({ ...cluster, api_server: `https://192.0.2.${index + 10}:6443`, default_namespace: 'default', hosts: [] })))
 const selected = ref('lan'), reads = [], failure = ref(false), recovered = ref(false), saved = ref('')
-let started = Date.now()
+let started = Date.now(), manualUntil = 0
 window.edoConnectionPreview = { reads, selected, clusters }
 client.defaults.adapter = async config => {
   config.signal?.throwIfAborted()
@@ -29,6 +29,7 @@ client.defaults.adapter = async config => {
   reads.push({ path, method: config.method, params: config.params, at: Date.now() })
   if (path !== '/kubernetes/clusters/connection-statuses' || config.method !== 'get') throw new Error('隔离验收不访问真实接口')
   if (failure.value) throw new Error('连接状态暂时无法读取')
+  if (config.params?.refresh) manualUntil = Date.now() + 2500
   const expires = new Date(Date.now() + 30_000).toISOString()
   const statuses = clusters.value.map(cluster => {
     let status = 'connected', message = '连接正常', reason = ''
@@ -36,7 +37,7 @@ client.defaults.adapter = async config => {
     else if (cluster.id === 'lan' && !recovered.value) { status = 'unreachable'; message = 'EDO 当前无法连接集群，请检查集群运行状态及网络连通性。'; reason = 'network' }
     else if (cluster.id === 'restricted') { status = 'restricted'; message = '集群拒绝访问，请检查连接凭据与集群授权。'; reason = 'forbidden' }
     else if (cluster.id === 'slow' && Date.now() - started < 12_000) { status = 'checking'; message = '正在检测集群连接' }
-    return { cluster_id: cluster.id, status, reason, message, checked_at: status === 'checking' ? undefined : new Date().toISOString(), expires_at: expires }
+    return { cluster_id: cluster.id, status, reason, message, checked_at: status === 'checking' ? undefined : new Date().toISOString(), expires_at: expires, checking: cluster.is_active && (status === 'checking' || Date.now() < manualUntil) }
   }).filter(status => !config.params?.ids || config.params.ids.split(',').includes(status.cluster_id))
   return { data: { statuses }, status: 200, statusText: 'OK', headers: {}, config }
 }
@@ -46,7 +47,9 @@ auth.user = { id: 'preview', username: 'preview', project_id: project, is_superu
 auth.loaded = true; auth.authorizationState = 'ready'
 const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] })
 await router.push('/hosts?view=clusters')
-function refresh() { clusters.value = clusters.value.map(cluster => ({ ...cluster, updated_at: new Date().toISOString() })) }
+function refresh(manual = false) {
+  if (!manual) clusters.value = clusters.value.map(cluster => ({ ...cluster, updated_at: new Date().toISOString() }))
+}
 createApp({ setup: () => () => h('main', { style: 'padding:24px;max-width:1440px;margin:auto' }, [
   h('h2', '集群连接状态 · 隔离验收'),
   h(Space, { style: 'margin-bottom:20px' }, { default: () => [
