@@ -9,7 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
 import { isAxiosError } from 'axios'
 import { v4 as uuidv4 } from 'uuid'
-import { ArrowUpRight, Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Search, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
+import { ArrowUpRight, Box, Boxes, Check, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Search, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
 
 import client from '@/api/client'
 import { subscribeDeliveryEvents } from '@/utils/deliveryEvents'
@@ -105,6 +105,12 @@ const applicationSearch=ref(''),applicationFilter=ref<ApplicationFilter>('all')
 const applicationDetailTabs=ref<Record<string,ApplicationDetailTab>>({}),checkingApplicationIDs=ref<Record<string,boolean>>({})
 const deploymentRuntimeStates=ref<Record<string,DeploymentRuntimeState>>({}),deploymentRuntimeLoading=ref<Record<string,boolean>>({}),deploymentRuntimeErrors=ref<Record<string,string>>({}),deploymentRuntimeAction=ref('')
 const scaleDialog=reactive({open:false,record:null as DeploymentRecord|null,replicas:1,submitting:false})
+const scaleAutoscaler=reactive({loading:false,error:'',exists:false,min:undefined as number|undefined,max:undefined as number|undefined,current:undefined as number|undefined,cpu:''})
+const scaleRuntime=computed(()=>scaleDialog.record?deploymentRuntimeStates.value[scaleDialog.record.id]:undefined)
+const scaleChanged=computed(()=>Boolean(scaleDialog.record)&&scaleDialog.replicas!==Math.max(0,scaleRuntime.value?.replicas??0))
+const scaleUnavailableReplicas=computed(()=>{const replicas=scaleRuntime.value?.replicas,ready=scaleRuntime.value?.ready_replicas;return replicas===undefined||ready===undefined?'—':String(Math.max(0,replicas-ready))})
+const canReadKubernetesWorkload=computed(()=>auth.canAny(['kubernetes.workload.read']))
+const kubernetesLogOpening=ref('')
 const shellControlDialog=reactive({open:false,record:null as DeploymentRecord|null,restart_script:'',stop_script:'',timeout_seconds:300,loading:false,saving:false})
 const lifecycleOutput=reactive({open:false,title:'',output:''})
 const dockerRuntimeRequests=new Map<string,Promise<void>>()
@@ -757,9 +763,59 @@ async function saveShellControlConfiguration(){
   shellControlDialog.open=false;shellControlDialog.record=null
  }catch(error){message.error(apiErrorMessage(error))}finally{shellControlDialog.saving=false}
 }
+function deploymentDetailsAvailable(record:DeploymentRecord){
+ return deploymentKind(record)!=='kubernetes'||Boolean(deploymentRuntimeErrors.value[record.id])||Boolean(deploymentRuntimeStates.value[record.id]?.services?.length)
+}
+async function openKubernetesDeploymentLogs(record:DeploymentRecord){
+ if(!canReadKubernetesWorkload.value){message.warning('没有读取 Kubernetes 工作负载日志的权限');return}
+ const runtime=deploymentRuntimeStates.value[record.id]
+ const cluster=record.runtime_id, namespace=record.namespace||runtime?.namespace, workload=record.workload_name||runtime?.name
+ if(!cluster||!namespace||!workload){message.warning('缺少集群、命名空间或工作负载信息，无法读取日志');return}
+ kubernetesLogOpening.value=record.id
+ try{
+  const {data}=await client.get<{pods:Array<{name:string;phase:string;containers:string[]}>}>('/kubernetes/clusters/'+encodeURIComponent(cluster)+'/pods',{params:{namespace}})
+  const pod=(data.pods||[]).find(item=>item.phase==='Running'&&item.name.startsWith(workload+'-'))
+  if(!pod){message.warning('当前没有运行中的 '+workload+' Pod，无法读取日志');return}
+  const container=pod.containers.includes(record.container_name||'')?record.container_name:pod.containers[0]
+  if(!container){message.warning('未找到可读取日志的容器');return}
+  composeStream.value=null
+  containerLogs.value={
+   open:true,
+   title:'容器日志：'+workload+' / '+container,
+   path:'/api/v1/kubernetes/clusters/'+encodeURIComponent(cluster)+'/namespaces/'+encodeURIComponent(namespace)+'/pods/'+encodeURIComponent(pod.name)+'/containers/'+encodeURIComponent(container)+'/logs/ws',
+  }
+ }catch(error){message.error(apiErrorMessage(error))}finally{kubernetesLogOpening.value=''}
+}
+function openInstanceLogs(record:DeploymentRecord){
+ if(deploymentKind(record)==='kubernetes')return openKubernetesDeploymentLogs(record)
+ return openDeploymentLogs(record)
+}
+async function loadScaleAutoscaler(){
+ const record=scaleDialog.record, runtime=record?deploymentRuntimeStates.value[record.id]:undefined
+ const cluster=record?.runtime_id, namespace=record?.namespace||runtime?.namespace, workload=record?.workload_name||runtime?.name
+ scaleAutoscaler.error='';scaleAutoscaler.exists=false;scaleAutoscaler.min=undefined;scaleAutoscaler.max=undefined;scaleAutoscaler.current=undefined;scaleAutoscaler.cpu=''
+ if(!record||!cluster||!namespace||!workload){scaleAutoscaler.error='缺少集群或工作负载信息';return}
+ scaleAutoscaler.loading=true
+ try{
+  const {data}=await client.get<{object?:Record<string,any>}>('/kubernetes/clusters/'+encodeURIComponent(cluster)+'/resources/horizontalpodautoscalers/'+encodeURIComponent(workload),{params:{namespace}})
+  const object=data.object
+  if(!object){scaleAutoscaler.error='未能读取自动伸缩信息';return}
+  const spec=(object.spec||{}) as Record<string,any>, status=(object.status||{}) as Record<string,any>
+  scaleAutoscaler.exists=true
+  scaleAutoscaler.min=typeof spec.minReplicas==='number'?spec.minReplicas:1
+  scaleAutoscaler.max=typeof spec.maxReplicas==='number'?spec.maxReplicas:undefined
+  scaleAutoscaler.current=typeof status.currentReplicas==='number'?status.currentReplicas:undefined
+  const metric=(Array.isArray(spec.metrics)?spec.metrics:[]).find((item:Record<string,any>)=>item?.type==='Resource'&&item?.resource?.name==='cpu')
+  scaleAutoscaler.cpu=metric?.resource?.target?.averageUtilization?String(metric.resource.target.averageUtilization)+'%':'未设置'
+ }catch(error){
+  const status=isAxiosError(error)?error.response?.status:undefined
+  if(status!==404)scaleAutoscaler.error=apiErrorMessage(error)
+ }finally{scaleAutoscaler.loading=false}
+}
 function openScaleDialog(record:DeploymentRecord){
  const runtime=deploymentRuntimeStates.value[record.id]
  scaleDialog.record=record;scaleDialog.replicas=Math.max(0,runtime?.replicas??1);scaleDialog.open=true
+ void loadScaleAutoscaler()
 }
 async function submitScale(){
  const record=scaleDialog.record
@@ -2264,8 +2320,8 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
             <span>实例 / 运行位置</span><span>类型</span><span>状态</span><span>部署时间</span>
           </div>
           <div v-for="record in card.deploymentInstances" :key="record.id" class="application-deployment-item">
-            <button type="button" class="application-deployment-summary" :aria-expanded="deploymentDetailsOpen(record)"
-              :aria-controls="deploymentDetailsOpen(record)?`application-instance-${record.id}`:undefined" @click="toggleDeploymentDetails(record)">
+            <component :is="deploymentDetailsAvailable(record)?'button':'div'" :type="deploymentDetailsAvailable(record)?'button':undefined" :class="['application-deployment-summary',{'is-static':!deploymentDetailsAvailable(record)}]" :aria-expanded="deploymentDetailsAvailable(record)?deploymentDetailsOpen(record):undefined"
+              :aria-controls="deploymentDetailsOpen(record)?`application-instance-${record.id}`:undefined" @click="deploymentDetailsAvailable(record)&&toggleDeploymentDetails(record)">
               <span class="application-deployment-identity">
                 <span class="application-instance-icon" aria-hidden="true"><Box v-if="deploymentKind(record)==='docker'||deploymentKind(record)==='compose'"/><Layers3 v-else-if="deploymentKind(record)==='kubernetes'"/><Server v-else/></span>
                 <span class="application-instance-name">
@@ -2276,23 +2332,17 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
               <span class="application-instance-kind">{{ deploymentKindLabel(record) }}</span>
               <span class="apps-status" :class="`tone-${currentDeploymentStatus(record).tone}`"><i aria-hidden="true"/>{{ currentDeploymentStatus(record).label }}</span>
               <time :datetime="record.finished_at||record.updated_at||record.created_at">{{ formatApplicationTime(record.finished_at||record.updated_at||record.created_at) }}</time>
-              <ChevronDown :class="{expanded:deploymentDetailsOpen(record)}" aria-hidden="true"/>
-            </button>
-            <Transition name="deployment-details">
-              <div v-if="deploymentDetailsOpen(record)" :id="`application-instance-${record.id}`" class="application-deployment-details">
-                <a-alert v-if="deploymentRuntimeErrors[record.id]" type="warning" show-icon :message="deploymentRuntimeErrors[record.id]"/>
-                <dl class="application-instance-facts">
-                  <div v-if="record.deployment_plan_kind==='compose_stack'&&deploymentRuntimeStates[record.id]?.kind==='compose'&&deploymentRuntimeStates[record.id]?.name"><dt>Compose 项目</dt><dd>{{ deploymentRuntimeStates[record.id]?.name }}</dd></div>
-                  <div v-if="deploymentKind(record)==='kubernetes'&&record.namespace"><dt>命名空间</dt><dd>{{ record.namespace }}</dd></div>
-                  <div v-if="deploymentKind(record)==='kubernetes'&&record.workload_name"><dt>工作负载</dt><dd>{{ record.workload_name }}</dd></div>
-                  <div v-if="deploymentRuntimeStates[record.id]?.kind==='kubernetes'"><dt>副本</dt><dd>{{ deploymentRuntimeStates[record.id]?.ready_replicas ?? 0 }} / {{ deploymentRuntimeStates[record.id]?.replicas ?? 0 }} 就绪</dd></div>
-                  <div v-if="deploymentKind(record)!=='script'&&record.deployment_plan_kind!=='compose_stack'"><dt>{{ t('applicationCard.image') }}</dt><dd>{{ deploymentImageLabel(record) }}</dd></div>
-                  <div v-if="deploymentKind(record)==='docker'&&dockerContainerState(record)!==currentDeploymentStatus(record).label"><dt>{{ t('applicationCard.containerStatus') }}</dt><dd>{{ dockerContainerState(record) }}</dd></div>
-                  <div v-if="deploymentKind(record)==='script'"><dt>停止命令</dt><dd>{{ lifecycleScriptAvailable(record,'stop')?'已配置':'未配置' }}</dd></div>
-                  <div v-if="deploymentKind(record)==='script'"><dt>重启命令</dt><dd>{{ lifecycleScriptAvailable(record,'restart')?'已配置':'未配置' }}</dd></div>
-                </dl>
-                <ComposeRuntimeServices v-if="deploymentRuntimeStates[record.id]?.services?.length" :key="record.id" :services="deploymentRuntimeStates[record.id]?.services || []" :runtimeID="deploymentRuntimeStates[record.id]?.runtime_id" :sourceDeploymentID="record.id" :can-logs="['compose','custom'].includes(deploymentRuntimeStates[record.id]?.kind||'')&&canReadContainerLogs" :can-terminal="['compose','custom'].includes(deploymentRuntimeStates[record.id]?.kind||'')&&canOpenContainerTerminal" :can-restart="canComposeContainerControl('restart')" :can-stop="canComposeContainerControl('stop')" :can-recreate="canComposeContainerControl('recreate')" :opening="Boolean(composeContainerOpening)||Boolean(deploymentRuntimeAction)" @control="(id,action)=>openComposeContainerControl(record,id,action)" @logs="openComposeContainerStream(record,$event,'logs')" @terminal="openComposeContainerStream(record,$event,'terminal')" />
-                <div class="application-deployment-actions resource-row-actions">
+              <ChevronDown v-if="deploymentDetailsAvailable(record)" :class="{expanded:deploymentDetailsOpen(record)}" aria-hidden="true"/>
+            </component>
+                        <div class="application-deployment-inline">
+              <dl v-if="deploymentKind(record)==='kubernetes'" class="application-instance-facts application-instance-facts-inline">
+                <div v-if="record.namespace"><dt>命名空间</dt><dd>{{ record.namespace }}</dd></div>
+                <div v-if="record.workload_name"><dt>工作负载</dt><dd>{{ record.workload_name }}</dd></div>
+                <div><dt>副本</dt><dd>{{ deploymentRuntimeStates[record.id]?.ready_replicas ?? 0 }} / {{ deploymentRuntimeStates[record.id]?.replicas ?? 0 }} 就绪</dd></div>
+                <div class="fact-image"><dt>镜像</dt><dd :title="deploymentImageLabel(record)">{{ deploymentImageLabel(record) }}</dd></div>
+              </dl>
+<div class="application-deployment-actions resource-row-actions">
+                  <a-button v-if="canReadKubernetesWorkload&&deploymentKind(record)==='kubernetes'" size="small" :loading="kubernetesLogOpening===record.id" @click="openInstanceLogs(record)"><FileText/>日志</a-button>
                   <SessionAction v-if="deploymentKind(record)==='docker'&&canReadContainerLogs" kind="container-log" :path="deploymentStreamPath(record)" :title="`容器日志：${deploymentContainerName(record)}`" :disabled="dockerRuntimeLoading[record.runtime_id]||!dockerContainerForDeployment(record)" ><a-button v-if="deploymentKind(record)==='docker'&&canReadContainerLogs" size="small" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText/>{{ t('containerLogs.button') }}</a-button></SessionAction>
                   <SessionAction v-if="deploymentKind(record)==='docker'&&canOpenContainerTerminal&&canReadContainerLogs" kind="terminal" :path="deploymentStreamPath(record,true)" :title="`容器终端：${deploymentContainerName(record)}`" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" ><a-button v-if="deploymentKind(record)==='docker'&&canOpenContainerTerminal&&canReadContainerLogs" size="small" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':t('applicationCard.terminalRunningOnly')" @click="openDeploymentTerminal(record)"><TerminalSquare/>{{ t('applicationCard.terminal') }}</a-button></SessionAction>
                   <a-button v-if="canUpdateDeployments&&deploymentKind(record)==='script'&&deploymentRuntimeStates[record.id]?.kind!=='custom'" size="small" @click="openShellControlConfiguration(record)"><Settings2/>配置命令</a-button>
@@ -2303,6 +2353,19 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
                   <a-button v-if="canReadDeployments&&canControlDeployments&&['docker','kubernetes'].includes(deploymentKind(record))" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openDeploymentRollback(record)"><RotateCw/>{{ rollbackT('rollback.title') }}</a-button>
                   <a-button v-if="canControlDeployments&&deploymentKind(record)==='docker'" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'remove')" :disabled="Boolean(deploymentRuntimeAction)" @click="confirmDeploymentRuntimeRemoval(record)"><Trash2/>删除实例</a-button>
                 </div>
+            </div>
+<Transition name="deployment-details">
+              <div v-if="deploymentDetailsOpen(record)" :id="`application-instance-${record.id}`" class="application-deployment-details">
+                <a-alert v-if="deploymentRuntimeErrors[record.id]" type="warning" show-icon :message="deploymentRuntimeErrors[record.id]"/>
+                <dl class="application-instance-facts">
+                  <div v-if="record.deployment_plan_kind==='compose_stack'&&deploymentRuntimeStates[record.id]?.kind==='compose'&&deploymentRuntimeStates[record.id]?.name"><dt>Compose 项目</dt><dd>{{ deploymentRuntimeStates[record.id]?.name }}</dd></div>
+                  <div v-if="deploymentKind(record)!=='script'&&record.deployment_plan_kind!=='compose_stack'"><dt>{{ t('applicationCard.image') }}</dt><dd>{{ deploymentImageLabel(record) }}</dd></div>
+                  <div v-if="deploymentKind(record)==='docker'&&dockerContainerState(record)!==currentDeploymentStatus(record).label"><dt>{{ t('applicationCard.containerStatus') }}</dt><dd>{{ dockerContainerState(record) }}</dd></div>
+                  <div v-if="deploymentKind(record)==='script'"><dt>停止命令</dt><dd>{{ lifecycleScriptAvailable(record,'stop')?'已配置':'未配置' }}</dd></div>
+                  <div v-if="deploymentKind(record)==='script'"><dt>重启命令</dt><dd>{{ lifecycleScriptAvailable(record,'restart')?'已配置':'未配置' }}</dd></div>
+                </dl>
+                <ComposeRuntimeServices v-if="deploymentRuntimeStates[record.id]?.services?.length" :key="record.id" :services="deploymentRuntimeStates[record.id]?.services || []" :runtimeID="deploymentRuntimeStates[record.id]?.runtime_id" :sourceDeploymentID="record.id" :can-logs="['compose','custom'].includes(deploymentRuntimeStates[record.id]?.kind||'')&&canReadContainerLogs" :can-terminal="['compose','custom'].includes(deploymentRuntimeStates[record.id]?.kind||'')&&canOpenContainerTerminal" :can-restart="canComposeContainerControl('restart')" :can-stop="canComposeContainerControl('stop')" :can-recreate="canComposeContainerControl('recreate')" :opening="Boolean(composeContainerOpening)||Boolean(deploymentRuntimeAction)" @control="(id,action)=>openComposeContainerControl(record,id,action)" @logs="openComposeContainerStream(record,$event,'logs')" @terminal="openComposeContainerStream(record,$event,'terminal')" />
+                
               </div>
             </Transition>
           </div>
@@ -2720,11 +2783,36 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
  :saving="saving"
  @save="saveReleasePlanEditor"
 />
-<a-modal v-model:open="scaleDialog.open" title="调整 Kubernetes 副本数" ok-text="确认调整" cancel-text="取消" :confirm-loading="scaleDialog.submitting" @ok="submitScale">
- <a-form layout="vertical">
-  <a-form-item label="目标副本数" required><a-input-number v-model:value="scaleDialog.replicas" :min="0" :max="1000" :precision="0" style="width:100%"/></a-form-item>
-  <a-alert type="info" show-icon message="设置为 0 会停止工作负载" description="以后点击重启时，EDO 会恢复停止前保存的副本数；设置为大于 0 时会等待目标副本就绪。"/>
- </a-form>
+<a-modal v-model:open="scaleDialog.open" title="扩缩容" :width="860" :footer="null">
+ <div class="scale-dialog">
+  <section class="scale-panel" aria-label="手动伸缩">
+   <header><h3>手动伸缩</h3></header>
+   <div class="scale-manual">
+    <span class="scale-caption">伸缩到</span>
+    <a-input-number v-model:value="scaleDialog.replicas" :min="0" :max="1000" :precision="0" class="scale-input" aria-label="目标副本数"/>
+    <a-button type="primary" :loading="scaleDialog.submitting" :disabled="!scaleChanged" @click="submitScale"><Check/>确认</a-button>
+   </div>
+   <dl class="scale-facts">
+    <div><dt>期望副本数</dt><dd>{{ scaleRuntime?.replicas ?? '—' }}</dd></div>
+    <div><dt>就绪副本数</dt><dd>{{ scaleRuntime?.ready_replicas ?? '—' }}</dd></div>
+    <div><dt>不可用副本数</dt><dd>{{ scaleUnavailableReplicas }}</dd></div>
+   </dl>
+   <p class="scale-hint">设置为 0 会停止工作负载；以后重启时恢复停止前的副本数，设置为大于 0 时等待目标副本就绪。</p>
+  </section>
+  <section class="scale-panel" aria-label="自动伸缩">
+   <header><h3>自动伸缩</h3><a-button size="small" :loading="scaleAutoscaler.loading" @click="loadScaleAutoscaler"><RefreshCw/>刷新</a-button></header>
+   <p v-if="scaleAutoscaler.loading" class="scale-muted">正在读取 HorizontalPodAutoscaler…</p>
+   <p v-else-if="scaleAutoscaler.error" class="scale-error">{{ scaleAutoscaler.error }}</p>
+   <dl v-else-if="scaleAutoscaler.exists" class="scale-facts">
+    <div><dt>最小副本数</dt><dd>{{ scaleAutoscaler.min ?? '—' }}</dd></div>
+    <div><dt>最大副本数</dt><dd>{{ scaleAutoscaler.max ?? '—' }}</dd></div>
+    <div><dt>当前副本数</dt><dd>{{ scaleAutoscaler.current ?? '—' }}</dd></div>
+    <div><dt>CPU 目标利用率</dt><dd>{{ scaleAutoscaler.cpu || '—' }}</dd></div>
+   </dl>
+   <p v-else class="scale-muted">未检测到自动伸缩（HPA）。在部署配置里启用自动扩缩容后，EDO 会为工作负载创建同名 HorizontalPodAutoscaler。</p>
+  </section>
+ </div>
+ <div class="scale-footer"><a-button @click="scaleDialog.open=false">关闭</a-button></div>
 </a-modal>
 <a-modal v-model:open="shellControlDialog.open" title="配置 Shell 部署实例运行命令" ok-text="保存" cancel-text="取消" width="720" :confirm-loading="shellControlDialog.saving" :ok-button-props="{disabled:shellControlDialog.loading}" @ok="saveShellControlConfiguration">
  <a-spin :spinning="shellControlDialog.loading">

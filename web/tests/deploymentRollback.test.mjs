@@ -158,3 +158,36 @@ test('Docker 回退展示真实容器与不可变镜像身份，沿用快照确�
     assert.deepEqual(h.events.map(event=>event[0]),['accepted'])
   } finally { h.stop() }
 })
+test('历史版本按镜像去重排序，只有服务端核对的上一镜像可回退且需二次确认', async () => {
+  const h = harness()
+  try {
+    const checked = preview()
+    h.props.records = [
+      { id: 'd3', image: 'registry/api@sha256:older', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', created_at: '2026-10-20T00:00:00Z' },
+      { id: 'd2', image: 'registry/api@sha256:good', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', created_at: '2026-10-22T00:00:00Z' },
+      { id: 'd1', image: 'registry/api@sha256:good', status: 'succeeded', namespace: 'test', workload_name: 'api', container_name: 'api', created_at: '2026-10-21T00:00:00Z' },
+      { id: 'failed-deploy', image: 'registry/api@sha256:bad', status: 'failed', namespace: 'test', workload_name: 'api', container_name: 'api', created_at: '2026-10-23T00:00:00Z' },
+      { id: 'other', image: 'registry/api@sha256:other', status: 'succeeded', namespace: 'test', workload_name: 'other', container_name: 'api', created_at: '2026-10-23T00:00:00Z' },
+    ]
+    h.gets[0].resolve({ data: { rollback: checked } })
+    await flush()
+    const entries = h.state.history.value
+    assert.deepEqual(entries.map(entry => entry.image), ['registry/api@sha256:good', 'registry/api@sha256:older'])
+    assert.deepEqual(entries.map(entry => entry.rollbackable), [true, false])
+    assert.equal(h.state.canSubmit.value, false, '未选择版本时不能直接确认')
+    await h.state.submit()
+    assert.equal(h.posts.length, 0)
+    h.state.pickRollback(entries[1])
+    assert.equal(h.state.stage.value, 'history', '不可回退的历史版本不能进入确认')
+    h.state.pickRollback(entries[0])
+    assert.equal(h.state.stage.value, 'confirm')
+    assert.equal(h.state.canSubmit.value, true)
+    const submitting = h.state.submit()
+    assert.equal(h.posts.length, 1)
+    assert.equal(h.posts[0].body.expected_target_image, checked.target_image)
+    h.posts[0].resolve({ data: { deployment: { id: 'rolled', image: checked.target_image, status: 'queued' } } })
+    await submitting
+    h.state.backToHistory()
+    assert.equal(h.state.stage.value, 'history')
+  } finally { h.stop() }
+})

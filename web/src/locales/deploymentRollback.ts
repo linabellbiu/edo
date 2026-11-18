@@ -11,6 +11,8 @@ export const deploymentRollbackZh = {
   succeeded: '已回退，就绪检查通过', failed: '回退失败，请检查错误及工作负载状态',
   recentFailure: '最近失败部署', failureFallback: '部署失败，请检查部署记录', viewRecords: '查看部署记录', recordsAndRollback: '部署记录与回退',
   recordsReadFailed: '读取关联部署记录失败', retryRecords: '重新读取', recordsLoading: '正在检查关联部署记录',
+  history: '历史版本', historyEmpty: '没有更早的成功部署记录', onlyPrevious: '只能回退到上一个镜像', rollbackAction: '回退',
+  confirmStep: '确认回退到上一个镜像', back: '返回',
 }
 
 export const deploymentRollbackEn = {
@@ -26,4 +28,6 @@ export const deploymentRollbackEn = {
   succeeded: 'Rollback completed and readiness verified', failed: 'Rollback failed. Check the error and workload state.',
   recentFailure: 'Latest failed deployment', failureFallback: 'Deployment failed. Check the deployment record.', viewRecords: 'View deployment records', recordsAndRollback: 'Deployment records and rollback',
   recordsReadFailed: 'Could not read associated deployments', retryRecords: 'Try again', recordsLoading: 'Checking associated deployments',
+  history: 'History', historyEmpty: 'No earlier successful deployments', onlyPrevious: 'Only the previous image can be restored', rollbackAction: 'Restore',
+  confirmStep: 'Confirm restoring the previous image', back: 'Back',
 }

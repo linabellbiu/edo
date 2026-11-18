@@ -140,7 +140,13 @@
 .application-instance-facts > div { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-size: 12px; }
 .application-instance-facts dt { flex: none; color: var(--edo-muted); }
 .application-instance-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
-.application-deployment-actions { flex-wrap: wrap; margin-inline-start: auto; }
+.application-deployment-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-inline-start: auto; }
+.application-deployment-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 0 14px 10px; }
+.application-instance-facts-inline { flex: 1 1 460px; }
+.application-instance-facts-inline > .fact-image { flex: 1 1 220px; min-width: 0; }
+.application-instance-facts-inline > .fact-image dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.application-deployment-summary.is-static { cursor: default; }
+.application-deployment-summary.is-static:hover { background: var(--edo-surface); }
 .application-deployment-actions svg { width: 14px; height: 14px; }
 .application-instance-facts:empty, .application-deployment-actions:empty, .application-deployment-details:not(:has(> :not(:empty))) { display: none; }
 .deployment-details-enter-active, .deployment-details-leave-active { transition: opacity 140ms ease; }
@@ -148,6 +154,8 @@
 .apps-instance-section .application-failed-deployments { margin: 0; padding: 12px 14px; border-top: 1px solid var(--edo-border); }
 @container application-instances (max-width: 640px) {
   .application-deployment-columns { display: none; }
+  .application-deployment-inline { padding: 0 10px 9px; }
+  .application-instance-facts-inline { flex: 1 1 100%; }
   .application-deployment-summary { grid-template-columns: minmax(0, 1fr) auto 16px; gap: 4px 8px; padding: 9px 10px; }
   .application-deployment-identity { grid-area: 1 / 1; }
   .application-instance-kind { grid-area: 2 / 1; padding-inline-start: 37px; }
@@ -162,6 +170,22 @@
 @media (prefers-reduced-motion: reduce) {
   .application-deployment-summary > svg, .deployment-details-enter-active, .deployment-details-leave-active { transition: none; }
 }
+.scale-dialog { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 16px; }
+.scale-panel { display: grid; align-content: start; gap: 14px; padding: 16px; border: 1px solid var(--edo-border); border-radius: 10px; background: var(--edo-surface); }
+.scale-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.scale-panel h3 { margin: 0; color: var(--edo-text); font-size: 14px; font-weight: 600; }
+.scale-manual { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.scale-caption { color: var(--edo-muted); font-size: 13px; }
+.scale-input { width: 96px; }
+.scale-facts { display: grid; gap: 10px; margin: 0; }
+.scale-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.scale-facts dt { color: var(--edo-muted); font-size: 13px; }
+.scale-facts dd { margin: 0; color: var(--edo-text); font-size: 13px; font-variant-numeric: tabular-nums; }
+.scale-hint, .scale-muted, .scale-error { margin: 0; font-size: 12px; line-height: 1.6; }
+.scale-hint, .scale-muted { color: var(--edo-muted); }
+.scale-error { color: var(--apps-danger, #d74354); }
+.scale-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+@media (max-width: 720px) { .scale-dialog { grid-template-columns: 1fr; } }
 .apps-empty-inline { display: flex; min-height: 72px; align-items: center; justify-content: center; gap: 10px; margin: 0; color: var(--edo-muted); background: var(--edo-surface); font-size: 13px; }
 .apps-empty, .apps-loading { padding: 44px 24px; border: 1px solid var(--edo-border); border-radius: 10px; background: var(--edo-surface); }
 .apps-empty { display: flex; align-items: center; flex-direction: column; gap: 12px; color: var(--edo-muted); text-align: center; }
