@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { AlertTriangle } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { isAxiosError } from 'axios'
 import client from '@/api/client'
@@ -104,11 +105,11 @@ watch(() => props.records, records => {
   <a-modal :open="open" :title="t('rollback.title')" :width="760" :mask-closable="!submitting" :closable="!submitting" :keyboard="!submitting" @cancel="emit('update:open', false)">
     <a-spin :spinning="loading">
       <div class="rollback-content">
-        <a-alert v-if="error" type="error" show-icon :message="error"/>
-        <a-alert v-if="!canExecute" type="warning" show-icon :message="t('rollback.permission')"/>
+        <div v-if="error" class="rollback-notice is-error" role="alert">{{ error }}</div>
+        <div v-if="!canExecute" class="rollback-notice is-muted">{{ t('rollback.permission') }}</div>
         <template v-if="preview">
-          <a-alert v-if="!preview.can_rollback&&!task" type="warning" show-icon :message="t('rollback.unavailable')" :description="preview.reason"/>
-          <a-alert v-else-if="!task" type="warning" show-icon :message="t(isDocker?'rollback.dockerImpact':'rollback.impact')"/>
+          <div v-if="!preview.can_rollback&&!task" class="rollback-notice is-warning" role="status"><AlertTriangle :size="15"/><span>{{ t('rollback.unavailable') }}：{{ preview.reason }}</span></div>
+          <p v-else-if="!task" class="rollback-impact">{{ t(isDocker?'rollback.dockerImpact':'rollback.impact') }}</p>
           <dl class="rollback-facts">
             <template v-if="isDocker">
               <div><dt>{{ t('rollback.runtime') }}</dt><dd>{{ preview.runtime_name || preview.runtime_id || '—' }}</dd></div>
@@ -141,7 +142,10 @@ watch(() => props.records, records => {
           </div>
         </template>
         <template v-if="task">
-          <a-alert :type="statusType" show-icon :message="t(`rollback.${task.status}`)" :description="task.error_message || undefined"/>
+          <div class="rollback-notice" :class="statusType === 'success' ? 'is-success' : statusType === 'error' ? 'is-error' : 'is-muted'" role="status">
+            <AlertTriangle v-if="statusType === 'error'" :size="15"/><span>{{ t(`rollback.${task.status}`) }}</span>
+          </div>
+          <p v-if="task.error_message" class="rollback-impact is-error">{{ task.error_message }}</p>
           <p class="rollback-task">{{ t('rollback.task') }}：{{ task.id }}</p>
         </template>
       </div>
@@ -158,5 +162,5 @@ watch(() => props.records, records => {
 </template>
 
 <style scoped>
-.rollback-content{display:grid;gap:12px;min-height:80px}.rollback-facts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0}.rollback-facts>div{min-width:0;padding:10px 12px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface-soft)}.rollback-facts dt{margin-bottom:4px;color:var(--edo-muted);font-size:12px}.rollback-facts dd{margin:0;color:var(--edo-text);overflow-wrap:anywhere}.rollback-facts .rollback-image{grid-column:1/-1}.rollback-image small{display:block;margin-top:4px;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.rollback-task{margin:0;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.rollback-history{display:grid;gap:2px;max-height:220px;margin:0;padding:0;overflow:auto;list-style:none}.rollback-history li{display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:6px;background:var(--edo-surface-soft)}.rollback-history li.picked{background:var(--edo-primary-soft)}.rollback-history-main{display:grid;min-width:0;flex:1;gap:2px}.rollback-history time{color:var(--edo-muted);font-size:12px;font-variant-numeric:tabular-nums}.rollback-history code{overflow:hidden;color:var(--edo-text);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.rollback-history-empty{padding:12px;color:var(--edo-muted);font-size:12px;text-align:center}.rollback-confirm{display:grid;gap:6px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--edo-danger,#d74354) 35%,var(--edo-border));border-radius:6px;background:color-mix(in srgb,var(--edo-danger,#d74354) 6%,var(--edo-surface))}.rollback-confirm p{margin:0;font-size:12px;line-height:1.6}.rollback-confirm code{font-size:12px;overflow-wrap:anywhere}@media(max-width:540px){.rollback-facts{grid-template-columns:1fr}}
+.rollback-content{display:grid;gap:12px;min-height:80px}.rollback-notice{display:flex;align-items:flex-start;gap:8px;font-size:13px;line-height:1.6}.rollback-notice svg{flex:none;margin-top:3px}.rollback-notice.is-warning{color:var(--apps-warning,#a76809)}.rollback-notice.is-error{color:var(--edo-danger,#d74354)}.rollback-notice.is-success{color:var(--apps-success,#16845b)}.rollback-notice.is-muted{color:var(--edo-muted)}.rollback-impact{margin:0;color:var(--edo-muted);font-size:12px;line-height:1.6}.rollback-impact.is-error{color:var(--edo-danger,#d74354)}.rollback-facts{display:grid;grid-template-columns:1fr 1fr;gap:0 24px;margin:0}.rollback-facts>div{display:flex;min-width:0;align-items:baseline;gap:10px;padding:7px 0;border-bottom:1px solid var(--edo-border)}.rollback-facts dt{flex:none;margin:0;color:var(--edo-muted);font-size:12px}.rollback-facts dd{min-width:0;margin:0;color:var(--edo-text);font-size:13px;overflow-wrap:anywhere}.rollback-facts .rollback-image{grid-column:1/-1;flex-wrap:wrap}.rollback-facts .rollback-image dd{flex:1;min-width:0}.rollback-facts .rollback-image small{flex-basis:100%}.rollback-image small{display:block;margin-top:4px;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.rollback-task{margin:0;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.rollback-history{display:grid;gap:2px;max-height:220px;margin:0;padding:0;overflow:auto;list-style:none}.rollback-history li{display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:6px;background:var(--edo-surface-soft)}.rollback-history li.picked{background:var(--edo-primary-soft)}.rollback-history-main{display:grid;min-width:0;flex:1;gap:2px}.rollback-history time{color:var(--edo-muted);font-size:12px;font-variant-numeric:tabular-nums}.rollback-history code{overflow:hidden;color:var(--edo-text);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.rollback-history-empty{padding:12px;color:var(--edo-muted);font-size:12px;text-align:center}.rollback-confirm{display:grid;gap:6px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--edo-danger,#d74354) 35%,var(--edo-border));border-radius:6px;background:color-mix(in srgb,var(--edo-danger,#d74354) 6%,var(--edo-surface))}.rollback-confirm p{margin:0;font-size:12px;line-height:1.6}.rollback-confirm code{font-size:12px;overflow-wrap:anywhere}@media(max-width:540px){.rollback-facts{grid-template-columns:1fr}}
 </style>

@@ -18,7 +18,7 @@ test('K8s 部署实例在行内展示命名空间、工作负载、副本与镜�
   assert.match(view, /:aria-expanded="deploymentDetailsAvailable\(record\)\?deploymentDetailsOpen\(record\):undefined"/)
   const inline = item.slice(summaryEnd, detailsIndex)
   for (const label of ['命名空间', '工作负载', '副本', '镜像']) assert.ok(inline.includes('<dt>' + label + '</dt>'), label)
-  assert.ok(inline.includes('application-instance-facts-inline'))
+  assert.ok(inline.includes('application-instance-meta'))
   // 事实行出现在展开区之前，且不再留在详情里
   const details = item.slice(detailsIndex)
   assert.ok(!details.includes('<dt>工作负载</dt>'))
@@ -62,8 +62,8 @@ test('回退弹窗先列历史版本，点击回退后再二次确认', () => {
 
 test('行内条与空状态样式只作用于部署实例列表', () => {
   assert.ok(css.includes('.application-deployment-inline'))
-  assert.ok(css.includes('.application-instance-facts-inline'))
-  assert.ok(css.includes('.application-instance-facts-inline > .fact-image dd'))
+  assert.ok(css.includes('.application-instance-meta'))
+  assert.ok(css.includes('.application-instance-meta > .meta-image dd'))
   assert.ok(css.includes('.application-deployment-summary.is-static'))
   assert.ok(css.includes('.scale-dialog') && css.includes('.scale-panel'))
 })

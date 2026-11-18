@@ -764,7 +764,11 @@ async function saveShellControlConfiguration(){
  }catch(error){message.error(apiErrorMessage(error))}finally{shellControlDialog.saving=false}
 }
 function deploymentDetailsAvailable(record:DeploymentRecord){
- return deploymentKind(record)!=='kubernetes'||Boolean(deploymentRuntimeErrors.value[record.id])||Boolean(deploymentRuntimeStates.value[record.id]?.services?.length)
+ return Boolean(deploymentRuntimeErrors.value[record.id])||Boolean(deploymentRuntimeStates.value[record.id]?.services?.length)
+}
+function dockerContainerTone(record:DeploymentRecord){
+ const state=dockerContainerState(record)
+ return state==='running'?'is-ready':/missing|unavailable|unchecked|noPermission/.test(state)||state==='—'?'is-unknown':'is-idle'
 }
 async function openKubernetesDeploymentLogs(record:DeploymentRecord){
  if(!canReadKubernetesWorkload.value){message.warning('没有读取 Kubernetes 工作负载日志的权限');return}
@@ -785,6 +789,19 @@ async function openKubernetesDeploymentLogs(record:DeploymentRecord){
    path:'/api/v1/kubernetes/clusters/'+encodeURIComponent(cluster)+'/namespaces/'+encodeURIComponent(namespace)+'/pods/'+encodeURIComponent(pod.name)+'/containers/'+encodeURIComponent(container)+'/logs/ws',
   }
  }catch(error){message.error(apiErrorMessage(error))}finally{kubernetesLogOpening.value=''}
+}
+function deploymentReplicasLabel(record:DeploymentRecord){
+ const runtime=deploymentRuntimeStates.value[record.id]
+ if(!runtime)return deploymentRuntimeLoading.value[record.id]?'读取中…':'—'
+ const ready=runtime.ready_replicas, replicas=runtime.replicas
+ if(ready===undefined||replicas===undefined)return '—'
+ return ready+' / '+replicas+' 就绪'
+}
+function deploymentReplicasTone(record:DeploymentRecord){
+ const runtime=deploymentRuntimeStates.value[record.id]
+ if(!runtime||runtime.replicas===undefined||runtime.ready_replicas===undefined)return 'is-unknown'
+ if(runtime.replicas===0)return 'is-idle'
+ return runtime.ready_replicas<runtime.replicas?'is-warning':'is-ready'
 }
 function openInstanceLogs(record:DeploymentRecord){
  if(deploymentKind(record)==='kubernetes')return openKubernetesDeploymentLogs(record)
@@ -1190,10 +1207,23 @@ async function refreshApplicationState(){
 }
 function refreshVisibleDeploymentRuntime(){
  const visibleRecords=applicationCards.value.filter(card=>applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments').flatMap(card=>card.deploymentInstances).filter(record=>expandedDeployments.value[record.id])
+ // 部署实例行内直接展示副本、运行状态，未展开的实例也需要独立回填运行信息。
+ const instanceRecords=new Map(visibleRecords.map(record=>[record.id,record]))
+ if(applicationDrawerOpen.value&&applicationDetailTab(applicationDrawerID.value)==='deployments'){
+  for(const record of applicationDrawerCard.value?.deploymentInstances??[])instanceRecords.set(record.id,record)
+ }
+ visibleRecords.splice(0,visibleRecords.length,...instanceRecords.values())
  const visibleRuntimeIDs=new Set(visibleRecords.filter(record=>deploymentKind(record)==='docker').map(record=>record.runtime_id).filter(Boolean))
  for(const runtimeID of visibleRuntimeIDs)void loadDockerRuntime(runtimeID,true,true)
  for(const record of visibleRecords)void loadDeploymentRuntime(record,true)
 }
+watch(()=>[applicationDrawerOpen.value,applicationDetailTab(applicationDrawerID.value),applicationDrawerCard.value?.deploymentInstances.map(record=>record.id).join(',')].join('|'),()=>{
+ if(!applicationDrawerOpen.value||applicationDetailTab(applicationDrawerID.value)!=='deployments')return
+ for(const record of applicationDrawerCard.value?.deploymentInstances??[]){
+  void loadDeploymentRuntime(record)
+  if(deploymentKind(record)==='docker')void loadDockerRuntime(record.runtime_id)
+ }
+},{immediate:true})
 async function refreshReleasePlanState(scope?:PlanExecutionScope,_options?:{headers:{'X-EDO-Project-ID':string};signal:AbortSignal}){
  if(!auth.canAny([`${sectionPermission.value}.read`])||(scope&&!currentPlanExecutionScope(scope)))return
  void resourceReaders.applications()
@@ -2335,11 +2365,14 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
               <ChevronDown v-if="deploymentDetailsAvailable(record)" :class="{expanded:deploymentDetailsOpen(record)}" aria-hidden="true"/>
             </component>
                         <div class="application-deployment-inline">
-              <dl v-if="deploymentKind(record)==='kubernetes'" class="application-instance-facts application-instance-facts-inline">
-                <div v-if="record.namespace"><dt>命名空间</dt><dd>{{ record.namespace }}</dd></div>
-                <div v-if="record.workload_name"><dt>工作负载</dt><dd>{{ record.workload_name }}</dd></div>
-                <div><dt>副本</dt><dd>{{ deploymentRuntimeStates[record.id]?.ready_replicas ?? 0 }} / {{ deploymentRuntimeStates[record.id]?.replicas ?? 0 }} 就绪</dd></div>
-                <div class="fact-image"><dt>镜像</dt><dd :title="deploymentImageLabel(record)">{{ deploymentImageLabel(record) }}</dd></div>
+              <dl class="application-instance-meta">
+                <div v-if="record.deployment_plan_kind==='compose_stack'&&deploymentRuntimeStates[record.id]?.kind==='compose'&&deploymentRuntimeStates[record.id]?.name"><dt>Compose 项目</dt><dd>{{ deploymentRuntimeStates[record.id]?.name }}</dd></div>
+                <div v-if="deploymentKind(record)==='kubernetes'&&record.namespace"><dt>命名空间</dt><dd>{{ record.namespace }}</dd></div>
+                <div v-if="deploymentKind(record)==='kubernetes'&&record.workload_name"><dt>工作负载</dt><dd>{{ record.workload_name }}</dd></div>
+                <div v-if="deploymentKind(record)==='kubernetes'"><dt>副本</dt><dd class="meta-replicas" :class="deploymentReplicasTone(record)" :title="deploymentRuntimeErrors[record.id] || ''">{{ deploymentReplicasLabel(record) }}</dd></div>
+                <div v-if="deploymentKind(record)==='docker'"><dt>容器</dt><dd class="meta-replicas" :class="dockerContainerTone(record)">{{ dockerContainerState(record) }}</dd></div>
+                <div v-if="deploymentKind(record)==='script'"><dt>运行命令</dt><dd>{{ lifecycleScriptAvailable(record,'stop')||lifecycleScriptAvailable(record,'restart')?'已配置':'未配置' }}</dd></div>
+                <div v-if="deploymentKind(record)!=='script'&&record.deployment_plan_kind!=='compose_stack'" class="meta-image"><dt>镜像</dt><dd :title="deploymentImageLabel(record)">{{ deploymentImageLabel(record) }}</dd></div>
               </dl>
 <div class="application-deployment-actions resource-row-actions">
                   <a-button v-if="canReadKubernetesWorkload&&deploymentKind(record)==='kubernetes'" size="small" :loading="kubernetesLogOpening===record.id" @click="openInstanceLogs(record)"><FileText/>日志</a-button>

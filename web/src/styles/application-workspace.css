@@ -141,10 +141,17 @@
 .application-instance-facts dt { flex: none; color: var(--edo-muted); }
 .application-instance-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .application-deployment-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-inline-start: auto; }
-.application-deployment-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 0 14px 10px; }
-.application-instance-facts-inline { flex: 1 1 460px; }
-.application-instance-facts-inline > .fact-image { flex: 1 1 220px; min-width: 0; }
-.application-instance-facts-inline > .fact-image dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.application-deployment-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 0 14px 10px; }
+.application-instance-meta { display: flex; flex-wrap: wrap; min-width: 0; flex: 1 1 420px; align-items: baseline; gap: 4px 18px; margin: 0; font-size: 12px; }
+.application-instance-meta > div { display: inline-flex; min-width: 0; align-items: baseline; gap: 6px; }
+.application-instance-meta dt { flex: none; color: var(--edo-muted); }
+.application-instance-meta dd { min-width: 0; margin: 0; color: var(--edo-text); overflow-wrap: anywhere; }
+.application-instance-meta > .meta-image { min-width: 0; flex: 1 1 220px; }
+.application-instance-meta > .meta-image dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.application-instance-meta .meta-replicas { font-variant-numeric: tabular-nums; font-weight: 500; }
+.application-instance-meta .meta-replicas.is-ready { color: var(--apps-success); }
+.application-instance-meta .meta-replicas.is-warning { color: var(--apps-warning); }
+.application-instance-meta .meta-replicas.is-idle, .application-instance-meta .meta-replicas.is-unknown { color: var(--edo-muted); }
 .application-deployment-summary.is-static { cursor: default; }
 .application-deployment-summary.is-static:hover { background: var(--edo-surface); }
 .application-deployment-actions svg { width: 14px; height: 14px; }
@@ -155,7 +162,7 @@
 @container application-instances (max-width: 640px) {
   .application-deployment-columns { display: none; }
   .application-deployment-inline { padding: 0 10px 9px; }
-  .application-instance-facts-inline { flex: 1 1 100%; }
+  .application-instance-meta { flex: 1 1 100%; }
   .application-deployment-summary { grid-template-columns: minmax(0, 1fr) auto 16px; gap: 4px 8px; padding: 9px 10px; }
   .application-deployment-identity { grid-area: 1 / 1; }
   .application-instance-kind { grid-area: 2 / 1; padding-inline-start: 37px; }
