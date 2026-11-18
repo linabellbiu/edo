@@ -71,7 +71,8 @@ test('分段控件使用统一浅靛蓝令牌：默认、悬停、选中与高�
   assert.equal(light['--edo-tabs-item-height'], '28px')
   assert.equal(light['--edo-tabs-item-height-sm'], '24px')
   assert.equal(light['--edo-tabs-item-height-lg'], '32px')
-  assert.equal(resolve(light['--edo-tabs-bg'], light), '#f8f9fb', '容器底色应为浅中性色')
+  assert.equal(resolve(light['--edo-tabs-bg'], light), '#fff', '容器为白底，靠发丝边框与页面分区')
+  assert.equal(resolve(light['--edo-tabs-border'], light), '#e7e9ee', '容器边框使用主题分割色')
   assert.equal(resolve(light['--edo-tabs-hover-bg'], light), '#eef2ff', '悬停应为浅靛蓝')
   assert.equal(resolve(light['--edo-tabs-selected-bg'], light), '#e0e7ff', '选中实底应为浅靛蓝实底')
   assert.equal(resolve(light['--edo-tabs-selected-color'], light), '#3f56cf')
@@ -90,22 +91,38 @@ test('选中与未选中文字在明暗主题都满足正文对比度，且选�
     assert.ok(selectedRatio >= 4.5, `${theme} 选中文字对比度不足：${selectedRatio.toFixed(2)}`)
     const mutedRatio = contrast(muted, surface)
     assert.ok(mutedRatio >= 4.5, `${theme} 未选中文字对比度不足：${mutedRatio.toFixed(2)}`)
-    assert.ok(contrast(surface, resolve(tokens['--edo-surface'], tokens)) > 1, `${theme} 容器底色需要与页面底色区分`)
+    const border = resolve(tokens['--edo-tabs-border'], tokens)
+    assert.ok(contrast(border, resolve(tokens['--edo-surface'], tokens)) >= 1.1, `${theme} 容器边框需要与页面底色可区分`)
   }
 })
 
-test('去掉渐变、投影与描边，条目高度固定，避免选中块溢出容器', () => {
+test('去掉渐变与外发光，只保留一条发丝边框，条目高度固定不溢出容器', () => {
   const segmentedRules = []
   styleRoot.walkRules(rule => { if (rule.selector.includes('ant-segmented')) segmentedRules.push(rule) })
   const declarations = segmentedRules.flatMap(rule => rule.nodes.filter(node => node.type === 'decl'))
   assert.ok(!declarations.some(node => /gradient/i.test(node.value)), '分段控件不得使用渐变')
   const shadows = declarations.filter(node => node.prop === 'box-shadow')
   assert.ok(shadows.every(node => node.value === 'none' || /var\(--edo-tabs-focus-ring\)/.test(node.value)), '分段控件只允许键盘焦点内环，不再使用发光或内阴影')
+  // 只允许容器上的一条发丝边框，条目本身不再逐项描边。
   const borders = declarations.filter(node => node.prop === 'border' || node.prop === 'border-color')
-  assert.ok(borders.every(node => String(node.value).startsWith('0') || String(node.value) === 'none'), '容器不再套描边')
+  assert.ok(borders.every(node => String(node.value) === '1px solid var(--edo-tabs-border)'), '只允许容器使用 1px 发丝边框')
   assert.equal(ruleDeclarations('.ant-segmented.ant-segmented .ant-segmented-item').height, 'var(--edo-tabs-item-height)')
   assert.equal(ruleDeclarations('.ant-segmented.ant-segmented.edo-page-tabs .ant-segmented-item').height, 'var(--edo-tabs-item-height-lg)')
   assert.equal(ruleDeclarations('.ant-segmented.ant-segmented.ant-segmented-sm .ant-segmented-item').height, 'var(--edo-tabs-item-height-sm)')
+})
+
+test('功能性分段之间用发丝分隔线，选中与悬停两侧不压线', () => {
+  const divider = ruleDeclarations('.ant-segmented.ant-segmented .ant-segmented-item + .ant-segmented-item::before')
+  assert.equal(divider.width, '1px')
+  assert.equal(divider.background, 'var(--edo-tabs-divider)')
+  assert.match(styleSource, /ant-segmented-item-selected \+ \.ant-segmented-item::before/)
+  assert.match(styleSource, /ant-segmented-item:has\(\+ \.ant-segmented-item-selected\)::before/)
+  assert.match(styleSource, /ant-segmented-item:hover \+ \.ant-segmented-item::before/)
+  assert.equal(ruleDeclarations('.ant-segmented.ant-segmented.ant-segmented-sm .ant-segmented-item + .ant-segmented-item::before').height, '12px')
+  const light = palette('light'), dark = palette('dark')
+  assert.equal(light['--edo-tabs-border'], 'var(--edo-border)')
+  assert.ok(/^#|^color-mix/.test(String(light['--edo-tabs-divider'])))
+  assert.ok(dark['--edo-tabs-divider'] && dark['--edo-tabs-divider'] !== light['--edo-tabs-divider'], '深色需要独立的发丝线颜色')
 })
 
 test('页面页签保留横向滚动、标签内边距与键盘焦点环', () => {
