@@ -222,10 +222,12 @@ export interface ApplicationWorkflowRunRecord {
   execution_graph?: PipelineExecutionGraph
   timing?: PipelineStageTiming
   created_at: string
+  updated_at?: string
   ref: string
   commit_sha: string
   commit_message?: string
   commit_author?: string
+  message?: string
   trigger: string
 }
 

@@ -34,22 +34,18 @@ test('当前默认直接显示，仅打开历史抽屉时读取最近50条，关
   assert.deepEqual(h.requests[0].options.params, { application_id: 'app', workflow_id: 'flow', order: 'desc', status_group: 'active', limit: 200 })
   const active = run('current', { status: 'running', created_at: '2026-11-01T00:00:00Z' })
   h.resolve(0, [active, active, run('wrong', { workflow_id: 'another', status: 'running' })]); await flush()
-  assert.deepEqual(h.state.rows.value.map(item => item.id), ['current'])
-  h.state.historyExpanded.value = true; await vue.nextTick()
-  assert.equal(h.requests.length, 3)
-  assert.equal(h.requests[2].options.params.status_group, 'finished')
-  assert.equal(h.requests[2].options.params.limit, 50)
-  h.resolve(1, [active]); h.resolve(2, [...Array.from({ length: 55 }, (_, i) => run(`history-${i}`)), run('other', { workflow_id: 'another' })]); await flush()
-  assert.equal(h.state.rows.value.length, 51)
-  assert.equal(h.state.rows.value[0].id, 'current')
+  assert.deepEqual(h.state.active.value.map(item => item.id), ['current'])
+  h.state.openHistory({}); await vue.nextTick()
+  assert.equal(h.requests.length, 2)
+  assert.equal(h.requests[1].options.params.status_group, 'finished')
+  assert.equal(h.requests[1].options.params.limit, 50)
+  h.resolve(1, [...Array.from({ length: 55 }, (_, i) => run(`history-${i}`)), run('other', { workflow_id: 'another' })]); await flush()
   assert.equal(h.state.history.value.length, 50)
-  assert.equal(h.state.loading.value, false)
+  assert.equal(h.state.historyLoading.value, false)
   h.state.historyExpanded.value = false; await vue.nextTick()
-  assert.deepEqual(h.state.rows.value.map(item => item.id), ['current'])
+  assert.deepEqual(h.state.active.value.map(item => item.id), ['current'])
   assert.equal(h.state.history.value.length, 0)
-  assert.equal(h.requests.length, 4)
-  assert.equal(h.requests[3].options.params.status_group, 'active')
-  h.resolve(3, [active]); await flush()
+  assert.equal(h.requests.length, 2)
   h.stop()
 })
 
@@ -57,17 +53,17 @@ test('切换范围或撤权时关闭历史抽屉并取消旧读取，不自动�
   for (const revoke of [false, true]) {
     const h = harness()
     h.resolve(0); await flush()
-    h.state.historyExpanded.value = true; await vue.nextTick()
+    h.state.openHistory({}); await vue.nextTick()
     if (revoke) h.auth.readable = false
     else { h.props.workflowId = 'other-flow'; h.props.scopeKey = 'project-b' }
     await vue.nextTick()
     assert.equal(h.state.historyExpanded.value, false)
-    assert.equal(h.requests[2].options.signal.aborted, true)
-    assert.equal(h.requests.slice(3).some(request => request.options.params.status_group === 'finished'), false)
-    h.resolve(1); h.resolve(2, [run('old-history')]); await flush()
+    assert.equal(h.requests[1].options.signal.aborted, true)
+    assert.equal(h.requests.slice(2).some(request => request.options.params.status_group === 'finished'), false)
+    h.resolve(1, [run('old-history')]); await flush()
     assert.deepEqual(h.state.history.value, [])
-    if (!revoke) { h.resolve(3, [run('new-active', { status: 'running', workflow_id: 'other-flow' })]); await flush() }
-    assert.equal(h.state.currentRuns.value.length, revoke ? 0 : 1)
+    if (!revoke) { h.resolve(2, [run('new-active', { status: 'running', workflow_id: 'other-flow' })]); await flush() }
+    assert.equal(h.state.active.value.length, revoke ? 0 : 1)
     h.stop()
   }
 })
@@ -75,19 +71,19 @@ test('切换范围或撤权时关闭历史抽屉并取消旧读取，不自动�
 test('历史关闭后恢复原入口焦点，切换范围、撤权或重开后不抢焦点', async () => {
   const h = harness()
   let focused = 0
-  h.state.historyTrigger.value = { focus(options) { assert.equal(options.preventScroll, true); focused++ } }
-  h.state.openHistory(); await vue.nextTick()
+  const click = { currentTarget: { isConnected: true, focus(options) { assert.equal(options.preventScroll, true); focused++ } } }
+  h.state.openHistory(click); await vue.nextTick()
   h.state.historyExpanded.value = false; await vue.nextTick()
   h.state.historyVisibilityChanged(false)
   assert.equal(focused, 1)
-  h.state.openHistory(); await vue.nextTick()
+  h.state.openHistory(click); await vue.nextTick()
   h.state.historyVisibilityChanged(false)
   assert.equal(focused, 1)
   h.props.workflowId = 'another'; await vue.nextTick()
   h.state.historyVisibilityChanged(false)
   assert.equal(focused, 1)
   h.auth.readable = false; await vue.nextTick()
-  h.state.openHistory()
+  h.state.openHistory(click)
   assert.equal(h.state.historyExpanded.value, false)
   h.state.historyVisibilityChanged(false)
   assert.equal(focused, 1)
@@ -100,27 +96,28 @@ test('历史收起时新执行自动出现，完成后移入历史且不重复',
   h.subscriber.event({ type: 'changed', resources: ['pipeline_runs'] })
   h.timers.values().next().value()
   h.resolve(1, [run('new', { status: 'running' })]); await flush()
-  assert.deepEqual(h.state.rows.value.map(item => item.id), ['new'])
+  assert.deepEqual(h.state.active.value.map(item => item.id), ['new'])
   assert.equal(h.state.historyExpanded.value, false)
-  h.state.historyExpanded.value = true; await vue.nextTick()
-  h.resolve(3, [run('new')]); await flush()
-  assert.deepEqual(h.state.rows.value.map(item => item.id), ['new'], '历史先返回也不重复显示同一执行')
-  h.resolve(2); await flush()
-  assert.equal(h.state.active.value.length, 0)
-  assert.deepEqual(h.state.rows.value.map(item => item.id), ['new'])
+  h.state.openHistory({}); await vue.nextTick()
+  h.state.refresh()
+  h.resolve(4, [run('new')]); await flush()
+  assert.deepEqual(h.state.active.value, [], '历史先返回时立即移出当前区域')
+  h.resolve(3, [run('new', { status: 'running' })]); await flush()
+  assert.deepEqual(h.state.active.value, [], '迟到的当前列表不重复显示已结束的执行')
+  assert.deepEqual(h.state.history.value.map(item => item.id), ['new'])
   h.stop()
 })
 
-test('收起历史取消旧读取，迟到历史不能隐藏或改写当前进度', async () => {
+test('收起历史仅取消历史读取，迟到历史不能隐藏或改写当前进度', async () => {
   const h = harness(), active = run('current', { status: 'running' })
-  h.resolve(0, [active]); await flush()
-  h.state.historyExpanded.value = true; await vue.nextTick()
+  h.state.openHistory({}); await vue.nextTick()
   h.state.historyExpanded.value = false; await vue.nextTick()
-  assert.equal(h.requests[2].options.signal.aborted, true)
-  h.resolve(1); h.resolve(2, [run('current')]); h.resolve(3, [active]); await flush()
-  assert.deepEqual(h.state.rows.value.map(item => item.id), ['current'])
+  assert.equal(h.requests[0].options.signal.aborted, false)
+  assert.equal(h.requests[1].options.signal.aborted, true)
+  h.resolve(1, [run('current')]); h.resolve(0, [active]); await flush()
+  assert.deepEqual(h.state.active.value.map(item => item.id), ['current'])
   assert.deepEqual(h.state.history.value, [])
-  assert.equal(h.unsubscribed, 0, '折叠历史保留当前订阅')
+  assert.equal(h.unsubscribed, 0, '关闭历史保留当前订阅')
   h.stop()
 })
 
@@ -132,14 +129,14 @@ test('切换流水线、项目和权限后取消旧读取，迟到响应不能�
   h.resolve(0, [run('old', { status: 'running' })])
   h.resolve(1, [run('new', { workflow_id: 'other-flow', status: 'running' }), run('wrong-app', { application_id: 'another', workflow_id: 'other-flow', status: 'running' })])
   await flush()
-  assert.deepEqual(h.state.rows.value.map(item => item.id), ['new'])
-  const pending = h.state.load()
+  assert.deepEqual(h.state.active.value.map(item => item.id), ['new'])
+  const pending = h.state.load('active')
   h.auth.readable = false
   await vue.nextTick()
   assert.equal(h.requests[2].options.signal.aborted, true)
   h.resolve(2, [run('late', { workflow_id: 'other-flow', status: 'running' })])
   await pending
-  assert.deepEqual(h.state.rows.value, [])
+  assert.deepEqual(h.state.active.value, [])
   assert.equal(h.state.allowed.value, false)
   assert.ok(h.unsubscribed > 0)
   h.stop()
@@ -147,22 +144,48 @@ test('切换流水线、项目和权限后取消旧读取，迟到响应不能�
 
 test('历史失败不阻断当前同步，当前读取失败保留数据并明确提示', async () => {
   const h = harness()
+  h.state.openHistory({}); await vue.nextTick()
   h.resolve(0, [run('saved', { status: 'running' })]); await flush()
-  h.state.historyExpanded.value = true; await vue.nextTick()
-  h.requests[2].reject(new Error('读取历史执行失败'))
-  h.resolve(1, [run('updated', { status: 'running' })]); await flush()
-  assert.deepEqual(h.state.rows.value.map(item => item.id), ['updated'])
+  assert.equal(h.state.loading.value, false)
+  assert.equal(h.state.historyLoading.value, true)
+  h.requests[1].reject(new Error('读取历史执行失败')); await flush()
+  assert.deepEqual(h.state.active.value.map(item => item.id), ['saved'])
   assert.equal(h.state.historyError.value, '读取历史执行失败')
   assert.equal(h.state.error.value, '')
-  const pending = h.state.load()
-  h.requests[3].reject(new Error('读取执行记录失败')); h.resolve(4, [run('history')])
-  await pending
-  assert.deepEqual(h.state.rows.value.map(item => item.id), ['updated', 'history'])
+  h.state.refresh()
+  h.requests[2].reject(new Error('读取执行记录失败')); h.resolve(3, [run('history')]); await flush()
+  assert.deepEqual(h.state.active.value.map(item => item.id), ['saved'])
+  assert.deepEqual(h.state.history.value.map(item => item.id), ['history'])
   assert.equal(h.state.error.value, '读取执行记录失败')
   assert.equal(h.state.historyError.value, '')
-  const retry = h.state.load(); h.resolve(5); h.resolve(6, [run('history')]); await retry
+  const retry = h.state.load('active'); h.resolve(4); await retry
   assert.equal(h.state.error.value, '')
   assert.ok(h.requests.every(request => request.path === '/pipeline-runs'))
+  h.stop()
+})
+
+test('详情保留当前历史记录的准确身份，返回恢复焦点，撤权清除详情', async () => {
+  const h = harness()
+  h.state.openHistory({}); await vue.nextTick()
+  const first = run('first'), second = run('second', { status: 'failed', message: '部署失败' })
+  h.resolve(1, [first, second]); await flush()
+  let focused = false
+  const click = { currentTarget: { isConnected: true, focus() { focused = true } } }
+  await h.state.openDetails(run('other'), click)
+  assert.equal(h.state.selectedRun.value, undefined)
+  await h.state.openDetails(second, click)
+  assert.equal(h.state.selectedRun.value.id, 'second')
+  assert.equal(h.requests.length, 2, '拓扑复用运行快照')
+  await h.state.backToHistory()
+  assert.equal(h.state.selectedRun.value, undefined)
+  assert.equal(focused, true)
+  assert.deepEqual(h.state.history.value.map(item => item.id), ['first', 'second'])
+  await h.state.openDetails(first, click)
+  h.auth.readable = false
+  await vue.nextTick()
+  assert.equal(h.state.selectedRun.value, undefined)
+  assert.equal(h.state.historyExpanded.value, false)
+  assert.equal(h.state.history.value.length, 0)
   h.stop()
 })
 
@@ -186,7 +209,7 @@ test('运行事件合并刷新，页面隐藏和关闭时取消请求，无权�
   assert.equal(h.listeners.size, 0)
 })
 
-test('应用关联流水线直接挂载当前执行区域，不以展开按钮控制可见性', () => {
+test('应用关联流水线自动展示当前执行，从操作列查看历史记录', () => {
   const source = readFileSync(new URL('../src/views/DevOpsView.vue', import.meta.url), 'utf8'), elements = []
   function walk(node) { if (node.type === 1) elements.push(node); for (const child of node.children || []) walk(child) }
   walk(parse(source).descriptor.template.ast)
@@ -197,6 +220,10 @@ test('应用关联流水线直接挂载当前执行区域，不以展开按钮�
   const expanded = table.children.find(node => node.type === 1 && node.props.some(prop => prop.name === 'slot' && prop.arg?.content === 'expandedRowRender'))
   assert.equal(expanded.children[0].tag, 'ApplicationWorkflowRuns')
   assert.equal(expanded.children[0].props.some(prop => prop.name === 'if'), false)
+  const actions = elements.find(node => node.tag === 'ResourceRowActions' && node.props.some(prop => prop.exp?.content === "workflowColumn.key==='actions'"))
+  assert.ok(actions.children.some(node => node.tag === 'a-button' && node.children.some(child => child.content === '历史记录')))
+  const runs = readFileSync(new URL('../src/components/ApplicationWorkflowRuns.vue', import.meta.url), 'utf8')
+  assert.doesNotMatch(runs, /当前没有正在执行的流水线/)
 })
 
 test('进度只展示运行快照的阶段，保留未知与失败，不用任务名或总状态补造阶段成功', () => {

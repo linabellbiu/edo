@@ -493,8 +493,13 @@ const applicationWorkflowColumns=computed(()=>[
  {key:'source',title:t('applicationWorkspace.columns.source'),width:200},
  {key:'template',title:t('applicationWorkspace.columns.template'),width:160},
  {key:'tasks',title:t('applicationWorkspace.columns.tasks'),width:175},
- {key:'actions',title:t('applicationWorkspace.columns.actions'),width:132,fixed:'right' as const,align:'right' as const},
+ {key:'actions',title:t('applicationWorkspace.columns.actions'),width:166,fixed:'right' as const,align:'right' as const},
 ])
+const workflowRunPanels=new Map<string,InstanceType<typeof ApplicationWorkflowRuns>>()
+function setWorkflowRunPanel(workflowID:string,panel:unknown){
+ if(panel)workflowRunPanels.set(workflowID,panel as InstanceType<typeof ApplicationWorkflowRuns>)
+ else workflowRunPanels.delete(workflowID)
+}
 function applicationTableRow(card:ApplicationCard){return {id:`application-${card.application.id}`}}
 function applicationTableRowClass(card:ApplicationCard){return ['apps-table-row',applicationDetailsOpen(card.application.id)?'is-expanded':'',activeApplicationID.value===card.application.id?'is-linked':''].join(' ')}
 function resetApplicationFilters(){applicationSearch.value='';applicationFilter.value='all'}
@@ -1559,8 +1564,8 @@ async function executeRetry(){
 }
 watch(planExecutionScopeIdentity,resetRetry,{flush:'sync'})
 onBeforeUnmount(resetRetry)
-function openTaskLogs(run:Run,node:{id:string;name:string}){log.value={open:true,runID:run.id,nodeID:node.id,title:`任务日志：${node.name}`,status:run.status}}
-function openLogs(run:Run){log.value={open:true,runID:run.id,nodeID:'',title:`流水线日志：${applicationName(run)}`,status:run.status}}
+function openTaskLogs(run:Pick<Run,'id'|'status'>,node:{id:string;name:string}){log.value={open:true,runID:run.id,nodeID:node.id,title:`任务日志：${node.name}`,status:run.status}}
+function openLogs(run:Pick<Run,'id'|'status'|'application_id'|'application'>){log.value={open:true,runID:run.id,nodeID:'',title:`流水线日志：${applicationName(run)}`,status:run.status}}
 function resetManualFlow(){
  commitOpen.value=false
  manualApplicationID.value=''
@@ -2020,7 +2025,7 @@ function executeReleasePlan(){
  })
 }
 function showWebhook(item:Repository){void client.get<{webhook_url:string;webhook_secret:string}>(`/repositories/${item.id}/webhook`).then(result=>Modal.info({title:`${item.name} Webhook`,width:650,content:()=>`${result.data.webhook_url}\n${result.data.webhook_secret}`})).catch(error=>message.error(apiErrorMessage(error)))}
-function applicationName(run:Run){return applications.value.find(item=>item.id===run.application_id)?.name||run.application?.name||'未命名应用'}
+function applicationName(run:Pick<Run,'application_id'|'application'>){return applications.value.find(item=>item.id===run.application_id)?.name||run.application?.name||'未命名应用'}
 function applicationForRun(run:Run){return applications.value.find(item=>item.id===run.application_id)||run.application}
 function workflowForRun(run:Run){return applicationForRun(run)?.workflows?.find(item=>item.id===run.workflow_id)}
 function runWorkflowName(run:Run){
@@ -2244,7 +2249,10 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
         <template v-if="applicationDetailTab(card.application.id)==='workflows'">
           <a-table v-if="card.workflowSummaries.length" class="apps-workflow-table" size="small" table-layout="fixed"
             :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:1080}" :expanded-row-keys="card.workflowSummaries.map(item=>item.workflow.id)" :show-expand-column="false">
-            <template #expandedRowRender="{record:item}"><ApplicationWorkflowRuns :application-id="card.application.id" :workflow-id="item.workflow.id" :workflow-name="workflowDisplayName(item.workflow)" :scope-key="resourceScopeKey()" @logs="run=>openLogs(run as Run)"/></template>
+            <template #expandedRowRender="{record:item}">
+              <ApplicationWorkflowRuns :ref="panel=>setWorkflowRunPanel(item.workflow.id,panel)" :application-id="card.application.id" :workflow-id="item.workflow.id"
+                :workflow-name="workflowDisplayName(item.workflow)" :scope-key="resourceScopeKey()" @logs="openLogs" @task-logs="openTaskLogs"/>
+            </template>
             <template #bodyCell="{column:workflowColumn,record:item}">
               <template v-if="workflowColumn.key==='name'"><a-tooltip :title="workflowDisplayName(item.workflow)" :mouse-enter-delay="0.1"><button type="button" class="apps-workflow-name" @click="openApplicationWorkflow(card.application.id,item.workflow.id)"><Workflow :size="15"/><span>{{ workflowDisplayName(item.workflow) }}</span></button></a-tooltip><span v-if="auth.canAny(['pipeline_run.read'])" class="apps-workflow-latest"><span class="apps-status" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/>{{ item.state.label }}</span><time>{{ formatApplicationTime(item.latestRun?.created_at) }}</time></span><span v-else class="apps-workflow-latest">无权查看运行记录</span></template>
               <span v-else-if="workflowColumn.key==='enabled'" class="apps-enabled" :class="{'is-inactive':!item.workflow.is_active}">{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</span>
@@ -2254,6 +2262,8 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
               <span v-else-if="workflowColumn.key==='status'" class="apps-status" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/>{{ item.state.label }}</span>
               <time v-else-if="workflowColumn.key==='time'" class="apps-time">{{ formatApplicationTime(item.latestRun?.created_at) }}</time>
               <ResourceRowActions v-else-if="workflowColumn.key==='actions'" :more="false">
+                <a-button v-if="auth.authorizationState==='ready'&&auth.canAny(['pipeline_run.read'])" size="small" aria-haspopup="dialog"
+                  @click="workflowRunPanels.get(item.workflow.id)?.openHistory($event)">历史记录</a-button>
                 <a-button v-if="item.latestRun&&canRetryRun(item.latestRun)" size="small" type="primary" :loading="retryRunID===item.latestRun.id&&(retryLoading||retrySubmitting)" :disabled="retryLoading||retrySubmitting" @click="openRetry(item.latestRun)">重新执行</a-button>
               </ResourceRowActions>
             </template>

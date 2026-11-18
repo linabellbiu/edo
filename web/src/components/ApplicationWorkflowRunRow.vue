@@ -6,8 +6,8 @@ import SessionPopoutLink from './SessionPopoutLink.vue'
 import PipelineRunStages from './PipelineRunStages.vue'
 import PipelineRunProgress from './PipelineRunProgress.vue'
 
-defineProps<{ run: ApplicationWorkflowRunRecord; compact?: boolean }>()
-defineEmits<{ logs: [run: ApplicationWorkflowRunRecord] }>()
+defineProps<{ run: ApplicationWorkflowRunRecord; compact?: boolean; showDetails?: boolean }>()
+defineEmits<{ logs: [run: ApplicationWorkflowRunRecord]; details: [run: ApplicationWorkflowRunRecord, event: MouseEvent] }>()
 function reference(run: ApplicationWorkflowRunRecord) { return run.ref.replace(/^refs\/(heads|tags)\//, '') || '未记录版本' }
 function time(value: string) { const date = new Date(value); return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' }).format(date) : '—' }
 function trigger(value: string) { return ({ manual: '手动触发', retry: '重新执行', poll_tag: 'Tag 触发', tag_push: 'Tag 触发', poll_push: '代码提交', branch_push: '代码提交', poll_pr: '合并请求', pull_request: '合并请求' } as Record<string, string>)[value] || '代码事件' }
@@ -20,7 +20,10 @@ function trigger(value: string) { return ({ manual: '手动触发', retry: '重�
       <div class="workflow-run-meta"><span class="workflow-run-ref" :title="run.ref"><Tag v-if="run.ref.startsWith('refs/tags/')" :size="13" aria-hidden="true"/><GitBranch v-else :size="13" aria-hidden="true"/>{{ reference(run) }}</span><span>{{ trigger(run.trigger) }}</span><span class="workflow-run-author" :aria-label="`提交人：${run.commit_author||'未记录'}`"><UserRound :size="13" aria-hidden="true"/>{{ run.commit_author||'未记录提交人' }}</span><time :datetime="run.created_at">{{ time(run.created_at) }}</time><PipelineRunProgress :run="run" duration-only/></div>
     </div>
     <PipelineRunStages :stages="run.execution_graph?.stages" :status="run.status"/>
-    <div class="workflow-run-actions"><a-button size="small" @click="$emit('logs',run)">日志</a-button><SessionPopoutLink kind="pipeline-log" :runID="run.id" :title="`流水线日志：${run.commit_message || run.id}`" /></div>
+    <div class="workflow-run-actions">
+      <a-button v-if="showDetails" size="small" @click="$emit('details',run,$event)">详情</a-button>
+      <a-button size="small" @click="$emit('logs',run)">日志</a-button><SessionPopoutLink kind="pipeline-log" :runID="run.id" :title="`流水线日志：${run.commit_message || run.id}`" />
+    </div>
   </article>
 </template>
 

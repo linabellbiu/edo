@@ -70,6 +70,7 @@
 .apps-workflow-table :deep(.ant-table-tbody > tr > td) { height: 48px; padding: 9px 12px; border-bottom-color: var(--edo-border); white-space: nowrap; }
 .apps-workflow-table :deep(.ant-table-tbody > tr:last-child > td) { border-bottom: 0; }
 .apps-workflow-table :deep(.ant-table-expanded-row>td){padding:0!important;background:var(--edo-surface)}
+.apps-workflow-table :deep(.ant-table-expanded-row:not(:has(.workflow-runs))){display:none}
 .apps-workflow-name { display: inline-flex; width: 100%; min-width: 0; align-items: center; gap: 8px; padding: 3px 0; border: 0; color: var(--edo-primary); background: transparent; cursor: pointer; font-size: 13px; font-weight: 500; text-align: left; }
 .apps-workflow-name svg { flex-shrink: 0; }
 .apps-workflow-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

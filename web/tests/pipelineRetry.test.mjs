@@ -12,7 +12,7 @@ const failed = { id: 'failed', status: 'failed', application_id: 'app', created_
 const options = { ref: 'refs/tags/v1', commit_sha: 'a'.repeat(40), build_nodes: [] }
 const retried = { ...failed, id: 'retried', status: 'ready' }
 function harness(t, { execute = true, api = {} } = {}) {
-  const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', permissions: ['pipeline_run.read', ...(execute ? ['pipeline_run.execute'] : [])] }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
+  const auth = vue.reactive({ authorizationState: 'ready', user: { id: 'operator', project_id: 'project-a', permissions: ['pipeline_run.read', ...(execute ? ['pipeline_run.execute'] : [])] }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
   const h = componentHarness('../src/views/DevOpsView.vue', {
     props: { section: 'release-plans' }, query: { view: 'runs' },
     modules: { '@/stores/auth': { useAuthStore: () => auth }, '@/utils/deploymentInstances': loadFrontend('../src/utils/deploymentInstances.ts') },
@@ -126,8 +126,9 @@ test('应用点开流水线后，按准确流水线的最新成功或失败运�
   assert.equal(card.workflowSummaries[0].latestRun.id,'new-api-success')
   assert.equal(card.workflowSummaries[1].latestRun.id,'web-failed')
   for(const item of card.workflowSummaries){
-    const html=await renderActions({workflowColumn:{key:'actions'},item,canRetryRun:h.state.canRetryRun,retryRunID:'',retryLoading:false,retrySubmitting:false,openRetry(){}},workflowRender)
+    const html=await renderActions({workflowColumn:{key:'actions'},item,auth:h.auth,workflowRunPanels:new Map(),canRetryRun:h.state.canRetryRun,retryRunID:'',retryLoading:false,retrySubmitting:false,openRetry(){}},workflowRender)
     assert.equal(html.includes('重新执行'),true)
+    assert.match(html,/历史记录/)
   }
   await h.state.openRetry(card.workflowSummaries[0].latestRun)
   assert.equal(h.requests.at(-1).path,'/pipeline-runs/new-api-success/retry-options')

@@ -1,44 +1,92 @@
 import 'ant-design-vue/dist/reset.css'
 import '/src/styles/vben.css'
+import '/src/styles/resource-list.css'
 import { createApp, h, ref } from 'vue'
 import { createPinia } from 'pinia'
-import { Button, ConfigProvider, Table, theme } from 'ant-design-vue'
+import { Button, ConfigProvider, theme } from 'ant-design-vue'
+import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import client from '/src/api/client'
 import i18n from '/src/locales'
 import { useAuthStore } from '/src/stores/auth'
-import ApplicationWorkflowRuns from '/src/components/ApplicationWorkflowRuns.vue'
+import DevOpsView from '/src/views/DevOpsView.vue'
 
-// 合成运行数据，只允许登记的读取，不连接实际 EDO 或执行流水线。
-const mode = ref('empty'), dark = ref(false), project = ref('preview-a'), lastLog = ref('')
+// 使用真实应用页面和只读合成数据，所有连接留在夹具内。
+const mode = ref('empty'), dark = ref(false), project = ref('preview-a')
 const trace = []; window.edoWorkflowRunTrace = trace
-const graph = (running) => ({ schema_version: 1, source: { id: 'source', name: '代码源', type: 'trigger' }, stages: [
-  { id: 'build', name: '构建镜像', tasks: [{ id: 'api', type: 'build', name: 'API' }, { id: 'web', type: 'build', name: 'Web' }], timing: { state: 'succeeded', duration_ms: 32000, running: false } },
-  { id: 'deploy', name: '主机部署', tasks: [{ id: 'publish', type: 'deploy', name: '发布' }], timing: { state: running ? 'running' : 'succeeded', duration_ms: 8000, running } },
-] })
-const run = (id, running) => ({ id, row_id: Number(id.replace(/\D/g, '')) || 100, application_id: 'app', workflow_id: 'flow', ref: 'refs/tags/v1.2.0', commit_sha: 'a'.repeat(40), commit_message: running ? '更新服务配置' : `发布记录 ${id}`, commit_author: '示例提交人', trigger: 'manual', created_at: '2026-11-13T08:00:00+08:00', status: running ? 'running' : 'succeeded', stage: running ? 'deploy' : 'completed', timing: { state: running ? 'running' : 'succeeded', duration_ms: 40000, running }, execution_graph: graph(running) })
+const source = { id: 'source', name: '代码源', type: 'trigger', config: { branch: 'main', events: ['manual'] } }
+const workflows = [
+  { id: 'flow', name: '主机发布', source, stages: [], is_active: true },
+  { id: 'backup', name: '备用发布', source, stages: [], is_active: true },
+]
+const application = { id: 'app', name: '应用示例', description: '', is_active: true, sync_status: 'idle', workflows }
+const build = { id: 'build', name: '构建镜像', tasks: [{ id: 'api', type: 'build', name: '构建 API' }], timing: { state: 'succeeded', duration_ms: 32000, running: false } }
+const run = (id, workflowID, status) => {
+  const message = status === 'failed' ? '镜像拉取失败，请检查仓库权限' : ''
+  const timing = { state: status, duration_ms: 8000, running: status === 'running' }
+  const deploy = { id: 'deploy', name: workflows.find(flow => flow.id === workflowID).name, tasks: [{ id: 'publish', type: 'deploy', name: `部署 ${id}` }], timing }
+  return {
+    id, row_id: Number(id.match(/\d+$/)?.[0]) || 100, application_id: application.id, workflow_id: workflowID,
+    ref: 'refs/tags/v1.2.0', commit_sha: 'a'.repeat(40), commit_message: `发布记录 ${id}`, commit_author: '示例提交人',
+    trigger: 'manual', created_at: '2026-11-13T08:00:00+08:00', status, stage: status === 'succeeded' ? 'completed' : 'deploy', message,
+    current_node_id: 'publish', timing: { ...timing, duration_ms: 40000 }, execution_graph: { schema_version: 1, source, stages: [build, deploy] },
+  }
+}
+
+const history = workflows.flatMap(workflow => Array.from({ length: 55 }, (_, index) => run(`${workflow.id}-${55-index}`, workflow.id, index % 2 ? 'succeeded' : 'failed')))
 client.defaults.adapter = async config => {
-  const event = { path: config.url, method: config.method, params: config.params }; trace.push(event)
-  if (config.method !== 'get' || config.url !== '/pipeline-runs') throw new Error('隔离验收不允许此请求')
-  const historical = config.params.status_group === 'finished'
-  if (mode.value === 'error') throw new Error(historical ? '读取历史执行失败' : '读取当前执行失败')
-  const records = historical ? Array.from({ length: 55 }, (_, i) => run(`history-${55-i}`, false)) : mode.value === 'many' ? Array.from({ length: 5 }, (_, i) => run(`current-${i}`, true)) : mode.value === 'active' ? [run('current', true)] : []
-  return { data: { pipeline_runs: records }, status: 200, statusText: 'OK', headers: {}, config }
+  trace.push({ path: config.url, method: config.method, params: config.params })
+  if (config.method !== 'get') throw new Error('隔离验收只允许读取')
+  let data
+  if (config.url === '/applications') data = { applications: [application] }
+  else if (config.url === '/pipeline-runs?limit=200') data = { pipeline_runs: history }
+  else if (config.url === '/pipeline-runs' && config.params.application_id === application.id) {
+    const { status_group, workflow_id } = config.params
+    if (mode.value === 'error') throw new Error(status_group === 'finished' ? '读取历史执行失败' : '读取当前执行失败')
+    const count = workflow_id === 'flow' ? ({ active: 1, many: 5 })[mode.value] || 0 : 0
+    const records = status_group === 'finished'
+      ? history.filter(record => record.workflow_id === workflow_id)
+      : Array.from({ length: count }, (_, index) => run(`current-${index+1}`, workflow_id, 'running'))
+    data = { pipeline_runs: records }
+  } else {
+    const [, id, resource] = config.url.match(/^\/pipeline-runs\/([^/]+)\/([^?]+)/) || []
+    const record = history.find(value => value.id === id)
+    if (record && resource === 'tasks') data = { tasks: record.execution_graph.stages.flatMap(stage => stage.tasks.map(task => ({
+      id: `${id}-${task.id}`, node_id: task.id, name: task.name, status: stage.timing.state,
+      stage: stage.timing.state === 'failed' ? 'failed' : 'completed', message: stage.timing.state === 'failed' ? record.message : '任务已完成',
+    }))) }
+    if (record && resource === 'check-reports') data = { reports: [] }
+    if (record && resource === 'check-deliveries') data = { deliveries: [] }
+    if (record && resource === 'logs') data = { logs: [{ id: 1, node_id: 'publish', stage: 'deploy', level: 'stderr', message: `模拟日志 ${record.id}`, created_at: record.created_at }], status: record.status }
+  }
+  if (!data) throw new Error(`隔离验收未登记请求：${config.url}`)
+  return { data, status: 200, statusText: 'OK', headers: {}, config }
 }
 window.fetch = () => Promise.reject(new Error('隔离页面不连接服务器'))
-window.WebSocket = class extends EventTarget { readyState = 0; close() { this.readyState = 3 } }
+window.WebSocket = class extends EventTarget {
+  static OPEN = 1
+  readyState = 0
+  constructor(url, protocol) {
+    super()
+    queueMicrotask(() => {
+      if (this.readyState !== 0) return
+      this.readyState = 1; this.onopen?.()
+      if (protocol === 'edo-pipeline-logs-v1') this.onmessage?.({ data: JSON.stringify({ type: 'complete' }) })
+    })
+  }
+  close() { this.readyState = 3 }
+}
 localStorage.setItem('edo.project', project.value)
 const pinia = createPinia(), auth = useAuthStore(pinia)
-auth.user = { id: 'reader', project_id: project.value, permissions: ['pipeline_run.read'] }; auth.loaded = true; auth.authorizationState = 'ready'
-createApp({ setup() { return () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, { default: () => h('main', { style: 'padding:16px' }, [
+auth.user = { id: 'reader', project_id: project.value, permissions: ['application.read', 'pipeline_run.read'] }
+auth.loaded = true; auth.authorizationState = 'ready'
+const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/applications', component: DevOpsView, props: { section: 'applications' } }] })
+await router.push('/applications')
+createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, { default: () => h('main', { style: 'padding:16px' }, [
   h('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px' }, [
     ...['empty', 'active', 'many', 'error'].map((value, i) => h(Button, { onClick: () => { mode.value = value } }, () => ['空闲', '运行中', '多条当前', '读取失败'][i])),
-    h(Button, { onClick: () => { auth.user.permissions = auth.user.permissions.length ? [] : ['pipeline_run.read'] } }, () => '切换权限'),
+    h(Button, { onClick: () => { auth.user.permissions = auth.user.permissions.includes('pipeline_run.read') ? ['application.read'] : ['application.read', 'pipeline_run.read'] } }, () => '切换权限'),
     h(Button, { onClick: () => { project.value = project.value === 'preview-a' ? 'preview-b' : 'preview-a'; localStorage.setItem('edo.project', project.value); auth.user.project_id = project.value } }, () => '切换项目'),
     h(Button, { onClick: () => { dark.value = !dark.value; document.documentElement.dataset.theme = dark.value ? 'dark' : 'light' } }, () => '切换主题'),
   ]),
-  h('p', { style: 'font-size:12px;color:var(--edo-muted)' }, '隔离合成数据，不连接服务器'),
-  h(Table, { class: 'apps-workflow-table', size: 'small', rowKey: 'id', pagination: false, columns: [{ title: '流水线', dataIndex: 'name' }, { title: '启用状态', dataIndex: 'enabled' }, { title: '触发规则', dataIndex: 'rule' }], dataSource: [{ id: 'flow', name: '快速开始 Dockerfile 流水线', enabled: '已启用', rule: '手动、Tag' }], expandedRowKeys: ['flow'], showExpandColumn: false }, {
-    expandedRowRender: () => h(ApplicationWorkflowRuns, { applicationId: 'app', workflowId: 'flow', workflowName: '快速开始 Dockerfile 流水线', scopeKey: `${project.value}:${mode.value}`, onLogs: value => { lastLog.value = value.id } }),
-  }),
-  h('p', { 'aria-label': '日志目标' }, lastLog.value),
-]) }) } }).use(pinia).use(i18n).mount('#root')
+  h(RouterView),
+]) }) }).use(pinia).use(i18n).use(router).mount('#root')
