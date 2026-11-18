@@ -278,6 +278,69 @@ button { color: inherit; }
 .ant-segmented.ant-segmented .ant-segmented-item:has(.ant-segmented-item-input:focus-visible) { outline: none; box-shadow: inset 0 0 0 2px var(--edo-tabs-focus-ring); }
 .ant-segmented.ant-segmented.ant-segmented-sm .ant-segmented-item { height: var(--edo-tabs-item-height-sm); }
 .ant-segmented.ant-segmented.ant-segmented-sm .ant-segmented-item + .ant-segmented-item::before { height: 12px; }
+
+/* 功能性单选按钮组（安装方式、镜像来源、授权范围等）与分段控件同一套外观：
+   浅色容器 + 发丝边框与分隔线 + 浅靛蓝选中，不再使用整块高饱和品牌蓝。 */
+.ant-radio-group:has(> .ant-radio-button-wrapper) {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 3px;
+  border: 1px solid var(--edo-tabs-border);
+  border-radius: var(--edo-tabs-radius);
+  background: var(--edo-tabs-bg);
+}
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper {
+  position: relative;
+  height: var(--edo-tabs-item-height);
+  margin-inline-start: 0;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--edo-tabs-item-radius);
+  color: var(--edo-muted);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: var(--edo-tabs-item-height);
+  transition: color 140ms ease, background-color 140ms ease;
+}
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper::before {
+  top: 50%;
+  inset-inline-start: 0;
+  width: 1px;
+  height: 14px;
+  border-radius: 1px;
+  background: var(--edo-tabs-divider);
+  transform: translateY(-50%);
+  transition: opacity 140ms ease;
+}
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:first-child::before { display: none; }
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:not(.ant-radio-button-wrapper-checked):not(.ant-radio-button-wrapper-disabled):hover {
+  color: var(--edo-text);
+  background: var(--edo-tabs-hover-bg);
+}
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled) {
+  color: var(--edo-tabs-selected-color);
+  background: var(--edo-tabs-selected-bg);
+  box-shadow: none;
+  font-weight: 600;
+}
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper-checked::before,
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:has(+ .ant-radio-button-wrapper-checked)::before,
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:hover::before,
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:hover + .ant-radio-button-wrapper::before { opacity: 0; }
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper-disabled {
+  color: color-mix(in srgb, var(--edo-muted) 55%, transparent);
+  background: transparent;
+}
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper-disabled.ant-radio-button-wrapper-checked {
+  color: color-mix(in srgb, var(--edo-muted) 70%, transparent);
+  background: color-mix(in srgb, var(--edo-tabs-selected-bg) 55%, transparent);
+}
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:has(input:focus-visible) {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--edo-tabs-focus-ring);
+}
 .ant-segmented.ant-segmented.ant-segmented-sm .ant-segmented-item-label { padding: 0 9px; font-size: 12px; }
 
 .ant-segmented.ant-segmented.edo-page-tabs {

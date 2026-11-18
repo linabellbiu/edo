@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ConfigProvider, Segmented, theme } from 'ant-design-vue'
+import { ConfigProvider, Radio, Segmented, theme } from 'ant-design-vue'
 
 const query = new URLSearchParams(location.search)
 const dark = ref(query.get('theme') === 'dark')
@@ -54,6 +54,9 @@ const modeOptions = [
   { value: 'entries', label: '条目编辑' },
   { value: 'tabs', label: '分栏编辑' },
 ]
+const installMode = ref('native')
+const source = ref('domestic')
+const scope = ref(false)
 const permission = ref('inherit')
 const permissionOptions = [
   { value: 'inherit', label: '继承' },
@@ -94,6 +97,30 @@ function toggleTheme() {
         <div class="inline-row">
           <Segmented value="all" :options="statusOptions" disabled aria-label="禁用的状态筛选" />
           <Segmented value="b" :options="[{ value: 'a', label: '按命名空间聚合' }, { value: 'b', label: '按工作负载聚合' }, { value: 'c', label: '按节点聚合' }]" size="small" aria-label="聚合方式" />
+        </div>
+      </section>
+
+      <section class="preview-card">
+        <h2>功能性单选组（安装方式 / 镜像来源 / 授权范围 / 禁用项）</h2>
+        <div class="inline-row">
+          <Radio.Group v-model:value="installMode" button-style="solid" aria-label="安装方式">
+            <Radio.Button value="native">原生 K3s</Radio.Button>
+            <Radio.Button value="k3d">k3d</Radio.Button>
+          </Radio.Group>
+          <Radio.Group v-model:value="source" aria-label="镜像来源">
+            <Radio.Button value="domestic">国内源</Radio.Button>
+            <Radio.Button value="dockerhub">Docker Hub</Radio.Button>
+            <Radio.Button value="custom">手动填写</Radio.Button>
+          </Radio.Group>
+          <Radio.Group v-model:value="scope" button-style="solid" aria-label="授权范围">
+            <Radio.Button :value="false">指定命名空间</Radio.Button>
+            <Radio.Button :value="true">集群级资源</Radio.Button>
+          </Radio.Group>
+          <Radio.Group value="b" aria-label="禁用示例">
+            <Radio.Button value="a">默认安装</Radio.Button>
+            <Radio.Button value="b">自定义安装</Radio.Button>
+            <Radio.Button value="c" disabled>不可选</Radio.Button>
+          </Radio.Group>
         </div>
       </section>
     </main>
