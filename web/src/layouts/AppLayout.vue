@@ -304,7 +304,6 @@ onBeforeUnmount(() => {
           </a-menu>
 
           <template v-for="(section, sectionIndex) in navigation.slice(1)" :key="section.label">
-            <div v-if="!preferences.sidebarCollapsed" class="navigation-section-title">{{ section.label ? t(section.label) : '' }}</div>
             <a-menu
               :selected-keys="selectedKeys"
               :open-keys="preferences.sidebarCollapsed ? collapsedOpenKeys : openKeys"
