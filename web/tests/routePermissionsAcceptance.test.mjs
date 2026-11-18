@@ -79,16 +79,25 @@ test('仅有 K8s 资源查看权限也能进入独立集群目录，不可进入
   assert.equal(await routeHarness(['deployment.read']).guard('/hosts?view=clusters'), '/projects')
 })
 
-test('侧栏全部叶子按精确有效权限过滤，无权限父级不会残留，平台与项目入口不混淆',()=>{
+test('侧栏全部叶子按精确有效权限过滤，无权限父级不会残留，平台与项目入口不混淆',async()=>{
   const baseline=routeHarness(),leaves=baseline.navigation.flatNavigation()
   const flatten=items=>items.flatMap(item=>item.children?flatten(item.children):[item])
   const sections=baseline.navigation.navigation
   const visible=h=>sections.flatMap(section=>[...flatten(h.navigation.visibleNavigationItems(section.items||[],h.auth.canAny)),...(section.branches||[]).flatMap(branch=>flatten(h.navigation.visibleNavigationItems(branch.items,h.auth.canAny)))])
   assert.deepEqual(visible(baseline).map(item=>item.path).sort(),['/projects','/settings'])
-  for(const code of new Set(leaves.flatMap(item=>item.permissions))) {
+  // 隐藏入口（应用数据库、主机组保护）不进侧栏，但路由与权限保留。
+  const hidden=leaves.filter(item=>item.hidden)
+  assert.deepEqual(hidden.map(item=>item.path).sort(),['/application-databases','/environment-policies'])
+  const menuLeaves=leaves.filter(item=>!item.hidden)
+  for(const code of new Set(menuLeaves.flatMap(item=>item.permissions))) {
     const h=routeHarness([code]),actual=visible(h).map(item=>item.path).sort()
-    const expected=leaves.filter(item=>!item.permissions.length||item.permissions.includes(code)).map(item=>item.path).sort()
+    const expected=menuLeaves.filter(item=>!item.permissions.length||item.permissions.includes(code)).map(item=>item.path).sort()
     assert.deepEqual(actual,expected,code)
+  }
+  for(const item of hidden) {
+    const h=routeHarness([...item.permissions])
+    assert.ok(!visible(h).map(entry=>entry.path).includes(item.path),'隐藏入口不能出现在侧栏')
+    assert.equal(await h.guard(item.path),true,'隐藏入口仍保留路由与权限')
   }
   const roleOnly=visible(routeHarness(['role.read'])).map(item=>item.path)
   assert.ok(roleOnly.includes('/access?view=roles'))

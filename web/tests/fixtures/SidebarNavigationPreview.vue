@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ConfigProvider, theme } from 'ant-design-vue'
-import { navigation } from '@/router/navigation'
+import { navigation, visibleNavigationItems } from '@/router/navigation'
 import SidebarNavigation, { type SidebarSection } from '@/components/SidebarNavigation.vue'
 
 const query = new URLSearchParams(location.search)
@@ -25,9 +25,13 @@ const antTheme = computed(() => ({
 }))
 
 const overviewItems = computed(() => navigation[0]?.items ?? [])
+const allowAll = () => true
+// 与 AppLayout 一致：隐藏入口不进入侧栏。
 const sections = computed<SidebarSection[]>(() => navigation.slice(1).map((section, index) => ({
   key: section.label ?? `section-${index}`,
-  branches: section.branches ?? [],
+  branches: (section.branches ?? [])
+    .map(branch => ({ ...branch, items: visibleNavigationItems(branch.items, allowAll) }))
+    .filter(branch => branch.items.length > 0),
 })))
 
 function toggleTheme() {

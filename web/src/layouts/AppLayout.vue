@@ -9,7 +9,7 @@ import {
   Pin, Settings, Sun, X,
 } from 'lucide-vue-next'
 
-import { flatNavigation, navigation, findNavigationItem, navigationTrail, visibleNavigationItems, type NavBranch, type NavItem } from '@/router/navigation'
+import { flatNavigation, menuNavigation, navigation, findNavigationItem, navigationTrail, visibleNavigationItems, type NavBranch, type NavItem } from '@/router/navigation'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useTabsStore } from '@/stores/tabs'
@@ -116,7 +116,7 @@ const breadcrumbs = computed(() => {
   return trail.length ? trail : [{ label: String(route.meta.title || 'nav.overview') }]
 })
 
-const searchableItems = computed(() => flatNavigation()
+const searchableItems = computed(() => menuNavigation()
   .filter(allowed)
   .filter((item) => t(item.label).toLowerCase().includes(searchText.value.trim().toLowerCase())))
 

@@ -11,6 +11,8 @@ export interface NavItem {
   path: string
   permissions: string[]
   icon?: Component
+  /** 暂时从侧栏与搜索入口隐藏，路由与权限仍保留。 */
+  hidden?: boolean
   children?: NavItem[]
 }
 
@@ -38,8 +40,9 @@ export const navigation: NavSection[] = [
         { label: 'nav.applications', path: '/applications', permissions: ['application.read'], icon: PanelsTopLeft },
         { label: 'nav.repositories', path: '/repositories', permissions: ['repository.read'], icon: GitBranch },
         { label: 'nav.credentials', path: '/credentials', permissions: ['credential.read'], icon: KeyRound },
-        {label:'nav.applicationDatabases',path:'/application-databases',permissions:['application_database.read'],icon:Database},
-        {label:'nav.environmentPolicies',path:'/environment-policies',permissions:['environment_policy.read'],icon:ShieldCheck},
+        // 应用数据库与主机组保护暂不对外展示（路由、接口与权限保留，后续按需求再决定删除）。
+        {label:'nav.applicationDatabases',path:'/application-databases',permissions:['application_database.read'],icon:Database,hidden:true},
+        {label:'nav.environmentPolicies',path:'/environment-policies',permissions:['environment_policy.read'],icon:ShieldCheck,hidden:true},
         {label:'nav.configurationFiles',path:'/configuration-files',permissions:['delivery_variable.read'],icon:FileText},
         { label: 'nav.deliveryVariables', path: '/delivery-variables', permissions: ['delivery_variable.read'], icon: KeyRound },
       ] },
@@ -100,8 +103,14 @@ export function flatNavigation() {
   ])
 }
 
+/** 侧栏与搜索可展示的入口，隐藏项仍在路由与标题解析中生效。 */
+export function menuNavigation() {
+  return flatNavigation().filter(item => !item.hidden)
+}
+
 export function visibleNavigationItems(items: NavItem[], canAny: (permissions: string[]) => boolean): NavItem[] {
   return items.flatMap(item => {
+    if (item.hidden) return []
     if (!item.children) return canAny(item.permissions) ? [item] : []
     const children = visibleNavigationItems(item.children, canAny)
     return children.length ? [{ ...item, children }] : []

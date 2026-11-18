@@ -1,4 +1,4 @@
-import { flatNavigation } from '@/router/navigation'
+import { menuNavigation } from '@/router/navigation'
 
 export type AssistantNavigationPart =
   | { kind: 'text'; text: string }
@@ -6,7 +6,7 @@ export type AssistantNavigationPart =
 
 // 只识别已有菜单的站内导航，不解析 HTML 或通用 Markdown。
 export function assistantNavigationParts(content: string, canAny: (permissions: string[]) => boolean): AssistantNavigationPart[] {
-  const targets = new Map(flatNavigation().map(item => [item.path, item]))
+  const targets = new Map(menuNavigation().map(item => [item.path, item]))
   const parts: AssistantNavigationPart[] = []
   const links = /(?<!!)\[([^\]\r\n]{1,100})\]\((\/[^\s()]{1,512})\)/g
   let start = 0
