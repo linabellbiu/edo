@@ -47,6 +47,16 @@ func (h clusterHandler) resourceReveal(c *gin.Context) {
 	h.getKubernetesResource(c, true)
 }
 func (h clusterHandler) getKubernetesResource(c *gin.Context, reveal bool) {
+	if c.Param("resource") == "pods" && c.Query("include_deployment") == "true" {
+		result, err := h.kube.GetPodWorkloadDetail(c.Request.Context(), c.Param("id"), c.Query("namespace"), c.Param("name"))
+		if err != nil {
+			h.resourceError(c, "kubernetes_pod_workload_get", err)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, result)
+		return
+	}
 	result, err := h.kube.GetResource(c.Request.Context(), c.Param("id"), c.Param("resource"), c.Query("namespace"), c.Param("name"), reveal)
 	if err != nil {
 		h.resourceError(c, "kubernetes_resource_get", err)

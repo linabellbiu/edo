@@ -69,6 +69,11 @@ client.defaults.adapter = async config => {
         response = { items: params.replica_set_uid ? data.eventsForRevision(revision) : data.eventsFor(object) }
       }
       else if (operation === 'diagnostics') response = object.kind === 'Deployment' ? { uid: object.metadata.uid, state: 'ok', revisions: data.revisions } : object.kind === 'Service' ? { uid: object.metadata.uid, state: 'ok', endpoints: [] } : { uid: object.metadata.uid, state: 'ok', metrics_at: new Date().toISOString(), containers: object.status?.phase === 'Running' ? [{ name: 'web', cpu: .021, memory: 162 * 1024 ** 2 }, { name: 'metrics', cpu: .002, memory: 18 * 1024 ** 2 }] : [] }
+      else if (resource === 'pods' && params.include_deployment) {
+        const owner = object.metadata.ownerReferences?.find(item => item.controller === true && item.kind === 'ReplicaSet')
+        const revision = data.revisions.find(item => item.uid === owner?.uid)
+        response = { object, deployment: revision ? { object: data.deployment, replica_set_uid: revision.uid } : null }
+      }
       else response = { object }
     } else if (/\/nodes\/[^/]+\/metrics$/.test(path)) response = data.nodeHistory(decodeURIComponent(path.split('/').at(-2)))
     else throw new Error('本地预览未登记此接口')
@@ -120,6 +125,7 @@ if (workloadActions) auth.user.permissions.push('kubernetes.workload.execute', '
 auth.loaded = true
 auth.authorizationState = 'ready'
 const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/kubernetes', component: KubernetesView }, { path: '/hosts', component: { render: () => h(ClusterInventory, { clusters: inventoryClusters, hosts: [], loading: false }) } }] })
-const view = new URLSearchParams(location.search).get('view') || 'overview'
-await router.push({ path: view === 'clusters' ? '/hosts' : '/kubernetes', query: { view, ...(view === 'clusters' ? {} : { cluster: 'local-preview', namespace: 'preview' }) } })
+const previewQuery = new URLSearchParams(location.search)
+const view = previewQuery.get('view') || 'overview'
+await router.push({ path: view === 'clusters' ? '/hosts' : '/kubernetes', query: { view, resource: previewQuery.get('resource') || undefined, ...(view === 'clusters' ? {} : { cluster: 'local-preview', namespace: 'preview' }) } })
 createApp(KubernetesWorkspacePreview).use(pinia).use(i18n).use(router).mount('#root')

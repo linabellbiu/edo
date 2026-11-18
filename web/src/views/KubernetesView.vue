@@ -5,7 +5,7 @@ import { Plus, RefreshCw, Search, ArrowLeft, Filter, Server, ChevronRight } from
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate, type LocationQueryRaw } from 'vue-router'
 import client from '@/api/client'
-import { identityOf, kubeKey, kubeTypes, listKubeResources, listKubeResourceScopes, namespaceSelection, mapNamespaceRequests, mergeNamespaceOverviews, resourceURL, withFreshKubeResource, kubeErrorMessage, KubeResourceChanged, streamKubeEvents, KubeWatchError, usageFor, formatKubeCPU, formatKubeMemory, podSpec, type KubeWatchEvent, type KubeOverview as OverviewData, type KubeCluster, type KubeObject, type KubeType } from '@/api/kubernetes'
+import { identityOf, kubeKey, kubeTypes, listKubeResources, listKubeResourceScopes, namespaceSelection, mapNamespaceRequests, mergeNamespaceOverviews, resourceURL, withFreshKubeResource, kubeErrorMessage, KubeResourceChanged, streamKubeEvents, KubeWatchError, usageFor, formatKubeCPU, formatKubeMemory, podSpec, type KubeWatchEvent, type KubeOverview as OverviewData, type KubeCluster, type KubeObject, type KubeResourceDetail, type KubeType } from '@/api/kubernetes'
 import { resourceColumns, resourceCells, resourceStatus, resourceSearchText, matchesLabelFilter, relatedPodMatch, type KubeReference } from '@/utils/kubernetesPresentation'
 import KubeNamespaceTree from '@/components/KubeNamespaceTree.vue'
 import '@/styles/kubernetes.css'
@@ -307,32 +307,55 @@ function hideSecret(){secretController?.abort();secretController=undefined;secre
 watch(()=>can('kubernetes.config.read')&&can('kubernetes.secret.read'),allowed=>{if(!allowed)hideSecret()},{flush:'sync'})
 function closeDetails() { cancelPendingEdit();const origin=lastViewedRow.value;void nextTick(()=>{const row=[...resourcePanel.value?.querySelectorAll<HTMLElement>('[data-resource-key]')??[]].find(item=>item.dataset.resourceKey===origin);row?.querySelector<HTMLButtonElement>('.resource-name')?.focus({preventScroll:true})}); detailRevision++;detailController?.abort(); detailOpen.value=false; detail.value=undefined;detailType.value=undefined;detailOrigin.value='';detailHistory.value=[]; workloadSelections.value={};templateContainerSelections.value={}; hideSecret(); relatedPods.value=[]; events.value=[]; detailError.value='';detailSyncError.value='';relatedLoading.value=false }
 function nsOf(object:KubeObject) { return object.metadata.namespace ?? '' }
-async function openDetails(object:KubeObject, tab='basic',type=activeType.value,follow=false) {
+async function openDetails(object:KubeObject, tab='basic',type=activeType.value,follow=false, preferDeployment=!follow) {
   if (!type||!can(`${type.permission}.read`)) return
   cancelPendingEdit()
   eventsLoading.value=false
   if(!follow){detailHistory.value=[];detailOrigin.value=kubeKey(object);lastViewedRow.value=kubeKey(object)}
   const preserve=follow&&detail.value?.metadata.uid===object.metadata.uid&&detailType.value?.resource===type.resource
-  const current=++detailRevision, id=cluster.value
+  const current=++detailRevision, id=cluster.value, actor=workloadActor()
+  const resolveDeployment=preferDeployment&&type.resource==='pods'&&tab==='basic'
   detailController?.abort();const request=new AbortController();detailController=request
+  const isCurrent=()=>mounted&&current===detailRevision&&!request.signal.aborted&&actor===workloadActor()&&can(`${type.permission}.read`)
   detailOpen.value=true; detailLoading.value=true; detailError.value='';detailSyncError.value=''; hideSecret(); detailTab.value=object.kind==='Node'&&tab==='basic'?'monitor':type.group==='workloads'&&object.kind!=='Pod'&&['pods','diagnostics'].includes(tab)?'basic':tab; if(!preserve){relatedPods.value=[];events.value=[];templateSection.value='containers'} eventsError.value=false;relatedLoaded.value=false;relatedError.value='';relatedPartial.value=false;relatedLoading.value=false;lastRelatedSync=0
-  detail.value=object;detailType.value=type
+  // 归属核验完成前只显示加载态，避免先渲染 Pod 详情再切换到 Deployment。
+  detail.value=resolveDeployment?{kind:object.kind,metadata:object.metadata}:object;detailType.value=type
   try {
-    const {data}=await client.get<{object:KubeObject}>(resourceURL(id,type,object.metadata.name),{params:{namespace:nsOf(object)},signal:request.signal})
-    if (!mounted||current!==detailRevision) return
+    const {data}=await client.get<KubeResourceDetail>(resourceURL(id,type,object.metadata.name),{
+      params:{namespace:nsOf(object),...(resolveDeployment?{include_deployment:true}:{})},signal:request.signal,
+    })
+    if (!isCurrent()) return
     if(object.metadata.uid&&object.metadata.uid!==data.object.metadata.uid){detailError.value=t('k8s.resourceChanged');return}
-    detail.value=data.object
-    if (type.resource!=='secrets') void loadEvents(id,type,data.object,current,request.signal)
-    if(needsRelatedPods.value)void loadRelatedPods(id,data.object,current,request.signal)
-  } catch (err) { if(mounted&&current===detailRevision&&!request.signal.aborted) detailError.value=kubeErrorMessage(err) }
+    let target=data.object, targetType=type
+    if(resolveDeployment&&(target.kind!=='Pod'||target.metadata.name!==object.metadata.name||nsOf(target)!==nsOf(object))){
+      throw new KubeResourceChanged(t('k8s.resourceChanged'))
+    }
+    if(resolveDeployment&&data.deployment){
+      const deployment=data.deployment.object, revisionUID=data.deployment.replica_set_uid
+      if(deployment?.kind!=='Deployment'||!deployment.metadata?.uid||!deployment.metadata.name||!revisionUID||nsOf(deployment)!==nsOf(object)||!data.object.metadata.uid){
+        throw new KubeResourceChanged(t('k8s.resourceChanged'))
+      }
+      target=deployment
+      targetType=kubeTypes.find(item=>item.resource==='deployments')!
+      workloadSelections.value[id+deployment.metadata.uid]={revisionUID,podUID:data.object.metadata.uid,containerName:'',podTab:'summary'}
+    }else if(resolveDeployment&&data.deployment===undefined&&data.object.metadata.ownerReferences?.some((owner:KubeObject)=>owner.controller===true&&owner.kind==='ReplicaSet')){
+      throw new KubeResourceChanged(t('k8s.podDeploymentUnavailable'))
+    }
+    detailType.value=targetType;detail.value=target
+    if (targetType.resource!=='secrets') void loadEvents(id,targetType,target,current,request.signal)
+    if(needsRelatedPods.value)void loadRelatedPods(id,target,current,request.signal)
+  } catch (err) { if(isCurrent()) detailError.value=kubeErrorMessage(err) }
   finally { if(mounted&&current===detailRevision) detailLoading.value=false }
 }
 function canFollow(reference?:KubeReference){const type=kubeTypes.find(item=>item.resource===reference?.resource);return Boolean(type&&can(`${type.permission}.read`))}
+function canFollowWorkloadRuntime(reference:KubeReference){
+  return (detail.value?.kind!=='Deployment'||reference.resource!=='pods')&&canFollow(reference)
+}
 async function followReference(reference:KubeReference){
   const type=kubeTypes.find(item=>item.resource===reference.resource)
   if(!type||!canFollow(reference)||detailLoading.value)return
   if(detail.value&&detailType.value)detailHistory.value.push({object:detail.value,type:detailType.value,tab:detailTab.value,templateSection:templateSection.value,templateIdentity:templateIdentity.value,templateContainerKey:templateContainerSelections.value[templateIdentity.value]})
-  await openDetails({kind:type.kind,metadata:{name:reference.name,namespace:reference.namespace,uid:reference.uid}},'basic',type,true)
+  await openDetails({kind:type.kind,metadata:{name:reference.name,namespace:reference.namespace,uid:reference.uid}},'basic',type,true,true)
 }
 async function followFromRow(object:KubeObject,reference:KubeReference){
   if(!activeType.value||!canFollow(reference))return
@@ -781,7 +804,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
             :selection="workloadSelections[cluster+detail.metadata.uid]" @selection="value=>workloadSelections[cluster+detail!.metadata.uid]=value"
             :pods="relatedPods" :pods-loading="relatedLoading" :pods-error="relatedError" :pods-partial="relatedPartial"
             :events="events" :events-error="eventsError" :auto-refresh="autoRefresh&&detailPresented&&detailTab==='basic'"
-            :refresh-token="detailRefresh" :can="can" :can-follow="canFollow" :disabled="Boolean(busy)||detailLoading||Boolean(detailSyncError)||relatedLoading"
+            :refresh-token="detailRefresh" :can="can" :can-follow="canFollowWorkloadRuntime" :disabled="Boolean(busy)||detailLoading||Boolean(detailSyncError)||relatedLoading"
             @follow="followReference" @logs="(pod,container)=>openWorkloadStream(pod,container)" @terminal="(pod,container)=>openWorkloadStream(pod,container,true)"
             @files="(pod,container)=>openWorkloadStream(pod,container,true,true)" @pod-yaml="openWorkloadManifest" @revision-yaml="openRevisionManifest" @pod-remove="removeRelatedPod"
             @delete-revision-pods="deleteRevisionPods" @retry-pods="retryRelatedPods" />

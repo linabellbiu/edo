@@ -16,10 +16,10 @@ const settle = async () => { await vue.nextTick(); await new Promise(resolve => 
 function pod(uid = 'pod-a') {
   return { apiVersion: 'v1', kind: 'Pod', metadata: { uid, name: 'web', namespace: 'team' }, spec: { containers: [{ name: 'web' }, { name: 'metrics' }], initContainers: [{ name: 'prepare' }], ephemeralContainers: [{ name: 'debug' }] }, status: { phase: 'Running', containerStatuses: [{ name: 'web', state: { running: {} } }, { name: 'metrics', state: { running: {} } }], initContainerStatuses: [{ name: 'prepare', state: { terminated: { exitCode: 0 } } }], ephemeralContainerStatuses: [{ name: 'debug', state: { running: {} } }] } }
 }
-async function harness() {
+async function harness(getResource) {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/kubernetes', component: {} }] })
   await router.push('/kubernetes?view=workloads&resource=pods&cluster=cluster-a&namespace=team')
-  const route = new Proxy({}, { get: (_, key) => router.currentRoute.value[key] }), blocked = vue.reactive(new Set()), messages = []
+  const route = new Proxy({}, { get: (_, key) => router.currentRoute.value[key] }), blocked = vue.reactive(new Set()), messages = [], requests = []
   const component = loadFrontend('../src/views/KubernetesView.vue', {
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
     'vue-i18n': { useI18n: () => ({ t: key => key }) },
@@ -28,7 +28,12 @@ async function harness() {
     '@/api/kubernetes': { ...api, listKubeResourceScopes: async () => ({ items: [], cursor: {} }), listKubeResources: async () => ({ items: [], continue: '' }) },
     '@/utils/kubernetesWorkspace': workspace, '@/utils/kubernetesPresentation': presentation,
     '@/stores/auth': { useAuthStore: () => ({ canAny: codes => codes.some(code => !blocked.has(code)) }) },
-    '@/api/client': { __esModule: true, default: { get: async url => ({ data: url.endsWith('/namespaces') ? { namespaces: ['team'] } : { counts: {}, nodes: [], usage: {}, phases: {} } }) } },
+    '@/api/client': { __esModule: true, default: { get: async (url, options) => {
+      if (url.includes('/resources/')) requests.push({ url, options })
+      if (url.endsWith('/events')) return { data: { items: [] } }
+      if (getResource && url.includes('/resources/')) return { data: await getResource(url, options) }
+      return { data: url.endsWith('/namespaces') ? { namespaces: ['team'] } : { counts: {}, nodes: [], usage: {}, phases: {} } }
+    } } },
   }, { document: { hidden: false }, localStorage: { getItem: () => 'project-a' } }).default
   const scope = vue.effectScope(); let state
   scope.run(() => { state = component.setup({}, { expose() {} }) })
@@ -36,8 +41,62 @@ async function harness() {
   state.cluster.value = 'cluster-a'; await settle()
   const current = pod()
   state.detail.value = current; state.detailType.value = podType; state.detailOpen.value = true; state.detailLoading.value = false
-  return { state, blocked, messages, target: container => ({ cluster: 'cluster-a', namespace: 'team', podUID: 'pod-a', container }), stop() { state.cancelListPersist(); scope.stop() } }
+  return { state, blocked, messages, requests, target: container => ({ cluster: 'cluster-a', namespace: 'team', podUID: 'pod-a', container }), stop() { state.cancelListPersist(); scope.stop() } }
 }
+
+test('从 Pod 列表直接进入 Deployment 三栏并选中原 Pod，不先渲染 Pod 详情', async () => {
+  const selection = pod(), deployment = { kind: 'Deployment', apiVersion: 'apps/v1', metadata: { name: 'workload', namespace: 'team', uid: 'deployment-a' } }
+  let respond
+  const h = await harness(() => new Promise(resolve => { respond = resolve }))
+  const pending = h.state.openDetails(selection, 'basic', podType)
+  assert.equal(h.state.detail.value.apiVersion, undefined)
+  assert.equal(h.state.detailLoading.value, true)
+  assert.deepEqual(h.requests[0].options.params, { namespace: 'team', include_deployment: true })
+  respond({ object: selection, deployment: { object: deployment, replica_set_uid: 'rs-a' } })
+  await pending
+  assert.equal(h.state.detail.value.kind, 'Deployment')
+  assert.equal(h.state.detailType.value.resource, 'deployments')
+  assert.equal(h.state.detailTab.value, 'basic')
+  assert.equal(h.state.lastViewedRow.value, 'pod-a')
+  assert.deepEqual(h.state.workloadSelections.value['cluster-adeployment-a'], { revisionUID: 'rs-a', podUID: 'pod-a', containerName: '', podTab: 'summary' })
+  assert.equal(h.state.canFollowWorkloadRuntime({ resource: 'pods', name: 'web', namespace: 'team', uid: 'pod-a' }), false)
+  assert.equal(h.state.canFollowWorkloadRuntime({ resource: 'nodes', name: 'worker' }), true)
+  assert.deepEqual(h.requests.map(request => request.url), ['/kubernetes/clusters/cluster-a/resources/pods/web', '/kubernetes/clusters/cluster-a/resources/deployments/workload/events'])
+  h.stop()
+})
+
+test('仅在已核实 Pod 归属时跳转，迟到响应不能替换后一次选择', async () => {
+  const selection = pod(), independent = { ...pod('pod-b'), metadata: { ...pod('pod-b').metadata, name: 'standalone' } }
+  let respond
+  const h = await harness(url => url.endsWith('/web') ? new Promise(resolve => { respond = resolve }) : { object: independent, deployment: null })
+  const old = h.state.openDetails(selection, 'basic', podType)
+  await h.state.openDetails(independent, 'basic', podType)
+  assert.equal(h.requests[0].options.signal.aborted, true)
+  respond({ object: selection, deployment: { object: { kind: 'Deployment', metadata: { uid: 'old-deployment', namespace: 'team', name: 'old' } }, replica_set_uid: 'rs-old' } })
+  await old
+  assert.equal(h.state.detail.value.metadata.uid, 'pod-b')
+  assert.equal(h.state.detailType.value.resource, 'pods')
+  assert.deepEqual(h.state.workloadSelections.value, {})
+  h.stop()
+})
+
+test('从关联资源进入 Pod 所属 Deployment，返回后保留原资源及页签', async () => {
+  const source = { kind: 'Service', apiVersion: 'v1', metadata: { name: 'service', namespace: 'team', uid: 'service-a' } }
+  const deployment = { kind: 'Deployment', apiVersion: 'apps/v1', metadata: { name: 'workload', namespace: 'team', uid: 'deployment-a' } }
+  const h = await harness(url => url.endsWith('/pods/web')
+    ? { object: pod(), deployment: { object: deployment, replica_set_uid: 'rs-a' } }
+    : { object: source })
+  h.state.detail.value = source
+  h.state.detailType.value = api.kubeTypes.find(type => type.resource === 'services')
+  h.state.detailTab.value = 'pods'
+  await h.state.followReference({ resource: 'pods', name: 'web', namespace: 'team', uid: 'pod-a' })
+  assert.equal(h.state.detail.value.metadata.uid, 'deployment-a')
+  await h.state.backDetail()
+  assert.equal(h.state.detail.value.metadata.uid, 'service-a')
+  assert.equal(h.state.detailTab.value, 'pods')
+  assert.equal(h.state.detailHistory.value.length, 0)
+  h.stop()
+})
 
 test('初始默认普通容器，显式选择失效后保留名称并停止日志和弹出链接', async () => {
   const h = await harness(), current = h.state.detail.value

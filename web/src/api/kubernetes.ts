@@ -5,6 +5,10 @@ import { apiErrorMessage } from './resources'
 import type { ClusterHost } from './infrastructure'
 
 export type KubeObject = Record<string, any>
+export interface KubeResourceDetail {
+  object: KubeObject
+  deployment?: { object: KubeObject; replica_set_uid: string } | null
+}
 export interface KubeCluster { id: string; name: string; default_namespace: string; api_server: string; is_active: boolean; hosts?: ClusterHost[] | null }
 export interface KubeType { resource: string; kind: string; apiVersion: string; group: string; permission: string; namespaced: boolean; create: boolean; update: boolean; delete: boolean }
 const type = (resource: string, kind: string, apiVersion: string, group: string, permission: string, namespaced = true, create = true, update = true, remove = true): KubeType => ({ resource, kind, apiVersion, group, permission: `kubernetes.${permission}`, namespaced, create, update, delete: remove })
