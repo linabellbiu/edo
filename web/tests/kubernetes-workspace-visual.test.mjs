@@ -219,14 +219,11 @@ test('范围树保留选择边界，禁用不发事件，集群级页面不操�
  const style=components.KubeNamespaceTree.styles
  assert.ok(Number.parseFloat(declarations(style,'.namespace-expander').width)>=24)
  assert.ok(Number.parseFloat(declarations(style,'.namespace-expander')['min-height'])>=24)
- assert.equal(declarations(style,'.namespace-tree-item:not(.selected):not(.is-disabled):hover').background,'var(--kube-hover)')
- assert.equal(declarations(style,'.namespace-tree-item.selected').background,'var(--kube-selected)')
+ assert.equal(declarations(style,'.namespace-tree-item:not(.is-disabled):hover').background,'var(--kube-hover)')
+ // 选中只由勾选框表达：整行不加底色、不改文字颜色，多个勾选项才不会连成一片。
+ assert.equal(declarations(style,'.namespace-tree-item.selected').background,undefined,'选中行不要再铺底色')
+ assert.equal(declarations(style,'.namespace-tree-item.selected').color,undefined,'选中行不要改文字颜色')
  assert.equal(declarations(style,'.namespace-cluster-name:disabled').cursor,'not-allowed')
- // 相邻选中项各自成块：条目之间必须有间距和圆角，否则多个命名空间勾选后会粘成一整块。
- assert.equal(declarations(style,'.namespace-children')['flex-direction'],'column')
- assert.ok(Number.parseFloat(declarations(style,'.namespace-children').gap)>=4,'命名空间条目之间要留间距')
- assert.ok(Number.parseFloat(declarations(style,'.namespace-tree-item')['border-radius'])>=8,'命名空间条目要保留圆角')
- assert.ok(Number.parseFloat(declarations(style,'.namespace-tree-branch+.namespace-tree-branch')['margin-top'])>=4,'集群之间要留间距')
  assert.match(components.KubeNamespaceTree.descriptor.template.content,/<Search aria-hidden="true"/)
 })
 
