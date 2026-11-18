@@ -28,7 +28,8 @@ test('容器直接点选并在自身状态下提供日志终端，无下拉且�
  assert.match(template,/:aria-expanded="item.name===container" @click="chooseContainer\(item.name\)"/)
  assert.equal((template.match(/class="container-action-bar"/g)??[]).length,1)
  assert.match(template,/:disabled="!allowedContainer\(container\)"/)
- assert.match(template,/v-if="can\('terminal.open'\)" :disabled="!allowedTerminal\(container\)"/)
+ assert.match(template,/<SessionAction v-if="can\('terminal.open'\)"[^>]*:disabled="!allowedTerminal\(container\)"/)
+ assert.match(template,/<a-button :disabled="!allowedTerminal\(container\)" @click="openLogs\(container,true\)"/)
  const h=runtime();await h.respond(0)
  h.state.chooseContainer('init');assert.deepEqual(h.events,[{name:'container',args:[{cluster:'cluster-a',namespace:'team',podUID:'pod-a',container:'init'}]}])
  h.events.length=0

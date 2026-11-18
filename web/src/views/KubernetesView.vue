@@ -29,7 +29,7 @@ import type { NodeTopologyData } from '@/utils/kubernetesTopology'
 import KubeNodeMonitor from '@/components/KubeNodeMonitor.vue'
 import K3sProvisionDrawer from '@/components/K3sProvisionDrawer.vue'
 import type { K3sInstallation } from '@/api/k3s'
-import SessionPopoutLink from '@/components/SessionPopoutLink.vue'
+import SessionAction from '@/components/SessionAction.vue'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import TerminalDrawer from '@/components/TerminalDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -675,8 +675,8 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
                 </div>
                 <p v-if="missingPodContainer(row)" class="related-container-missing" role="status">所选容器已不存在，请重新选择。</p>
                 <div class="related-pod-stream-actions">
-                  <a-button class="kube-action kube-action-info" size="small" :disabled="!allowedRelatedPodStream(row)" @click="openRelatedPodStream(row)">{{ t('k8s.logs') }}</a-button><SessionPopoutLink kind="container-log" :path="podStreamPath(row)" :title="`${row.metadata.name} / ${selectedPodContainerName(row)}`" :disabled="!allowedRelatedPodStream(row)" />
-                  <a-button v-if="can('terminal.open')" class="kube-action kube-action-success" size="small" :disabled="!allowedRelatedPodStream(row,true)" @click="openRelatedPodStream(row,true)">{{ t('k8s.terminal') }}</a-button><SessionPopoutLink v-if="can('terminal.open')" kind="terminal" :path="podStreamPath(row,true)" :title="`${row.metadata.name} / ${selectedPodContainerName(row)}`" :disabled="!allowedRelatedPodStream(row,true)" />
+                  <SessionAction kind="container-log" :path="podStreamPath(row)" :title="`${row.metadata.name} / ${selectedPodContainerName(row)}`" :disabled="!allowedRelatedPodStream(row)"><a-button class="kube-action kube-action-info" size="small" :disabled="!allowedRelatedPodStream(row)" @click="openRelatedPodStream(row)">{{ t('k8s.logs') }}</a-button></SessionAction>
+                  <SessionAction v-if="can('terminal.open')" kind="terminal" :path="podStreamPath(row,true)" :title="`${row.metadata.name} / ${selectedPodContainerName(row)}`" :disabled="!allowedRelatedPodStream(row,true)"><a-button class="kube-action kube-action-success" size="small" :disabled="!allowedRelatedPodStream(row,true)" @click="openRelatedPodStream(row,true)">{{ t('k8s.terminal') }}</a-button></SessionAction>
                 </div>
               </div>
             </template>

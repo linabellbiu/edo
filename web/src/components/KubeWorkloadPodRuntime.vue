@@ -11,7 +11,7 @@ import { podExplorerEvents, workloadConditionTone, type WorkloadContainerTarget 
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
 import KubeResourceDiagnostics from './KubeResourceDiagnostics.vue'
 import KubeWorkloadEvents from './KubeWorkloadEvents.vue'
-import SessionPopoutLink from './SessionPopoutLink.vue'
+import SessionAction from './SessionAction.vue'
 
 const props = defineProps<{
   cluster: string
@@ -149,7 +149,7 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
             <p v-if="containerState(item).exit!==undefined" class="runtime-message">退出码 {{ containerState(item).exit }}</p>
             <div v-if="item.runtime?.lastState?.terminated" class="previous-state"><span>上次退出</span><strong>{{ item.runtime.lastState.terminated.reason || '—' }}</strong><span>exit {{ item.runtime.lastState.terminated.exitCode ?? '—' }}</span><time>{{ formatDateTime(item.runtime.lastState.terminated.finishedAt) }}</time></div>
             <div class="runtime-actions" :aria-label="`${item.name} 容器操作`">
-              <div class="container-action-bar"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" />追踪日志</a-button><SessionPopoutLink kind="container-log" :path="streamPath()" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedContainer(container)" /><a-button v-if="can('terminal.open')" :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" />终端</a-button><SessionPopoutLink v-if="can('terminal.open')" kind="terminal" :path="streamPath(true)" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedTerminal(container)" /></div>
+              <div class="container-action-bar"><SessionAction kind="container-log" :path="streamPath()" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedContainer(container)"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" />追踪日志</a-button></SessionAction><SessionAction v-if="can('terminal.open')" kind="terminal" :path="streamPath(true)" :title="`${pod.metadata.name} / ${container}`" :disabled="!allowedTerminal(container)"><a-button :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" />终端</a-button></SessionAction></div>
             </div>
             <p v-if="container && !missingContainer && can('terminal.open') && !allowedTerminal(container)" class="runtime-action-hint">{{ containers.find(item=>item.name===container)?.containerKind==='init' ? 'Init 容器只支持查看日志，不支持终端。' : '所选容器未运行或当前不可操作，终端暂不可用。' }}</p>
           </template>
@@ -221,8 +221,8 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .container-action-bar :deep(.ant-btn) { display: flex; align-items: center; gap: 5px; height: 30px; border: 0; border-radius: 8px; box-shadow: none; font-size: 12px; }
 .container-action-bar :deep(.ant-btn:not(:disabled)) { background: var(--workload-idle); color: var(--workload-link); }
 .container-action-bar :deep(.ant-btn:not(:disabled):hover) { background: var(--workload-hover); color: var(--workload-link); }
-.container-action-bar :deep(.session-popout-link) { height: 30px; border: 0; background: var(--workload-idle); color: var(--workload-link); }
-.container-action-bar :deep(.session-popout-link:not(.is-disabled):hover) { background: var(--workload-hover); }
+.container-action-bar :deep(.session-action-corner) { color: var(--workload-muted); }
+.container-action-bar :deep(.session-action:hover .session-action-corner), .container-action-bar :deep(.session-action-corner:hover) { color: var(--workload-link); }
 .workload-pod-runtime :deep(.diagnostics) { padding: 0; border: 0; box-shadow: none; background: transparent; }
 .workload-pod-runtime :deep(.metrics-disclosure),.workload-pod-runtime :deep(.trend-resources-details),.workload-pod-runtime :deep(.diagnostic-charts article) { border: 0; box-shadow: none; background: var(--workload-stripe); }
 button:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }

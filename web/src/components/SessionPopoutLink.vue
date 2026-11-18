@@ -14,8 +14,8 @@ const label = computed(() => `${props.kind === 'terminal' ? '在新标签页打�
 </template>
 
 <style scoped>
-.session-popout-link{display:inline-flex;flex:none;align-items:center;justify-content:center;width:26px;height:28px;vertical-align:middle;border:1px solid var(--edo-border);border-radius:3px;color:var(--edo-primary);background:var(--edo-surface);text-decoration:none}
-.session-popout-link:hover{background:var(--edo-primary-soft);border-color:var(--edo-primary)}
-.session-popout-link:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
-.session-popout-link.is-disabled{opacity:.4;cursor:not-allowed;color:var(--edo-muted)}
+.session-popout-link{display:inline-flex;flex:none;align-items:center;justify-content:center;width:22px;height:22px;vertical-align:middle;border:0;border-radius:5px;color:var(--edo-muted);background:transparent;text-decoration:none;transition:color 140ms ease,background-color 140ms ease}
+.session-popout-link:hover{color:var(--edo-primary);background:var(--edo-primary-soft)}
+.session-popout-link:focus-visible{outline:2px solid var(--edo-primary);outline-offset:1px}
+.session-popout-link.is-disabled{opacity:.45;cursor:not-allowed;color:var(--edo-muted)}
 </style>

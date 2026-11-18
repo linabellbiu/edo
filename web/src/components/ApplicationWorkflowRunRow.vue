@@ -2,7 +2,7 @@
 import { GitBranch, Tag, UserRound } from 'lucide-vue-next'
 import { pipelineRunProgress } from '@/utils/pipelineRunProgress'
 import type { ApplicationWorkflowRunRecord } from '@/types/pipeline'
-import SessionPopoutLink from './SessionPopoutLink.vue'
+import SessionAction from './SessionAction.vue'
 import PipelineRunStages from './PipelineRunStages.vue'
 import PipelineRunProgress from './PipelineRunProgress.vue'
 
@@ -22,7 +22,7 @@ function trigger(value: string) { return ({ manual: '手动触发', retry: '重�
     <PipelineRunStages :stages="run.execution_graph?.stages" :status="run.status"/>
     <div class="workflow-run-actions">
       <a-button v-if="showDetails" size="small" @click="$emit('details',run,$event)">详情</a-button>
-      <a-button size="small" @click="$emit('logs',run)">日志</a-button><SessionPopoutLink kind="pipeline-log" :runID="run.id" :title="`流水线日志：${run.commit_message || run.id}`" />
+      <SessionAction kind="pipeline-log" :runID="run.id" :title="`流水线日志：${run.commit_message || run.id}`"><a-button size="small" @click="$emit('logs',run)">日志</a-button></SessionAction>
     </div>
   </article>
 </template>
