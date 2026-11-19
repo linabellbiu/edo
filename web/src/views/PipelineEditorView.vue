@@ -1963,9 +1963,7 @@ onBeforeRouteLeave(async () => {
           <a-input v-model:value="taskSearch" allow-clear placeholder="搜索任务">
             <template #prefix><Search :size="15" /></template>
           </a-input>
-          <nav class="task-category-tabs" aria-label="任务分类">
-            <button v-for="category in taskCategories" :key="category" type="button" :class="{ active: activeTaskCategory === category }" @click="activeTaskCategory = category">{{ category }}</button>
-          </nav>
+          <a-segmented v-model:value="activeTaskCategory" class="task-category-tabs" :options="[...taskCategories]" aria-label="任务分类" />
           <a-alert v-if="!stages.length" class="panel-alert" type="info" show-icon message="请先创建一个阶段，再添加任务。" />
           <div class="task-library">
             <section v-for="group in taskGroups" :key="group.group">
@@ -1995,7 +1993,7 @@ onBeforeRouteLeave(async () => {
               <a-button type="text" aria-label="关闭阶段配置" @click="closePanel"><X :size="17" /></a-button>
             </div>
           </header>
-          <div class="panel-tabs single"><span class="active">常规配置</span></div>
+          <h3 class="panel-section-title">常规配置</h3>
           <section class="panel-section">
             <h4><Layers3 :size="15" />基础信息</h4>
             <a-form layout="vertical">
@@ -2033,9 +2031,9 @@ onBeforeRouteLeave(async () => {
             <div><CircleAlert :size="16" aria-hidden="true" /><strong>任务配置异常</strong></div>
             <ul><li v-for="issue in selectedTaskIssues" :key="issue.message">{{ issue.message }}</li></ul>
           </section>
-          <div class="panel-tabs" role="tablist" aria-label="任务配置分区">
-            <button type="button" :class="{ active: propertyTab === 'common' }" role="tab" :aria-selected="propertyTab === 'common'" @click="propertyTab = 'common'">{{ selectedNode.type==='deploy' ? '部署配置' : '常规配置' }}</button>
-            <button type="button" :class="{ active: propertyTab === 'advanced' }" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">{{ selectedNode.type==='deploy' ? '通知' : '通知及高级配置' }}</button>
+          <div class="panel-tabs edo-segmented-tabs" role="tablist" aria-label="任务配置分区">
+            <button type="button" class="edo-tab-item" role="tab" :aria-selected="propertyTab === 'common'" @click="propertyTab = 'common'">{{ selectedNode.type==='deploy' ? '部署配置' : '常规配置' }}</button>
+            <button type="button" class="edo-tab-item" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">{{ selectedNode.type==='deploy' ? '通知' : '通知及高级配置' }}</button>
           </div>
           <a-form v-if="propertyTab === 'common'" layout="vertical">
             <h3 v-if="selectedNode.type === 'deploy'" class="task-section-heading"><CircleDot :size="15" aria-hidden="true" />基本信息</h3>
@@ -2428,9 +2426,7 @@ onBeforeRouteLeave(async () => {
 .panel-header-actions { display: flex; align-items: center; }
 .task-library-entry { margin-right: 6px; }
 .pipeline-side-panel > :deep(.ant-input-affix-wrapper) { width: calc(100% - 32px); margin: 0 16px; }
-.task-category-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 16px 2px; }
-.task-category-tabs button { padding: 4px 10px; border: 1px solid transparent; border-radius: 5px; color: var(--edo-muted); background: var(--edo-surface-soft); cursor: pointer; }
-.task-category-tabs button.active, .task-category-tabs button:hover { border-color: var(--edo-primary); color: var(--edo-primary); background: var(--edo-primary-soft); }
+.task-category-tabs { max-width: calc(100% - 32px); margin: 12px 16px 2px; overflow-x: auto; scrollbar-width: none; }
 .task-library { margin-top: 14px; padding: 0 16px; }
 .task-library section + section { margin-top: 16px; }
 .task-library h4 { margin: 0 0 7px; color: var(--edo-muted); font-size: 11px; font-weight: 600; }
@@ -2449,14 +2445,11 @@ onBeforeRouteLeave(async () => {
 .template-shortcuts button:disabled { cursor: not-allowed; opacity: .5; }
 .template-shortcuts b, .template-shortcuts small { display: block; }
 .template-shortcuts small { color: var(--edo-muted); font-size: 10px; }
-.panel-tabs { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); margin: 0 16px 16px; border: 1px solid var(--edo-border); border-radius: 5px; }
-.panel-tabs.single { grid-template-columns: 1fr; }
+.panel-tabs { max-width: calc(100% - 32px); margin: 0 16px 16px; }
+.panel-section-title { margin: 0 16px 14px; color: var(--edo-text); font-size: 13px; font-weight: 600; }
 .task-section-heading { display: flex; align-items: center; gap: 8px; margin: 0 -16px 14px; padding: 10px 16px; border-top: 1px solid var(--edo-border); border-bottom: 1px solid var(--edo-border); background: color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface)); color: var(--edo-text); font-size: 14px; font-weight: 600; }
 .task-section-heading > svg { flex-shrink: 0; color: var(--edo-primary); }
 .deployment-basic-info :deep(.kubernetes-deployment-basics) { margin-bottom: 14px; }
-.panel-tabs span, .panel-tabs button { padding: 7px 8px; border: 0; color: var(--edo-muted); background: transparent; text-align: center; }
-.panel-tabs button { cursor: pointer; }
-.panel-tabs span.active, .panel-tabs button.active { color: var(--edo-primary); box-shadow: inset 0 0 0 1px var(--edo-primary); }
 .panel-section { padding: 0 16px; }
 .panel-section h4 { display: flex; align-items: center; gap: 6px; margin: 0 -16px 14px; padding: 9px 16px; color: var(--edo-text); background: var(--edo-primary-soft); }
 .pipeline-side-panel > :deep(.ant-form) { padding: 0 16px; }

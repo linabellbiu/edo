@@ -132,7 +132,9 @@ test('集群与命名空间使用独立筛选树，内容区不再重复展示�
   assert.match(template, /:selected="selectedNamespaces"/)
   assert.doesNotMatch(template, /kube-workspace-namespace|kube-workspace-cluster/)
   assert.doesNotMatch(template,/workspace-tabs|v-for="item in groups"|context-scope/)
-  assert.match(template,/v-if="types.length>1[^"]*" class="resource-type-tabs"/)
+  assert.match(template,/v-if="types.length>1[^"]*" ref="resourceTabBar" class="resource-type-tabs edo-segmented-tabs edo-page-tabs" role="tablist"/)
+  assert.match(template,/class="edo-tab-item" role="tab"/)
+  assert.match(template,/overview\?\.counts\[type\.resource\]\?\.state==='ok'" class="edo-tab-count"/)
   assert.match(template,/@click="selectResource\(type.resource\)"/)
 })
 test('存储列表跟随导航和浏览历史，刷新恢复准确类型，无效类型回到存储卷声明', async () => {

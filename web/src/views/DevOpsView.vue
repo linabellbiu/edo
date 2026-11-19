@@ -2287,8 +2287,8 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
 <div v-if="props.section==='applications'" class="apps-workspace">
   <div class="apps-filter-bar">
     <a-input v-model:value="applicationSearch" allow-clear :placeholder="t('applicationWorkspace.search')" :aria-label="t('applicationWorkspace.search')" class="apps-search"><template #prefix><Search :size="16"/></template></a-input>
-    <div class="apps-filters" role="group" :aria-label="t('applicationWorkspace.filterLabel')">
-      <button v-for="filter in applicationFilters" :key="filter.key" type="button" :class="{'is-selected':applicationFilter===filter.key}" :aria-pressed="applicationFilter===filter.key" @click="applicationFilter=filter.key">{{ filter.label }}<span>{{ filter.count }}</span></button>
+    <div class="edo-segmented-tabs" role="group" :aria-label="t('applicationWorkspace.filterLabel')">
+      <button v-for="filter in applicationFilters" :key="filter.key" type="button" class="edo-tab-item" :aria-pressed="applicationFilter===filter.key" @click="applicationFilter=filter.key">{{ filter.label }}<span class="edo-tab-count">{{ filter.count }}</span></button>
     </div>
   </div>
   <a-table v-if="visibleApplicationCards.length" class="apps-table resource-list-table" size="small" table-layout="fixed"

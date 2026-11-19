@@ -86,6 +86,19 @@ function backToOverview(){
 }
 const types = computed(() => kubeTypes.filter(item=>item.group===group.value && can(`${item.permission}.read`)))
 const activeType = computed(() => types.value.find(item=>item.resource===route.query.resource) ?? types.value[0])
+const resourceTabBar = ref<HTMLElement>()
+const resourceCountWidths = computed(() => types.value.map(({ resource }) => {
+  const count = overview.value?.counts[resource]
+  return count?.state === 'ok' ? String(count.count).length : 0
+}).join(','))
+watch([resourceTabBar, () => activeType.value?.resource, resourceCountWidths], ([bar]) => {
+  const selected = bar?.querySelector<HTMLButtonElement>('[aria-selected="true"]')
+  if (!bar || !selected || bar.scrollWidth <= bar.clientWidth) return
+  const { left, right } = selected.getBoundingClientRect()
+  const start = bar.getBoundingClientRect().left + bar.clientLeft
+  if (left < start) bar.scrollLeft += Math.floor(left - start)
+  else if (right > start + bar.clientWidth) bar.scrollLeft += Math.ceil(right - start - bar.clientWidth)
+}, { flush: 'post' })
 const namespaceScoped = computed(() => group.value==='overview'||Boolean(activeType.value?.namespaced))
 const showResourceToolbar = computed(()=>fromOverview.value
   ||group.value==='nodes'&&can('kubernetes.node.create')
@@ -739,7 +752,15 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
     <section ref="resourcePanel" class="resource-panel">
       <div v-if="fromOverview" class="overview-return"><a-button type="link" :disabled="contextDisabled" @click="backToOverview"><ArrowLeft :size="14" />{{ t('k8s.backOverview') }}</a-button></div>
       <div class="resource-panel-heading">
-        <div v-if="types.length>1&&group!=='overview'" class="resource-type-tabs" role="tablist" :aria-label="t('k8s.resources')"><button v-for="type in types" :key="type.resource" role="tab" :aria-selected="activeType?.resource===type.resource" :aria-controls="`kube-list-${type.resource}`" :tabindex="activeType?.resource===type.resource?0:-1" :disabled="contextDisabled" :class="{selected:activeType?.resource===type.resource}" @keydown="resourceTabKey($event,type.resource)" @click="selectResource(type.resource)">{{ t(`k8s.type_${type.resource}`) }}<span v-if="overview?.counts[type.resource]?.state==='ok'" class="type-count">{{ overview.counts[type.resource]?.count }}</span></button></div>
+        <div v-if="types.length>1&&group!=='overview'" ref="resourceTabBar" class="resource-type-tabs edo-segmented-tabs edo-page-tabs" role="tablist" :aria-label="t('k8s.resources')">
+          <button v-for="type in types" :key="type.resource" type="button" class="edo-tab-item" role="tab"
+            :aria-selected="activeType?.resource===type.resource" :aria-controls="`kube-list-${type.resource}`"
+            :tabindex="activeType?.resource===type.resource?0:-1" :disabled="contextDisabled"
+            @keydown="resourceTabKey($event,type.resource)" @click="selectResource(type.resource)">
+            {{ t(`k8s.type_${type.resource}`) }}
+            <span v-if="overview?.counts[type.resource]?.state==='ok'" class="edo-tab-count">{{ overview.counts[type.resource]?.count }}</span>
+          </button>
+        </div>
         <h3 v-else>{{ t(group==='overview'?'k8s.overview':activeType?`k8s.type_${activeType.resource}`:'k8s.resources') }}</h3>
       <a-radio-group v-if="group==='nodes'&&activeType?.resource==='nodes'" class="node-view-toggle" :value="nodeView" :disabled="contextDisabled" :aria-label="t('k8sTopology.nodeView')" size="small" button-style="solid" @change="setNodeView($event.target.value)"><a-radio-button value="list">{{ t('k8sTopology.list') }}</a-radio-button><a-radio-button value="topology">{{ t('k8sTopology.mapView') }}</a-radio-button></a-radio-group>
       <div class="resource-heading-refresh"><a-checkbox v-model:checked="autoRefresh">{{ t('k8s.autoRefresh') }}</a-checkbox><a-button :loading="loading||overviewLoading||topologyLoading" @click="refreshAll"><RefreshCw :size="14" />{{ t('k8s.refresh') }}</a-button></div>
@@ -896,11 +917,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 .kube-filters{display:flex;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--edo-border)}
 .kube-context-field{display:flex;align-items:center;gap:8px;min-width:0}.kube-context-field label{font-size:13px;color:var(--edo-muted);white-space:nowrap}.kube-filter-spacer{flex:1}
 .cluster-select{width:230px}.namespace-select{width:190px}
-.resource-type-tabs{display:flex;gap:20px;padding:0 18px;border-bottom:1px solid var(--edo-border);overflow-x:auto}
-.resource-type-tabs button{padding:13px 0 11px;border:0;border-bottom:2px solid transparent;background:none;white-space:nowrap;font-size:13px;color:var(--edo-muted);cursor:pointer;transition:color .12s,border-color .12s}
-.resource-type-tabs button.selected{color:var(--edo-primary);border-bottom-color:var(--edo-primary);font-weight:600}
-.resource-type-tabs button:focus-visible{outline:2px solid var(--edo-primary);outline-offset:-2px}
-.type-count{font-size:11px;margin-left:4px;background:var(--edo-bg);padding:1px 5px;border-radius:4px;color:var(--edo-muted)}
+.resource-type-tabs{margin-inline-end:auto}
 .statistics-scope{font-size:12px;color:var(--edo-muted);margin:14px 16px 0}
 .list-alert{margin:12px 16px}.workspace-empty{padding:48px 0}
 .resource-identity,.status-cell{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0}
@@ -923,20 +940,19 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 .config-entry pre{margin:8px 0 0;padding:10px;background:var(--edo-bg);white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto}
 .section-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.section-heading h4{margin:0}
 .manifest{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;font-size:12px;margin:0;max-height:68vh;overflow:auto}
-@media(prefers-reduced-motion:reduce){.resource-type-tabs button{transition:none}}
 @media(max-width:768px){.kube-context-field{flex:1;min-width:240px}.cluster-select,.namespace-select{flex:1;min-width:0}.resource-search{max-width:none}.event-row{grid-template-columns:1fr}.event-row .secondary{grid-column:1}}
 </style>
 <style scoped>
-.workspace-tabs{background:var(--edo-surface);gap:28px}.workspace-tabs button{display:flex;gap:7px;align-items:center;padding-block:15px 13px;font-size:14px}.kube-filters{padding:10px 14px;gap:10px;background:var(--edo-surface)}.context-scope{margin-right:auto;font-size:12px;color:var(--edo-muted)}.resource-kind{font-size:11px;color:var(--edo-muted);margin-left:6px;font-weight:400}.list-filters{display:flex;align-items:center;gap:8px;padding:10px 14px;flex-wrap:wrap;border-bottom:1px solid var(--edo-border)}.resource-search{margin:0;flex:1;min-width:220px;max-width:400px}.status-select{width:160px}.label-search{width:250px}.list-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;font-size:12px;color:var(--edo-muted);border-bottom:1px solid var(--edo-border);background:var(--edo-surface)}.list-meta>span:first-child{display:flex;align-items:center;gap:12px}.list-meta strong{font-weight:600;color:var(--edo-text);font-size:13px}.partial-badge{background:var(--edo-bg);padding:2px 6px;border:1px solid var(--edo-border);border-radius:3px}.kube-resource-table :deep(.resource-table){min-width:1050px}.kube-resource-table :deep(th){height:40px;padding:9px 14px;background:var(--kube-heading);color:var(--kube-muted);font-size:12px;font-weight:600;border-bottom:1px solid var(--kube-border)}
+.kube-filters{padding:10px 14px;gap:10px;background:var(--edo-surface)}.context-scope{margin-right:auto;font-size:12px;color:var(--edo-muted)}.resource-kind{font-size:11px;color:var(--edo-muted);margin-left:6px;font-weight:400}.list-filters{display:flex;align-items:center;gap:8px;padding:10px 14px;flex-wrap:wrap;border-bottom:1px solid var(--edo-border)}.resource-search{margin:0;flex:1;min-width:220px;max-width:400px}.status-select{width:160px}.label-search{width:250px}.list-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;font-size:12px;color:var(--edo-muted);border-bottom:1px solid var(--edo-border);background:var(--edo-surface)}.list-meta>span:first-child{display:flex;align-items:center;gap:12px}.list-meta strong{font-weight:600;color:var(--edo-text);font-size:13px}.partial-badge{background:var(--edo-bg);padding:2px 6px;border:1px solid var(--edo-border);border-radius:3px}.kube-resource-table :deep(.resource-table){min-width:1050px}.kube-resource-table :deep(th){height:40px;padding:9px 14px;background:var(--kube-heading);color:var(--kube-muted);font-size:12px;font-weight:600;border-bottom:1px solid var(--kube-border)}
 .kube-resource-table :deep(td){height:56px;padding:9px 14px;border-bottom:1px solid #eef1f6}
 .kube-resource-table :deep(tbody tr:nth-child(even) td){background:var(--edo-surface)}
 .kube-resource-table :deep(tbody tr:hover td){background:color-mix(in srgb,var(--edo-primary) 5%,var(--edo-surface))}
 .kube-resource-table :deep(.resource-row-actions .ant-btn){height:28px;border-radius:var(--kube-radius-control,8px)}.kube-resource-table :deep(.table-actions),.kube-resource-table :deep(.table-action-heading){min-width:115px}.resource-identity{min-width:200px;max-width:260px}.resource-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.resource-name.deleting{text-decoration:line-through}.namespace-value{font-size:12px;color:var(--edo-muted);white-space:nowrap}.status-reason{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.detail-context{display:flex;align-items:center;flex-wrap:wrap;gap:4px;max-width:100%;overflow-wrap:anywhere}.detail-tabs :deep(.ant-tabs-nav){position:sticky;top:-16px;z-index:2;padding-top:4px;margin-bottom:14px}.detail-tabs :deep(.ant-tabs-tab){font-size:13px}.annotation-row{display:grid;grid-template-columns:minmax(180px,32%) minmax(0,1fr);gap:14px;padding:12px 0;border-bottom:1px solid var(--edo-border);font-size:13px;overflow-wrap:anywhere}.annotation-row code{font-size:12px;color:var(--edo-muted)}.related-pod-table :deep(.table-actions){min-width:285px}.related-pod-table :deep(.resource-table){min-width:1050px}.detail-labels{margin-top:0}.detail-labels :deep(.ant-tag){max-width:100%;white-space:normal;overflow-wrap:anywhere}.resource-detail-section h4{font-size:13px}
-@media(max-width:900px){.workspace-tabs{gap:22px}.resource-kind{display:none}.label-search{flex:1;min-width:210px}.list-meta{align-items:flex-start;flex-wrap:wrap}.context-scope{display:none}.kube-filters>:last-child{margin-left:auto}}
-@media(max-width:540px){.workspace-tabs{gap:18px}.workspace-tabs button{font-size:13px}.status-select{width:130px}.list-filters{gap:8px}.list-filters>svg{display:none}.annotation-row{grid-template-columns:1fr}.detail-context{flex-basis:100%}}
+@media(max-width:900px){.resource-kind{display:none}.label-search{flex:1;min-width:210px}.list-meta{align-items:flex-start;flex-wrap:wrap}.context-scope{display:none}.kube-filters>:last-child{margin-left:auto}}
+@media(max-width:540px){.status-select{width:130px}.list-filters{gap:8px}.list-filters>svg{display:none}.annotation-row{grid-template-columns:1fr}.detail-context{flex-basis:100%}}
 </style>
 
 <style scoped>
-.resource-panel-heading{display:flex;align-items:center;gap:12px;min-height:52px;padding:6px 14px;border-bottom:1px solid var(--edo-border);flex-wrap:wrap}.node-view-toggle{margin-left:auto}.resource-panel-heading>h3{font-size:14px;margin:0 auto 0 0;line-height:30px}.resource-heading-refresh{display:flex;align-items:center;gap:10px;margin-left:auto;font-size:12px}.resource-heading-refresh :deep(.ant-checkbox-wrapper){font-size:12px;color:var(--edo-muted)}.resource-panel-heading .resource-type-tabs{padding:0;border:0;gap:16px;margin:0 auto -9px 0}.resource-panel-heading .resource-type-tabs button{padding:10px 0 16px;font-size:13px}.overview-return{padding:4px 8px;border-bottom:1px solid var(--edo-border);background:var(--edo-surface-soft)}.overview-return :deep(.ant-btn){font-size:12px}.list-filters{padding:10px 14px;gap:8px}.resource-search{min-width:180px;max-width:none}.label-search{width:210px}.list-meta{font-size:12px;padding:8px 14px}.kube-resource-table :deep(td){height:56px;padding:9px 14px}.kube-resource-table :deep(th){height:40px;padding:9px 14px}.kube-resource-table :deep(.table-empty-cell){height:220px}.resource-identity,.status-cell{gap:4px}.list-loading{padding:50px;color:var(--edo-muted);font-size:13px}.resource-name:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}.resource-name:hover{text-decoration:underline}.resource-panel :deep(.ant-tag){margin-inline-end:0}.detail-tabs :deep(.ant-tabs-nav){margin-bottom:12px}.kube-resource-table :deep(.resource-pagination){margin:10px 14px}
-@media(max-width:768px){.resource-panel-heading{gap:8px;padding:8px 12px}.resource-panel-heading .resource-type-tabs{flex-basis:100%;order:-1;gap:20px;margin:0 0 0;border-bottom:1px solid var(--edo-border)}.resource-panel-heading .resource-type-tabs button{padding:6px 0 10px}.resource-heading-refresh{margin-left:auto}.list-filters{padding:10px 12px}.label-search{flex:1;min-width:140px}.status-select{width:135px}.list-meta{padding-inline:12px}.resource-search{min-width:100%;flex-basis:100%}}
+.resource-panel-heading{display:flex;align-items:center;gap:12px;min-height:52px;padding:6px 14px;border-bottom:1px solid var(--edo-border);flex-wrap:wrap}.node-view-toggle{margin-left:auto}.resource-panel-heading>h3{font-size:14px;margin:0 auto 0 0;line-height:30px}.resource-heading-refresh{display:flex;align-items:center;gap:10px;margin-left:auto;font-size:12px}.resource-heading-refresh :deep(.ant-checkbox-wrapper){font-size:12px;color:var(--edo-muted)}.overview-return{padding:4px 8px;border-bottom:1px solid var(--edo-border);background:var(--edo-surface-soft)}.overview-return :deep(.ant-btn){font-size:12px}.list-filters{padding:10px 14px;gap:8px}.resource-search{min-width:180px;max-width:none}.label-search{width:210px}.list-meta{font-size:12px;padding:8px 14px}.kube-resource-table :deep(td){height:56px;padding:9px 14px}.kube-resource-table :deep(th){height:40px;padding:9px 14px}.kube-resource-table :deep(.table-empty-cell){height:220px}.resource-identity,.status-cell{gap:4px}.list-loading{padding:50px;color:var(--edo-muted);font-size:13px}.resource-name:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}.resource-name:hover{text-decoration:underline}.resource-panel :deep(.ant-tag){margin-inline-end:0}.detail-tabs :deep(.ant-tabs-nav){margin-bottom:12px}.kube-resource-table :deep(.resource-pagination){margin:10px 14px}
+@media(max-width:768px){.resource-panel-heading{gap:8px;padding:8px 12px}.resource-heading-refresh{margin-left:auto}.list-filters{padding:10px 12px}.label-search{flex:1;min-width:140px}.status-select{width:135px}.list-meta{padding-inline:12px}.resource-search{min-width:100%;flex-basis:100%}}
 </style>

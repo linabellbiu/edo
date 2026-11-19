@@ -212,7 +212,8 @@ button { color: inherit; }
 .page-toolbar-actions { display: flex; align-items: center; gap: 8px; }
 /* 分段控件（页面页签、筛选与范围）统一为浅色实底：选中用浅靛蓝 + 靛蓝文字，
    不使用渐变、外发光或内阴影；选中块与相邻条目同高，不允许溢出容器。 */
-.ant-segmented.ant-segmented {
+.ant-segmented.ant-segmented,
+.edo-segmented-tabs {
   display: inline-flex;
   padding: 3px;
   border: 1px solid var(--edo-tabs-border);
@@ -225,7 +226,8 @@ button { color: inherit; }
 }
 /* 功能性分段之间用发丝线分隔；选中与悬停的实底块两侧不画线，避免线条压进色块。 */
 .ant-segmented.ant-segmented .ant-segmented-item { position: relative; }
-.ant-segmented.ant-segmented .ant-segmented-item + .ant-segmented-item::before {
+.ant-segmented.ant-segmented .ant-segmented-item + .ant-segmented-item::before,
+.edo-segmented-tabs > .edo-tab-item + .edo-tab-item::before {
   content: "";
   position: absolute;
   left: 0;
@@ -241,7 +243,9 @@ button { color: inherit; }
 .ant-segmented.ant-segmented .ant-segmented-item-selected + .ant-segmented-item::before,
 .ant-segmented.ant-segmented .ant-segmented-item:has(+ .ant-segmented-item-selected)::before,
 .ant-segmented.ant-segmented .ant-segmented-item:hover::before,
-.ant-segmented.ant-segmented .ant-segmented-item:hover + .ant-segmented-item::before { opacity: 0; }
+.ant-segmented.ant-segmented .ant-segmented-item:hover + .ant-segmented-item::before,
+.edo-segmented-tabs > .edo-tab-item:is([aria-selected="true"], [aria-current="page"], [aria-pressed="true"], :hover)::before,
+.edo-segmented-tabs > .edo-tab-item:is([aria-selected="true"], [aria-current="page"], [aria-pressed="true"], :hover) + .edo-tab-item::before { opacity: 0; }
 .ant-segmented.ant-segmented .ant-segmented-group { align-items: stretch; }
 .ant-segmented.ant-segmented .ant-segmented-item {
   display: flex;
@@ -343,7 +347,8 @@ button { color: inherit; }
 }
 .ant-segmented.ant-segmented.ant-segmented-sm .ant-segmented-item-label { padding: 0 9px; font-size: 12px; }
 
-.ant-segmented.ant-segmented.edo-page-tabs {
+.ant-segmented.ant-segmented.edo-page-tabs,
+.edo-segmented-tabs {
   display: flex;
   width: max-content;
   max-width: 100%;
@@ -351,10 +356,54 @@ button { color: inherit; }
   overflow-x: auto;
   scrollbar-width: none;
 }
-.ant-segmented.ant-segmented.edo-page-tabs::-webkit-scrollbar { display: none; }
+.ant-segmented.ant-segmented.edo-page-tabs::-webkit-scrollbar,
+.edo-segmented-tabs::-webkit-scrollbar { display: none; }
 .ant-segmented.ant-segmented.edo-page-tabs .ant-segmented-group { min-width: max-content; }
 .ant-segmented.ant-segmented.edo-page-tabs .ant-segmented-item { height: var(--edo-tabs-item-height-lg); }
 .ant-segmented.ant-segmented.edo-page-tabs .ant-segmented-item-label { padding: 0 16px; font-size: 13.5px; }
+
+/* 保留原生链接与页签的键盘和导航语义，视觉沿用 Segmented。 */
+.edo-segmented-tabs { min-width: 0; margin-bottom: 0; }
+.edo-segmented-tabs > .edo-tab-item {
+  display: flex;
+  position: relative;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--edo-tabs-item-height);
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--edo-tabs-item-radius);
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+.edo-segmented-tabs.edo-page-tabs > .edo-tab-item { height: var(--edo-tabs-item-height-lg); padding: 0 16px; font-size: 13.5px; }
+.edo-segmented-tabs > .edo-tab-item:hover:not(:disabled) { color: var(--edo-text); background: var(--edo-tabs-hover-bg); }
+.edo-segmented-tabs > .edo-tab-item:is([aria-selected="true"], [aria-current="page"], [aria-pressed="true"]) {
+  color: var(--edo-tabs-selected-color);
+  background: var(--edo-tabs-selected-bg);
+  font-weight: 600;
+}
+.edo-segmented-tabs > .edo-tab-item:disabled { opacity: .55; cursor: not-allowed; }
+.edo-segmented-tabs > .edo-tab-item:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--edo-tabs-focus-ring); }
+.edo-tab-count {
+  min-width: 18px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  text-align: center;
+}
 .vben-card { border: 1px solid var(--edo-border); border-radius: 8px; background: var(--edo-surface); box-shadow: var(--edo-shadow); }
 .content-grid { display: grid; gap: 16px; }
 .content-grid.two { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -383,7 +432,7 @@ button { color: inherit; }
   .desktop-collapse { display: none; }
   .header-search span, .header-search kbd, .optional-action { display: none; }
   .vben-content { padding: 12px; }
-  .ant-segmented.ant-segmented.edo-page-tabs { width: 100%; }
+  .ant-segmented.ant-segmented.edo-page-tabs, .edo-segmented-tabs.edo-page-tabs { width: 100%; }
   .content-grid.four, .content-grid.two { grid-template-columns: 1fr; }
 }
 

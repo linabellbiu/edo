@@ -1,6 +1,6 @@
 # 分段页签与筛选视觉规范
 
-页面页签（系统设置、访问控制）与筛选/范围控件（任务状态、时间范围、编辑方式、权限动作）共用 Ant Design Segmented，视觉统一在 `web/src/styles/vben.css` 的 `.ant-segmented` 规则中维护，契约由 `web/tests/segmented-tabs-design.test.mjs` 校验。
+页面页签和功能性单选控件共用 `web/src/styles/vben.css` 中的分段样式。系统设置、访问控制等使用 Ant Design Segmented。需要原生链接或页签语义时，使用 `.edo-segmented-tabs`、`.edo-tab-item` 和原有的导航及选中属性。视觉契约由 `web/tests/segmented-tabs-design.test.mjs` 校验。
 
 ## 规则
 
@@ -41,7 +41,9 @@ cd web && npm run dev   # 打开 /tests/fixtures/segmented-tabs.html 目视校�
 | --- | --- |
 | 分段控件 `a-segmented`（页面页签、时间范围、状态、编辑方式、权限动作） | 统一：容器边框 + 分隔线 + 浅靛蓝选中 |
 | 功能性单选按钮组 `a-radio-group`（安装方式、镜像来源、授权范围、状态筛选等） | 统一：与分段控件同一套令牌 |
-| 下划线页签（`a-tabs`、K8s 资源类型页签） | 保留页签族样式：下划线选中 + 容器底边线，不叠加色块 |
+| Kubernetes 资源类型、主机与集群导航 | 统一分段外观，保留数量与原生链接或页签语义 |
+| 应用状态筛选、流水线任务分类与配置分区 | 统一分段外观，保留筛选和当前分区状态 |
+| 详情抽屉与编辑表单内容页签（`a-tabs`） | 沿用下划线选中和容器底边线 |
 | 顶栏页面标签（`.vben-tabs`）、侧栏菜单 | 独立族，保持现有选中底色与焦点环 |
 
 新增功能性按钮组必须复用 `--edo-tabs-*` 令牌（容器底色、边框、分隔线、选中、焦点），由 `web/tests/segmented-tabs-design.test.mjs` 校验，不再逐页写样式。
