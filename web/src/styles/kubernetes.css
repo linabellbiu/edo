@@ -60,12 +60,12 @@
   text-overflow: ellipsis;
 }
 .kube-workspace .kube-compact-table .resource-row-actions .ant-btn { border-radius: var(--kube-radius-control); box-shadow: none; }
-.kube-workspace .kube-compact-table :is(.kube-action-yaml, .resource-more-button).ant-btn:not(:disabled) {
+.kube-workspace .kube-compact-table .resource-more-button.ant-btn:not(:disabled) {
   color: var(--kube-muted);
   border-color: var(--kube-border);
   background: var(--kube-surface);
 }
-.kube-workspace .kube-compact-table :is(.kube-action-yaml, .resource-more-button).ant-btn:not(:disabled):hover {
+.kube-workspace .kube-compact-table .resource-more-button.ant-btn:not(:disabled):hover {
   color: var(--kube-text);
   border-color: var(--kube-control-border);
   background: var(--kube-hover);
@@ -114,16 +114,14 @@
   color: var(--kube-text);
   font-size: 12px;
 }
-.kube-action.ant-btn:not(:disabled),
+.kube-action.ant-btn:not(:disabled, .ant-btn-primary, .ant-btn-dangerous, .edo-button-soft),
 .kube-resource-actions .resource-more-button.ant-btn:not(:disabled) {
   color: var(--kube-link);
   border-color: var(--kube-control-border);
   background: var(--kube-surface);
 }
-.kube-action.ant-btn:not(:disabled):hover,
+.kube-action.ant-btn:not(:disabled, .ant-btn-primary, .ant-btn-dangerous, .edo-button-soft):hover,
 .kube-resource-actions .resource-more-button.ant-btn:not(:disabled):hover { color: var(--kube-link); background: var(--kube-selected); border-color: var(--kube-link); }
-.kube-action-edit.ant-btn:not(:disabled) { color: var(--kube-link); border-color: var(--kube-control-border); background: var(--kube-surface); }
-.kube-action-edit.ant-btn:not(:disabled):hover { color: var(--kube-link); border-color: var(--kube-link); background: var(--kube-selected); }
 .kube-action.ant-btn:focus-visible,
 .kube-resource-actions .resource-more-button.ant-btn:focus-visible { outline: 2px solid var(--kube-focus); outline-offset: 2px; }
 .kube-action.ant-btn:disabled,

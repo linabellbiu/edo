@@ -4,14 +4,22 @@ import {nodeConditionState} from '@/utils/kubernetesNode'
 import {formatDateTime} from '@/utils/time'
 import { useI18n } from 'vue-i18n'
 import { formatKubeQuantity, podSpec, type KubeObject, type KubeType } from '@/api/kubernetes'
-import { resourceCells, resourceColumns, ingressRoutes, podReferences, policyDirections, policyPeer, type KubeReference } from '@/utils/kubernetesPresentation'
+import { resourceCells, resourceColumns, ingressRoutes, isHeadlessService, podReferences, policyDirections, policyPeer, serviceAccessHints, type KubeReference } from '@/utils/kubernetesPresentation'
 import { kubeContainerDetails, kubeContainerProbes, kubeEnvironmentSources, kubeVolumeDetails } from '@/utils/kubernetesDetails'
 import KubeResourceCell from './KubeResourceCell.vue'
+import KubeServiceAccessHint from './KubeServiceAccessHint.vue'
 const props=defineProps<{object:KubeObject;type:KubeType;canFollow:(reference?:KubeReference)=>boolean;container?:string;containerKey?:string;selectionIdentity?:string;section?:'all'|'containers'|'storage'|'scheduling'}>()
 const emit=defineEmits<{follow:[reference:KubeReference];container:[name:string];containerKey:[key:string,identity?:string]}>()
 const {t}=useI18n()
 const cells=computed(()=>resourceCells(props.object,t))
 const fields=computed(()=>resourceColumns(props.type,t).filter(item=>!['name','namespace','status','created','usage','images'].includes(item.key)))
+const servicePorts = computed(() => (props.object.spec?.ports ?? []).map((port: KubeObject) => {
+  const protocol = port.protocol ?? 'TCP'
+  return { port, protocol, endpoint: `${port.port}/${protocol}`, hints: serviceAccessHints(props.object, port, t) }
+}))
+const serviceDNSHints = computed(() => serviceAccessHints(props.object, undefined, t))
+const serviceAccessNote = computed(() => props.object.spec?.type === 'ExternalName' ? t('k8s.serviceAccessExternalNameNote')
+  : isHeadlessService(props.object) ? t('k8s.serviceAccessHeadlessNote') : undefined)
 const containers=computed(()=>kubeContainerDetails(props.object))
 const containerGroups=computed(()=>(['app','init','ephemeral'] as const).map(kind=>({kind,items:containers.value.filter(item=>item.kind===kind)})).filter(group=>group.items.length))
 const selectedContainerKey=ref('')
@@ -119,7 +127,30 @@ const rawResources=(container:KubeObject,field:string)=>Object.entries(container
   <a-empty v-if="section==='storage'&&!volumes.length" :description="t('k8s.workloadNoVolumes')" />
   <a-empty v-if="section==='scheduling'&&!schedulingFields.length&&!Object.keys(configuration.nodeSelector??{}).length&&!schedulingRules.length" :description="t('k8s.workloadNoScheduling')" />
 
-  <section v-if="object.kind==='Service'" class="resource-detail-section"><h4>{{ t('k8s.portMapping') }}</h4><div class="detail-table-scroll" tabindex="0" role="region" :aria-label="t('k8s.portMapping')"><table class="kube-detail-table"><thead><tr><th scope="col">{{ t('k8s.name') }}</th><th scope="col">{{ t('k8s.protocol') }}</th><th scope="col">{{ t('k8s.servicePort') }}</th><th scope="col">{{ t('k8s.targetPort') }}</th><th scope="col">NodePort</th></tr></thead><tbody><tr v-for="port in object.spec?.ports??[]" :key="`${port.port}/${port.protocol}`"><td>{{ port.name||'—' }}</td><td>{{ port.protocol??'TCP' }}</td><td>{{ port.port }}</td><td>{{ port.targetPort??port.port }}</td><td>{{ port.nodePort??'—' }}</td></tr></tbody></table></div><dl class="kube-detail-facts additional-facts"><div><dt>{{ t('k8s.sessionAffinity') }}</dt><dd>{{ object.spec?.sessionAffinity??'None' }}</dd></div><div><dt>{{ t('k8s.externalTrafficPolicy') }}</dt><dd>{{ object.spec?.externalTrafficPolicy??'—' }}</dd></div><div><dt>{{ t('k8s.publishNotReady') }}</dt><dd>{{ t(object.spec?.publishNotReadyAddresses?'k8s.yes':'k8s.no') }}</dd></div></dl><p class="detail-hint">{{ t('k8s.serviceReachabilityHint') }}</p></section>
+  <section v-if="object.kind==='Service'" class="resource-detail-section">
+    <template v-if="servicePorts.length">
+      <h4>{{ t('k8s.portMapping') }}</h4>
+      <div class="detail-table-scroll" tabindex="0" role="region" :aria-label="t('k8s.portMapping')">
+        <table class="kube-detail-table">
+          <thead><tr>
+            <th scope="col">{{ t('k8s.name') }}</th><th scope="col">{{ t('k8s.protocol') }}</th>
+            <th scope="col">{{ t('k8s.servicePort') }}</th><th scope="col">{{ t('k8s.targetPort') }}</th>
+            <th scope="col">NodePort</th><th scope="col" class="service-access-column">{{ t('k8s.serviceAccessColumn') }}</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="{port, protocol, endpoint, hints} in servicePorts" :key="`${object.metadata.uid}/${endpoint}`">
+              <td>{{ port.name||'—' }}</td><td>{{ protocol }}</td><td>{{ port.port }}</td>
+              <td>{{ port.targetPort??port.port }}</td><td>{{ port.nodePort??'—' }}</td>
+              <td class="service-access-column"><KubeServiceAccessHint v-if="hints.length" :hints="hints" :endpoint="endpoint" :note="serviceAccessNote" /><span v-else>—</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
+    <KubeServiceAccessHint v-else-if="serviceDNSHints.length" :key="object.metadata.uid" :hints="serviceDNSHints" :note="serviceAccessNote" />
+    <dl class="kube-detail-facts additional-facts"><div><dt>{{ t('k8s.sessionAffinity') }}</dt><dd>{{ object.spec?.sessionAffinity??'None' }}</dd></div><div><dt>{{ t('k8s.externalTrafficPolicy') }}</dt><dd>{{ object.spec?.externalTrafficPolicy??'—' }}</dd></div><div><dt>{{ t('k8s.publishNotReady') }}</dt><dd>{{ t(object.spec?.publishNotReadyAddresses?'k8s.yes':'k8s.no') }}</dd></div></dl>
+    <p class="detail-hint">{{ t('k8s.serviceReachabilityHint') }}</p>
+  </section>
 
   <section v-if="object.kind==='Ingress'" class="resource-detail-section"><h4>{{ t('k8s.routes') }}</h4><div class="detail-table-scroll" tabindex="0" role="region" :aria-label="t('k8s.routes')"><table class="kube-detail-table"><thead><tr><th scope="col">{{ t('k8s.hostname') }}</th><th scope="col">{{ t('k8s.path') }}</th><th scope="col">{{ t('k8s.pathType') }}</th><th scope="col">{{ t('k8s.backend') }}</th><th scope="col">{{ t('k8s.servicePort') }}</th></tr></thead><tbody><tr v-for="(route,index) in routes" :key="index"><td>{{ route.host }}</td><td>{{ route.path }}</td><td>{{ route.pathType }}</td><td><button v-if="route.service&&canFollow({resource:'services',name:route.service,namespace:object.metadata.namespace})" type="button" class="detail-link" @click="emit('follow',{resource:'services',name:route.service!,namespace:object.metadata.namespace})">{{ route.service }}</button><span v-else>{{ route.service??route.resource??'—' }}</span></td><td>{{ route.port??'—' }}</td></tr></tbody></table></div><a-empty v-if="!routes.length" :description="t('k8s.emptyData')" /><div v-if="object.spec?.tls?.length" class="tls-list"><div v-for="(tls,index) in object.spec.tls" :key="index"><span>{{ (tls.hosts??[]).join(', ')||'*' }}</span><span class="muted">Secret</span><button v-if="tls.secretName&&canFollow({resource:'secrets',name:tls.secretName,namespace:object.metadata.namespace})" type="button" class="detail-link" @click="emit('follow',{resource:'secrets',name:tls.secretName,namespace:object.metadata.namespace})">{{ tls.secretName }}</button><span v-else>{{ tls.secretName||'—' }}</span></div></div><p class="detail-hint">{{ t('k8s.ingressReachabilityHint') }}</p></section>
 
@@ -165,6 +196,8 @@ dd{font-size:13px;margin:0;line-height:1.6;overflow-wrap:anywhere;font-variant-n
 .kube-detail-table th,.kube-detail-table td{padding:8px 10px;border-bottom:1px solid var(--kube-border);border-right:1px solid var(--kube-border);vertical-align:top;min-width:90px;line-height:1.6}
 .kube-detail-table tr>:last-child{border-right:0}.kube-detail-table tbody tr:last-child td{border-bottom:0}
 .kube-detail-table tbody tr:nth-child(even) td{background:var(--kube-stripe)}
+.service-access-column{position:sticky;inset-inline-end:0;z-index:1;width:1%;white-space:nowrap;box-shadow:-1px 0 var(--kube-border)}
+.kube-detail-table td.service-access-column{background:var(--kube-surface)}
 .kube-detail-table code{display:block;min-width:180px;max-width:330px;overflow-wrap:anywhere;font-size:12px}
 .muted{color:var(--kube-muted);font-size:12px;margin-left:5px}
 .detail-hint{font-size:12px;color:var(--kube-muted);margin:12px 0 0;line-height:1.7}

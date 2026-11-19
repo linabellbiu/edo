@@ -151,6 +151,53 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
   }
   return cells
 }
+
+export interface ServiceAccessHint {
+  scope: 'sameNamespace' | 'otherNamespaces' | 'clusterIP' | 'nodePort' | 'localNodePort' | 'loadBalancer' | 'externalIP' | 'externalName'
+  addresses: string[]
+}
+
+export function isHeadlessService(object: KubeObject) {
+  return object.spec?.clusterIP === 'None' || object.spec?.clusterIPs?.includes('None') === true
+}
+
+export function serviceAccessHints(object: KubeObject, port: KubeObject | undefined, t: Translate): ServiceAccessHint[] {
+  if (object.kind !== 'Service') return []
+  const spec = object.spec ?? {}
+  const validPort = (value: number) => Number.isInteger(value) && value > 0 && value <= 65535
+  const dnsOnly = spec.type === 'ExternalName' || isHeadlessService(object)
+  if (!dnsOnly && !validPort(port?.port)) return []
+
+  const hints: ServiceAccessHint[] = []
+  function add(scope: ServiceAccessHint['scope'], hosts: unknown[], number?: number) {
+    const values = hosts.filter((host): host is string => typeof host === 'string' && host !== '' && host !== 'None')
+    const addresses = [...new Set(values)].map(host => {
+      if (number === undefined) return host
+      return `${host.includes(':') ? `[${host}]` : host}:${number}`
+    })
+    if (addresses.length) hints.push({ scope, addresses })
+  }
+
+  const { name, namespace } = object.metadata ?? {}
+  const servicePort = dnsOnly ? undefined : port?.port
+  add('sameNamespace', [name], servicePort)
+  if (name && namespace) add('otherNamespaces', [`${name}.${namespace}`], servicePort)
+
+  if (spec.type === 'ExternalName') add('externalName', [spec.externalName])
+  if (dnsOnly) return hints
+
+  add('clusterIP', spec.clusterIPs?.length ? spec.clusterIPs : [spec.clusterIP], servicePort)
+  if (['NodePort', 'LoadBalancer'].includes(spec.type) && validPort(port?.nodePort)) {
+    add(spec.externalTrafficPolicy === 'Local' ? 'localNodePort' : 'nodePort', [t('k8s.serviceAccessNodeAddress')], port?.nodePort)
+  }
+  if (spec.type === 'LoadBalancer') {
+    const ingress = object.status?.loadBalancer?.ingress ?? []
+    add('loadBalancer', ingress.flatMap((entry: KubeObject) => [entry.ip, entry.hostname]), servicePort)
+  }
+  add('externalIP', spec.externalIPs ?? [], servicePort)
+  return hints
+}
+
 export function ingressRoutes(object:KubeObject):Array<{host:string;path:string;pathType:string;service?:string;port?:string|number;resource?:string}> {
   const route=(host:string,path:string,pathType:string,backend:KubeObject={})=>({host,path,pathType,service:backend.service?.name,port:backend.service?.port?.number??backend.service?.port?.name,resource:backend.resource?`${backend.resource.kind}/${backend.resource.name}`:undefined})
   const paths=(object.spec?.rules??[]).flatMap((rule:KubeObject)=>(rule.http?.paths??[]).map((path:KubeObject)=>route(rule.host??'*',path.path??'/',path.pathType??'—',path.backend)))

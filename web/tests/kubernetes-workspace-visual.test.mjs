@@ -13,7 +13,7 @@ import {loadFrontend} from './acceptanceHarness.mjs'
 const read=path=>readFileSync(new URL(path,import.meta.url),'utf8')
 const tokens=postcss.parse(read('../src/styles/kubernetes-workspace.css'))
 const shared=postcss.parse(read('../src/styles/kubernetes.css'))
-const names=['KubeResourceDetails','KubeNodeInfo','KubeNamespaceTree','KubeOverview','KubeNodeUsage','KubeNodeMonitor','KubeResourceCell']
+const names=['KubeResourceDetails','KubeNodeInfo','KubeNamespaceTree','KubeOverview','KubeNodeUsage','KubeNodeMonitor','KubeResourceCell','KubeServiceAccessHint']
 const components=Object.fromEntries(names.map(name=>{
  const descriptor=parse(read(`../src/components/${name}.vue`)).descriptor
  return [name,{descriptor,styles:descriptor.styles.map(style=>postcss.parse(style.content))}]
@@ -45,6 +45,7 @@ function compiledComponent(name){
   '@/utils/time':{formatDateTime:value=>value??'—'},
   '@/directives/copyFullText':{vCopyFullText:{},selectAndCopyFullText:()=>false},
   './KubeResourceCell.vue':{__esModule:true,default:{props:['cell'],setup:props=>()=>vue.h('span',props.cell?.text??'—')}},
+  ...(name==='KubeResourceDetails'?{'./KubeServiceAccessHint.vue':{__esModule:true,default:compiledComponent('KubeServiceAccessHint')}}:{}),
  }
  const module={exports:{}}
  new Function('require','module','exports',output)(name=>{
@@ -56,6 +57,8 @@ function compiledComponent(name){
 function renderComponent(name,props){
  const app=vue.createSSRApp(compiledComponent(name),props)
  for(const tag of ['a-tooltip','a-tag','a-empty','a-alert'])app.component(tag,{inheritAttrs:false,props:['description','message'],setup:(props,{slots,attrs})=>()=>vue.h('div',attrs,props.description??props.message??slots.default?.())})
+ app.component('a-popover',{setup:(_props,{slots})=>()=>vue.h('div',[slots.default?.(),slots.content?.()])})
+ app.component('a-button',{setup:(_props,{slots})=>()=>vue.h('button',slots.default?.())})
  return renderToString(app)
 }
 
@@ -122,7 +125,9 @@ test('查看、修改和执行按钮各自保留语义，hover 不影响禁用�
  const actions=read('../src/components/KubeResourceActions.vue')
  assert.match(actions,/class="kube-action" type="primary"[^>]+emit\('pods'\)/)
  assert.match(actions,/class="kube-action edo-button-soft" data-tone="warning"[^>]+emit\('action','restart'\)/)
- assert.match(actions,/class="kube-action kube-action-edit" :type="workloadToolbar\?'primary':'default'"/)
+ assert.match(actions,/class="kube-action kube-action-edit" :type="workloadToolbar\|\|resourceManagement\?'primary':'default'"/)
+ assert.match(actions,/class="kube-action kube-action-yaml" :class="\{'edo-button-soft':resourceManagement\}"/)
+ assert.doesNotMatch(read('../src/styles/kubernetes.css'),/\.kube-compact-table[^\n{]+\.kube-action-yaml/)
  assert.equal(declarations([shared],'.kube-action.ant-btn:disabled').cursor,'not-allowed')
  assert.equal(declarations([shared],'.kube-action.ant-btn:focus-visible').outline,'2px solid var(--kube-focus)')
  assert.equal(declarations([tokens],'.kube-workspace .partial-badge').font,'inherit')
@@ -199,6 +204,77 @@ test('Service 多端口使用冒号和独立标签，协议、命名端口及Nod
  assert.deepEqual(presentation.resourceCells({...object,spec:{ports:[{port:443,targetPort:6443,protocol:'TCP'}]}},translate).servicePorts.tokens,['443:6443'])
  const empty=presentation.resourceCells({...object,spec:{ports:[]}},translate).servicePorts
  assert.equal(empty.text,'—');assert.deepEqual(empty.tokens,[])
+})
+
+test('Service 访问提示逐端口使用服务端口、真实双栈地址和对应的 NodePort',()=>{
+ const udp={name:'dns',port:53,protocol:'UDP',targetPort:5353,nodePort:30053}
+ const tcp={name:'dns-tcp',port:53,protocol:'TCP',targetPort:'dns-tcp',nodePort:31053}
+ const service={
+  kind:'Service',
+  metadata:{name:'resolver',namespace:'platform'},
+  spec:{type:'NodePort',clusterIP:'10.43.0.10',clusterIPs:['10.43.0.10','fd00::10'],ports:[udp,tcp]},
+ }
+ const hints=port=>presentation.serviceAccessHints(service,port,translate)
+ const common=[
+  {scope:'sameNamespace',addresses:['resolver:53']},
+  {scope:'otherNamespaces',addresses:['resolver.platform:53']},
+  {scope:'clusterIP',addresses:['10.43.0.10:53','[fd00::10]:53']},
+ ]
+ assert.deepEqual(hints(udp),[...common,{scope:'nodePort',addresses:['k8s.serviceAccessNodeAddress:30053']}])
+ assert.deepEqual(hints(tcp),[...common,{scope:'nodePort',addresses:['k8s.serviceAccessNodeAddress:31053']}])
+ service.spec.externalTrafficPolicy='Local'
+ assert.deepEqual(hints(tcp),[...common,{scope:'localNodePort',addresses:['k8s.serviceAccessNodeAddress:31053']}])
+})
+
+test('Service 访问提示按实际负载均衡与外部地址显示，无 NodePort 时不补造节点入口',()=>{
+ const port={port:443,targetPort:8443}
+ const service={
+  kind:'Service',
+  metadata:{name:'gateway',namespace:'edge'},
+  spec:{type:'LoadBalancer',clusterIP:'10.43.0.20',externalIPs:['192.0.2.42'],allocateLoadBalancerNodePorts:false,ports:[port]},
+  status:{loadBalancer:{ingress:[{ip:'2001:db8::20'},{hostname:'edge.example.net'}]}},
+ }
+ const hints=presentation.serviceAccessHints(service,port,translate)
+ assert.deepEqual(hints,[
+  {scope:'sameNamespace',addresses:['gateway:443']},
+  {scope:'otherNamespaces',addresses:['gateway.edge:443']},
+  {scope:'clusterIP',addresses:['10.43.0.20:443']},
+  {scope:'loadBalancer',addresses:['[2001:db8::20]:443','edge.example.net:443']},
+  {scope:'externalIP',addresses:['192.0.2.42:443']},
+ ])
+ const pending={...service,spec:{...service.spec,externalIPs:[]},status:{loadBalancer:{ingress:[]}}}
+ assert.deepEqual(presentation.serviceAccessHints(pending,port,translate),hints.slice(0,3))
+})
+
+test('无头 Service 和 ExternalName 按 DNS 语义展示，不把 DNS 别名当转发端口',()=>{
+ const port={port:443,targetPort:'https',protocol:'TCP'}
+ const service={
+  kind:'Service',
+  metadata:{name:'catalog',namespace:'tenant'},
+  spec:{type:'ClusterIP',clusterIP:'None',clusterIPs:['None'],ports:[port]},
+ }
+ const dns=[
+  {scope:'sameNamespace',addresses:['catalog']},
+  {scope:'otherNamespaces',addresses:['catalog.tenant']},
+ ]
+ assert.deepEqual(presentation.serviceAccessHints(service,port,translate),dns)
+ const external={...service,spec:{type:'ExternalName',externalName:'catalog.example.net',ports:[port]}}
+ assert.deepEqual(presentation.serviceAccessHints(external,port,translate),[
+  ...dns,{scope:'externalName',addresses:['catalog.example.net']},
+ ])
+ assert.deepEqual(presentation.serviceAccessHints(external,undefined,translate),presentation.serviceAccessHints(external,port,translate))
+})
+
+test('Service 详情每行独立展示访问提示，ExternalName 没有端口时仍可查看 DNS',async()=>{
+ const type=api.kubeTypes.find(item=>item.resource==='services')
+ const object={kind:'Service',metadata:{uid:'service-test',name:'resolver',namespace:'platform'},spec:{type:'NodePort',clusterIP:'10.43.0.10',ports:[{port:53,protocol:'UDP',nodePort:30053},{port:53,protocol:'TCP',nodePort:31053}]}}
+ const html=await renderComponent('KubeResourceDetails',{object,type,canFollow:()=>false})
+ assert.equal((html.match(/<button[^>]*class="edo-button-soft"/g)??[]).length,2)
+ assert.match(html,/30053[^]*?<code>k8s\.serviceAccessNodeAddress:30053<\/code>/)
+ assert.match(html,/31053[^]*?<code>k8s\.serviceAccessNodeAddress:31053<\/code>/)
+ const external=await renderComponent('KubeResourceDetails',{object:{...object,spec:{type:'ExternalName',externalName:'resolver.example.net'}},type,canFollow:()=>false})
+ assert.match(external,/<code>resolver\.example\.net<\/code>/)
+ assert.doesNotMatch(external,/class="detail-table-scroll"/)
 })
 
 test('节点详情真实SSR只转换展示单位，保留原始精度、未知值和不可信文本',async()=>{

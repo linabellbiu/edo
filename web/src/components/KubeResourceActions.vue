@@ -34,8 +34,8 @@ const more=computed(()=>editable.value&&!editShortcut.value||!workloadToolbar.va
     </a-button>
     <a-button v-if="workloadToolbar&&editable&&supportsWorkloadImageEdit(type)" class="kube-action" type="primary" size="small" :disabled="disabled" @click="emit('images')"><Box :size="14" aria-hidden="true" />{{ t('k8s.adjustImage') }}</a-button>
     <a-button v-if="directRuntime" class="kube-action edo-button-soft" data-tone="warning" size="small" :disabled="disabled" @click="emit('action','restart')"><RefreshCw :size="14" aria-hidden="true" />{{ t('k8s.restart') }}</a-button>
-    <a-button v-if="editShortcut" class="kube-action kube-action-edit" :type="workloadToolbar?'primary':'default'" size="small" :disabled="disabled" @click="emit('edit')"><Pencil :size="14" aria-hidden="true" />{{ t('k8s.edit') }}</a-button>
-    <a-button v-if="yamlShortcut" class="kube-action kube-action-yaml" size="small" :disabled="disabled" @click="emit('yaml')"><FileCode2 v-if="workloadToolbar" :size="14" aria-hidden="true" />YAML</a-button>
+    <a-button v-if="editShortcut" class="kube-action kube-action-edit" :type="workloadToolbar||resourceManagement?'primary':'default'" size="small" :disabled="disabled" @click="emit('edit')"><Pencil :size="14" aria-hidden="true" />{{ t('k8s.edit') }}</a-button>
+    <a-button v-if="yamlShortcut" class="kube-action kube-action-yaml" :class="{'edo-button-soft':resourceManagement}" size="small" :disabled="disabled" @click="emit('yaml')"><FileCode2 v-if="workloadToolbar" :size="14" aria-hidden="true" />YAML</a-button>
     <a-button v-if="workloadToolbar&&linkable" class="kube-action kube-action-link" size="small" :disabled="disabled" @click="emit('link')"><Link2 :size="14" aria-hidden="true" />{{ t('delivery.link') }}</a-button>
     <a-button v-if="workloadToolbar&&removable" class="kube-action kube-action-remove" size="small" danger :disabled="disabled" @click="emit('remove')"><Trash2 :size="14" aria-hidden="true" />{{ t('k8s.remove') }}</a-button>
     <template #more>
