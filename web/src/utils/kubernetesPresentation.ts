@@ -3,7 +3,8 @@ import { kubernetesNodeRoles, kubernetesNodeRoleKey } from '@/utils/kubernetesRo
 
 type Translate = (key:string, values?:Record<string,unknown>)=>string
 export interface KubeReference { resource:string; name:string; namespace?:string; uid?:string }
-export interface KubeCell { text:string; tokens?:string[]; secondary?:string; raw?:string; reference?:KubeReference; progress?:number; badge?:'success'|'warning'|'danger'|'neutral'; sortValue?:number }
+export interface KubePortMapping { mapping: string; nodePort?: number }
+export interface KubeCell { text:string; portMappings?:KubePortMapping[]; secondary?:string; raw?:string; reference?:KubeReference; progress?:number; badge?:'success'|'warning'|'danger'|'neutral'; sortValue?:number }
 export interface KubeStatus { key:string; text:string; tone:string; reason?:string }
 const joined = (values:unknown[]) => values.filter(value=>value!==undefined&&value!==null&&value!=='').join(' · ') || '—'
 const entries = (value:Record<string,unknown>={}) => Object.entries(value).map(([key,value])=>`${key}=${value}`)
@@ -97,10 +98,12 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
   const containers=podSpec(object).containers??[],all=t('k8s.allPods')
   const labels=entries(object.metadata?.labels)
   const portSpecs=spec.ports??[]
-  const servicePorts=portSpecs.map((port:KubeObject)=>{
-    const protocol=port.protocol??'TCP'
-    return `${port.port}:${port.targetPort??port.port}${portSpecs.length>1||protocol!=='TCP'?`/${protocol}`:''}${port.nodePort?` (NodePort ${port.nodePort})`:''}`
+  const portMappings: KubePortMapping[] = portSpecs.map((port: KubeObject) => {
+    const protocol = port.protocol ?? 'TCP'
+    const protocolSuffix = portSpecs.length > 1 || protocol !== 'TCP' ? `/${protocol}` : ''
+    return { mapping: `${port.port}:${port.targetPort ?? port.port}${protocolSuffix}`, nodePort: port.nodePort || undefined }
   })
+  const servicePorts = portMappings.map(({mapping, nodePort}) => `${mapping}${nodePort ? ` (NodePort ${nodePort})` : ''}`)
   const cells:Record<string,KubeCell>={
     labels:cell(joined(labels)),images:cell(joined(containers.map((item:KubeObject)=>item.image)),containers.length?t('k8s.containerCount',{count:containers.length}):undefined),
     selector:cell(selectorText(kind==='Service'?spec.selector&&Object.keys(spec.selector).length?{matchLabels:spec.selector}:undefined:kind==='NetworkPolicy'?spec.podSelector:spec.selector,all)),
@@ -117,7 +120,7 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
     reclaim:cell(object.reclaimPolicy??spec.persistentVolumeReclaimPolicy??(kind==='StorageClass'?'Delete':undefined)),
     defaultClass:cell(t(object.metadata?.annotations?.['storageclass.kubernetes.io/is-default-class']==='true'||object.metadata?.annotations?.['storageclass.beta.kubernetes.io/is-default-class']==='true'?'k8s.yes':'k8s.no')),
     provisioner:cell(object.provisioner),binding:cell(object.volumeBindingMode??'Immediate'),expansion:cell(t(object.allowVolumeExpansion?'k8s.allowed':'k8s.notAllowed')),
-    serviceType:cell(spec.type??'ClusterIP'),servicePorts:{...cell(servicePorts.join('\n')),tokens:servicePorts},
+    serviceType:cell(spec.type??'ClusterIP'),servicePorts:{...cell(servicePorts.join('\n')),portMappings},
     hosts:cell(joined((spec.rules??[]).map((rule:KubeObject)=>rule.host??'*'))),ingressClass:cell(spec.ingressClassName??object.metadata?.annotations?.['kubernetes.io/ingress.class']),
     routes:cell(joined(ingressRoutes(object).map(route=>`${route.path} → ${route.service??route.resource??'—'}:${route.port??'—'}`))),
     tls:cell(t(spec.tls?.length?'k8s.configured':'k8s.notConfigured')),

@@ -63,7 +63,7 @@ const settings=computed(()=>{
       <dl class="workload-service-facts">
        <div v-if="service.address?.text&&service.address.text!=='—'"><dt>{{ service.addressLabel }}</dt><dd>{{ service.address.text }}</dd></div>
        <div v-if="service.address?.secondary&&service.address.secondary!=='—'"><dt>{{ t('k8s.externalAddress') }}</dt><dd>{{ service.address.secondary }}</dd></div>
-       <div v-if="service.ports?.tokens?.length"><dt>{{ t('k8s.portMapping') }}</dt><dd><KubeResourceCell :cell="service.ports" /></dd></div>
+       <div v-if="service.ports?.portMappings?.length"><dt>{{ t('k8s.portMapping') }}</dt><dd><KubeResourceCell :cell="service.ports" /></dd></div>
       </dl>
      </li>
     </ul>
@@ -99,7 +99,6 @@ dd { margin: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .workload-service-name, .workload-service-facts, .workload-service-facts > div { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
 .workload-service-facts { margin: 0; gap: 4px 14px; }
 .workload-service-facts dd { min-width: 0; max-width: 100%; }
-.workload-service-facts :deep(.kube-port-badge) { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .workload-service-name :deep(.kube-cell) { min-width: 0; }
 .workload-service-name :deep(.cell-link) { white-space: normal; overflow-wrap: anywhere; }
 .workload-service-message { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; color: var(--workload-muted); font-size: 12px; }
