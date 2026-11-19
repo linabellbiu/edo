@@ -54,6 +54,18 @@
 .kube-ready-badge.is-warning { color: var(--kube-warning); background: var(--kube-warning-bg); border-color: var(--kube-warning-border); }
 .kube-ready-badge.is-danger { color: var(--kube-danger); background: var(--kube-danger-bg); border-color: var(--kube-danger-border); }
 .kube-ready-badge.is-neutral { background: var(--kube-surface-soft); color: var(--kube-muted); border-color: var(--kube-border); }
+.kube-workload-table :is(.status-cell .ant-tag, .kube-ready-badge) {
+  --kube-success-bg: #dff5e8;
+  --kube-success-border: #a8d8bd;
+  --kube-warning-bg: #fff1d8;
+  --kube-warning-border: #edcf95;
+}
+:root[data-theme='dark'] .kube-workload-table :is(.status-cell .ant-tag, .kube-ready-badge) {
+  --kube-success-bg: #194337;
+  --kube-success-border: #3d7663;
+  --kube-warning-bg: #4b391e;
+  --kube-warning-border: #80653b;
+}
 .kube-namespace-badge {
   display: inline-block;
   padding: 3px 7px;
