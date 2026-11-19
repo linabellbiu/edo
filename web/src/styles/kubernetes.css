@@ -55,6 +55,11 @@
 .kube-ready-badge.is-danger { color: var(--kube-danger); background: var(--kube-danger-bg); border-color: var(--kube-danger-border); }
 .kube-ready-badge.is-neutral { background: var(--kube-surface-soft); color: var(--kube-muted); border-color: var(--kube-border); }
 .kube-workload-table :is(.status-cell .ant-tag, .kube-ready-badge) {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding-block: 0;
+  border-radius: 6px;
   --kube-success-bg: #dff5e8;
   --kube-success-border: #a8d8bd;
   --kube-warning-bg: #fff1d8;

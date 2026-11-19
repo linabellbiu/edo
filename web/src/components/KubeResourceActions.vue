@@ -27,7 +27,7 @@ const more=computed(()=>editable.value&&!editShortcut.value||!workloadToolbar.va
 <template>
   <ResourceRowActions class="kube-resource-actions" :more="more" :loading="loading">
     <a-button v-if="type.group==='workloads'&&!inDrawer" class="kube-action kube-action-info" size="small" :disabled="disabled" @click="emit('details')">{{ t('resourceList.details') }}</a-button>
-    <a-button v-if="controller&&!inDrawer" class="kube-action edo-button-soft" data-tone="success" size="small" :disabled="disabled" @click="emit('pods')">{{ t('k8s.podConsole') }}</a-button>
+    <a-button v-if="controller&&!inDrawer" class="kube-action" type="primary" size="small" :disabled="disabled" @click="emit('pods')">{{ t('k8s.podConsole') }}</a-button>
     <a-button v-if="type.resource==='pods'&&!hideContainerActions" class="kube-action kube-action-info" size="small" :disabled="disabled||logsPath===''" @click="emit('logs')">{{ t('k8s.logs') }}</a-button><SessionPopoutLink v-if="type.resource==='pods'&&!hideContainerActions&&logsPath" kind="container-log" :path="logsPath" :title="object.metadata.name" :disabled="disabled" />
     <a-button v-if="directRuntime&&['deployments','statefulsets'].includes(type.resource)" class="kube-action kube-action-scale" size="small" :disabled="disabled" @click="emit('scale')">
       <Scaling :size="14" aria-hidden="true" />{{ t('k8s.scale') }}<span v-if="replicas" class="workload-toolbar-replicas" :data-tone="replicas.badge" :title="t('k8s.readyReplicas')">{{ replicas.text }}</span>

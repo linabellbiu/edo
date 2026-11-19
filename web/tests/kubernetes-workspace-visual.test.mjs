@@ -120,7 +120,7 @@ test('共用表格保留清晰表头、列线、末行线和不透明固定操�
 
 test('查看、修改和执行按钮各自保留语义，hover 不影响禁用态，键盘焦点独立可见',()=>{
  const actions=read('../src/components/KubeResourceActions.vue')
- assert.match(actions,/class="kube-action edo-button-soft" data-tone="success"[^>]+emit\('pods'\)/)
+ assert.match(actions,/class="kube-action" type="primary"[^>]+emit\('pods'\)/)
  assert.match(actions,/class="kube-action edo-button-soft" data-tone="warning"[^>]+emit\('action','restart'\)/)
  assert.match(actions,/class="kube-action kube-action-edit" :type="workloadToolbar\?'primary':'default'"/)
  assert.equal(declarations([shared],'.kube-action.ant-btn:disabled').cursor,'not-allowed')
@@ -128,6 +128,14 @@ test('查看、修改和执行按钮各自保留语义，hover 不影响禁用�
  assert.equal(declarations([tokens],'.kube-workspace .partial-badge').font,'inherit')
  assert.equal(declarations([tokens],'.kube-workspace .partial-badge:focus-visible').outline,'2px solid var(--kube-focus)')
  assert.doesNotMatch(read('../src/styles/kubernetes.css'),/filter:\s*brightness/)
+})
+
+test('工作负载列表的状态与就绪数量标签共用紧凑高度',()=>{
+ const badges=declarations([shared],'.kube-workload-table :is(.status-cell .ant-tag, .kube-ready-badge)')
+ assert.equal(badges.display,'inline-flex')
+ assert.equal(badges['align-items'],'center')
+ assert.equal(badges.height,'24px')
+ assert.equal(badges['padding-block'],'0')
 })
 
 test('K8s 页签激活和 processing 标签使用局部可读配对，不覆盖全站 Ant 主题',()=>{
