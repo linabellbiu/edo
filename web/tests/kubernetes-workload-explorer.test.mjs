@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
+import axios from 'axios'
 import * as vue from 'vue'
 import {createRouter,createMemoryHistory} from 'vue-router'
 import {loadFrontend} from './acceptanceHarness.mjs'
@@ -267,11 +268,11 @@ test('第二个容器无效时切回模板并定位对应容器，脏草稿取�
 })
 
 const settleView=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
-async function viewHarness(){
+async function viewHarness({readServices=async()=>({items:[],continue:''})}={}){
  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/kubernetes',component:{}}]})
  await router.push('/kubernetes?view=workloads&resource=deployments&cluster=test&namespace=team')
- const route=new Proxy({},{get:(_target,key)=>router.currentRoute.value[key]}),calls=[],lists=[],unmounts=[],messages=[],blocked=new Set()
- const workload={...structuredClone(deployment),apiVersion:'apps/v1',spec:{replicas:2,selector:{matchLabels:{app:'web'}},template:{spec:pod('template').spec}},metadata:{...deployment.metadata,resourceVersion:'7'}}
+ const route=new Proxy({},{get:(_target,key)=>router.currentRoute.value[key]}),calls=[],lists=[],unmounts=[],messages=[],blocked=vue.reactive(new Set())
+ const workload={...structuredClone(deployment),apiVersion:'apps/v1',spec:{replicas:2,selector:{matchLabels:{app:'web'}},template:{metadata:{labels:{app:'web'}},spec:pod('template').spec}},metadata:{...deployment.metadata,resourceVersion:'7'}}
  const podA=pod('pod-a');podA.apiVersion='v1';podA.metadata.labels={app:'web'}
  const podB=pod('pod-b');podB.apiVersion='v1';podB.metadata.labels={app:'web'}
  const pvc={apiVersion:'v1',kind:'PersistentVolumeClaim',metadata:{name:'data',namespace:'team',uid:'pvc-a'}}
@@ -290,7 +291,13 @@ async function viewHarness(){
   vue:{...vue,onMounted(){},onBeforeUnmount:fn=>unmounts.push(fn)},'vue-i18n':{useI18n:()=>({t:key=>key})},
   'vue-router':{useRoute:()=>route,useRouter:()=>router,onBeforeRouteLeave(){},onBeforeRouteUpdate(){}},
   'ant-design-vue':{Modal:{confirm:()=>({destroy(){}})},message:Object.fromEntries(['error','warning','success'].map(kind=>[kind,value=>messages.push({kind,value})]))},
-  '@/api/kubernetes':{...api,listKubeResourceScopes:async()=>({items:[],cursor:{}}),listKubeResources:async(cluster,type,namespace,continuation,signal)=>{lists.push({cluster,type:type.resource,namespace,continuation,signal});return {items:type.resource==='pods'?[podA,podB]:[],continue:''}}},
+  axios,
+  '@/api/kubernetes':{...api,listKubeResourceScopes:async()=>({items:[],cursor:{}}),listKubeResources:async(cluster,type,namespace,continuation,signal,fresh)=>{
+   const call={cluster,type:type.resource,namespace,continuation,signal,fresh}
+   lists.push(call)
+   if(type.resource==='services')return readServices(call)
+   return {items:type.resource==='pods'?[podA,podB]:[],continue:''}
+  }},
   '@/utils/kubernetesWorkspace':workspace,'@/utils/kubernetesPresentation':presentation,
   '@/stores/auth':{useAuthStore:()=>({canAny:permissions=>permissions.some(permission=>!blocked.has(permission))})},
   '@/api/client':{__esModule:true,default:client},
@@ -308,6 +315,55 @@ test('工作负载概览默认加载关联 Pod 和事件，后台同步保留概
  h.advance(11000);await h.state.syncDetails();await settleView()
  assert.equal(h.calls.filter(call=>call.url.endsWith('/events')).length,eventsBefore+1);assert.equal(h.lists.length,podsBefore+1);assert.equal(h.state.detailTab.value,'basic')
  h.stop()
+})
+
+const service=(name,selector,namespace='team',type='ClusterIP')=>({
+ kind:'Service',metadata:{uid:`svc-${namespace}-${name}`,name,namespace},
+ spec:{type,selector,clusterIP:'10.43.0.8',ports:[{port:80,targetPort:'http',nodePort:30080}]},
+})
+
+test('关联 Service 使用同一命名空间的完整选择器或 StatefulSet 明确引用',()=>{
+ const workload={kind:'Deployment',metadata:{namespace:'team',labels:{app:'metadata-only'}},spec:{template:{metadata:{labels:{app:'web',tier:'frontend'}}}}}
+ const matches=service('web-node',{app:'web',tier:'frontend'},'team','NodePort')
+ const headless=service('governing',{})
+ const candidates=[matches,service('wrong-value',{app:'web',tier:'backend'}),service('foreign',{app:'web'},'other'),service('web',{}),service('labels-only',{app:'metadata-only'}),service('external',{app:'web'},'team','ExternalName'),headless,matches]
+ assert.deepEqual(presentation.relatedWorkloadServices(workload,candidates),[matches])
+ assert.deepEqual(presentation.relatedWorkloadServices({...workload,kind:'StatefulSet',spec:{...workload.spec,serviceName:'governing'}},candidates),[headless,matches])
+ assert.deepEqual(presentation.relatedWorkloadServices({kind:'Pod',metadata:{namespace:'team',labels:{app:'web',tier:'frontend'}}},candidates),[matches])
+ assert.deepEqual(presentation.relatedWorkloadServices({...workload,kind:'CronJob',spec:{jobTemplate:{spec:workload.spec}}},candidates),[matches])
+})
+
+test('Service 独立读取并处理分页，撤权清除结果并丢弃迟到响应',async t=>{
+ const requests=[]
+ const h=await viewHarness({readServices:call=>new Promise((resolve,reject)=>requests.push({call,resolve,reject}))})
+ t.after(h.stop)
+ const match=service('web-node',{app:'web'},'team','NodePort')
+ await h.state.openDetails(h.workload);await settleView()
+ assert.equal(h.state.detailLoading.value,false)
+ assert.equal(h.state.relatedPods.value.length,2)
+ assert.equal(h.state.events.value.length,1)
+ assert.equal(requests.length,1)
+ assert.equal(requests[0].call.namespace,'team')
+ requests[0].resolve({items:[service('other',{app:'other'})],continue:'page2'});await settleView()
+ assert.equal(requests[1].call.continuation,'page2')
+ requests[1].resolve({items:[match],continue:''});await settleView()
+ assert.deepEqual(h.state.workloadServices.value,[match])
+ void h.state.loadWorkloadServices(true)
+ assert.equal(requests[2].call.fresh,true)
+ requests[2].reject({isAxiosError:true,response:{status:403}});await settleView()
+ assert.equal(h.state.servicesError.value,true)
+ assert.deepEqual(h.state.workloadServices.value,[])
+ void h.state.loadWorkloadServices(true)
+ requests[3].resolve({items:[match],continue:''});await settleView()
+ assert.equal(h.state.servicesError.value,false)
+ assert.deepEqual(h.state.workloadServices.value,[match])
+ void h.state.loadWorkloadServices(true)
+ h.blocked.add('kubernetes.network.read')
+ assert.equal(requests[4].call.signal.aborted,true)
+ assert.deepEqual(h.state.workloadServices.value,[])
+ requests[4].resolve({items:[match],continue:''});await settleView()
+ assert.deepEqual(h.state.workloadServices.value,[])
+ assert.equal(requests.length,5)
 })
 
 test('工作负载查看 Pod 与历史诊断快捷入口归到概览，普通 Pod 保留自身诊断页',async()=>{

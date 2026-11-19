@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
+import axios from 'axios'
 import { Plus, RefreshCw, Search, ArrowLeft, Filter, Server, ChevronRight } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate, type LocationQueryRaw } from 'vue-router'
 import client from '@/api/client'
 import { identityOf, kubeKey, kubeTypes, listKubeResources, listKubeResourceScopes, namespaceSelection, mapNamespaceRequests, mergeNamespaceOverviews, resourceURL, withFreshKubeResource, kubeErrorMessage, KubeResourceChanged, streamKubeEvents, KubeWatchError, usageFor, formatKubeCPU, formatKubeMemory, podSpec, type KubeWatchEvent, type KubeOverview as OverviewData, type KubeCluster, type KubeObject, type KubeResourceDetail, type KubeType } from '@/api/kubernetes'
-import { resourceColumns, resourceCells, resourceStatus, resourceSearchText, matchesLabelFilter, relatedPodMatch, type KubeReference } from '@/utils/kubernetesPresentation'
+import { resourceColumns, resourceCells, resourceStatus, resourceSearchText, matchesLabelFilter, relatedPodMatch, relatedWorkloadServices, type KubeReference } from '@/utils/kubernetesPresentation'
 import KubeNamespaceTree from '@/components/KubeNamespaceTree.vue'
 import '@/styles/kubernetes.css'
 import ResourceTable from '@/components/ResourceTable.vue'
@@ -158,7 +159,7 @@ let secretController:AbortController|undefined
 let detailSyncing=false,listRefreshing=false,lastRelatedSync=0,lastVisibleSync=0
 const watchHealthy=ref(false),watchDegraded=ref(false)
 let watchMounted=false,watchRevision=0,watchController:AbortController|undefined,watchReconnect:ReturnType<typeof setTimeout>|undefined,watchFlush:ReturnType<typeof setTimeout>|undefined,watchRetry=0,lastWatchEvent=0,lastCalibration=0
-const watchDirty=new Set<'list'|'overview'|'namespaces'|'detail'|'related'>()
+const watchDirty=new Set<'list'|'overview'|'namespaces'|'detail'|'related'|'services'>()
 const scopeKey=computed(()=>selectedNamespaces.value.join(','))
 const overviewNamespaces=computed(()=>group.value!=='overview'&&activeType.value&&!activeType.value.namespaced?['*']:selectedNamespaces.value)
 const namespace=computed(()=>selectedNamespaces.value.length===1&&selectedNamespaces.value[0]!=='*'?selectedNamespaces.value[0]!:'')
@@ -358,7 +359,12 @@ async function openDetails(object:KubeObject, tab='basic',type=activeType.value,
     if (targetType.resource!=='secrets') void loadEvents(id,targetType,target,current,request.signal)
     if(needsRelatedPods.value)void loadRelatedPods(id,target,current,request.signal)
   } catch (err) { if(isCurrent()) detailError.value=kubeErrorMessage(err) }
-  finally { if(mounted&&current===detailRevision) detailLoading.value=false }
+  finally {
+    if(mounted&&current===detailRevision){
+      detailLoading.value=false
+      if(isCurrent())void loadWorkloadServices(preserve)
+    }
+  }
 }
 function canFollow(reference?:KubeReference){const type=kubeTypes.find(item=>item.resource===reference?.resource);return Boolean(type&&can(`${type.permission}.read`))}
 function canFollowWorkloadRuntime(reference:KubeReference){
@@ -383,11 +389,52 @@ async function loadEvents(id:string,type:KubeType,object:KubeObject,current:numb
   finally {if(mounted&&current===detailRevision)eventsLoading.value=false}
 }
 const hasRelatedPods=computed(()=>can('kubernetes.workload.read')&&['Node','Deployment','StatefulSet','DaemonSet','Job','CronJob','ConfigMap','Secret','PersistentVolumeClaim','Service','NetworkPolicy'].includes(detail.value?.kind??''))
-async function listRelatedResources(id:string,resource:string,ns:string,signal:AbortSignal){
+async function listRelatedResources(id:string,resource:string,ns:string,signal:AbortSignal,fresh=false){
   const type=kubeTypes.find(item=>item.resource===resource)!,items:KubeObject[]=[]
   let next=''
-  for(let page=0;page<20;page++){const result=await listKubeResources(id,type,ns,next,signal);items.push(...result.items);next=result.continue;if(!next)break}
+  for(let page=0;page<20;page++){
+    signal.throwIfAborted()
+    const result=await listKubeResources(id,type,ns,next,signal,fresh)
+    items.push(...result.items)
+    next=result.continue
+    if(!next)break
+  }
   return {items,partial:Boolean(next)}
+}
+const workloadServiceScope=computed(()=>{
+  const metadata=detail.value?.metadata
+  if(!detailOpen.value||!workloadDetail.value||!cluster.value||!metadata?.uid||!metadata.namespace||metadata.namespace==='*'
+    ||!can('kubernetes.workload.read')||!can('kubernetes.network.read'))return ''
+  return JSON.stringify([workloadScope.value,metadata.namespace])
+})
+const serviceCatalog=ref<{items:KubeObject[];partial:boolean}>(),servicesError=ref(false)
+const workloadServices=computed(()=>workloadServiceScope.value&&detail.value&&serviceCatalog.value
+  ?relatedWorkloadServices(detail.value,serviceCatalog.value.items):[])
+let serviceRequest:AbortController|undefined,lastServiceAttempt=0
+watch(workloadServiceScope,()=>{
+  serviceRequest?.abort();serviceRequest=undefined
+  serviceCatalog.value=undefined;servicesError.value=false;lastServiceAttempt=0
+  watchDirty.delete('services')
+},{flush:'sync'})
+watch([workloadServiceScope,detailTab],()=>{
+  if(!serviceCatalog.value||watchDirty.has('services'))void loadWorkloadServices()
+})
+onBeforeUnmount(()=>serviceRequest?.abort())
+async function loadWorkloadServices(fresh=false){
+  const scope=workloadServiceScope.value,object=detail.value
+  if(!mounted||!scope||!object||detailTab.value!=='basic'||detailLoading.value||detailError.value||serviceRequest)return
+  const request=new AbortController()
+  serviceRequest=request;lastServiceAttempt=Date.now();watchDirty.delete('services')
+  const isCurrent=()=>mounted&&serviceRequest===request&&!request.signal.aborted&&scope===workloadServiceScope.value
+  try{
+    const result=await listRelatedResources(cluster.value,'services',nsOf(object),request.signal,fresh)
+    if(isCurrent()){serviceCatalog.value=result;servicesError.value=false}
+  }catch(error){
+    if(!isCurrent())return
+    if(axios.isAxiosError(error)&&(error.response?.status===401||error.response?.status===403))serviceCatalog.value=undefined
+    servicesError.value=true
+  }
+  finally{if(serviceRequest===request)serviceRequest=undefined}
 }
 async function loadRelatedPods(id:string,object:KubeObject,current:number,signal:AbortSignal) {
   if(relatedLoading.value)return
@@ -672,7 +719,7 @@ function markWatchDirty(event:KubeWatchEvent){
   if(event.type==='ready'||event.type==='ping')return
   if(event.type==='degraded'){watchDegraded.value=true;watchHealthy.value=false}
   if(event.type==='synced'){watchDegraded.value=false;watchHealthy.value=true;lastCalibration=Date.now()}
-  if(event.type==='reset'||event.type==='degraded'||event.type==='synced'){for(const key of ['list','overview','namespaces','detail','related'] as const)watchDirty.add(key)}
+  if(event.type==='reset'||event.type==='degraded'||event.type==='synced'){for(const key of ['list','overview','namespaces','detail','related','services'] as const)watchDirty.add(key)}
   else{
     if(!('resource' in event))return
     // One working kind cannot prove that another failed kind has recovered.
@@ -685,6 +732,7 @@ function markWatchDirty(event:KubeWatchEvent){
     if(event.resource==='namespaces')watchDirty.add('namespaces')
     if(detailOpen.value&&detail.value&&detailType.value?.resource===event.resource&&detail.value.metadata.name===event.name&&nsOf(detail.value)===event.namespace)watchDirty.add('detail')
     if(detailOpen.value&&['pods','jobs'].includes(event.resource))watchDirty.add('related')
+    if(workloadServiceScope.value&&event.resource==='services'&&event.namespace===detail.value?.metadata.namespace)watchDirty.add('services')
   }
   if(!watchFlush)watchFlush=setTimeout(()=>{watchFlush=undefined;flushWatchChanges()},500)
 }
@@ -695,6 +743,7 @@ function flushWatchChanges(){
   // overview resource reads at the event-stream rate. Keep the dirty flag.
   if(watchDirty.has('overview')&&!overviewPending&&Date.now()-lastOverviewAttempt>=5000){watchDirty.delete('overview');void refreshOverview(true)}
   if(watchDirty.has('namespaces')&&!namespaceLoading.value){watchDirty.delete('namespaces');void loadNamespaces()}
+  if(watchDirty.has('services')&&Date.now()-lastServiceAttempt>=5000)void loadWorkloadServices()
   if((watchDirty.has('detail')||watchDirty.has('related'))&&!detailSyncing&&!detailLoading.value){
     if(watchDirty.has('related'))lastRelatedSync=0
     watchDirty.delete('detail');watchDirty.delete('related');void syncDetails()
@@ -726,7 +775,11 @@ function syncVisible(){
   const calibrate=!watchHealthy.value||Date.now()-lastCalibration>=30_000
   if(!calibrate)return
   lastCalibration=Date.now();void refresh(true)
-  if(!contextDisabled.value){void syncDetails();if(Date.now()-lastOverview>30_000)void refreshOverview(true)}
+  if(!contextDisabled.value){
+    void syncDetails()
+    if(Date.now()-lastServiceAttempt>=30_000)void loadWorkloadServices()
+    if(Date.now()-lastOverview>30_000)void refreshOverview(true)
+  }
 }
 function workspaceVisibility(){if(document.hidden)stopKubeWatch();else{startKubeWatch();syncVisible()}}
 function watchProjectChanged(event:StorageEvent){if(event.key==='edo.project'){stopKubeWatch();watchDirty.clear();rows.value=[];overview.value=null;namespaces.value=[];clusters.value=[];cluster.value='';void loadClusters()}}
@@ -821,7 +874,9 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         <a-tab-pane v-if="detail.kind==='Node'" key="monitor" :tab="t('k8s.nodeMonitoring')"><KubeNodeMonitor v-if="detailTab==='monitor'" :key="cluster+detail.metadata.uid" :cluster="cluster" :node="detail" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :workloads="can('kubernetes.workload.read')" /></a-tab-pane>
 
         <a-tab-pane key="basic" :class="{'workload-overview-pane':workloadDetail}" :tab="t(workloadDetail?'k8s.workloadOverview':'k8s.resourceSettings')">
-          <KubeWorkloadSummary v-if="workloadDetail" :object="detail" :type="detailType" :events="events" :events-error="eventsError" :events-loading="detailLoading||eventsLoading" @events="detailTab='events'" />
+          <KubeWorkloadSummary v-if="workloadDetail" :object="detail" :type="detailType" :events="events" :events-error="eventsError" :events-loading="detailLoading||eventsLoading"
+            :services="workloadServices" :services-error="servicesError" :services-partial="serviceCatalog?.partial"
+            @events="detailTab='events'" @follow="followReference" @retry-services="loadWorkloadServices(true)" />
           <KubeWorkloadExplorer v-if="workloadExplorer" v-show="detailTab==='basic'"
             :visible="detailPresented&&detailTab==='basic'" :key="cluster+detail.metadata.uid" :scope-key="workloadScope" :cluster="cluster" :object="detail" :type="detailType"
             :selection="workloadSelections[cluster+detail.metadata.uid]" @selection="value=>workloadSelections[cluster+detail!.metadata.uid]=value"

@@ -2,19 +2,28 @@
 import {computed,ref,watch} from 'vue'
 import {useI18n} from 'vue-i18n'
 import {type KubeObject,type KubeType} from '@/api/kubernetes'
-import {resourceCells,resourceColumns,selectorText} from '@/utils/kubernetesPresentation'
+import {resourceCells,resourceColumns,selectorText,type KubeReference} from '@/utils/kubernetesPresentation'
 import {workloadConditionTone} from '@/utils/kubernetesWorkloadExplorer'
 import {formatDateTime,formatRelativeTime} from '@/utils/time'
 import KubeResourceCell from './KubeResourceCell.vue'
 import KubeWorkloadEvents from './KubeWorkloadEvents.vue'
 
-const props=defineProps<{object:KubeObject;type:KubeType;events:KubeObject[];eventsError:boolean;eventsLoading?:boolean}>()
-const emit=defineEmits<{events:[]}>()
+const props=defineProps<{object:KubeObject;type:KubeType;events:KubeObject[];eventsError:boolean;eventsLoading?:boolean;services?:KubeObject[];servicesError?:boolean;servicesPartial?:boolean}>()
+const emit=defineEmits<{events:[];follow:[KubeReference];'retry-services':[]}>()
 const {t}=useI18n()
 const cells=computed(()=>resourceCells(props.object,t))
 const fields=computed(()=>resourceColumns(props.type,t).filter(field=>['replicas','currentReplicas','completions','activeJobs','restarts'].includes(field.key)))
 const annotations=computed(()=>Object.entries(props.object.metadata.annotations??{}).filter(([key])=>key!=='kubectl.kubernetes.io/last-applied-configuration'))
 const labels=computed(()=>Object.entries(props.object.metadata.labels??{}))
+const serviceSummaries=computed(()=>(props.services??[]).map(service=>{
+  const {name,namespace,uid}=service.metadata
+  const {serviceType,address,servicePorts}=resourceCells(service,t)
+  return {
+    uid,name:{text:name,reference:{resource:'services',name,namespace,uid}},
+    type:serviceType?.text,address,addressLabel:t(service.spec?.type==='ExternalName'?'k8s.hostname':'k8s.workloadServiceClusterIP'),
+    ports:servicePorts,
+  }
+}))
 const metadataExpanded=ref(false)
 watch(()=>props.object.metadata.uid,()=>{metadataExpanded.value=false})
 const settings=computed(()=>{
@@ -43,6 +52,26 @@ const settings=computed(()=>{
   <section class="workload-identity identity-compact" tabindex="0" aria-label="工作负载资料">
    <h4>{{ t('k8s.workloadBasicInfo') }}</h4>
    <dl class="identity-facts identity-inline"><div><dt>{{ t('k8s.namespace') }}</dt><dd :title="object.metadata.namespace">{{ object.metadata.namespace||'—' }}</dd></div><div><dt>{{ t('k8s.name') }}</dt><dd :title="object.metadata.name">{{ object.metadata.name||'—' }}</dd></div><div><dt>ResourceVersion</dt><dd>{{ object.metadata.resourceVersion||'—' }}</dd></div><div><dt>创建时间</dt><dd :title="formatDateTime(object.metadata.creationTimestamp)">{{ formatRelativeTime(object.metadata.creationTimestamp) }}</dd></div></dl>
+   <section v-if="serviceSummaries.length||servicesError||servicesPartial" class="workload-services" :aria-label="t('k8s.serviceName')">
+    <h5>{{ t('k8s.serviceName') }}</h5>
+    <ul v-if="serviceSummaries.length" class="workload-services-list" role="list">
+     <li v-for="service in serviceSummaries" :key="service.uid" class="workload-service-entry">
+      <div class="workload-service-name">
+       <KubeResourceCell :cell="service.name" can-follow @follow="emit('follow',$event)" />
+       <span class="metadata-chip">{{ service.type }}</span>
+      </div>
+      <dl class="workload-service-facts">
+       <div v-if="service.address?.text&&service.address.text!=='—'"><dt>{{ service.addressLabel }}</dt><dd>{{ service.address.text }}</dd></div>
+       <div v-if="service.address?.secondary&&service.address.secondary!=='—'"><dt>{{ t('k8s.externalAddress') }}</dt><dd>{{ service.address.secondary }}</dd></div>
+       <div v-if="service.ports?.tokens?.length"><dt>{{ t('k8s.portMapping') }}</dt><dd><KubeResourceCell :cell="service.ports" /></dd></div>
+      </dl>
+     </li>
+    </ul>
+    <div v-if="servicesError||servicesPartial" class="workload-service-message" role="status">
+     <span>{{ t(servicesError?'k8s.workloadServicesFailed':'k8s.workloadServicesPartial') }}</span>
+     <a-button v-if="servicesError" size="small" type="link" @click="emit('retry-services')">{{ t('k8s.retry') }}</a-button>
+    </div>
+   </section>
    <div class="workload-metadata" :class="{expanded:metadataExpanded}">
     <div class="metadata-group"><span class="metadata-label">标签</span><div class="metadata-chips"><span v-for="[key,value] in labels" :key="key" class="metadata-chip" :title="`${key}=${value}`">{{ key }}={{ value }}</span><span v-if="!labels.length" class="metadata-empty">—</span></div></div>
     <div class="metadata-group"><span class="metadata-label">注解</span><div class="metadata-chips"><span v-for="[key,value] in annotations" :key="key" class="metadata-chip annotation-chip" :title="`${key}=${value}`">{{ key }}={{ value }}</span><span v-if="!annotations.length" class="metadata-empty">—</span></div></div>
@@ -63,6 +92,17 @@ const settings=computed(()=>{
 dt { margin: 0; color: var(--workload-muted); font-size: 12px; white-space: nowrap; }
 dd { margin: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .identity-facts dd { max-width: 360px; color: var(--workload-title); font-weight: 600; font-variant-numeric: tabular-nums; }
+.workload-services { margin: 0 0 8px; }
+.workload-services h5 { margin: 0 0 3px; font-size: 12px; line-height: 18px; font-weight: 600; color: var(--workload-title); }
+.workload-services-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.workload-service-entry { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; padding: 4px 8px; border-radius: 6px; background: var(--workload-stripe); }
+.workload-service-name, .workload-service-facts, .workload-service-facts > div { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.workload-service-facts { margin: 0; gap: 4px 14px; }
+.workload-service-facts dd { min-width: 0; max-width: 100%; }
+.workload-service-facts :deep(.kube-port-badge) { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.workload-service-name :deep(.kube-cell) { min-width: 0; }
+.workload-service-name :deep(.cell-link) { white-space: normal; overflow-wrap: anywhere; }
+.workload-service-message { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; color: var(--workload-muted); font-size: 12px; }
 .workload-metadata { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; margin-top: 4px; }
 .metadata-group { display: grid; grid-template-columns: 30px minmax(0,1fr); align-items: start; gap: 7px; min-width: 0; }
 .metadata-label,.metadata-empty { color: var(--workload-muted); font-size: 12px; line-height: 22px; }

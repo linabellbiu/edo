@@ -44,7 +44,8 @@ async function harness({denied=[],resource='statefulsets'}={}){
   vue:{...vue,onMounted(){},onBeforeUnmount:fn=>unmounts.push(fn)},'vue-i18n':{useI18n:()=>({t:key=>key})},
   'vue-router':{useRoute:()=>route,useRouter:()=>router,onBeforeRouteLeave(){},onBeforeRouteUpdate(){}},
   'ant-design-vue':{Modal:{confirm:()=>({destroy(){}})},message:Object.fromEntries(['error','warning','success'].map(kind=>[kind,value=>messages.push({kind,value})]))},
-  '@/api/kubernetes':{...api,listKubeResourceScopes:async()=>({items:[],cursor:{}})},'@/utils/kubernetesWorkspace':workspace,'@/utils/kubernetesPresentation':presentation,
+  axios,
+  '@/api/kubernetes':{...api,listKubeResourceScopes:async()=>({items:[],cursor:{}}),listKubeResources:async()=>({items:[],continue:''})},'@/utils/kubernetesWorkspace':workspace,'@/utils/kubernetesPresentation':presentation,
   '@/stores/auth':{useAuthStore:()=>({canAny:permissions=>authorization.ready&&permissions.some(permission=>!blocked.has(permission))})},'@/api/client':{__esModule:true,default:client},
  },{document:{hidden:false,removeEventListener(){}},window:{removeEventListener(){}}}).default
  const scope=vue.effectScope();let state,stopped=false

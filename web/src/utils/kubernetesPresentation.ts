@@ -191,6 +191,21 @@ export function relatedPodMatch(object:KubeObject,pod:KubeObject,jobUIDs:string[
   const selector=object.kind==='Service'?object.spec?.selector&&Object.keys(object.spec.selector).length?{matchLabels:object.spec.selector}:undefined:object.kind==='NetworkPolicy'?object.spec?.podSelector:object.spec?.selector
   return matchesSelector(pod.metadata?.labels,selector)
 }
+export function relatedWorkloadServices(workload:KubeObject,services:KubeObject[]) {
+  const namespace=workload.metadata?.namespace
+  if(!namespace)return []
+  const template=workload.kind==='CronJob'?workload.spec?.jobTemplate?.spec?.template:workload.spec?.template
+  const labels=workload.kind==='Pod'?workload.metadata?.labels:template?.metadata?.labels
+  const governingService=workload.kind==='StatefulSet'?workload.spec?.serviceName:undefined
+  const matches=services.filter(service=>{
+    if(service.kind!=='Service'||service.metadata?.namespace!==namespace||!service.metadata?.uid)return false
+    if(governingService&&service.metadata.name===governingService)return true
+    const selector=service.spec?.selector
+    return service.spec?.type!=='ExternalName'&&selector&&Object.keys(selector).length>0&&matchesSelector(labels,{matchLabels:selector})
+  })
+  return [...new Map(matches.map(service=>[service.metadata.uid,service])).values()]
+    .sort((a,b)=>a.metadata.name.localeCompare(b.metadata.name))
+}
 export function resourceSearchText(object:KubeObject,t:Translate) {
   // 不把 ConfigMap 内容或 Secret 原文当搜索索引。
   return [object.metadata?.name,object.metadata?.namespace,...entries(object.metadata?.labels),resourceStatus(object,t).text,...Object.values(resourceCells(object,t)).flatMap(cell=>[cell.text,cell.secondary])].filter(Boolean).join(' ').toLowerCase()
