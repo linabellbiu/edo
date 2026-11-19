@@ -9,6 +9,47 @@ export function readKubeListState(query:Record<string,unknown>):KubeListState {
 }
 export function kubeListQuery(state:KubeListState){return {q:state.query||undefined,label:state.label||undefined,status:state.status||undefined,sort:state.sort==='name'?undefined:state.sort,order:state.order==='asc'?undefined:state.order,page:state.page===1?undefined:String(state.page),limit:state.limit===10?undefined:String(state.limit)}}
 export function withoutKubeListQuery(query:Record<string,any>){const result={...query};for(const key of kubeListQueryKeys)delete result[key];return result}
+
+export interface KubeWorkspacePreferences {
+ cluster?:string
+ scopes?:Record<string,string[]>
+ autoRefresh?:boolean
+ pageSize?:number
+}
+// 复用项目现有的浏览器 Storage API；不把浏览偏好作为鉴权依据或发送到服务端。
+// 全选、部分选择和空选择分别保存，不能用空值回退悄悄扩大查询范围。
+export function kubeWorkspacePreferenceKey(userID?:string,projectID?:string):string {
+ return userID&&projectID?`edo.kubernetes.preferences.v1:${encodeURIComponent(userID)}:${encodeURIComponent(projectID)}`:''
+}
+function sanitizeKubeWorkspacePreferences(value:unknown):KubeWorkspacePreferences {
+ if(!value||typeof value!=='object'||Array.isArray(value))return {}
+ const input=value as Record<string,unknown>,result:KubeWorkspacePreferences={}
+ if(typeof input.cluster==='string'&&input.cluster.length<=128)result.cluster=input.cluster
+ if(typeof input.autoRefresh==='boolean')result.autoRefresh=input.autoRefresh
+ if(typeof input.pageSize==='number'&&[10,20,50,100].includes(input.pageSize))result.pageSize=input.pageSize
+ if(input.scopes&&typeof input.scopes==='object'&&!Array.isArray(input.scopes)) {
+  result.scopes={}
+  for(const [id,names] of Object.entries(input.scopes).slice(-100)) {
+   if(!id||id.length>128||['__proto__','constructor','prototype'].includes(id)||!Array.isArray(names)||names.length>1000)continue
+   if(names.some(name=>typeof name!=='string'||name!=='*'&&(name.length>63||!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name))))continue
+   result.scopes[id]=names.includes('*')?['*']:[...new Set(names)].sort()
+  }
+ }
+ return result
+}
+export function readKubeWorkspacePreferences(userID?:string,projectID?:string):KubeWorkspacePreferences {
+ const key=kubeWorkspacePreferenceKey(userID,projectID)
+ if(!key)return {}
+ try {
+  const raw=localStorage.getItem(key)
+  return raw&&raw.length<=256*1024?sanitizeKubeWorkspacePreferences(JSON.parse(raw)):{}
+ }catch{return {}}
+}
+export function writeKubeWorkspacePreferences(userID:string|undefined,projectID:string|undefined,value:KubeWorkspacePreferences):void {
+ const key=kubeWorkspacePreferenceKey(userID,projectID)
+ if(!key)return
+ try{localStorage.setItem(key,JSON.stringify(sanitizeKubeWorkspacePreferences(value)))}catch{/* 禁用存储或空间不足时保留本次页面选择。 */}
+}
 export function sortKubeRows<T extends KubeObject>(rows:T[],key:string,order:'asc'|'desc'):T[]{
  const value=(row:T)=>key==='created'?Date.parse(row.metadata?.creationTimestamp??''):key==='namespace'?row.metadata?.namespace:key==='status'?row.state?.text:key==='lastSchedule'?Date.parse(row.status?.lastScheduleTime??''):key!=='name'?row.cells?.[key]?.sortValue:row.metadata?.name
  return [...rows].sort((a,b)=>{const x=value(a),y=value(b),empty=(v:unknown)=>v===undefined||v===''||typeof v==='number'&&!Number.isFinite(v);if(empty(x)!==empty(y))return empty(x)?1:-1;const compared=empty(x)?0:typeof x==='number'&&typeof y==='number'?x-y:String(x).localeCompare(String(y),'zh-CN',{numeric:true});return compared*(order==='desc'?-1:1)||String(a.metadata?.name).localeCompare(String(b.metadata?.name),'zh-CN',{numeric:true})||String(a.metadata?.uid).localeCompare(String(b.metadata?.uid))})
