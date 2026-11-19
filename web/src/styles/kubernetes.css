@@ -45,7 +45,7 @@
 .kube-workspace .kube-compact-table .resource-label-summary { max-width: 100%; font-size: 12px; line-height: 16px; color: var(--kube-muted); }
 .kube-workspace .kube-compact-table .kube-cell { min-width: 0; }
 .kube-workspace .kube-compact-table .cell-tokens { gap: 4px 6px; }
-.kube-workspace .kube-compact-table :is(.namespace-value, .status-cell .ant-tag, .kube-port-badge) {
+.kube-workspace .kube-compact-table .status-cell .ant-tag {
   display: inline-flex;
   align-items: center;
   min-height: 24px;
@@ -53,9 +53,7 @@
   font-size: 12px;
 }
 .kube-workspace .kube-compact-table .namespace-value {
-  display: inline-block;
   max-width: 132px;
-  line-height: 22px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -107,13 +105,15 @@
 }
 .kube-namespace-badge {
   display: inline-block;
-  padding: 3px 7px;
-  border: 1px solid var(--kube-border);
-  border-radius: 4px;
-  background: var(--kube-surface-soft);
-  color: var(--kube-text);
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--kube-heading);
+  color: var(--kube-muted);
   font-size: 12px;
+  line-height: 20px;
 }
+.kube-namespace-badge:focus-visible { outline: 2px solid var(--kube-focus); outline-offset: 2px; }
 .kube-action.ant-btn:not(:disabled, .ant-btn-primary, .ant-btn-dangerous, .edo-button-soft),
 .kube-resource-actions .resource-more-button.ant-btn:not(:disabled) {
   color: var(--kube-link);

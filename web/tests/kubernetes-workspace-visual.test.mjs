@@ -198,6 +198,10 @@ test('Service 多端口使用冒号和独立标签，协议、命名端口及Nod
  const object={kind:'Service',metadata:{name:'kube-dns',namespace:'kube-system'},spec:{ports:[{port:53,targetPort:53,protocol:'UDP'},{port:53,targetPort:53,protocol:'TCP'},{port:9153,targetPort:'metrics',protocol:'TCP',nodePort:30153}]}}
  const cell=presentation.resourceCells(object,translate).servicePorts
  assert.deepEqual(cell.tokens,['53:53/UDP','53:53/TCP','9153:metrics/TCP (NodePort 30153)'])
+ const badge=declarations([shared],'.kube-namespace-badge')
+ assert.equal(badge.border,'0')
+ assert.equal(badge.background,'var(--kube-heading)')
+ assert.equal(badge.color,'var(--kube-muted)')
  const html=await renderComponent('KubeResourceCell',{cell})
  assert.equal((html.match(/class="kube-namespace-badge kube-port-badge"/g)||[]).length,3)
  assert.doesNotMatch(html,/→| · /);assert.match(html,/tabindex="0"/)
