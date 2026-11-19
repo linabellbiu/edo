@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -437,6 +439,7 @@ func TestDockerHelperErrorKeepsTransportFailureDistinctFromWriteDenied(t *testin
 	s := NewService(nil, nil, time.Hour)
 	for _, sample := range []struct{ cause, want error }{
 		{io.EOF, ErrDockerHelperConnection},
+		{&url.Error{Op: "Put", URL: "http://example.invalid/archive", Err: &net.OpError{Op: "write", Net: "tcp", Err: net.ErrClosed}}, ErrDockerHelperConnection},
 		{context.DeadlineExceeded, ErrDockerHelperTimeout},
 		{ErrDockerHelperWriteDenied, ErrDockerHelperWriteDenied},
 		{ErrDockerHelperReadOnly, ErrDockerHelperReadOnly},
