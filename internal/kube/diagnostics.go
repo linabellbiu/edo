@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"time"
@@ -19,7 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 )
 
 // 诊断接口仅返回当前对象的关联信息，不开放通用资源透传或写入能力。
@@ -73,9 +73,12 @@ func (s *Service) ResourceDiagnostics(ctx context.Context, clusterID, resource, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-	ctx, _, err := s.authorizeResourceOperation(ctx, clusterID, resource, namespace, "read", false)
+	ctx, query, err := s.authorizeResourceOperation(ctx, clusterID, resource, namespace, "read", false)
 	if err != nil {
 		return nil, err
+	}
+	if s.inventoryRead(ctx) {
+		return s.inventoryDiagnostics(ctx, query, resource, namespace, name, uid)
 	}
 	reader, _, err := s.resourceClient(ctx, clusterID, resource, namespace, false)
 	if err != nil {
@@ -92,16 +95,12 @@ func (s *Service) ResourceDiagnostics(ctx context.Context, clusterID, resource, 
 	if err != nil {
 		return nil, err
 	}
-	client, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
 	result := &ResourceDiagnostics{UID: uid, State: "ok", Errors: map[string]error{}}
 	switch resource {
 	case "services":
-		err = serviceEndpoints(ctx, client, object, result)
+		err = serviceEndpoints(ctx, query.typed.DiscoveryV1().EndpointSlices(namespace).List, object, result)
 	case "deployments":
-		err = deploymentRevisions(ctx, client, object, result)
+		err = deploymentRevisions(ctx, query.typed.AppsV1().ReplicaSets(namespace).List, query.typed.CoreV1().Pods(namespace).List, object, result)
 	case "pods":
 		metrics, e := dynamic.NewForConfig(cfg)
 		if e != nil {
@@ -123,10 +122,66 @@ func (s *Service) ResourceDiagnostics(ctx context.Context, clusterID, resource, 
 	return result, nil
 }
 
-func serviceEndpoints(ctx context.Context, client kubernetes.Interface, object *unstructured.Unstructured, result *ResourceDiagnostics) error {
+func (s *Service) inventoryDiagnostics(ctx context.Context, q *clusterQueries, resource, namespace, name, uid string) (*ResourceDiagnostics, error) {
+	def, _ := ResourceType(resource)
+	object, err := s.inventoryGet(ctx, q, def, namespace, name)
+	if err != nil {
+		return nil, err
+	}
+	if string(object.GetUID()) != uid {
+		return nil, ErrResourceConflict
+	}
+	result := &ResourceDiagnostics{UID: uid, State: "ok", Errors: map[string]error{}}
+	switch resource {
+	case "services":
+		err = serviceEndpoints(ctx, func(ctx context.Context, options metav1.ListOptions) (*discoveryv1.EndpointSliceList, error) {
+			var list discoveryv1.EndpointSliceList
+			items, next, err := inventoryTypedList[discoveryv1.EndpointSlice](ctx, s, q, inventoryEndpointSlices, namespace, options)
+			list.Items, list.Continue = items, next
+			return &list, err
+		}, object, result)
+	case "deployments":
+		pods, _ := ResourceType("pods")
+		err = deploymentRevisions(ctx,
+			func(ctx context.Context, options metav1.ListOptions) (*appsv1.ReplicaSetList, error) {
+				var list appsv1.ReplicaSetList
+				items, next, err := inventoryTypedList[appsv1.ReplicaSet](ctx, s, q, inventoryReplicaSets, namespace, options)
+				list.Items, list.Continue = items, next
+				return &list, err
+			}, func(ctx context.Context, options metav1.ListOptions) (*corev1.PodList, error) {
+				var list corev1.PodList
+				items, next, err := inventoryTypedList[corev1.Pod](ctx, s, q, pods, namespace, options)
+				list.Items, list.Continue = items, next
+				return &list, err
+			}, object, result)
+	case "pods":
+		metrics, metricsErr := s.inventoryGet(ctx, q, inventoryMetricDefinition("pods"), namespace, name)
+		setPodContainerMetrics(object, metrics, metricsErr, result)
+	}
+	if _, stale := InventoryReadStatus(ctx); stale && result.State == "ok" {
+		result.State = "stale"
+	}
+	return result, err
+}
+
+func inventoryTypedList[T any](ctx context.Context, s *Service, q *clusterQueries, def ResourceDefinition, namespace string, options metav1.ListOptions) ([]T, string, error) {
+	list, err := s.inventoryList(ctx, q, def, namespace, options)
+	if err != nil {
+		return nil, "", err
+	}
+	items := make([]T, len(list.Items))
+	for index, item := range list.Items {
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(item.Object, &items[index]); err != nil {
+			return nil, "", err
+		}
+	}
+	return items, list.GetContinue(), nil
+}
+
+func serviceEndpoints(ctx context.Context, read func(context.Context, metav1.ListOptions) (*discoveryv1.EndpointSliceList, error), object *unstructured.Unstructured, result *ResourceDiagnostics) error {
 	continuation := ""
 	for page := 0; page < 20; page++ {
-		list, err := client.DiscoveryV1().EndpointSlices(object.GetNamespace()).List(ctx, metav1.ListOptions{LabelSelector: labels.Set{discoveryv1.LabelServiceName: object.GetName()}.String(), Limit: 500, Continue: continuation})
+		list, err := read(ctx, metav1.ListOptions{LabelSelector: labels.Set{discoveryv1.LabelServiceName: object.GetName()}.String(), Limit: 500, Continue: continuation})
 		if err != nil {
 			return err
 		}
@@ -162,7 +217,7 @@ func serviceEndpoints(ctx context.Context, client kubernetes.Interface, object *
 	return nil
 }
 
-func deploymentRevisions(ctx context.Context, client kubernetes.Interface, object *unstructured.Unstructured, result *ResourceDiagnostics) error {
+func deploymentRevisions(ctx context.Context, readReplicaSets func(context.Context, metav1.ListOptions) (*appsv1.ReplicaSetList, error), readPods func(context.Context, metav1.ListOptions) (*corev1.PodList, error), object *unstructured.Unstructured, result *ResourceDiagnostics) error {
 	var deployment appsv1.Deployment
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &deployment); err != nil {
 		return err
@@ -176,7 +231,7 @@ func deploymentRevisions(ctx context.Context, client kubernetes.Interface, objec
 	}
 	continuation := ""
 	for page := 0; page < 20; page++ {
-		list, err := client.AppsV1().ReplicaSets(deployment.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String(), Limit: 500, Continue: continuation})
+		list, err := readReplicaSets(ctx, metav1.ListOptions{LabelSelector: selector.String(), Limit: 500, Continue: continuation})
 		if err != nil {
 			return err
 		}
@@ -216,7 +271,7 @@ func deploymentRevisions(ctx context.Context, client kubernetes.Interface, objec
 	}
 	continuation = ""
 	for page := 0; page < 20; page++ {
-		pods, err := client.CoreV1().Pods(deployment.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String(), Limit: 500, Continue: continuation})
+		pods, err := readPods(ctx, metav1.ListOptions{LabelSelector: selector.String(), Limit: 500, Continue: continuation})
 		if err != nil {
 			result.State = "pods_unavailable"
 			result.Errors["pods"] = err
@@ -251,23 +306,28 @@ func podContainerMetrics(ctx context.Context, client dynamic.Interface, pod *uns
 			break
 		}
 	}
+	setPodContainerMetrics(pod, metrics, err, result)
+	return nil
+}
+
+func setPodContainerMetrics(pod, metrics *unstructured.Unstructured, err error, result *ResourceDiagnostics) {
 	if err != nil {
 		result.State = "unavailable"
-		if apierrors.IsForbidden(err) {
+		if apierrors.IsForbidden(err) || errors.Is(err, ErrRBACForbidden) || errors.Is(err, ErrResourceForbidden) {
 			result.State = "forbidden"
 		}
 		result.Errors["metrics"] = err
-		return nil
+		return
 	}
 	stamp, _, _ := unstructured.NestedString(metrics.Object, "timestamp")
 	at, parseErr := time.Parse(time.RFC3339Nano, stamp)
 	if parseErr != nil || time.Since(at) > 2*time.Minute || time.Until(at) > time.Minute || at.Before(pod.GetCreationTimestamp().Time) {
 		result.State = "stale"
-		return nil
+		return
 	}
 	if metrics.GetUID() != "" && metrics.GetUID() != pod.GetUID() {
 		result.State = "stale"
-		return nil
+		return
 	}
 	result.MetricsAt = stamp
 	containers, _, _ := unstructured.NestedSlice(metrics.Object, "containers")
@@ -287,5 +347,4 @@ func podContainerMetrics(ctx context.Context, client dynamic.Interface, pod *uns
 	if len(result.Containers) == 0 {
 		result.State = "unavailable"
 	}
-	return nil
 }

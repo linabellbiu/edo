@@ -1,0 +1,133 @@
+package deployment
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"edo/internal/cache"
+	"edo/internal/database"
+	"edo/internal/model"
+)
+
+// CachedRuntimeState 只读取后台展示快照，运行操作的预检仍核对实际实例。
+func (s *Service) CachedRuntimeState(ctx context.Context, id string) (*RuntimeState, cache.SnapshotStatus, error) {
+	record, err := s.currentDeployment(ctx, id)
+	if err != nil {
+		return nil, cache.SnapshotStatus{}, err
+	}
+	if record.Platform == model.DeploymentKubernetes && s.kube != nil {
+		state, stamp, err := s.kube.CachedDeploymentState(ctx, record.RuntimeID, record.Namespace, record.WorkloadName, record.KubernetesUID)
+		if err != nil || state == nil {
+			return nil, stamp, err
+		}
+		return kubernetesRuntimeState(id, *state), stamp, nil
+	}
+	key, err := s.runtimeSnapshotKey(ctx, record)
+	if err != nil {
+		s.logger.DebugContext(ctx, "无法确认运行实例缓存范围", "operation", "deployment_runtime_snapshot_scope", "deployment_id", id, "err", err)
+		return nil, cache.SnapshotStatus{State: cache.SnapshotUnavailable}, nil
+	}
+	state, status := s.runtimeSnapshots.Get(key, time.Now())
+	return state, status, nil
+}
+
+func (s *Service) RunRuntimeSnapshotSync(ctx context.Context) error {
+	return cache.RunSnapshotWorkers(ctx, 15*time.Second, "deployment_runtime_snapshots", 8, func(ctx context.Context, yield func(string, model.DeploymentRecord) bool) error {
+		// 同一项目内只采集当前成功实例，旧记录的应用从运行记录解析。
+		current := s.db.WithContext(ctx).Table("deployment_records AS d").
+			Select("MAX(d.id)").Joins("LEFT JOIN pipeline_runs AS r ON r.uuid = d.pipeline_run_id AND r.project_id = d.project_id AND r.department_id = d.department_id").
+			Where("d.status = ? AND d.pipeline_run_id <> '' AND d.deployment_plan_id <> '' AND COALESCE(NULLIF(d.application_id, ''), r.application_id, '') <> ''", model.DeploymentSucceeded).
+			Where("EXISTS (SELECT 1 FROM projects WHERE projects.uuid = d.project_id AND projects.department_id = d.department_id AND projects.is_active = ?)", true).
+			Group("d.department_id, d.project_id, d.deployment_plan_id, d.target_id, COALESCE(NULLIF(d.application_id, ''), r.application_id, '')")
+		for cursor := uint64(0); ctx.Err() == nil; {
+			var records []model.DeploymentRecord
+			err := s.db.WithContext(ctx).Where("id IN (?) AND id > ? AND platform <> ? AND runtime_deleted_at IS NULL", current, cursor, model.DeploymentKubernetes).
+				Order("id").Limit(100).Find(&records).Error
+			if err != nil {
+				return err
+			}
+			for _, record := range records {
+				if !yield(record.ID, record) {
+					return nil
+				}
+				cursor = record.RowID
+			}
+			if len(records) < 100 {
+				return nil
+			}
+		}
+		return nil
+	}, func(ctx context.Context, record model.DeploymentRecord) {
+		request, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		request = database.WithDepartmentScope(request, database.DepartmentScope{ProjectID: record.ProjectID, DepartmentID: record.DepartmentID})
+		if record.ApplicationID == "" {
+			var run model.PipelineRun
+			if err := s.db.WithContext(request).Select("application_id").First(&run, "uuid = ?", record.PipelineRunID).Error; err != nil {
+				s.logger.WarnContext(request, "无法解析旧部署实例的应用", "operation", "deployment_runtime_snapshot_application", "deployment_id", record.ID, "err", err)
+				return
+			}
+			record.ApplicationID = run.ApplicationID
+		}
+		key, err := s.runtimeSnapshotKey(request, &record)
+		if err != nil || !s.runtimeSnapshots.Due(key, time.Now(), 30*time.Second, 15*time.Second) {
+			return
+		}
+		state, err := s.readRuntimeState(request, &record)
+		now := time.Now().UTC()
+		if err != nil || state == nil {
+			s.runtimeSnapshots.Fail(key, now)
+			if err != nil && ctx.Err() == nil {
+				s.logger.WarnContext(request, "后台采集部署实例状态失败", "operation", "deployment_runtime_snapshot_collect", "deployment_id", record.ID, "err", err)
+			}
+			return
+		}
+		if ctx.Err() == nil {
+			s.runtimeSnapshots.Put(key, state, now)
+		}
+	})
+}
+
+func (s *Service) runtimeSnapshotKey(ctx context.Context, record *model.DeploymentRecord) (string, error) {
+	fields := []string{record.ProjectID, record.DepartmentID, record.ID, record.UpdatedAt.UTC().Format(time.RFC3339Nano)}
+	endpointID := record.RuntimeID
+	if record.HostID != "" {
+		var host model.Host
+		if err := s.db.WithContext(ctx).Select("uuid", "project_id", "department_id", "is_active", "updated_at").First(&host, "uuid = ?", record.HostID).Error; err != nil {
+			return "", err
+		}
+		if !host.IsActive || host.ProjectID != record.ProjectID || host.DepartmentID != record.DepartmentID {
+			return "", ErrRuntimeStateUnavailable
+		}
+		fields = append(fields, host.ID, host.UpdatedAt.UTC().Format(time.RFC3339Nano))
+		if record.DeploymentPlanKind == model.DeploymentPlanComposeStack || isCustomScriptRuntime(record) && endpointID != "" {
+			var capability model.HostCapability
+			if err := s.db.WithContext(ctx).First(&capability, "host_id = ? AND kind = ?", record.HostID, model.HostCapabilityDocker).Error; err != nil {
+				return "", err
+			}
+			if record.DeploymentPlanKind == model.DeploymentPlanComposeStack {
+				endpointID = capability.RuntimeID
+			} else if endpointID != capability.RuntimeID {
+				return "", ErrRuntimeStateUnavailable
+			}
+			fields = append(fields, fmt.Sprint(capability.UseSudo))
+		}
+	}
+	if endpointID != "" {
+		if s.docker == nil {
+			return "", errors.New("Docker 服务不可用")
+		}
+		endpoint, err := s.docker.Find(ctx, endpointID)
+		if err != nil {
+			return "", err
+		}
+		if endpoint.ProjectID != record.ProjectID || endpoint.DepartmentID != record.DepartmentID || !endpoint.IsActive {
+			return "", ErrRuntimeStateUnavailable
+		}
+		fields = append(fields, endpoint.ID, endpoint.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	}
+	return strings.Join(fields, "\x00"), nil
+}

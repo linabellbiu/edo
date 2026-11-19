@@ -15,6 +15,7 @@ const failed = ref(false)
 let controller: AbortController | undefined
 let request = 0
 let mounted = true
+let loadedScope = ''
 
 const canRead = computed(() => auth.canAny(['cluster.read', 'deployment.read']))
 const context = computed(() => JSON.stringify([
@@ -22,19 +23,31 @@ const context = computed(() => JSON.stringify([
   [...(auth.user?.permissions ?? [])].sort(),
   typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project'),
   props.host.id, props.host.address, props.host.ssh_port, props.host.ssh_username,
-  props.host.ssh_host_key_fingerprint, props.host.updated_at, props.host.is_active, props.revision,
+  props.host.ssh_host_key_fingerprint, props.host.updated_at, props.host.is_active, canRead.value,
 ]))
-const available = computed(() => data.value?.state === 'ok' ? data.value : undefined)
-const status = computed(() => !canRead.value ? '无查看权限' : !props.host.is_active ? '已停用' : loading.value ? '读取中' : failed.value || !available.value ? '未取得资源' : '')
+const available = computed(() => canRead.value && props.host.is_active && (data.value?.state === 'ok' || data.value?.state === 'stale') ? data.value : undefined)
+const status = computed(() => {
+  if (!canRead.value) return '无查看权限'
+  if (!props.host.is_active) return '已停用'
+  if (available.value?.state === 'stale' || failed.value && available.value) return '上次同步结果'
+  if (failed.value || data.value?.state === 'unavailable') return '未取得资源'
+  if (available.value) return ''
+  return loading.value ? '读取中' : '等待后台同步'
+})
 
 async function load() {
   const current = ++request
   const scope = context.value
   controller?.abort()
-  data.value = undefined
+  if (scope !== loadedScope) data.value = undefined
+  loadedScope = scope
   failed.value = false
   loading.value = false
   if (!props.host.id || !props.host.is_active || !canRead.value) return
+  if (props.host.resources) {
+    data.value = props.host.resources
+    return
+  }
   controller = new AbortController()
   loading.value = true
   try {
@@ -47,7 +60,7 @@ async function load() {
   }
 }
 
-watch(context, load, { immediate: true })
+watch([context, () => props.revision, () => props.host.resources], load, { immediate: true })
 onBeforeUnmount(() => { mounted = false; request += 1; controller?.abort() })
 </script>
 
@@ -56,7 +69,7 @@ onBeforeUnmount(() => { mounted = false; request += 1; controller?.abort() })
     <span class="host-resource-value"><Cpu :size="13" aria-hidden="true" /><span>CPU</span><strong>{{ formatHostCPU(available?.cpu_cores) }}</strong></span>
     <span class="host-resource-value"><MemoryStick :size="13" aria-hidden="true" /><span>内存</span><strong>{{ formatHostCapacity(available?.memory_total_bytes) }}</strong></span>
     <span class="host-resource-value"><HardDrive :size="13" aria-hidden="true" /><span>根目录</span><strong>{{ formatHostCapacity(available?.disk_total_bytes) }}</strong></span>
-    <small v-if="status" class="host-resource-note">{{ status }}<button v-if="!loading && !available && canRead && host.is_active" type="button" @click="load">重试</button></small>
+    <small v-if="status" class="host-resource-note" :title="available?.collected_at || undefined">{{ status }}<button v-if="(failed || data?.state==='unavailable') && !loading && !host.resources && canRead && host.is_active" type="button" @click="load">重试</button></small>
     <small v-else-if="available?.os" class="host-resource-note" :title="available.os">{{ available.os }}</small>
   </div>
 </template>

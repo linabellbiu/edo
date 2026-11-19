@@ -14,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -157,9 +158,17 @@ func (s *Service) GetResource(ctx context.Context, clusterID, resource, namespac
 	if resource == "namespaces" {
 		scope = name
 	}
-	ctx, _, err := s.authorizeResourceOperation(ctx, clusterID, resource, scope, "read", false)
+	ctx, query, err := s.authorizeResourceOperation(ctx, clusterID, resource, scope, "read", false)
 	if err != nil {
 		return nil, err
+	}
+	if !reveal && s.inventoryRead(ctx) {
+		def, _ := ResourceType(resource)
+		item, err := s.inventoryGet(ctx, query, def, namespace, name)
+		if err != nil {
+			return nil, resourceError(resource, err)
+		}
+		return resourceView(resource, item, false), nil
 	}
 	client, _, err := s.resourceClient(ctx, clusterID, resource, namespace, false)
 	if err != nil {
@@ -413,7 +422,7 @@ func (s *Service) ResourceEvents(ctx context.Context, clusterID, resource, names
 	if uid == "" || len(uid) > 128 {
 		return nil, ErrInvalidResource
 	}
-	ctx, _, err := s.authorizeResourceOperation(ctx, clusterID, resource, namespace, "read", false)
+	ctx, query, err := s.authorizeResourceOperation(ctx, clusterID, resource, namespace, "read", false)
 	if err != nil {
 		return nil, err
 	}
@@ -429,6 +438,10 @@ func (s *Service) ResourceEvents(ctx context.Context, clusterID, resource, names
 	if string((&unstructured.Unstructured{Object: obj}).GetUID()) != uid {
 		return nil, ErrResourceConflict
 	}
+	if s.inventoryRead(ctx) {
+		events, _, err := inventoryTypedList[corev1.Event](ctx, s, query, inventoryEvents, namespace, metav1.ListOptions{FieldSelector: "involvedObject.uid=" + uid, Limit: 200})
+		return events, err
+	}
 	client, err := s.Clientset(ctx, clusterID)
 	if err != nil {
 		return nil, err
@@ -441,6 +454,10 @@ func (s *Service) DeploymentReplicaSetEvents(ctx context.Context, clusterID, nam
 	ctx, queries, _, err := s.readOwnedDeploymentReplicaSet(ctx, clusterID, namespace, name, uid, replicaSet, replicaSetUID)
 	if err != nil {
 		return nil, err
+	}
+	if s.inventoryRead(ctx) {
+		events, _, err := inventoryTypedList[corev1.Event](ctx, s, queries, inventoryEvents, namespace, metav1.ListOptions{FieldSelector: "involvedObject.uid=" + replicaSetUID, Limit: 200})
+		return events, err
 	}
 	return listEventsForUID(ctx, queries.typed, "replicasets", namespace, replicaSetUID)
 }
@@ -468,20 +485,29 @@ func (s *Service) readOwnedDeploymentReplicaSet(ctx context.Context, clusterID, 
 	if !query.authorization.permitsResourceOperation(podType, namespace, "read", false) {
 		return ctx, nil, nil, ErrRBACForbidden
 	}
-	client := query.typed
-	deployment, err := client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	deployment, err := s.GetResource(ctx, clusterID, "deployments", namespace, name, false)
 	if err != nil {
 		return ctx, nil, nil, resourceError("deployments", err)
 	}
-	if string(deployment.UID) != uid {
+	if string((&unstructured.Unstructured{Object: deployment}).GetUID()) != uid {
 		return ctx, nil, nil, ErrResourceConflict
 	}
-	rs, err := client.AppsV1().ReplicaSets(namespace).Get(ctx, replicaSet, metav1.GetOptions{})
+	var rs *appsv1.ReplicaSet
+	if s.inventoryRead(ctx) {
+		var item *unstructured.Unstructured
+		item, err = s.inventoryGet(ctx, query, inventoryReplicaSets, namespace, replicaSet)
+		if err == nil {
+			rs = &appsv1.ReplicaSet{}
+			err = runtime.DefaultUnstructuredConverter.FromUnstructured(item.Object, rs)
+		}
+	} else {
+		rs, err = query.typed.AppsV1().ReplicaSets(namespace).Get(ctx, replicaSet, metav1.GetOptions{})
+	}
 	if err != nil {
 		return ctx, nil, nil, resourceError("replicasets", err)
 	}
 	owner := metav1.GetControllerOf(rs)
-	if string(rs.UID) != replicaSetUID || owner == nil || owner.Kind != "Deployment" || owner.UID != deployment.UID {
+	if string(rs.UID) != replicaSetUID || owner == nil || owner.Kind != "Deployment" || string(owner.UID) != uid {
 		return ctx, nil, nil, ErrResourceConflict
 	}
 	return ctx, query, rs, nil
@@ -582,7 +608,7 @@ func resourceError(resource string, err error) error {
 	}
 	// Internal validation/scope errors are already stable and must retain their
 	// identity, especially when Secret API errors are deliberately redacted.
-	for _, stable := range []error{ErrClusterNotFound, ErrInvalidCluster, ErrInvalidResource, ErrResourceNotFound, ErrResourceConflict, ErrResourceForbidden, ErrResourceProtected, ErrRBACForbidden, ErrRBACSyncPending} {
+	for _, stable := range []error{ErrClusterNotFound, ErrInvalidCluster, ErrInvalidResource, ErrResourceNotFound, ErrResourceConflict, ErrResourceForbidden, ErrResourceProtected, ErrRBACForbidden, ErrRBACSyncPending, ErrInventoryPending} {
 		if errors.Is(err, stable) {
 			return err
 		}

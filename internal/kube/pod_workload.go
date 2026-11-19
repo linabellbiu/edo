@@ -5,6 +5,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
@@ -19,7 +20,7 @@ type PodDeployment struct {
 	ReplicaSetUID string         `json:"replica_set_uid"`
 }
 
-// 只在进入详情时核对 Pod → ReplicaSet → Deployment 的控制器关系。
+// 使用同一连接下的 Pod、ReplicaSet 和 Deployment 精确核对控制器关系。
 func (s *Service) GetPodWorkloadDetail(ctx context.Context, clusterID, namespace, name string) (*PodWorkloadDetail, error) {
 	if len(validation.IsDNS1123Subdomain(name)) != 0 {
 		return nil, ErrInvalidResource
@@ -31,7 +32,13 @@ func (s *Service) GetPodWorkloadDetail(ctx context.Context, clusterID, namespace
 		return nil, err
 	}
 	podType, _ := ResourceType("pods")
-	pod, err := query.dynamic.Resource(podType.gvr()).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	read := func(def ResourceDefinition, name string) (*unstructured.Unstructured, error) {
+		if s.inventoryRead(ctx) {
+			return s.inventoryGet(ctx, query, def, namespace, name)
+		}
+		return query.dynamic.Resource(def.gvr()).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	}
+	pod, err := read(podType, name)
 	if err != nil {
 		return nil, resourceError("pods", err)
 	}
@@ -50,11 +57,11 @@ func (s *Service) GetPodWorkloadDetail(ctx context.Context, clusterID, namespace
 	if replicaOwner.UID == "" || len(validation.IsDNS1123Subdomain(replicaOwner.Name)) != 0 {
 		return nil, ErrResourceConflict
 	}
-	replica, err := query.typed.AppsV1().ReplicaSets(namespace).Get(ctx, replicaOwner.Name, metav1.GetOptions{})
+	replica, err := read(inventoryReplicaSets, replicaOwner.Name)
 	if err != nil {
 		return nil, resourceError("replicasets", err)
 	}
-	if replica.UID != replicaOwner.UID || replica.Namespace != namespace || replica.Name != replicaOwner.Name {
+	if replica.GetUID() != replicaOwner.UID || replica.GetNamespace() != namespace || replica.GetName() != replicaOwner.Name {
 		return nil, ErrResourceConflict
 	}
 	deploymentOwner := metav1.GetControllerOf(replica)
@@ -64,14 +71,14 @@ func (s *Service) GetPodWorkloadDetail(ctx context.Context, clusterID, namespace
 	if deploymentOwner.UID == "" || len(validation.IsDNS1123Subdomain(deploymentOwner.Name)) != 0 {
 		return nil, ErrResourceConflict
 	}
-	deployment, err := query.dynamic.Resource(deploymentType.gvr()).Namespace(namespace).Get(ctx, deploymentOwner.Name, metav1.GetOptions{})
+	deployment, err := read(deploymentType, deploymentOwner.Name)
 	if err != nil {
 		return nil, resourceError("deployments", err)
 	}
 	if deployment.GetUID() != deploymentOwner.UID || deployment.GetNamespace() != namespace || deployment.GetName() != deploymentOwner.Name {
 		return nil, ErrResourceConflict
 	}
-	result.Deployment = &PodDeployment{Object: resourceView("deployments", deployment, false), ReplicaSetUID: string(replica.UID)}
+	result.Deployment = &PodDeployment{Object: resourceView("deployments", deployment, false), ReplicaSetUID: string(replica.GetUID())}
 	return result, nil
 }
 

@@ -119,6 +119,7 @@ let statusTimer: number | undefined
 let statusRefreshing = false
 let statusErrorShown = false
 let lastStatusRefreshAt = 0
+let lastResourceReadAt = 0
 let initialized = false
 let mounted = true
 let inventoryRead = 0
@@ -127,6 +128,7 @@ let inventoryController: AbortController | undefined
 let statusController: AbortController | undefined
 
 const statusPollInterval = 5000
+const resourceReadInterval = 30_000
 const statusRefreshDeduplicationWindow = 1000
 // 旧版自动环境仅供已有部署兼容，不作为用户创建的主机分组展示。
 const legacyLocalEnvironmentID = 'edo-local-environment'
@@ -327,6 +329,7 @@ async function refresh() {
     hostWorkflows.value=workflowResult.status==='fulfilled'?workflowResult.value:{}
     workflowLoadError.value=workflowResult.status==='rejected'?apiErrorMessage(workflowResult.reason):''
     hosts.value = hostResult.status === 'fulfilled' ? hostResult.value : []
+    if (hostResult.status === 'fulfilled') lastResourceReadAt = Date.now()
     resourceRevision.value += 1
     hostLoadError.value = hostResult.status === 'rejected' ? apiErrorMessage(hostResult.reason) : ''
     environments.value = environmentResult.status === 'fulfilled' ? environmentResult.value : []
@@ -362,14 +365,18 @@ async function refreshStatuses() {
   statusController?.abort()
   statusController = new AbortController()
   try {
-    const statuses = await listHostStatuses(statusController.signal)
+    const readResources = now - lastResourceReadAt >= resourceReadInterval
+    if (readResources) lastResourceReadAt = now
+    const signal = statusController.signal
+    const latest = readResources ? await listHosts(signal) : undefined
+    const statuses = latest ?? await listHostStatuses(signal)
     if (!mounted || read !== statusRead || context !== hostReadContext() || !canReadHosts.value) return
     const merged = mergeHostStatuses(hosts.value, statuses)
     if (!merged) {
       await refresh()
       return
     }
-    hosts.value = merged
+    hosts.value = latest ?? merged
     syncRouteState()
     statusErrorShown = false
   } catch (error) {

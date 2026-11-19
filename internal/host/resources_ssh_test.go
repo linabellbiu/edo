@@ -36,6 +36,13 @@ func TestHostResourcesStrictPinRejectsChangedKeyBeforeAuthentication(t *testing.
 			if err := db.Model(&model.Host{}).Where(&model.Host{ID: host.ID}).Updates(map[string]any{"address": address, "ssh_port": sshPort, "ssh_host_key_fingerprint": pin, "ssh_credential_ciphertext": ciphertext}).Error; err != nil {
 				t.Fatal(err)
 			}
+			cold, err := s.Resources(context.Background(), host.ID)
+			if err != nil || cold.State != "pending" || server.auth.Load() != 0 {
+				t.Fatalf("普通读取不能连接 SSH: %+v %v", cold, err)
+			}
+			if err := syncTestResources(t.Context(), s, s.collectResources); err != nil {
+				t.Fatal(err)
+			}
 			result, err := s.Resources(context.Background(), host.ID)
 			if err != nil || result.State != "unavailable" {
 				t.Fatalf("失败采集不应伪造容量: %+v %v", result, err)

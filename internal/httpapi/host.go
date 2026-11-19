@@ -67,6 +67,7 @@ type hostResponse struct {
 	CreatedBy             string                         `json:"created_by"`
 	CreatedAt             time.Time                      `json:"created_at"`
 	UpdatedAt             time.Time                      `json:"updated_at"`
+	Resources             *hostmanager.ResourceInfo      `json:"resources,omitempty"`
 }
 
 type hostStatusResponse struct {
@@ -84,8 +85,9 @@ func (h hostHandler) list(c *gin.Context) {
 	}
 	response := make([]hostResponse, 0, len(hosts))
 	for i := range hosts {
-		response = append(response, toHostResponse(hosts[i]))
+		response = append(response, h.withResources(hosts[i]))
 	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{"hosts": response})
 }
 
@@ -112,7 +114,15 @@ func (h hostHandler) get(c *gin.Context) {
 		h.writeError(c, "host_get", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"host": toHostResponse(*current)})
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"host": h.withResources(*current)})
+}
+
+func (h hostHandler) withResources(current hostmanager.Detail) hostResponse {
+	response := toHostResponse(current)
+	resources := h.service.ResourceSnapshot(current.Host)
+	response.Resources = &resources
+	return response
 }
 
 func (h hostHandler) resources(c *gin.Context) {
@@ -126,6 +136,7 @@ func (h hostHandler) resources(c *gin.Context) {
 		h.writeError(c, "host_resources", err)
 		return
 	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{"resources": result})
 }
 

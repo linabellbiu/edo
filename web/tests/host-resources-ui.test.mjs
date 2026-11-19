@@ -155,13 +155,25 @@ test('每五秒状态clone不重采集，手动revision刷新才重读并拒绝�
   }
   assert.equal(h.requests.length, 1)
   h.props.revision++; await flush()
-  assert.equal(h.requests.length, 2); assert.equal(h.state.data.value, undefined)
+  assert.equal(h.requests.length, 2); assert.equal(h.state.available.value.cpu_cores, 4)
   h.props.revision++; await flush()
   assert.equal(h.requests[1].signal.aborted, true)
   await h.resolve(1, record({ cpu_cores: 64 }))
-  assert.equal(h.state.data.value, undefined); assert.equal(h.state.loading.value, true)
+  assert.equal(h.state.available.value.cpu_cores, 4); assert.equal(h.state.loading.value, true)
   await h.resolve(2, record({ cpu_cores: 8 }))
   assert.equal(h.state.available.value.cpu_cores, 8)
+})
+
+test('主机列表携带的快照直接展示，未同步和上次结果均不触发逐行请求', async t => {
+  const host = { ...createHostsPreviewData().hosts[1], resources: record({ state: 'pending', collected_at: null }) }
+  const h = summary({host}); t.after(h.stop)
+  assert.equal(h.state.status.value, '等待后台同步')
+  assert.equal(h.state.available.value, undefined)
+  h.props.host.resources = record({state: 'stale', cpu_cores: 12})
+  await flush()
+  assert.equal(h.requests.length, 0)
+  assert.equal(h.state.status.value, '上次同步结果')
+  assert.equal(h.state.available.value.cpu_cores, 12)
 })
 
 test('卸载或停用取消采集，卸载后迟到响应不写回，重新启用重新采集', async t => {

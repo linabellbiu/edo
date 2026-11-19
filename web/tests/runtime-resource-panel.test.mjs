@@ -17,7 +17,7 @@ const fixtureRows = () => [
 const host = (id = 'host-a', capabilities = [{ kind: 'docker', runtime_id: 'd1', status: 'ready' }]) => ({ id, name: id, is_active: true, capabilities })
 
 function harness(options = {}) {
-  const requests = [], notifications = [], events = [], mounts = [], unmounts = [], listeners = new Map()
+  const requests = [], notifications = [], events = [], mounts = [], unmounts = [], listeners = new Map(), polls = new Map()
   let project = 'project-a', stopped = false
   const auth = vue.reactive({ authorizationState: 'ready', user: { id: 'operator', department_id: 'department-a', project_id: 'project-a', is_superuser: false, permissions: options.codes ?? ['cluster.read', 'terminal.open', 'cluster.execute'] } })
   auth.canAny = codes => auth.authorizationState === 'ready' && Boolean(auth.user?.is_superuser || codes.some(code => auth.user?.permissions.includes(code)))
@@ -43,12 +43,29 @@ function harness(options = {}) {
     '@/stores/auth': { useAuthStore: () => auth }, '@/utils/runtimeResources': helper,
   }, {
     localStorage: { getItem: () => project },
-    window: { addEventListener: (event, callback) => listeners.set(event, callback), removeEventListener: event => listeners.delete(event) },
+    document: { hidden: false },
+    window: { addEventListener: (event, callback) => listeners.set(event, callback), removeEventListener: event => listeners.delete(event), setInterval: callback => { polls.set(1, callback); return 1 }, clearInterval: id => polls.delete(id) },
   }).default
   const scope = vue.effectScope(); let state
   scope.run(() => { state = component.setup(props, { expose() {}, emit: (name, value) => { events.push([name, value]); if (options.syncNode !== false && name === 'update:node') props.node = value } }) })
-  return { state, props, auth, requests, notifications, events, listeners, async mount() { mounts.forEach(callback => callback()); await settle() }, project(value, notify = true) { project = value; if (notify) listeners.get('edo:projects-changed')?.() }, stop() { if (stopped) return; stopped = true; unmounts.forEach(callback => callback()); scope.stop() } }
+  return { state, props, auth, requests, notifications, events, listeners, polls, async mount() { mounts.forEach(callback => callback()); await settle() }, project(value, notify = true) { project = value; if (notify) listeners.get('edo:projects-changed')?.() }, stop() { if (stopped) return; stopped = true; unmounts.forEach(callback => callback()); scope.stop() } }
 }
+
+test('运行资源首次缺少快照显示等待，后台只读更新后保留真实容器和采样时间', async t => {
+  let response = { containers: [], snapshot: { state: 'pending', collected_at: null } }
+  const h = harness({ get: path => path.includes('/containers?') ? { data: response } : undefined }); t.after(h.stop)
+  await h.mount()
+  assert.equal(h.state.snapshot.value.state, 'pending')
+  assert.equal(h.state.resourceLoaded.value, false)
+  assert.equal(h.state.resourceLoading.value, false)
+  response = { containers: fixtureRows(), snapshot: { state: 'stale', collected_at: '2026-11-19T01:00:00Z' } }
+  h.polls.get(1)(); await settle()
+  assert.equal(h.state.resourceLoaded.value, true)
+  assert.equal(h.state.containers.value[0].id, 'container-running')
+  assert.equal(h.state.snapshot.value.collected_at, response.snapshot.collected_at)
+  assert.equal(h.state.rowActionsDisabled.value, true)
+  assert.ok(h.requests.every(request => request.method === 'get'))
+})
 
 test('容器筛选只按真实状态分类，暂停/重启和未知不冒充运行或已停止，搜索不改变原记录', () => {
   const rows = [...fixtureRows(), { id: 'created', state: 'created' }, { id: 'restarting', state: 'restarting' }, { id: 'unknown' }]

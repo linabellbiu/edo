@@ -19,6 +19,8 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 	"gorm.io/gorm"
 
+	"edo/internal/cache"
+	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/sshclient"
 )
@@ -26,54 +28,28 @@ import (
 var errHostResourcesUnavailable = errors.New("暂时无法读取主机系统资源")
 
 const resourceTTL = time.Minute
-const resourceFailureTTL = 10 * time.Second
+const resourceFailureTTL = 15 * time.Second
 const resourceTimeout = 10 * time.Second
-const resourceCacheLimit = 256
+const resourceCacheLimit = 1024
 const resourceConcurrency = 4
-const resourcePendingLimit = 64
 
 // ResourceInfo 是当前系统命名空间可见的容量，不表示物理机整盘或容器配额。
 type ResourceInfo struct {
-	State            string    `json:"state"`
-	Source           string    `json:"source"`
-	Scope            string    `json:"scope"`
-	CPUCores         *int      `json:"cpu_cores"`
-	MemoryTotalBytes *uint64   `json:"memory_total_bytes"`
-	DiskTotalBytes   *uint64   `json:"disk_total_bytes"`
-	OS               string    `json:"os"`
-	DiskMount        string    `json:"disk_mount"`
-	CollectedAt      time.Time `json:"collected_at"`
+	State            string     `json:"state"`
+	Source           string     `json:"source"`
+	Scope            string     `json:"scope"`
+	CPUCores         *int       `json:"cpu_cores"`
+	MemoryTotalBytes *uint64    `json:"memory_total_bytes"`
+	DiskTotalBytes   *uint64    `json:"disk_total_bytes"`
+	OS               string     `json:"os"`
+	DiskMount        string     `json:"disk_mount"`
+	CollectedAt      *time.Time `json:"collected_at"`
 }
 
-type resourceEntry struct {
-	info    ResourceInfo
-	expires time.Time
-}
-type resourceFlight struct {
-	done chan struct{}
-	info ResourceInfo
-	err  error
-}
-type resourceCache struct {
-	mu      sync.Mutex
-	entries map[[32]byte]resourceEntry
-	flights map[[32]byte]*resourceFlight
-	slots   chan struct{}
-	clock   func() time.Time
-	collect func(context.Context, model.Host) (ResourceInfo, error)
-}
-
-func resourceIdentity(host model.Host) [32]byte {
-	value, _ := json.Marshal([]any{host.ID, host.ProjectID, host.DepartmentID, host.Mode, host.IsActive, host.Address, host.SSHPort, host.SSHUsername, host.SSHHostKeyFingerprint, host.SSHCredentialCiphertext})
-	return sha256.Sum256(value)
-}
-
-func unknownResources(host model.Host, now time.Time) ResourceInfo {
-	source := "ssh"
-	if host.Mode == model.HostModeLocal {
-		source = "local"
-	}
-	return ResourceInfo{State: "unavailable", Source: source, Scope: "current_environment", DiskMount: "/", CollectedAt: now.UTC()}
+func resourceIdentity(host model.Host) string {
+	value, _ := json.Marshal([]any{host.ID, host.ProjectID, host.DepartmentID, host.Mode, host.IsActive, host.IsBuiltin, host.CreatedAt, host.UpdatedAt,
+		host.Address, host.SSHPort, host.SSHUsername, host.SSHHostKeyFingerprint, host.SSHCredentialCiphertext})
+	return fmt.Sprintf("%x", sha256.Sum256(value))
 }
 
 func cloneResources(value ResourceInfo) ResourceInfo {
@@ -92,7 +68,7 @@ func cloneResources(value ResourceInfo) ResourceInfo {
 	return value
 }
 
-// Resources 先查项目范围再查缓存；分页读取不会触发全主机 SSH 扫描。
+// Resources 查询当前请求可见的主机，仅返回后台已保存的结果。
 func (s *Service) Resources(ctx context.Context, id string) (ResourceInfo, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -107,115 +83,72 @@ func (s *Service) Resources(ctx context.Context, id string) (ResourceInfo, error
 		}
 		return ResourceInfo{}, errors.New("查询主机系统资源失败")
 	}
-	cache := &s.resources
-	cache.mu.Lock()
-	now := time.Now()
-	if cache.clock != nil {
-		now = cache.clock()
+	return s.ResourceSnapshot(host), nil
+}
+
+// ResourceSnapshot 为已经通过项目范围校验的主机构造展示结果。
+func (s *Service) ResourceSnapshot(host model.Host) ResourceInfo {
+	info := ResourceInfo{State: cache.SnapshotUnavailable}
+	if host.IsActive {
+		value, status := s.resources.Get(resourceIdentity(host), time.Now())
+		info = cloneResources(value)
+		info.State, info.CollectedAt = status.State, status.CollectedAt
 	}
-	if cache.entries == nil {
-		cache.entries = make(map[[32]byte]resourceEntry)
-		cache.flights = make(map[[32]byte]*resourceFlight)
-		cache.slots = make(chan struct{}, resourceConcurrency)
+	info.Source = "ssh"
+	if host.Mode == model.HostModeLocal {
+		info.Source = "local"
 	}
+	info.Scope, info.DiskMount = "current_environment", "/"
+	return info
+}
+
+func (s *Service) RunResourceSync(ctx context.Context) error {
+	return cache.RunSnapshotWorkers(ctx, 5*time.Second, "host_resource_sync", resourceConcurrency, s.scanResources, func(ctx context.Context, host model.Host) {
+		s.syncResource(ctx, host, s.collectResources)
+	})
+}
+
+func (s *Service) scanResources(ctx context.Context, yield func(string, model.Host) bool) error {
+	var hosts []model.Host
+	db := s.db.WithContext(ctx)
+	activeProjects := db.Model(&model.Project{}).Select("uuid").Where("is_active = ?", true)
+	return db.Where("is_active = ? AND project_id IN (?)", true, activeProjects).FindInBatches(&hosts, 64, func(_ *gorm.DB, _ int) error {
+		for _, host := range hosts {
+			key := resourceIdentity(host)
+			if s.resources.Due(key, time.Now(), resourceTTL, resourceFailureTTL) && !yield(host.ID, host) {
+				return ctx.Err()
+			}
+		}
+		return nil
+	}).Error
+}
+
+func (s *Service) syncResource(ctx context.Context, host model.Host, collect func(context.Context, model.Host) (ResourceInfo, error)) {
 	key := resourceIdentity(host)
-	if entry, ok := cache.entries[key]; ok && now.Before(entry.expires) {
-		cache.mu.Unlock()
-		return cloneResources(entry.info), nil
-	}
-	if flight := cache.flights[key]; flight != nil {
-		cache.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return ResourceInfo{}, ctx.Err()
-		case <-flight.done:
-			return cloneResources(flight.info), flight.err
-		}
-	}
-	if len(cache.flights) >= resourcePendingLimit {
-		cache.mu.Unlock()
-		slog.WarnContext(ctx, "主机资源采集繁忙", "operation", "host_resources_busy", "host_id", host.ID)
-		return unknownResources(host, now), nil
-	}
-	flight := &resourceFlight{done: make(chan struct{})}
-	cache.flights[key] = flight
-	collector := cache.collect
-	slots := cache.slots
-	cache.mu.Unlock()
-	probeCtx, cancel := context.WithTimeout(ctx, resourceTimeout)
-	var info ResourceInfo
-	var probeErr error
-	// singleflight 的每键异步任务没有排队上限；这里登记固定目标后在请求自身等待，不另建采集协程。
-	select {
-	case slots <- struct{}{}:
-		if !host.IsActive {
-			probeErr = errHostResourcesUnavailable
-		} else if collector != nil {
-			info, probeErr = collector(probeCtx, host)
-		} else {
-			info, probeErr = s.collectResources(probeCtx, host)
-		}
-		<-slots
-	case <-probeCtx.Done():
-		probeErr = probeCtx.Err()
-	}
-	cancel()
-	if probeErr != nil {
-		slog.WarnContext(ctx, "读取主机系统资源失败", "operation", "host_resources_collect", "host_id", host.ID, "err", probeErr)
-	}
-	cache.mu.Lock()
-	now = time.Now()
-	if cache.clock != nil {
-		now = cache.clock()
-	}
-	cache.mu.Unlock()
-	if probeErr != nil {
-		info = unknownResources(host, now)
-	}
-	info.Source = unknownResources(host, now).Source
-	info.Scope = "current_environment"
-	info.DiskMount = "/"
-	info.CollectedAt = now.UTC()
+	scoped := database.WithDepartmentScope(ctx, database.DepartmentScope{ProjectID: host.ProjectID, DepartmentID: host.DepartmentID})
 	var current model.Host
-	queryErr := s.db.WithContext(ctx).Where(&model.Host{ID: host.ID}).First(&current).Error
-	var resultErr error
-	if queryErr != nil || resourceIdentity(current) != key {
-		slog.WarnContext(ctx, "主机资源采集期间目标发生变化", "operation", "host_resources_changed", "host_id", host.ID, "err", queryErr)
-		info = unknownResources(host, now)
-		if errors.Is(queryErr, gorm.ErrRecordNotFound) {
-			resultErr = ErrHostNotFound
-		} else if ctx.Err() != nil {
-			resultErr = ctx.Err()
-		}
+	db := s.db.WithContext(scoped)
+	activeProjects := db.Model(&model.Project{}).Select("uuid").Where("is_active = ?", true)
+	if err := db.Where("project_id IN (?)", activeProjects).First(&current, "uuid = ?", host.ID).Error; err != nil || resourceIdentity(current) != key {
+		slog.DebugContext(ctx, "主机资源采集目标已变化", "operation", "host_resources_changed", "host_id", host.ID, "err", err)
+		return
 	}
-	cache.mu.Lock()
-	if queryErr == nil && resourceIdentity(current) == key && ctx.Err() == nil {
-		for k, entry := range cache.entries {
-			if !now.Before(entry.expires) {
-				delete(cache.entries, k)
-			}
-		}
-		if len(cache.entries) >= resourceCacheLimit {
-			var oldest [32]byte
-			var expiry time.Time
-			for k, entry := range cache.entries {
-				if expiry.IsZero() || entry.expires.Before(expiry) {
-					oldest, expiry = k, entry.expires
-				}
-			}
-			delete(cache.entries, oldest)
-		}
-		ttl := resourceTTL
-		if info.State != "ok" {
-			ttl = resourceFailureTTL
-		}
-		cache.entries[key] = resourceEntry{info: cloneResources(info), expires: now.Add(ttl)}
+	probeCtx, cancel := context.WithTimeout(scoped, resourceTimeout)
+	defer cancel()
+	info, err := collect(probeCtx, current)
+	if ctx.Err() != nil {
+		return
 	}
-	flight.info, flight.err = cloneResources(info), resultErr
-	delete(cache.flights, key)
-	close(flight.done)
-	cache.mu.Unlock()
-	return info, resultErr
+	if err == nil && info.State != cache.SnapshotOK {
+		err = errHostResourcesUnavailable
+	}
+	if err != nil {
+		slog.WarnContext(ctx, "后台读取主机系统资源失败", "operation", "host_resources_collect", "host_id", host.ID, "err", err)
+		s.resources.Fail(key, time.Now())
+		return
+	}
+	// 读路径只接受当前连接身份，所以迟到的旧身份结果不可见。
+	s.resources.Put(key, info, time.Now())
 }
 
 func (s *Service) collectResources(ctx context.Context, host model.Host) (ResourceInfo, error) {
@@ -249,31 +182,44 @@ func (s *Service) collectResources(ctx context.Context, host model.Host) (Resour
 	stderr := &resourceOutput{limit: 1024, abort: func() { _ = client.Close() }}
 	session.Stdout, session.Stderr = output, stderr
 	session.Stdin = strings.NewReader(hostResourceProbeCommand)
-	if err := session.Run("env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C sh -se"); err != nil || output.exceeded || stderr.exceeded || ctx.Err() != nil {
-		return ResourceInfo{}, errHostResourcesUnavailable
+	runErr := session.Run("env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C sh -se")
+	if ctx.Err() != nil {
+		return ResourceInfo{}, ctx.Err()
+	}
+	if output.exceeded || stderr.exceeded {
+		return ResourceInfo{}, fmt.Errorf("%w：采集输出超过限制", errHostResourcesUnavailable)
+	}
+	if runErr != nil {
+		return ResourceInfo{}, fmt.Errorf("执行主机系统资源采集失败：%w", runErr)
 	}
 	return parseResourceInventory(output.buffer.String())
 }
 
 func collectLocalResources(ctx context.Context) (ResourceInfo, error) {
 	info := ResourceInfo{State: "unavailable", OS: runtime.GOOS}
-	if value, err := cpu.CountsWithContext(ctx, true); err == nil && value > 0 {
-		info.CPUCores = &value
+	cores, cpuErr := cpu.CountsWithContext(ctx, true)
+	if cpuErr == nil && cores > 0 {
+		info.CPUCores = &cores
 	}
-	if value, err := mem.VirtualMemoryWithContext(ctx); err == nil && value.Total > 0 {
-		info.MemoryTotalBytes = &value.Total
+	memory, memoryErr := mem.VirtualMemoryWithContext(ctx)
+	if memoryErr == nil && memory.Total > 0 {
+		info.MemoryTotalBytes = &memory.Total
 	}
-	if value, err := disk.UsageWithContext(ctx, "/"); err == nil && value.Total > 0 {
-		info.DiskTotalBytes = &value.Total
+	usage, diskErr := disk.UsageWithContext(ctx, "/")
+	if diskErr == nil && usage.Total > 0 {
+		info.DiskTotalBytes = &usage.Total
 	}
 	if ctx.Err() != nil {
 		return ResourceInfo{}, ctx.Err()
 	}
 	if info.CPUCores != nil || info.MemoryTotalBytes != nil || info.DiskTotalBytes != nil {
 		info.State = "ok"
+		if err := errors.Join(cpuErr, memoryErr, diskErr); err != nil {
+			slog.DebugContext(ctx, "本地主机有部分指标未能采集", "operation", "host_resources_local_collect", "err", err)
+		}
 		return info, nil
 	}
-	return info, errHostResourcesUnavailable
+	return info, errors.Join(errHostResourcesUnavailable, cpuErr, memoryErr, diskErr)
 }
 
 // 固定只读协议不接收路径或 Shell 参数，不需要 sudo；缺失工具保留空值。

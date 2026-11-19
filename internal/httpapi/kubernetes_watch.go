@@ -40,11 +40,22 @@ func streamKubernetesResources(deps Dependencies) gin.HandlerFunc {
 }
 
 func kubernetesReadContext(c *gin.Context) context.Context {
-	ctx := c.Request.Context()
-	if c.Query("fresh") == "1" {
-		return kube.WithFreshResourceRead(ctx)
-	}
+	ctx := kube.WithInventoryRead(c.Request.Context())
+	c.Request = c.Request.WithContext(ctx)
 	return ctx
+}
+
+func writeKubernetesInventoryHeaders(c *gin.Context) {
+	at, stale := kube.InventoryReadStatus(c.Request.Context())
+	if at.IsZero() {
+		return
+	}
+	c.Header("X-EDO-Snapshot-Collected-At", at.Format(time.RFC3339Nano))
+	state := "ok"
+	if stale {
+		state = "stale"
+	}
+	c.Header("X-EDO-Snapshot-State", state)
 }
 
 // Read permissions are derived from the same resource registry as the proxy.
@@ -119,7 +130,7 @@ func (h kubernetesWatchHandler) stream(c *gin.Context) {
 		writeError(c, http.StatusForbidden, "forbidden", "集群资源查看授权已失效")
 		return
 	}
-	ctx, cancel := context.WithCancel(c.Request.Context())
+	ctx, cancel := context.WithCancel(kube.WithInventoryRead(c.Request.Context()))
 	defer cancel()
 	changes, err := h.service.SubscribeResourceChanges(ctx, c.Param("id"), namespaces, allowed)
 	if err != nil {

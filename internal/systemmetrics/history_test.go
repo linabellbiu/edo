@@ -120,6 +120,13 @@ func TestCollectorRunsWithoutBrowserAndStopsWithContext(t *testing.T) {
 	defer client.Close()
 	service := New(db, sqlDB, testWorkerStats{}, testQueueStats{}, logger)
 	service.ConfigureHistory(client, "test:collector", ":8080")
+	if service.Current() != nil {
+		t.Fatal("后台启动前没有可读的真实样本，普通读取不得立即采样")
+	}
+	history, err := service.History(t.Context(), 15*time.Minute, 0)
+	if err != nil || history.Latest != nil || len(history.Points) != 0 {
+		t.Fatalf("空历史不应触发实时采样: %+v %v", history, err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -131,8 +138,8 @@ func TestCollectorRunsWithoutBrowserAndStopsWithContext(t *testing.T) {
 	if client.ZCard(context.Background(), service.history.key+":5s").Val() != 1 {
 		t.Fatal("没有浏览器查询时后台未采集")
 	}
-	first, second := service.Current(ctx), service.Current(ctx)
-	if !first.CollectedAt.Equal(second.CollectedAt) {
+	first, second := service.Current(), service.Current()
+	if first == nil || second == nil || !first.CollectedAt.Equal(second.CollectedAt) {
 		t.Fatal("浏览器读取改变了采样时间")
 	}
 	cancel()

@@ -17,5 +17,5 @@ export interface MetricsHistory {
   to: string
   interval_seconds: number
   points: SystemMetrics[]
-  latest: SystemMetrics
+  latest: SystemMetrics | null
 }

@@ -6,7 +6,7 @@ import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import { terminalActorContext } from '@/stores/hostTerminals'
 import { composeContainerCanTerminal } from '@/utils/composeRuntime'
-import type { DeploymentRuntimeState } from '@/types/deploymentRuntime'
+import type { DeploymentRuntimeResponse } from '@/types/deploymentRuntime'
 import { parseSessionTarget, sessionPermissions, sessionSocketTarget } from '@/utils/sessionPopout'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
@@ -51,8 +51,9 @@ async function verify() {
       if (!containers.some(item => item.name === container)) throw new Error('所选容器已不存在，请从原入口重新选择')
     }
     if (value.sourceDeploymentID && socket) {
-      const { data } = await client.get<{ runtime: DeploymentRuntimeState }>(`/deployments/${encodeURIComponent(value.sourceDeploymentID)}/runtime`, { ...options, timeout: 35_000 })
+      const { data } = await client.get<DeploymentRuntimeResponse>(`/deployments/${encodeURIComponent(value.sourceDeploymentID)}/runtime`, { ...options, timeout: 35_000 })
       const runtime = data.runtime
+      if (!runtime || data.snapshot?.state === 'stale') throw new Error('容器状态暂未同步，请稍后重试')
       const container = runtime.services?.flatMap(service => service.containers || []).find(item => item.id === socket.parts[1])
       if (runtime.deployment_id !== value.sourceDeploymentID || !['compose', 'custom'].includes(runtime.kind) || runtime.runtime_id !== socket.parts[0] || !container) throw new Error('部署容器已变化，请从原入口重新选择')
       if (value.kind === 'terminal' && !composeContainerCanTerminal(container)) throw new Error('容器当前无法打开终端')

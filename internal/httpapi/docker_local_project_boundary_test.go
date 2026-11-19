@@ -150,15 +150,46 @@ func TestDockerLocalProjectBoundaryRejectsBeforeDaemonAndPreservesOwner(t *testi
 	if err := deps.Access.SetProjectMember(context.Background(), admin, ownerProject, user.ID, access.ProjectOwnerRoleID); err != nil {
 		t.Fatal(err)
 	}
-	positive := request(http.MethodGet, "/docker/endpoints/edo-local-docker/containers?all=true", ownerProject, "", "")
-	var payload struct {
-		Containers []json.RawMessage `json:"containers"`
+	baseline := daemonCalls.Load()
+	const listPath = "/docker/endpoints/edo-local-docker/containers?all=true"
+	cold := request(http.MethodGet, listPath, ownerProject, "", "")
+	var payload dockerengine.ContainerSnapshot
+	if err := json.Unmarshal(cold.Body.Bytes(), &payload); err != nil || cold.Code != http.StatusOK ||
+		payload.Snapshot.State != "pending" || len(payload.Containers) != 0 || daemonCalls.Load() != baseline {
+		t.Fatalf("冷缓存读取不得访问 Docker: status=%d state=%s calls=%d err=%v", cold.Code, payload.Snapshot.State, daemonCalls.Load(), err)
 	}
-	if err := json.Unmarshal(positive.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
+	syncCtx, cancelSync := context.WithCancel(t.Context())
+	stopped := make(chan error, 1)
+	go func() { stopped <- deps.Docker.RunContainerSync(syncCtx) }()
+	t.Cleanup(func() {
+		cancelSync()
+		if err := <-stopped; err != nil {
+			t.Error(err)
+		}
+	})
+	deadline := time.Now().Add(time.Second)
+	for {
+		positive := request(http.MethodGet, listPath, ownerProject, "", "")
+		if err := json.Unmarshal(positive.Body.Bytes(), &payload); err != nil || positive.Code != http.StatusOK {
+			t.Fatalf("读取已授权 Docker 快照失败: status=%d err=%v", positive.Code, err)
+		}
+		if payload.Snapshot.State == "ok" && len(payload.Containers) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("后台 Docker 同步未发布快照: state=%s count=%d", payload.Snapshot.State, len(payload.Containers))
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	if positive.Code != http.StatusOK || len(payload.Containers) != 1 || daemonCalls.Load() == 0 {
-		t.Fatalf("原本拥有内置主机的项目无法读取自己的运行时: status=%d count=%d", positive.Code, len(payload.Containers))
+	syncedCalls := daemonCalls.Load()
+	positive := request(http.MethodGet, listPath, ownerProject, "", "")
+	if err := json.Unmarshal(positive.Body.Bytes(), &payload); err != nil || len(payload.Containers) != 1 ||
+		syncedCalls == baseline || daemonCalls.Load() != syncedCalls {
+		t.Fatalf("原本拥有内置主机的项目无法从后台快照读取容器: status=%d count=%d err=%v", positive.Code, len(payload.Containers), err)
+	}
+	foreign := request(http.MethodGet, listPath, project.ID, "", "")
+	if foreign.Code != http.StatusNotFound || strings.Contains(foreign.Body.String(), "owner-fixture") || daemonCalls.Load() != syncedCalls {
+		t.Fatalf("后台快照不能越过项目范围: status=%d", foreign.Code)
 	}
 	failLogs.Store(true)
 	failedLogs := request(http.MethodGet, "/docker/endpoints/edo-local-docker/containers/"+containerID+"/logs/ws?tail=10&follow=false", ownerProject, "", containerLogSubprotocol)

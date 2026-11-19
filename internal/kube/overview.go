@@ -76,6 +76,20 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 			allowed[code] = allowed[code] && slices.Contains(query.authorization.Permissions[""], code)
 		}
 	}
+	if s.inventoryRead(ctx) {
+		result, err := s.collectOverview(ctx, query, namespace, allowed)
+		if result != nil {
+			result.CollectedAt, _ = InventoryReadStatus(ctx)
+			if result.CollectedAt.IsZero() {
+				for _, reason := range result.Errors {
+					if errors.Is(reason, ErrInventoryPending) {
+						return nil, ErrInventoryPending
+					}
+				}
+			}
+		}
+		return result, err
+	}
 	return s.cachedOverview(ctx, query, namespace, allowed)
 }
 

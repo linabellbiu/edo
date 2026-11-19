@@ -35,6 +35,7 @@ func (h clusterHandler) resourceList(c *gin.Context) {
 		h.resourceError(c, "kubernetes_resource_list", err)
 		return
 	}
+	writeKubernetesInventoryHeaders(c)
 	c.JSON(http.StatusOK, result)
 }
 
@@ -47,22 +48,28 @@ func (h clusterHandler) resourceReveal(c *gin.Context) {
 	h.getKubernetesResource(c, true)
 }
 func (h clusterHandler) getKubernetesResource(c *gin.Context, reveal bool) {
+	ctx := c.Request.Context()
+	if !reveal {
+		ctx = kubernetesReadContext(c)
+	}
 	if c.Param("resource") == "pods" && c.Query("include_deployment") == "true" {
-		result, err := h.kube.GetPodWorkloadDetail(c.Request.Context(), c.Param("id"), c.Query("namespace"), c.Param("name"))
+		result, err := h.kube.GetPodWorkloadDetail(ctx, c.Param("id"), c.Query("namespace"), c.Param("name"))
 		if err != nil {
 			h.resourceError(c, "kubernetes_pod_workload_get", err)
 			return
 		}
 		c.Header("Cache-Control", "no-store")
+		writeKubernetesInventoryHeaders(c)
 		c.JSON(http.StatusOK, result)
 		return
 	}
-	result, err := h.kube.GetResource(c.Request.Context(), c.Param("id"), c.Param("resource"), c.Query("namespace"), c.Param("name"), reveal)
+	result, err := h.kube.GetResource(ctx, c.Param("id"), c.Param("resource"), c.Query("namespace"), c.Param("name"), reveal)
 	if err != nil {
 		h.resourceError(c, "kubernetes_resource_get", err)
 		return
 	}
 	c.Header("Cache-Control", "no-store")
+	writeKubernetesInventoryHeaders(c)
 	c.JSON(http.StatusOK, gin.H{"object": result})
 }
 
@@ -161,16 +168,18 @@ func (h clusterHandler) resourceEvents(c *gin.Context) {
 	}
 	var result []corev1.Event
 	var err error
+	ctx := kubernetesReadContext(c)
 	if replicaSet != "" || replicaSetUID != "" {
-		result, err = h.kube.DeploymentReplicaSetEvents(c.Request.Context(), clusterID, namespace, name, uid, replicaSet, replicaSetUID)
+		result, err = h.kube.DeploymentReplicaSetEvents(ctx, clusterID, namespace, name, uid, replicaSet, replicaSetUID)
 	} else {
-		result, err = h.kube.ResourceEvents(c.Request.Context(), clusterID, resource, namespace, name, uid)
+		result, err = h.kube.ResourceEvents(ctx, clusterID, resource, namespace, name, uid)
 	}
 	if err != nil {
 		h.resourceError(c, "kubernetes_resource_events", err)
 		return
 	}
 	c.Header("Cache-Control", "no-store")
+	writeKubernetesInventoryHeaders(c)
 	c.JSON(http.StatusOK, gin.H{"items": result})
 }
 
@@ -179,17 +188,22 @@ func (h clusterHandler) deploymentRevisionManifest(c *gin.Context) {
 		h.resourceError(c, "kubernetes_revision_manifest", kube.ErrInvalidResource)
 		return
 	}
-	object, err := h.kube.DeploymentReplicaSetManifest(c.Request.Context(), c.Param("id"), c.Query("namespace"),
+	object, err := h.kube.DeploymentReplicaSetManifest(kubernetesReadContext(c), c.Param("id"), c.Query("namespace"),
 		c.Param("name"), c.Query("uid"), c.Param("revision"), c.Query("revision_uid"))
 	if err != nil {
 		h.resourceError(c, "kubernetes_revision_manifest", err)
 		return
 	}
 	c.Header("Cache-Control", "no-store")
+	writeKubernetesInventoryHeaders(c)
 	c.JSON(http.StatusOK, gin.H{"object": object})
 }
 
 func (h clusterHandler) resourceError(c *gin.Context, operation string, err error) {
+	writeKubernetesInventoryHeaders(c)
+	if writeKubernetesInventoryPending(c, h.logger, operation, err) {
+		return
+	}
 	if writeKubernetesAuthorizationError(c, err) {
 		return
 	}
@@ -213,4 +227,16 @@ func (h clusterHandler) resourceError(c *gin.Context, operation string, err erro
 		status, code, message = http.StatusForbidden, "kubernetes_resource_forbidden", kube.ErrResourceForbidden.Error()
 	}
 	writeError(c, status, code, message)
+}
+
+func writeKubernetesInventoryPending(c *gin.Context, logger *slog.Logger, operation string, err error) bool {
+	if !errors.Is(err, kube.ErrInventoryPending) {
+		return false
+	}
+	logger.Debug("Kubernetes 后台资源快照暂未就绪", "operation", operation, "cluster_id", c.Param("id"),
+		"resource", c.Param("resource"), "namespace", c.Query("namespace"), "request_id", requestIDFrom(c), "err", err)
+	c.Header("Cache-Control", "no-store")
+	c.Header("X-EDO-Snapshot-State", "pending")
+	writeError(c, http.StatusServiceUnavailable, "kubernetes_snapshot_pending", kube.ErrInventoryPending.Error())
+	return true
 }

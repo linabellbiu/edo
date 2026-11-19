@@ -9,8 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"edo/internal/cache"
+
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
@@ -52,6 +55,37 @@ func (s *Service) DeploymentRuntimeState(ctx context.Context, clusterID, namespa
 		return RuntimeState{}, fmt.Errorf("%w: %w", ErrRuntimeResourceMissing, err)
 	}
 	return deploymentRuntimeState(current), nil
+}
+
+func (s *Service) CachedDeploymentState(ctx context.Context, clusterID, namespace, name, expectedUID string) (*RuntimeState, cache.SnapshotStatus, error) {
+	ctx = WithInventoryRead(ctx)
+	if !s.inventoryRead(ctx) {
+		return nil, cache.SnapshotStatus{State: cache.SnapshotPending}, nil
+	}
+	object, err := s.GetResource(ctx, clusterID, "deployments", namespace, name, false)
+	if errors.Is(err, ErrInventoryPending) {
+		return nil, cache.SnapshotStatus{State: cache.SnapshotPending}, nil
+	}
+	if err != nil {
+		return nil, cache.SnapshotStatus{}, err
+	}
+	var deployment appsv1.Deployment
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object, &deployment); err != nil {
+		return nil, cache.SnapshotStatus{}, fmt.Errorf("解析 Kubernetes 部署缓存失败: %w", err)
+	}
+	if expectedUID != "" && string(deployment.UID) != expectedUID {
+		return nil, cache.SnapshotStatus{}, ErrResourceConflict
+	}
+	at, stale := InventoryReadStatus(ctx)
+	status := cache.SnapshotStatus{State: cache.SnapshotOK}
+	if !at.IsZero() {
+		status.CollectedAt = &at
+	}
+	state := deploymentRuntimeState(&deployment)
+	if stale {
+		status.State = cache.SnapshotStale
+	}
+	return &state, status, nil
 }
 
 func (s *Service) ControlDeployment(

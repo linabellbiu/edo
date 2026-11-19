@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { Box, ChevronRight, FileCode2, Network, RefreshCw, Server, Trash2 } from 'lucide-vue-next'
 import { message } from 'ant-design-vue'
 import client from '@/api/client'
-import { KubeResourceChanged, kubeErrorMessage, resourceURL, type KubeObject, type KubeType } from '@/api/kubernetes'
+import { KubeResourceChanged, kubeErrorMessage, kubeSnapshotPending, readKubeSnapshotMeta, resourceURL, type KubeObject, type KubeSnapshotMeta, type KubeType } from '@/api/kubernetes'
 import { resourceStatus, type KubeReference } from '@/utils/kubernetesPresentation'
 import { podContainerChoices } from '@/utils/kubernetesWorkspace'
 import { initialWorkloadRevisionUID, podExplorerEvents, revisionOwnedPods, selectedWorkloadPod, selectedWorkloadRevision, sortWorkloadRevisions, type WorkloadContainerTarget, type WorkloadExplorerSelection, type WorkloadRevision } from '@/utils/kubernetesWorkloadExplorer'
@@ -48,6 +48,7 @@ const deployment = computed(() => props.object.kind === 'Deployment')
 const readable = computed(() => props.can('kubernetes.workload.read'))
 const namespace = computed(() => String(props.object.metadata?.namespace ?? ''))
 const revisions = ref<WorkloadRevision[]>([]), historyLoading = ref(false), historyError = ref(''), historyState = ref('')
+const historySnapshot = ref<KubeSnapshotMeta>({})
 const revisionUID = ref(''), podUID = ref(''), containerName = ref(''), podTab = ref('summary')
 const revisionEvents = ref<KubeObject[]>([]), revisionEventsLoading = ref(false), revisionEventsError = ref('')
 const revisionManifestLoading = ref(false)
@@ -68,7 +69,7 @@ const choices = computed(() => selectedPod.value ? podContainerChoices(selectedP
 const selectedContainer = computed(() => choices.value.find(container => container.name === containerName.value))
 const actionDisabled = computed(() => Boolean(props.disabled) || props.podsLoading || Boolean(props.podsError) || deployment.value && Boolean(historyError.value) || !readable.value || !selectedPod.value || !selectedContainer.value)
 const podActionsDisabled = computed(() => props.disabled || props.podsLoading || Boolean(props.podsError) || Boolean(historyError.value) || !readable.value)
-const mayDeleteRevisionPods = computed(() => !podActionsDisabled.value && !props.podsPartial && !historyLoading.value && historyState.value === 'ok'
+const mayDeleteRevisionPods = computed(() => !podActionsDisabled.value && !props.podsPartial && !historyLoading.value && !historySnapshot.value.stale && historyState.value === 'ok'
   && selectedRevision.value && visiblePods.value.length > 0 && visiblePods.value.every(pod => !pod.metadata.deletionTimestamp))
 
 function count(value: unknown) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? String(value) : '—' }
@@ -200,14 +201,21 @@ async function loadHistory() {
   request?.abort(); const controller = new AbortController(), current = ++revision, key = context.value
   request = controller; historyLoading.value = true
   try {
-    const { data } = await client.get(`${resourceURL(props.cluster, props.type, props.object.metadata.name)}/diagnostics`, { params: { namespace: namespace.value, uid: props.object.metadata.uid }, signal: controller.signal })
+    const { data, headers } = await client.get(`${resourceURL(props.cluster, props.type, props.object.metadata.name)}/diagnostics`, { params: { namespace: namespace.value, uid: props.object.metadata.uid }, signal: controller.signal })
     if (disposed || current !== revision || key !== context.value || controller.signal.aborted || !readable.value) return
     if (data.uid !== props.object.metadata.uid) throw new Error('工作负载已发生变化，请重新打开详情')
     revisions.value = sortWorkloadRevisions((Array.isArray(data.revisions) ? data.revisions : []).filter((item: WorkloadRevision) => typeof item.uid === 'string' && item.uid))
+    historySnapshot.value = readKubeSnapshotMeta(headers, data.state)
     historyError.value = ''; historyState.value = String(data.state ?? '')
     if (!revisionChosen) { revisionUID.value = initialWorkloadRevisionUID(revisions.value); revisionChosen = Boolean(revisionUID.value) }
   } catch (error) {
-    if (!disposed && current === revision && key === context.value && !controller.signal.aborted) historyError.value = kubeErrorMessage(error)
+    if (!disposed && current === revision && key === context.value && !controller.signal.aborted) {
+      if (kubeSnapshotPending(error)) {
+        historyError.value = ''
+        if (historySnapshot.value.collectedAt || revisions.value.length) historySnapshot.value = { ...historySnapshot.value, stale: true }
+        else historyState.value = 'pending'
+      } else historyError.value = kubeErrorMessage(error)
+    }
   } finally { if (!disposed && current === revision) historyLoading.value = false }
 }
 async function loadRevisionEvents() {
@@ -234,7 +242,7 @@ async function loadRevisionEvents() {
   }
 }
 watch(context, () => {
-  revision++; request?.abort(); historyLoading.value = false; historyError.value = ''; historyState.value = ''; revisions.value = []
+  revision++; request?.abort(); historyLoading.value = false; historyError.value = ''; historyState.value = ''; historySnapshot.value = {}; revisions.value = []
   const saved = props.selection
   revisionUID.value = saved?.revisionUID ?? ''; podUID.value = saved?.podUID ?? ''; containerName.value = saved?.containerName ?? ''; podTab.value = saved?.podTab === 'diagnostics' ? 'diagnostics' : 'summary'
   revisionChosen = Boolean(revisionUID.value); podChosen = Boolean(podUID.value)
@@ -259,7 +267,7 @@ watch([context, () => selectedRevision.value?.uid, readable], () => {
 watch(() => props.refreshToken, () => { if (deployment.value) { void loadHistory(); void loadRevisionEvents() } })
 watch(readable, value => {
   if (value) { if (deployment.value) void loadHistory() }
-  else { revision++; request?.abort(); historyLoading.value = false; historyState.value = ''; revisions.value = []; revisionUID.value = ''; podUID.value = ''; containerName.value = ''; revisionChosen = false; podChosen = false }
+  else { revision++; request?.abort(); historyLoading.value = false; historyError.value = ''; historyState.value = ''; historySnapshot.value = {}; revisions.value = []; revisionUID.value = ''; podUID.value = ''; containerName.value = ''; revisionChosen = false; podChosen = false }
 })
 function syncVisible() {
   if (document.hidden || !props.autoRefresh || props.disabled || !deployment.value) return
@@ -276,7 +284,8 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); eventRequ
       <header><h4>历史版本</h4><span class="history-limit">最大历史版本数 {{ object.spec?.revisionHistoryLimit ?? '—' }}</span><span class="column-header-action"><a-button size="small" type="text" :disabled="disabled || !readable" :aria-busy="historyLoading" :class="{ 'is-busy': historyLoading }" aria-label="刷新历史版本" @click="loadHistory"><RefreshCw :size="13" /></a-button></span></header>
       <a-alert v-if="historyError" class="column-alert" type="error" show-icon :message="historyError"><template #action><a-button size="small" :disabled="disabled" @click="loadHistory">重试</a-button></template></a-alert>
       <a-alert v-else-if="historyState==='partial' || historyState==='pods_unavailable'" class="column-alert" type="warning" show-icon :message="historyState==='partial'?'历史版本数据尚未完整加载':'暂时无法读取历史版本关联的 Pod，请核对关联 Pod 列表'" />
-      <a-spin :spinning="historyLoading">
+      <p v-if="historySnapshot.stale" class="column-note" role="status">{{ t('k8s.snapshotStale') }}<template v-if="historySnapshot.collectedAt"> · {{ formatDateTime(historySnapshot.collectedAt) }}</template></p>
+      <a-spin :spinning="historyLoading && historyState!=='pending'">
         <div v-if="revisions.length" class="revision-list" role="list" aria-label="ReplicaSet 历史版本">
           <div v-for="item in revisions" :key="item.uid" class="revision-entry" role="listitem" :class="{ selected: item.uid === revisionUID, current: item.current }">
             <span class="revision-created" :title="formatDateTime(item.created)">已创建：{{ formatRelativeTime(item.created) }}</span>
@@ -301,13 +310,13 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); eventRequ
             </KubeWorkloadEvents>
           </div>
         </div>
-        <a-empty v-else-if="!historyLoading && !historyError" :description="!readable ? '没有查看工作负载的权限' : historyState==='partial' || historyState==='pods_unavailable' ? '历史数据尚未完整获取' : '暂无历史版本'" :image-style="{ height: '40px' }" />
+        <a-empty v-else-if="(!historyLoading || historyState==='pending') && !historyError" :description="!readable ? '没有查看工作负载的权限' : historyState==='pending' ? t('k8s.snapshotPending') : historyState==='partial' || historyState==='pods_unavailable' ? '历史数据尚未完整获取' : '暂无历史版本'" :image-style="{ height: '40px' }" />
       </a-spin>
-      <p v-if="revisionChosen && revisionUID && !selectedRevision" class="column-note" role="status">所选历史版本已不存在，请重新选择。</p>
+      <p v-if="revisionChosen && revisionUID && !selectedRevision && historyState!=='pending'" class="column-note" role="status">所选历史版本已不存在，请重新选择。</p>
     </aside>
 
     <section class="explorer-column pod-column" tabindex="0" aria-label="对应容器组">
-      <header><h4>对应容器组 <span class="heading-count">{{ podsError||podsLoading?'—':`${visiblePods.length}${podsPartial?'+':''}` }}</span></h4><span class="column-header-action"><a-button size="small" type="text" :disabled="disabled || !readable" :aria-busy="podsLoading" :class="{ 'is-busy': podsLoading }" aria-label="刷新关联 Pod" @click="emit('retryPods')"><RefreshCw :size="13" /></a-button></span></header>
+      <header><h4>对应容器组 <span class="heading-count">{{ podsError||podsLoading||historyState==='pending'?'—':`${visiblePods.length}${podsPartial?'+':''}` }}</span></h4><span class="column-header-action"><a-button size="small" type="text" :disabled="disabled || !readable" :aria-busy="podsLoading" :class="{ 'is-busy': podsLoading }" aria-label="刷新关联 Pod" @click="emit('retryPods')"><RefreshCw :size="13" /></a-button></span></header>
       <div v-if="selectedRevision" class="revision-pod-context">
         <p class="selected-revision">副本集 <strong :title="selectedRevision.name">{{ selectedRevision.name }}</strong></p>
       </div>
@@ -322,7 +331,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); eventRequ
           </button></div>
         </div>
         <div v-else-if="!podsLoading && !podsError && scaledDownRevision" class="pod-empty-note" role="status">该版本已缩容到 0，没有运行中的容器组。</div>
-        <a-empty v-else-if="!podsLoading && !podsError" :description="deployment && !selectedRevision ? '请选择历史版本' : '暂无关联 Pod'" :image-style="{ height: '40px' }" />
+        <a-empty v-else-if="!podsLoading && !podsError" :description="historyState==='pending' ? t('k8s.snapshotPending') : deployment && !selectedRevision ? '请选择历史版本' : '暂无关联 Pod'" :image-style="{ height: '40px' }" />
       </a-spin>
     </section>
 

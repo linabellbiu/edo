@@ -1,4 +1,5 @@
 import client from '@/api/client'
+import type { HostResources } from '@/api/hostResources'
 
 export type HostMode = 'local' | 'ssh'
 export type HostAuthType = 'password' | 'private_key' | 'legacy' | ''
@@ -38,6 +39,7 @@ export interface InfrastructureHost {
   is_active: boolean
   capabilities: HostCapability[]
   capability_options?: HostCapabilityOption[]
+  resources?: HostResources
   credential_configured?: boolean
   use_sudo?: boolean
   created_at?: string

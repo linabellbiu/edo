@@ -26,6 +26,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"edo/internal/cache"
 	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/hostcredential"
@@ -96,8 +97,9 @@ type Service struct {
 	config  config.Runtime
 
 	// 事务克隆与主服务共享监控客户端缓存，因此锁也必须共享，不能复制已使用的 Mutex。
-	monitorMu      *sync.Mutex
-	monitorClients map[string]monitorClientEntry
+	monitorMu          *sync.Mutex
+	monitorClients     map[string]monitorClientEntry
+	containerSnapshots *cache.SnapshotStore[[]Container]
 }
 
 // WithTransaction 让 Docker 连接校验与上层聚合资源共享同一个数据库事务。
@@ -124,8 +126,9 @@ type monitorClientRevision struct {
 func NewService(db *gorm.DB, secrets *secret.Manager, cfg config.Runtime) *Service {
 	return &Service{
 		db: db, secrets: secrets, config: cfg,
-		monitorMu:      &sync.Mutex{},
-		monitorClients: make(map[string]monitorClientEntry),
+		monitorMu:          &sync.Mutex{},
+		monitorClients:     make(map[string]monitorClientEntry),
+		containerSnapshots: cache.NewSnapshotStore[[]Container](128, time.Minute, 10*time.Minute),
 	}
 }
 
@@ -316,7 +319,11 @@ func (s *Service) Containers(ctx context.Context, id string, all bool) ([]Contai
 	defer apiClient.Close()
 	requestContext, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
 	defer cancel()
-	result, err := apiClient.ContainerList(requestContext, client.ContainerListOptions{All: all})
+	return listContainers(requestContext, apiClient, all)
+}
+
+func listContainers(ctx context.Context, apiClient *client.Client, all bool) ([]Container, error) {
+	result, err := apiClient.ContainerList(ctx, client.ContainerListOptions{All: all})
 	if err != nil {
 		return nil, fmt.Errorf("查询 Docker 容器失败: %w", err)
 	}

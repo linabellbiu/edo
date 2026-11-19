@@ -29,7 +29,7 @@ func (h clusterHandler) topology(service *access.Service) gin.HandlerFunc {
 			h.resourceError(c, "kubernetes_topology_permission", kube.ErrResourceForbidden)
 			return
 		}
-		result, err := h.kube.NodeTopology(c.Request.Context(), c.Param("id"), allowed, allowed[access.PermissionClusterRead] || allowed[access.PermissionDeploymentRead])
+		result, err := h.kube.NodeTopology(kubernetesReadContext(c), c.Param("id"), allowed, allowed[access.PermissionClusterRead] || allowed[access.PermissionDeploymentRead])
 		if err != nil {
 			if errors.Is(err, kube.ErrTopologyIncomplete) {
 				writeError(c, http.StatusBadGateway, "kubernetes_topology_incomplete", kube.ErrTopologyIncomplete.Error())
@@ -39,6 +39,7 @@ func (h clusterHandler) topology(service *access.Service) gin.HandlerFunc {
 			return
 		}
 		c.Header("Cache-Control", "no-store")
+		writeKubernetesInventoryHeaders(c)
 		c.JSON(http.StatusOK, result)
 	}
 }

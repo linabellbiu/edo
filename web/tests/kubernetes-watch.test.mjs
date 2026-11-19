@@ -39,14 +39,14 @@ test('K8s SSE认证失败保留HTTP状态，异常类型与断流进入降级',a
  }
 })
 
-async function harness({holdOverview=false,holdClusters=false}={}){
+async function harness({holdOverview=false,holdClusters=false,readPods}={}){
  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/kubernetes',component:{}}]});await router.push('/kubernetes?view=workloads&resource=pods&cluster=test&namespace=team')
  const route=new Proxy({},{get:(_,key)=>router.currentRoute.value[key]}),calls=[],sessions=[],pendingClusters=[],pendingOverviews=[],timers=new Map(),mounts=[],unmounts=[],listeners=new Map(),clock={now:100_000},storage={project:'project-1'},scope=vue.effectScope()
  let timerID=0
  const doc={hidden:false,addEventListener:(name,callback)=>listeners.set(name,callback),removeEventListener:name=>listeners.delete(name)}
  const win={addEventListener:(name,callback)=>listeners.set(name,callback),removeEventListener:name=>listeners.delete(name)}
- const client={get:async(url,options={})=>{calls.push({url,options});if(url==='/kubernetes/clusters'){if(holdClusters)return new Promise(resolve=>pendingClusters.push({options,resolve}));return {data:{clusters:[{id:'test',name:'test',default_namespace:'team',is_active:true},{id:'other',name:'other',default_namespace:'team',is_active:true}]}}}if(url.endsWith('/namespaces'))return {data:{namespaces:['team','prod']}};if(url.endsWith('/overview')){if(holdOverview)return new Promise(resolve=>pendingOverviews.push({options,resolve}));return {data:{counts:{},nodes:[],usage:{},phases:{},collected_at:new Date().toISOString()}}}if(url.endsWith('/events'))return {data:{items:[]}};if(url.endsWith('/resources/pods/web'))return {data:{object:sample}};return {data:{items:[sample],continue:''}}}}
- const api=load('../src/api/kubernetes.ts',{'./client':{__esModule:true,default:client}}),workspace=load('../src/utils/kubernetesWorkspace.ts'),auth=vue.reactive({user:{id:'reader',permissions:['kubernetes.workload.read','kubernetes.config.read'],is_superuser:false},canAny(permissions){return !!this.user&&permissions.some(value=>this.user.permissions.includes(value))}})
+ const client={get:async(url,options={})=>{calls.push({url,options});if(url==='/kubernetes/clusters'){if(holdClusters)return new Promise(resolve=>pendingClusters.push({options,resolve}));return {data:{clusters:[{id:'test',name:'test',default_namespace:'team',is_active:true},{id:'other',name:'other',default_namespace:'team',is_active:true}]}}}if(url.endsWith('/namespaces'))return {data:{namespaces:['team','prod']}};if(url.endsWith('/overview')){if(holdOverview)return new Promise(resolve=>pendingOverviews.push({options,resolve}));return {data:{counts:{},nodes:[],usage:{},phases:{},collected_at:new Date().toISOString()}}}if(url.endsWith('/events'))return {data:{items:[]}};if(url.endsWith('/resources/pods/web'))return {data:{object:sample}};if(readPods&&url.endsWith('/resources/pods'))return await readPods();return {data:{items:[sample],continue:''}}}}
+ const api=load('../src/api/kubernetes.ts',{'./client':{__esModule:true,default:client}}),workspace=load('../src/utils/kubernetesWorkspace.ts'),auth=vue.reactive({user:{id:'reader',project_id:'project-1',permissions:['kubernetes.workload.read','kubernetes.config.read'],is_superuser:false},canAny(permissions){return !!this.user&&permissions.some(value=>this.user.permissions.includes(value))}})
  const component=load('../src/views/KubernetesView.vue',{
   vue:{...vue,onMounted:fn=>mounts.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},'vue-i18n':{useI18n:()=>({t:key=>key})},'vue-router':{useRoute:()=>route,useRouter:()=>router,onBeforeRouteLeave(){},onBeforeRouteUpdate(){}},
   '@/api/client':{__esModule:true,default:client},'@/api/kubernetes':{...api,streamKubeEvents:(cluster,namespaces,project,signal,onEvent)=>new Promise((resolve,reject)=>sessions.push({cluster,namespaces,project,signal,onEvent,resolve,reject}))},'@/utils/kubernetesWorkspace':workspace,'@/stores/auth':{useAuthStore:()=>auth},
@@ -94,22 +94,41 @@ test('持续事件每500ms刷新列表而不饥饿，总览至少间隔5秒且�
  assert.equal(h.state.watchDirty.has('overview'),false)
 })
 
-test('Watch reset在编辑时积累，结束编辑后刷新并保留表单，手动刷新绕过缓存',async t=>{
+test('快照通知在编辑时积累，结束编辑后重读并保留表单，手动刷新也只读快照',async t=>{
  const h=await harness();t.after(h.stop);const before=changes(h),context={object:{spec:{draft:true}}}
  h.state.editorOpen.value=true;h.state.editorContext.value=context;h.sessions.at(-1).onEvent({type:'reset'});await h.run(500)
  assert.equal(changes(h),before);assert.deepEqual(h.state.editorContext.value,context);assert.equal(h.state.editorOpen.value,true)
  h.state.editorOpen.value=false;await settle();await h.run(500);assert.equal(changes(h),before+1)
  h.calls.length=0;h.state.refreshAll();await settle()
- for(const suffix of ['/resources/pods','/overview','/namespaces'])assert.equal(h.calls.find(call=>call.url.endsWith(suffix)).options.params.fresh,1)
+ for(const suffix of ['/resources/pods','/overview','/namespaces'])assert.equal(h.calls.find(call=>call.url.endsWith(suffix)).options.params?.fresh,undefined)
 })
 
-test('fresh总览刷新中止旧pending，旧结果迟到不会覆盖刚写入后的新结果',async t=>{
+test('手动重读总览中止旧请求，迟到旧快照不会覆盖新结果',async t=>{
  const h=await harness({holdOverview:true});t.after(h.stop);const previous=h.pendingOverviews.at(-1)
  const refresh=h.state.refreshOverview(false,true),fresh=h.pendingOverviews.at(-1)
- assert.notEqual(previous,fresh);assert.equal(previous.options.signal.aborted,true);assert.equal(fresh.options.params.fresh,1)
- fresh.resolve({data:{counts:{pods:{count:2,state:'ok'}}}});await refresh
+ assert.notEqual(previous,fresh);assert.equal(previous.options.signal.aborted,true);assert.equal(fresh.options.params.fresh,undefined)
+ const collectedAt='2026-11-19T01:00:00Z'
+ fresh.resolve({data:{counts:{pods:{count:2,state:'ok'}}},headers:{'x-edo-snapshot-state':'stale','x-edo-snapshot-collected-at':collectedAt}});await refresh
  previous.resolve({data:{counts:{pods:{count:1,state:'ok'}}}});await settle()
  assert.equal(h.state.overview.value.counts.pods.count,2)
+ assert.deepEqual(h.state.overviewSnapshot.value,{stale:true,collectedAt})
+})
+
+test('资源初次缺少快照时显示等待，采样时间由后台返回且过期结果明确标记',async t=>{
+ let state='pending'
+ const h=await harness({readPods(){
+  if(state==='pending')throw {response:{status:503,data:{code:'kubernetes_snapshot_pending'}}}
+  return {data:{items:[sample],continue:''},headers:{'x-edo-snapshot-collected-at':'2026-11-19T01:00:00Z','x-edo-snapshot-state':state}}
+ }});t.after(h.stop)
+ assert.equal(h.state.listSnapshotState.value,'pending')
+ assert.equal(h.state.error.value,'')
+ assert.equal(h.state.lastRefreshed.value,'')
+ state='stale';await h.state.refresh(true)
+ assert.deepEqual(h.state.rows.value,[sample])
+ assert.equal(h.state.lastRefreshed.value,'2026-11-19T01:00:00Z')
+ assert.equal(h.state.listSnapshotState.value,'stale')
+ state='ok';await h.state.refresh(true)
+ assert.equal(h.state.listSnapshotState.value,'')
 })
 
 test('集群、权限、项目和窗口可见性切换取消旧流，迟到事件不更新新范围',async t=>{
@@ -119,13 +138,13 @@ test('集群、权限、项目和窗口可见性切换取消旧流，迟到事�
  h.auth.user.permissions=['kubernetes.workload.read'];await settle();const active=h.sessions.at(-1)
  h.doc.hidden=true;h.listeners.get('visibilitychange')();assert.equal(active.signal.aborted,true)
  h.doc.hidden=false;h.listeners.get('visibilitychange')();await settle();const visible=h.sessions.at(-1)
- h.storage.project='project-2';h.listeners.get('storage')({key:'edo.project'});await settle();assert.equal(visible.signal.aborted,true);assert.equal(h.sessions.at(-1).project,'project-2')
+ h.storage.project='project-2';h.auth.user.project_id='project-2';h.listeners.get('storage')({key:'edo.project'});await settle();assert.equal(visible.signal.aborted,true);assert.equal(h.sessions.at(-1).project,'project-2')
  h.auth.user=null;await settle();assert.equal(h.sessions.at(-1).signal.aborted,true)
 })
 
 test('项目切换取消旧集群目录读取，迟到旧响应不能替换新项目集群或Watch',async t=>{
  const h=await harness({holdClusters:true});t.after(h.stop);const previous=h.pendingClusters[0]
- h.storage.project='project-2';h.listeners.get('storage')({key:'edo.project'});await settle()
+ h.storage.project='project-2';h.auth.user.project_id='project-2';h.listeners.get('storage')({key:'edo.project'});await settle()
  assert.equal(previous.options.signal.aborted,true)
  h.pendingClusters.at(-1).resolve({data:{clusters:[{id:'new',name:'new-project-cluster',default_namespace:'team',is_active:true}]}});await settle()
  previous.resolve({data:{clusters:[{id:'test',name:'old-project-private-name',default_namespace:'team',is_active:true}]}});await settle()

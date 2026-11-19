@@ -23,7 +23,13 @@ func (h systemMetricsHandler) snapshot(c *gin.Context) {
 		writeError(c, http.StatusServiceUnavailable, "metrics_unavailable", "系统监控暂不可用")
 		return
 	}
-	c.JSON(http.StatusOK, h.service.Current(c.Request.Context()))
+	current := h.service.Current()
+	if current == nil {
+		h.logger.Debug("等待系统监控首份后台采样", "operation", "system_metrics_snapshot", "request_id", requestIDFrom(c))
+		writeError(c, http.StatusServiceUnavailable, "metrics_pending", "等待后台采集系统监控数据")
+		return
+	}
+	c.JSON(http.StatusOK, current)
 }
 
 func (h systemMetricsHandler) history(c *gin.Context) {

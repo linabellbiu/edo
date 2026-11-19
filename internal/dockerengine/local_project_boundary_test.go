@@ -33,6 +33,7 @@ func TestLocalDockerEndpointRequiresVisibleActiveProjectHost(t *testing.T) {
 		{"客户端", func() error { _, err := service.Client(foreign, LocalEndpointID); return err }},
 		{"长任务客户端", func() error { _, err := service.executionClient(foreign, LocalEndpointID); return err }},
 		{"容器列表", func() error { _, err := service.Containers(foreign, LocalEndpointID, true); return err }},
+		{"容器列表快照", func() error { _, err := service.ContainerListSnapshot(foreign, LocalEndpointID, true); return err }},
 		{"容器日志", func() error {
 			_, err := service.ContainerLogs(foreign, LocalEndpointID, strings.Repeat("a", 64), ContainerLogOptions{Tail: 10})
 			return err

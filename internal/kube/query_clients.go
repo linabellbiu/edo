@@ -189,7 +189,7 @@ func (s *Service) clusterQueries(ctx context.Context, id string) (*clusterQuerie
 		s.invalidateClusterQueries(id)
 		return nil, ErrClusterNotFound
 	}
-	authorization, err := s.resolveClusterAuthorization(ctx, cluster, !s.queryTransaction)
+	authorization, err := s.resolveClusterAuthorization(ctx, cluster, !s.queryTransaction && !s.inventoryRead(ctx))
 	if err != nil {
 		s.invalidateClusterActorQueries(ctx, cluster)
 		return nil, err
@@ -324,6 +324,9 @@ func (s *Service) listMetrics(ctx context.Context, id, kind, namespace string) (
 }
 
 func (s *Service) listMetricsForQuery(ctx context.Context, q *clusterQueries, kind, namespace string) (*unstructured.UnstructuredList, error) {
+	if s.inventoryRead(ctx) {
+		return s.inventoryMetrics(ctx, q, kind, namespace)
+	}
 	definition, ok := ResourceType(kind)
 	if !ok {
 		return nil, ErrInvalidResource

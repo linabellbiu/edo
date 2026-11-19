@@ -55,7 +55,7 @@ export function sortKubeRows<T extends KubeObject>(rows:T[],key:string,order:'as
  return [...rows].sort((a,b)=>{const x=value(a),y=value(b),empty=(v:unknown)=>v===undefined||v===''||typeof v==='number'&&!Number.isFinite(v);if(empty(x)!==empty(y))return empty(x)?1:-1;const compared=empty(x)?0:typeof x==='number'&&typeof y==='number'?x-y:String(x).localeCompare(String(y),'zh-CN',{numeric:true});return compared*(order==='desc'?-1:1)||String(a.metadata?.name).localeCompare(String(b.metadata?.name),'zh-CN',{numeric:true})||String(a.metadata?.uid).localeCompare(String(b.metadata?.uid))})
 }
 
-export interface KubeListPage {items:KubeObject[];cursor:Record<string,string>}
+export interface KubeListPage {items:KubeObject[];cursor:Record<string,string>;collectedAt?:string;stale?:boolean}
 export function podContainerChoices(pod:KubeObject):Array<{name:string;kind:'app'|'init'|'ephemeral';running:boolean}> {
  const spec=pod.spec??{},status=pod.status??{}
  return (['app','init','ephemeral'] as const).flatMap(kind=>{
@@ -70,12 +70,15 @@ export async function reloadKubeWindow(read:(cursor?:Record<string,string>)=>Pro
  const retainedPages=Number.isSafeInteger(pages)&&pages>0?pages:1,maximumPages=Math.max(20,retainedPages)
  const minimum=Number.isSafeInteger(minimumItems)&&minimumItems>0?minimumItems:0
  let cursor:Record<string,string>|undefined,loaded=0
+ let collectedAt: string|undefined, stale=false
  for(;loaded<maximumPages;){
   signal?.throwIfAborted()
   const result=await read(cursor)
   signal?.throwIfAborted()
   items.push(...result.items);cursor=result.cursor;loaded++
+  if(result.collectedAt&&(!collectedAt||result.collectedAt<collectedAt))collectedAt=result.collectedAt
+  stale ||= Boolean(result.stale)
   if(!Object.keys(cursor).length||loaded>=retainedPages&&items.length>=minimum)break
  }
- return {items,cursor:cursor??{},pages:loaded}
+ return {items,cursor:cursor??{},pages:loaded,...(collectedAt?{collectedAt}:{}),...(stale?{stale:true}:{})}
 }

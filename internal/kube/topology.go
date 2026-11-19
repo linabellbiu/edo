@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,6 +23,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
+	"edo/internal/cache"
 	"edo/internal/hostidentity"
 	"edo/internal/model"
 )
@@ -118,11 +121,20 @@ func (s *Service) NodeTopology(ctx context.Context, clusterID string, allowed ma
 		return nil, err
 	}
 	client := query.typed
-	nodes, err := listTopologyNodes(ctx, client)
+	var nodes []corev1.Node
+	if s.inventoryRead(ctx) {
+		def, _ := ResourceType("nodes")
+		nodes, _, err = inventoryTypedList[corev1.Node](ctx, s, query, def, "", metav1.ListOptions{})
+	} else {
+		nodes, err = listTopologyNodes(ctx, client)
+	}
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
+	if at, _ := InventoryReadStatus(ctx); !at.IsZero() {
+		now = at
+	}
 	result := &NodeTopology{ClusterID: clusterID, Nodes: []TopologyNode{}, HostsState: "no_permission", MetricsState: "unavailable", CollectedAt: now}
 	for i := range nodes {
 		node := &nodes[i]
@@ -143,9 +155,28 @@ func (s *Service) NodeTopology(ctx context.Context, clusterID string, allowed ma
 		})
 	}
 	if allowed["kubernetes.workload.read"] {
-		counts, podErr := listTopologyPodCounts(ctx, client)
+		var counts map[string]int64
+		var podErr error
+		switch {
+		case !s.inventoryRead(ctx):
+			counts, podErr = listTopologyPodCounts(ctx, client)
+		case query.authorization.enforced():
+			// 命名空间授权下的快照不代表节点的完整 Pod 数量。
+			podErr = ErrRBACForbidden
+		default:
+			def, _ := ResourceType("pods")
+			var pods []corev1.Pod
+			pods, _, podErr = inventoryTypedList[corev1.Pod](ctx, s, query, def, "", metav1.ListOptions{})
+			counts = map[string]int64{}
+			for i := range pods {
+				counts[pods[i].Spec.NodeName]++
+			}
+		}
 		for i := range result.Nodes {
 			result.Nodes[i].Pods.State = "unavailable"
+			if errors.Is(podErr, ErrRBACForbidden) {
+				result.Nodes[i].Pods.State = "no_permission"
+			}
 			if podErr == nil {
 				count := counts[nodes[i].Name]
 				result.Nodes[i].Pods.Count, result.Nodes[i].Pods.State = &count, "ok"
@@ -160,6 +191,9 @@ func (s *Service) NodeTopology(ctx context.Context, clusterID string, allowed ma
 		if err := s.RequireClusterPermission(ctx, clusterID, "", "kubernetes.node.read"); err != nil {
 			return nil, err
 		}
+	}
+	if at, _ := InventoryReadStatus(ctx); !at.IsZero() {
+		result.CollectedAt = at
 	}
 	return result, nil
 }
@@ -280,9 +314,14 @@ func (s *Service) fillTopologyMetrics(ctx context.Context, clusterID string, nod
 	}
 }
 
-// Topology reads live metrics independently of overview/watch display caches.
-// A partial metrics page is unavailable rather than a set of fabricated zeros.
 func (s *Service) topologyMetrics(ctx context.Context, clusterID string) (*unstructured.UnstructuredList, error) {
+	if s.inventoryRead(ctx) {
+		query, err := s.clusterQueries(ctx, clusterID)
+		if err != nil {
+			return nil, err
+		}
+		return s.inventoryMetrics(ctx, query, "nodes", "")
+	}
 	config, err := s.RESTConfig(ctx, clusterID)
 	if err != nil {
 		return nil, err
@@ -344,6 +383,10 @@ func (s *Service) fillTopologyHosts(ctx context.Context, clusterID string, nodes
 	for i := range hosts {
 		if !hosts[i].IsActive || hosts[i].IsBuiltin || hosts[i].Mode != model.HostModeSSH {
 			identities[i].err = hostidentity.ErrUnavailable
+			continue
+		}
+		if s.inventoryRead(ctx) {
+			identities[i].value, identities[i].err = s.topologyHosts.peek(hosts[i])
 			continue
 		}
 		select {
@@ -426,11 +469,49 @@ func newTopologyHostIdentityCache() *topologyHostIdentityCache {
 	return &topologyHostIdentityCache{entries: map[string]topologyIdentityCacheEntry{}}
 }
 
+func (s *Service) RunTopologyHostSync(ctx context.Context) error {
+	return cache.RunSnapshotWorkers(ctx, 10*time.Second, "kubernetes_topology_host_sync", 4, func(ctx context.Context, yield func(string, model.Host) bool) error {
+		linked := s.db.WithContext(ctx).Model(&model.HostCapability{}).Select("host_id").
+			Where("kind = ? AND runtime_id <> ''", model.HostCapabilityKubernetes)
+		var hosts []model.Host
+		return s.db.WithContext(ctx).Where("uuid IN (?) AND is_active = ? AND is_builtin = ? AND mode = ?", linked, true, false, model.HostModeSSH).
+			FindInBatches(&hosts, 100, func(_ *gorm.DB, _ int) error {
+				for _, host := range hosts {
+					if !yield(host.ID, host) {
+						return ctx.Err()
+					}
+				}
+				return nil
+			}).Error
+	}, func(ctx context.Context, host model.Host) {
+		request, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		if _, err := s.topologyHosts.read(request, host, s.readHostIdentity); err != nil && ctx.Err() == nil {
+			slog.WarnContext(request, "后台同步集群主机身份失败", "operation", "kubernetes_topology_host_sync", "host_id", host.ID, "err", err)
+		}
+	})
+}
+
+func topologyHostDigest(host model.Host) [32]byte {
+	return sha256.Sum256([]byte(strings.Join([]string{host.ID, host.Address, strconv.Itoa(host.SSHPort), host.SSHUsername, string(host.SSHAuthType), host.SSHCredentialCiphertext, host.SSHHostKeyFingerprint, host.ProjectID, host.DepartmentID, host.UpdatedAt.UTC().Format(time.RFC3339Nano)}, "\x00")))
+}
+
+func (cache *topologyHostIdentityCache) peek(host model.Host) (hostidentity.Identity, error) {
+	digest := topologyHostDigest(host)
+	cache.mu.Lock()
+	entry, found := cache.entries[host.ID]
+	cache.mu.Unlock()
+	if !found || entry.digest != digest || time.Now().After(entry.expires) {
+		return hostidentity.Identity{}, hostidentity.ErrUnavailable
+	}
+	return entry.identity, entry.err
+}
+
 func (cache *topologyHostIdentityCache) read(ctx context.Context, host model.Host, reader hostIdentityReader) (hostidentity.Identity, error) {
 	if err := ctx.Err(); err != nil {
 		return hostidentity.Identity{}, err
 	}
-	digest := sha256.Sum256([]byte(strings.Join([]string{host.ID, host.Address, strconv.Itoa(host.SSHPort), host.SSHUsername, string(host.SSHAuthType), host.SSHCredentialCiphertext, host.SSHHostKeyFingerprint, host.ProjectID, host.DepartmentID, host.UpdatedAt.UTC().Format(time.RFC3339Nano)}, "\x00")))
+	digest := topologyHostDigest(host)
 	now := time.Now()
 	cache.mu.Lock()
 	entry, found := cache.entries[host.ID]

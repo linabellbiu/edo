@@ -7,14 +7,16 @@ import {GridComponent,TooltipComponent} from 'echarts/components'
 import {CanvasRenderer} from 'echarts/renderers'
 import {RefreshCw} from 'lucide-vue-next'
 import client from '@/api/client'
-import {formatKubeCPU,formatKubeMemory,kubeErrorMessage,type KubeObject} from '@/api/kubernetes'
+import {formatKubeCPU,formatKubeMemory,kubeErrorMessage,kubeSnapshotPending,readKubeSnapshotMeta,type KubeObject,type KubeSnapshotMeta} from '@/api/kubernetes'
 import {nodeChartPoints,nodeMetricValue,nodeResourceValue,nodeSampleFresh,type NodeHistory,type NodeMeasure} from '@/utils/kubernetesNode'
 import {usePreferencesStore} from '@/stores/preferences'
+import {formatDateTime} from '@/utils/time'
 import KubeSelect from './KubeSelect.vue'
 const props=defineProps<{cluster:string;node:KubeObject;autoRefresh:boolean;workloads:boolean;embedded?:boolean;refreshToken?:number}>()
 const {t,locale}=useI18n(),preferences=usePreferencesStore()
 use([LineChart,GridComponent,TooltipComponent,CanvasRenderer])
 const root=ref<HTMLElement>(),history=ref<NodeHistory|null>(null),windowSeconds=ref(900),error=ref(''),loading=ref(false)
+const snapshot=ref<KubeSnapshotMeta>({}),snapshotPending=ref(false)
 const charts=new Map<string,EChartsType>();let disposed=false,request:AbortController|undefined,revision=0,observer:ResizeObserver|undefined,timer:ReturnType<typeof setInterval>|undefined,resizeFrame:number|undefined
 const ranges=computed(()=>[900,3600,21600,86400,259200].map(value=>({value,label:t(`k8s.nodeWindow${value}`)})))
 const now=ref(Date.now())
@@ -37,9 +39,14 @@ const cards=computed(()=>['cpu','memory','pods'].map(key=>{
 async function load(){
  request?.abort();const controller=new AbortController();request=controller;const currentRevision=++revision;loading.value=true
  try{
-  const {data}=await client.get<NodeHistory>(`/kubernetes/clusters/${encodeURIComponent(props.cluster)}/nodes/${encodeURIComponent(props.node.metadata.name)}/metrics`,{params:{uid:props.node.metadata.uid,window:windowSeconds.value},signal:controller.signal})
-  if(!disposed&&currentRevision===revision){history.value=data;error.value=''}
- }catch(err){if(!disposed&&currentRevision===revision&&!controller.signal.aborted)error.value=kubeErrorMessage(err)}
+  const {data,headers}=await client.get<NodeHistory>(`/kubernetes/clusters/${encodeURIComponent(props.cluster)}/nodes/${encodeURIComponent(props.node.metadata.name)}/metrics`,{params:{uid:props.node.metadata.uid,window:windowSeconds.value},signal:controller.signal})
+  if(!disposed&&currentRevision===revision){history.value=data;error.value='';snapshot.value=readKubeSnapshotMeta(headers);snapshotPending.value=false}
+ }catch(err){if(!disposed&&currentRevision===revision&&!controller.signal.aborted){
+  if(kubeSnapshotPending(err)){
+   error.value='';snapshotPending.value=!history.value
+   if(history.value)snapshot.value={...snapshot.value,stale:true}
+  }else{snapshotPending.value=false;error.value=kubeErrorMessage(err)}
+ }}
  finally{if(!disposed&&currentRevision===revision){loading.value=false;void render()}}
 }
 async function render(){
@@ -64,8 +71,7 @@ async function render(){
  }
 }
 function refreshVisible(){now.value=Date.now();if(!document.hidden&&props.autoRefresh&&!loading.value)void load()}
-watch(windowSeconds,()=>{history.value=null;void load()})
-watch([()=>props.cluster,()=>props.node.metadata.uid],()=>{history.value=null;void load()})
+watch([windowSeconds,()=>props.cluster,()=>props.node.metadata.uid],()=>{history.value=null;snapshot.value={};snapshotPending.value=false;error.value='';void load()})
 watch([history,cards,()=>preferences.theme,locale],()=>void render())
 watch(()=>props.refreshToken,()=>void load())
 watch(()=>props.autoRefresh,(enabled,previous)=>{if(enabled&&!previous)void load()})
@@ -83,8 +89,10 @@ onBeforeUnmount(()=>{disposed=true;revision++;request?.abort();if(timer)clearInt
  <section ref="root" class="node-monitor resource-detail-section" :aria-busy="loading">
   <div class="monitor-toolbar"><h4 v-if="!embedded">{{ t('k8s.nodeMonitoring') }}</h4><label>{{ t('k8s.nodeTimeRange') }}<KubeSelect v-model:value="windowSeconds" :aria-label="t('k8s.nodeTimeRange')" :options="ranges" /></label><a-button v-if="!embedded" size="small" :loading="loading" @click="load"><RefreshCw aria-hidden="true" :size="14" />{{ t('k8s.refresh') }}</a-button></div>
   <a-alert v-if="error" type="warning" show-icon :message="error" />
+  <p v-else-if="snapshotPending" class="secondary" role="status">{{ t('k8s.snapshotPending') }}</p>
   <a-alert v-else-if="!loading&&!current" type="info" show-icon :message="t(latest?'k8s.nodeSampleStale':'k8s.nodeWaitingSamples')" />
   <a-alert v-else-if="current&&current.metrics_state!=='ok'" type="warning" show-icon :message="t(current.metrics_state==='forbidden'?'k8s.nodeMetricsForbidden':'k8s.metricsMissing')" />
+  <p v-if="snapshot.stale" class="secondary" role="status">{{ t('k8s.snapshotStale') }}<template v-if="snapshot.collectedAt"> · {{ formatDateTime(snapshot.collectedAt) }}</template></p>
   <a-alert v-if="!workloads||current&&current.pods_state!=='ok'" type="info" show-icon :message="t(!workloads?'k8s.nodePodsNoPermission':'k8s.nodePodsUnavailable')" />
   <div class="monitor-grid">
    <article v-for="card in cards" :key="card.key" class="monitor-card">

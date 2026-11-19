@@ -35,7 +35,7 @@ type internalClusterAccessKey struct{}
 // call it. An absent user identity by itself does not authorize this access.
 func WithInternalClusterAccess(ctx context.Context, purpose string) context.Context {
 	switch purpose {
-	case "node-monitor", "node-bootstrap", "node-bootstrap-cleanup", "cluster-validation":
+	case "node-monitor", "resource-inventory", "node-bootstrap", "node-bootstrap-cleanup", "cluster-validation":
 		return context.WithValue(ctx, internalClusterAccessKey{}, purpose)
 	default:
 		return ctx

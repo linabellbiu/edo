@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"edo/internal/cache"
 	"edo/internal/dockerengine"
 	"edo/internal/hostcredential"
 	"edo/internal/kube"
@@ -172,7 +173,7 @@ type Service struct {
 	runtimeProbes       map[string]struct{}
 	runtimeProbeSlots   chan struct{}
 	localRuntimeProbe   bool
-	resources           resourceCache
+	resources           *cache.SnapshotStore[ResourceInfo]
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, docker dockerProbe, kubernetes kubernetesProbe) *Service {
@@ -180,6 +181,7 @@ func NewService(db *gorm.DB, secrets *secret.Manager, docker dockerProbe, kubern
 		db: db, secrets: secrets, docker: docker, kubernetes: kubernetes,
 		tests: make(map[string]testedInput), runtimeProbes: make(map[string]struct{}),
 		runtimeProbeSlots: make(chan struct{}, runtimeProbeConcurrency),
+		resources:         cache.NewSnapshotStore[ResourceInfo](resourceCacheLimit, 90*time.Second, 10*time.Minute),
 	}
 }
 

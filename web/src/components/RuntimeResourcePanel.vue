@@ -12,6 +12,7 @@ import ResourceTable from '@/components/ResourceTable.vue'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
 import TerminalDrawer from '@/components/TerminalDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
+import type { ResourceSnapshot } from '@/types/resourceSnapshot'
 import { containerState, filterRuntimeContainers, runtimeContainerName, runtimeMatches, runtimeStateTone, stoppedContainer, type ContainerFilter } from '@/utils/runtimeResources'
 
 type RuntimeKind = 'docker' | 'kubernetes'
@@ -26,7 +27,7 @@ const { t, te } = useI18n({ messages: {
     runtime: '运行时', allRuntimes: '全部运行时', docker: 'Docker 容器', kubernetes: 'Kubernetes Pod', refresh: '刷新', ping: '检查连接', pingOK: '连接检查通过', namespace: '命名空间', allNamespaces: '全部命名空间', load: '加载',
     search: '搜索', searchDocker: '名称、镜像或容器 ID', searchPods: 'Pod、命名空间或容器', status: '状态', running: '运行中', all: '全部', stopped: '已停止', count: '{visible} / {total} 个{kind}', containers: '容器', pods: 'Pod',
     name: '名称', image: '镜像版本', details: '运行信息', phase: '阶段', logs: '日志', terminal: '终端', previousPage: '上一页', nextPage: '下一页', page: '第 {page} / {total} 页', pageSize: '每页条数', noRead: '没有运行资源的查看权限', none: '当前没有可查看的运行时', missing: '运行时不存在或已被移除，请重新选择。', disabled: '运行时已停用', hostDisabled: '主机已停用或不再可用',
-    emptyDocker: '暂无容器', emptyRunning: '暂无运行中的容器', emptyStopped: '暂无已停止的容器', emptyPods: '当前命名空间暂无 Pod', noResults: '没有符合条件的资源', unavailable: '资源读取失败', previous: '读取失败，当前保留上次结果',
+    emptyDocker: '暂无容器', emptyRunning: '暂无运行中的容器', emptyStopped: '暂无已停止的容器', emptyPods: '当前命名空间暂无 Pod', noResults: '没有符合条件的资源', unavailable: '资源读取失败', previous: '读取失败，当前保留上次结果', pending: '等待后台同步', stale: '显示上次同步结果',
     metadataFailed: '{kind} 运行时读取失败：{error}', connected: '已连接', unreachable: '不可达', unchecked: '待检查', unbound: '未关联主机', inactive: '已停用', hostCount: '{count} 台主机', dockerLogs: '容器日志：{name}', dockerTerminal: '容器终端：{name}', podTerminal: 'Pod 终端：{name}（{container}）',
     state_running: '运行中', state_exited: '已停止', state_created: '未启动', state_dead: '异常', state_paused: '已暂停', state_restarting: '重启中', state_removing: '删除中', state_pending: '等待中', state_succeeded: '已完成', state_failed: '失败', state_unknown: '未知',
   } },
@@ -34,7 +35,7 @@ const { t, te } = useI18n({ messages: {
     runtime: 'Runtime', allRuntimes: 'All runtimes', docker: 'Docker containers', kubernetes: 'Kubernetes Pods', refresh: 'Refresh', ping: 'Check connection', pingOK: 'Connection check passed', namespace: 'Namespace', allNamespaces: 'All namespaces', load: 'Load',
     search: 'Search', searchDocker: 'Name, image or container ID', searchPods: 'Pod, namespace or container', status: 'Status', running: 'Running', all: 'All', stopped: 'Stopped', count: '{visible} / {total} {kind}', containers: 'containers', pods: 'Pods',
     name: 'Name', image: 'Image', details: 'Runtime details', phase: 'Phase', logs: 'Logs', terminal: 'Terminal', previousPage: 'Previous', nextPage: 'Next', page: 'Page {page} / {total}', pageSize: 'Rows per page', noRead: 'You do not have permission to view runtime resources', none: 'No runtimes available', missing: 'This runtime no longer exists. Select a runtime again.', disabled: 'Runtime disabled', hostDisabled: 'The host is disabled or no longer available',
-    emptyDocker: 'No containers', emptyRunning: 'No running containers', emptyStopped: 'No stopped containers', emptyPods: 'No Pods in this namespace', noResults: 'No matching resources', unavailable: 'Resources could not be loaded', previous: 'Refresh failed. Previous results are shown.',
+    emptyDocker: 'No containers', emptyRunning: 'No running containers', emptyStopped: 'No stopped containers', emptyPods: 'No Pods in this namespace', noResults: 'No matching resources', unavailable: 'Resources could not be loaded', previous: 'Refresh failed. Previous results are shown.', pending: 'Waiting for background sync', stale: 'Showing last synchronized results',
     metadataFailed: 'Could not load {kind} runtimes: {error}', connected: 'Connected', unreachable: 'Unreachable', unchecked: 'Not checked', unbound: 'No linked host', inactive: 'Disabled', hostCount: '{count} hosts', dockerLogs: 'Container logs: {name}', dockerTerminal: 'Container terminal: {name}', podTerminal: 'Pod terminal: {name} ({container})',
     state_running: 'Running', state_exited: 'Stopped', state_created: 'Created', state_dead: 'Dead', state_paused: 'Paused', state_restarting: 'Restarting', state_removing: 'Removing', state_pending: 'Pending', state_succeeded: 'Completed', state_failed: 'Failed', state_unknown: 'Unknown',
   } },
@@ -44,12 +45,14 @@ const dockerEndpoints = ref<DockerEndpoint[]>([]), kubernetesClusters = ref<Kube
 const containers = ref<ResourceRecord[]>([]), pods = ref<ResourceRecord[]>([])
 const metadataLoading = ref(false), resourceLoading = ref(false), metadataLoaded = ref(false), resourceLoaded = ref(false), pingLoading = ref(false)
 const metadataErrors = ref({ docker: '', kubernetes: '' }), resourceError = ref('')
+const snapshot = ref<ResourceSnapshot>()
 const namespace = ref('default'), search = ref(''), containerFilter = ref<ContainerFilter>('running')
 const terminal = ref({ open: false, title: '', path: '' }), containerLogs = ref({ open: false, title: '', path: '' })
 const logPaused = ref(false)
 let authorizationRevision = 0, pausedLogContext = '', logContainerID = ''
 let metadataRequest = 0, resourceRequest = 0, pingRequest = 0, namespaceRuntimeID = '', loadedContext = '', mounted = false, disposed = false, activeMetadataContext = ''
 let metadataController: AbortController | undefined, resourceController: AbortController | undefined, pingController: AbortController | undefined
+let runtimePoll: number | undefined, runtimeReading = false, requestedContext = ''
 const selectedHost = computed(() => props.hosts.find(host => host.id === props.hostId))
 const hostEnabled = computed(() => !props.hostId || Boolean(selectedHost.value && selectedHost.value.is_active !== false))
 const hostRuntimeKeys = computed(() => selectedHost.value?.capabilities.filter(item => ['docker', 'kubernetes'].includes(item.kind) && item.runtime_id).map(item => `${item.kind}:${item.runtime_id}`).sort() ?? [])
@@ -72,7 +75,7 @@ function resourceContext() { return JSON.stringify([identity(), props.hostId, ho
 const filteredContainers = computed(() => filterRuntimeContainers(containers.value, search.value, containerFilter.value))
 const filteredPods = computed(() => pods.value.filter(row => runtimeMatches(row, search.value)))
 const containerCounts = computed(() => ({ running: containers.value.filter(row => containerState(row) === 'running').length, all: containers.value.length, stopped: containers.value.filter(stoppedContainer).length }))
-const rowActionsDisabled = computed(() => logPaused.value || !canRead.value || !hostEnabled.value || metadataLoading.value || resourceLoading.value || !resourceLoaded.value || Boolean(resourceError.value) || !selectedRuntime.value?.enabled || Boolean(selectedRuntime.value && metadataErrors.value[selectedRuntime.value.kind]) || loadedContext !== resourceContext())
+const rowActionsDisabled = computed(() => logPaused.value || !canRead.value || !hostEnabled.value || metadataLoading.value || resourceLoading.value || !resourceLoaded.value || snapshot.value?.state === 'stale' || Boolean(resourceError.value) || !selectedRuntime.value?.enabled || Boolean(selectedRuntime.value && metadataErrors.value[selectedRuntime.value.kind]) || loadedContext !== resourceContext())
 const dockerColumns = computed(() => [ { key: 'names', label: t('runtimeResources.name'), width: '230px' }, { key: 'image_display', label: t('runtimeResources.image'), width: '260px' }, { key: 'state', label: t('runtimeResources.status'), width: '110px' }, { key: 'status', label: t('runtimeResources.details'), width: '190px' } ])
 const podColumns = computed(() => [ { key: 'name', label: 'Pod', width: '240px' }, { key: 'namespace', label: t('runtimeResources.namespace'), width: '150px' }, { key: 'phase', label: t('runtimeResources.phase'), width: '110px' }, { key: 'containers', label: t('runtimeResources.containers'), width: '220px' } ])
 const emptyText = computed(() => search.value.trim() ? t('runtimeResources.noResults') : t(selectedDocker.value ? containerFilter.value === 'running' ? 'runtimeResources.emptyRunning' : containerFilter.value === 'stopped' ? 'runtimeResources.emptyStopped' : 'runtimeResources.emptyDocker' : 'runtimeResources.emptyPods'))
@@ -92,7 +95,7 @@ function logContext() {
   const runtime = selectedRuntime.value, endpoint = dockerEndpoints.value.find(item => item.id === runtime?.id)
   return JSON.stringify([metadataContext(), props.node, runtime?.key, runtime?.enabled, endpoint && [endpoint.id, endpoint.name, endpoint.host, endpoint.local, endpoint.is_active, endpoint.updated_at]])
 }
-function clearResources() { resourceRequest++; resourceController?.abort(); resourceLoading.value = false; resourceLoaded.value = false; loadedContext = ''; containers.value = []; pods.value = []; resourceError.value = ''; closeStreams() }
+function clearResources() { resourceRequest++; resourceController?.abort(); runtimeReading = false; requestedContext = ''; resourceLoading.value = false; resourceLoaded.value = false; loadedContext = ''; containers.value = []; pods.value = []; snapshot.value = undefined; resourceError.value = ''; closeStreams() }
 function ensureNamespaceForSelection() { const cluster = selectedCluster.value; if (cluster && namespaceRuntimeID !== cluster.id) { namespaceRuntimeID = cluster.id; namespace.value = cluster.default_namespace || 'default' } }
 
 async function refreshMetadata() {
@@ -114,7 +117,8 @@ async function refreshMetadata() {
     return true
   } finally { if (request === metadataRequest) metadataLoading.value = false }
 }
-async function loadRuntime() {
+async function loadRuntime(silent = false) {
+  if (silent && runtimeReading) return
   const runtime = selectedRuntime.value
   resourceController?.abort(); const request = ++resourceRequest
   if (!canRead.value || !hostEnabled.value || disposed || !runtime || !runtime.enabled || metadataErrors.value[runtime.kind]) {
@@ -124,22 +128,33 @@ async function loadRuntime() {
   }
   const context = resourceContext(), controller = new AbortController(); resourceController = controller
   if (loadedContext !== context) { containers.value = []; pods.value = []; resourceLoaded.value = false }
-  resourceLoading.value = true; resourceError.value = ''
+  requestedContext = context; runtimeReading = true
+  if (!silent) resourceLoading.value = true
   try {
     const path = runtime.kind === 'docker' ? `/docker/endpoints/${encodeURIComponent(runtime.id)}/containers?all=true` : `/kubernetes/clusters/${encodeURIComponent(runtime.id)}/pods?namespace=${encodeURIComponent(namespace.value.trim())}`
-    const { data } = await client.get(path, { timeout: 35_000, signal: controller.signal })
+    const { data, headers } = await client.get<{containers?: ResourceRecord[]; pods?: ResourceRecord[]; snapshot?: ResourceSnapshot}>(path, { timeout: 35_000, signal: controller.signal })
     if (disposed || controller.signal.aborted || request !== resourceRequest || context !== resourceContext() || !canRead.value) return
+    const state = headers?.['x-edo-snapshot-state']
+    snapshot.value = data.snapshot ?? (state === 'ok' || state === 'stale' ? {state, collected_at: headers?.['x-edo-snapshot-collected-at'] ?? null} : undefined)
+    resourceError.value = ''
     if (runtime.kind === 'docker') containers.value = data.containers ?? []
     else pods.value = data.pods ?? []
-    loadedContext = context; resourceLoaded.value = true
+    loadedContext = context; resourceLoaded.value = !snapshot.value || ['ok', 'stale'].includes(snapshot.value.state)
   } catch (error) {
-    if (!disposed && !controller.signal.aborted && request === resourceRequest && context === resourceContext()) resourceError.value = apiErrorMessage(error)
-  } finally { if (request === resourceRequest) resourceLoading.value = false }
+    if (!disposed && !controller.signal.aborted && request === resourceRequest && context === resourceContext()) {
+      if ((error as {response?: {data?: {code?: string}}} | null)?.response?.data?.code === 'kubernetes_snapshot_pending') {
+        if (!resourceLoaded.value) snapshot.value = { state: 'pending', collected_at: null }
+      } else resourceError.value = apiErrorMessage(error)
+    }
+  } finally { if (request === resourceRequest) { runtimeReading = false; resourceLoading.value = false } }
 }
 async function refresh() {
   if (!await refreshMetadata()) return
   ensureNamespaceForSelection()
   await loadRuntime()
+}
+function readVisibleSnapshot() {
+  if (!document.hidden && !logPaused.value && requestedContext === resourceContext()) void loadRuntime(true)
 }
 async function ping() {
   const runtime = selectedRuntime.value
@@ -226,8 +241,8 @@ watch(() => props.node, () => { clearResources(); search.value = ''; containerFi
 watch(() => selectedRuntime.value ? `${selectedRuntime.value.key}/${selectedRuntime.value.enabled}` : '', () => { closeStreams(); if (!selectedRuntime.value || !selectedRuntime.value.enabled) clearResources() }, { flush: 'sync' })
 watch(namespace, () => { if (selectedCluster.value) clearResources() }, { flush: 'sync' })
 watch(metadataContext, resetContext, { flush: 'sync' })
-onMounted(() => { mounted = true; activeMetadataContext = metadataContext(); window.addEventListener('storage', externalContextChanged); window.addEventListener('edo:projects-changed', externalContextChanged); void refresh() })
-onBeforeUnmount(() => { disposed = true; mounted = false; metadataRequest++; metadataController?.abort(); pingRequest++; pingController?.abort(); clearResources(); window.removeEventListener('storage', externalContextChanged); window.removeEventListener('edo:projects-changed', externalContextChanged) })
+onMounted(() => { mounted = true; activeMetadataContext = metadataContext(); window.addEventListener('storage', externalContextChanged); window.addEventListener('edo:projects-changed', externalContextChanged); runtimePoll = window.setInterval(readVisibleSnapshot, 15_000); void refresh() })
+onBeforeUnmount(() => { disposed = true; mounted = false; metadataRequest++; metadataController?.abort(); pingRequest++; pingController?.abort(); clearResources(); if (runtimePoll !== undefined) window.clearInterval(runtimePoll); window.removeEventListener('storage', externalContextChanged); window.removeEventListener('edo:projects-changed', externalContextChanged) })
 </script>
 
 <template>
@@ -251,13 +266,13 @@ onBeforeUnmount(() => { disposed = true; mounted = false; metadataRequest++; met
       <div v-else-if="selectedRuntime" class="runtime-detail">
         <div class="resource-filters">
           <a-radio-group v-if="selectedDocker" v-model:value="containerFilter" role="radiogroup" :aria-label="t('runtimeResources.status')" size="small" button-style="solid"><a-radio-button v-for="filter in (['running', 'all', 'stopped'] as const)" :key="filter" :value="filter">{{ t(`runtimeResources.${filter}`) }}<span class="filter-count">{{ resourceLoaded ? containerCounts[filter] : '—' }}</span></a-radio-button></a-radio-group>
-          <label v-if="selectedCluster" class="namespace-field"><span>{{ t('runtimeResources.namespace') }}</span><a-input v-model:value="namespace" :aria-label="t('runtimeResources.namespace')" :placeholder="t('runtimeResources.allNamespaces')" @press-enter="loadRuntime" /><a-button :loading="resourceLoading" @click="loadRuntime">{{ t('runtimeResources.load') }}</a-button></label>
+          <label v-if="selectedCluster" class="namespace-field"><span>{{ t('runtimeResources.namespace') }}</span><a-input v-model:value="namespace" :aria-label="t('runtimeResources.namespace')" :placeholder="t('runtimeResources.allNamespaces')" @press-enter="loadRuntime()" /><a-button :loading="resourceLoading" @click="loadRuntime()">{{ t('runtimeResources.load') }}</a-button></label>
           <label class="runtime-search"><span>{{ t('runtimeResources.search') }}</span><a-input v-model:value="search" allow-clear :aria-label="t('runtimeResources.search')" :placeholder="t(selectedDocker ? 'runtimeResources.searchDocker' : 'runtimeResources.searchPods')"><template #prefix><Search :size="14" aria-hidden="true" /></template></a-input></label>
         </div>
         <a-alert v-if="resourceError" class="resource-error" type="warning" show-icon :message="resourceLoaded ? t('runtimeResources.previous') : resourceError" :description="resourceLoaded ? resourceError : undefined" />
-        <div class="runtime-list-meta" role="status">{{ t('runtimeResources.count', { visible: resourceLoaded ? selectedDocker ? filteredContainers.length : filteredPods.length : '—', total: resourceLoaded ? selectedDocker ? containers.length : pods.length : '—', kind: t(selectedDocker ? 'runtimeResources.containers' : 'runtimeResources.pods') }) }}</div>
+        <div class="runtime-list-meta" role="status"><span v-if="snapshot?.state==='stale'" :title="snapshot.collected_at || undefined">{{ t('runtimeResources.stale') }} · </span>{{ t('runtimeResources.count', { visible: resourceLoaded ? selectedDocker ? filteredContainers.length : filteredPods.length : '—', total: resourceLoaded ? selectedDocker ? containers.length : pods.length : '—', kind: t(selectedDocker ? 'runtimeResources.containers' : 'runtimeResources.pods') }) }}</div>
         <div v-if="selectedDocker" class="runtime-resource-table">
-        <ResourceTable :key="selectedNode" :rows="filteredContainers" :columns="dockerColumns" :loading="resourceLoading" :details="false" keep-header :empty-text="resourceError ? t('runtimeResources.unavailable') : emptyText">
+        <ResourceTable :key="selectedNode" :rows="filteredContainers" :columns="dockerColumns" :loading="resourceLoading" :details="false" keep-header :empty-text="snapshot?.state==='pending' ? t('runtimeResources.pending') : resourceError || snapshot?.state==='unavailable' ? t('runtimeResources.unavailable') : emptyText">
           <template #cell-names="{ row }"><div class="container-identity"><strong>{{ runtimeContainerName(row) }}</strong><code>{{ String(row.id ?? '').slice(0, 12) }}</code></div></template>
           <template #cell-image_display="{ row }"><span class="runtime-cell" tabindex="0">{{ row.image_display || row.image || '—' }}</span></template>
           <template #cell-state="{ row }"><a-tag :color="runtimeStateTone(row.state)">{{ stateLabel(row.state) }}</a-tag></template>
@@ -267,7 +282,7 @@ onBeforeUnmount(() => { disposed = true; mounted = false; metadataRequest++; met
         </ResourceTable>
         </div>
         <div v-else-if="selectedCluster" class="runtime-resource-table pod-resource-table">
-        <ResourceTable :key="selectedNode + namespace" :rows="filteredPods" :columns="podColumns" :loading="resourceLoading" :details="false" keep-header :empty-text="resourceError ? t('runtimeResources.unavailable') : emptyText">
+        <ResourceTable :key="selectedNode + namespace" :rows="filteredPods" :columns="podColumns" :loading="resourceLoading" :details="false" keep-header :empty-text="snapshot?.state==='pending' ? t('runtimeResources.pending') : resourceError || snapshot?.state==='unavailable' ? t('runtimeResources.unavailable') : emptyText">
           <template #cell-name="{ row }"><strong class="runtime-cell">{{ row.name }}</strong></template><template #cell-phase="{ row }"><a-tag :color="runtimeStateTone(row.phase)">{{ stateLabel(row.phase) }}</a-tag></template>
           <template #cell-containers="{ row }"><span class="runtime-cell">{{ Array.isArray(row.containers) ? row.containers.join('、') || '—' : '—' }}</span></template>
           <template v-if="auth.canAny(['terminal.open'])" #actions="{ row }"><template v-for="podContainer in (Array.isArray(row.containers) ? row.containers : [])" :key="String(podContainer)"><SessionAction kind="terminal" :path="podTerminalPath(row,String(podContainer))" :title="t('runtimeResources.podTerminal', { name: row.name, container: podContainer })" :disabled="rowActionsDisabled || row.phase !== 'Running' || !row.uid"><a-button size="small" :disabled="rowActionsDisabled || row.phase !== 'Running'" @click="openPodTerminal(row, String(podContainer))"><TerminalSquare :size="14" aria-hidden="true" />{{ podContainer }}</a-button></SessionAction></template></template>

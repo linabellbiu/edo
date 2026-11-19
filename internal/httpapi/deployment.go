@@ -11,6 +11,7 @@ import (
 
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
+	"edo/internal/kube"
 	"edo/internal/model"
 )
 
@@ -93,12 +94,12 @@ func (h deploymentHandler) rollbackPreview(c *gin.Context) {
 }
 
 func (h deploymentHandler) runtimeState(c *gin.Context) {
-	state, err := h.service.RuntimeState(c.Request.Context(), c.Param("id"))
+	state, snapshot, err := h.service.CachedRuntimeState(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		h.writeRuntimeError(c, "deployment_runtime_state", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"runtime": state})
+	c.JSON(http.StatusOK, gin.H{"runtime": state, "snapshot": snapshot})
 }
 
 func (h deploymentHandler) runtimeConfiguration(c *gin.Context) {
@@ -234,6 +235,12 @@ func (h deploymentHandler) writeRuntimeError(c *gin.Context, operation string, e
 		writeError(c, http.StatusBadRequest, "invalid_runtime_control", deployment.ErrRuntimeControlInvalid.Error())
 	case errors.Is(err, deployment.ErrRuntimeStateUnavailable):
 		writeError(c, http.StatusBadGateway, "runtime_state_unavailable", deployment.ErrRuntimeStateUnavailable.Error())
+	case errors.Is(err, kube.ErrRBACForbidden), errors.Is(err, kube.ErrResourceForbidden):
+		writeError(c, http.StatusForbidden, "runtime_state_forbidden", "没有查看此 Kubernetes 运行资源的权限")
+	case errors.Is(err, kube.ErrResourceConflict):
+		writeError(c, http.StatusConflict, "runtime_state_changed", "Kubernetes 工作负载已变化")
+	case errors.Is(err, kube.ErrResourceNotFound), errors.Is(err, kube.ErrClusterNotFound):
+		writeError(c, http.StatusNotFound, "runtime_state_missing", "Kubernetes 工作负载或集群不存在")
 	case errors.Is(err, deployment.ErrRuntimeControlFailed):
 		writeError(c, http.StatusBadGateway, "runtime_control_failed", deployment.ErrRuntimeControlFailed.Error())
 	case errors.Is(err, deployment.ErrRuntimeRemovalFailed):

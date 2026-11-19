@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -34,8 +36,18 @@ func (s *Service) monitoringState(ctx context.Context, query *clusterQueries) (s
 	if err != nil {
 		return "unavailable", err
 	}
-	deployment, err := query.typed.AppsV1().Deployments("kube-system").Get(ctx, "metrics-server", metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
+	var deployment *appsv1.Deployment
+	if s.inventoryRead(ctx) {
+		object, readErr := s.inventoryGet(ctx, query, def, "kube-system", "metrics-server")
+		err = readErr
+		if err == nil {
+			deployment = &appsv1.Deployment{}
+			err = runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, deployment)
+		}
+	} else {
+		deployment, err = query.typed.AppsV1().Deployments("kube-system").Get(ctx, "metrics-server", metav1.GetOptions{})
+	}
+	if apierrors.IsNotFound(err) || errors.Is(err, ErrResourceNotFound) {
 		// 接入的集群可以使用其他指标实现，未找到并不代表正在安装。
 		return "unavailable", nil
 	}
@@ -50,11 +62,21 @@ func (s *Service) monitoringState(ctx context.Context, query *clusterQueries) (s
 		return "unavailable", ErrInvalidResource
 	}
 	options := metav1.ListOptions{LabelSelector: selector.String(), Limit: 100}
-	replicas, err := query.typed.AppsV1().ReplicaSets("kube-system").List(ctx, options)
+	var replicas []appsv1.ReplicaSet
+	var continuation string
+	if s.inventoryRead(ctx) {
+		replicas, continuation, err = inventoryTypedList[appsv1.ReplicaSet](ctx, s, query, inventoryReplicaSets, "kube-system", options)
+	} else {
+		result, readErr := query.typed.AppsV1().ReplicaSets("kube-system").List(ctx, options)
+		err = readErr
+		if err == nil {
+			replicas, continuation = result.Items, result.Continue
+		}
+	}
 	if err != nil {
 		return "unavailable", err
 	}
-	if replicas.Continue != "" {
+	if continuation != "" {
 		return "unavailable", nil
 	}
 	def, _ = ResourceType("pods")
@@ -62,14 +84,23 @@ func (s *Service) monitoringState(ctx context.Context, query *clusterQueries) (s
 	if err != nil {
 		return "unavailable", err
 	}
-	pods, err := query.typed.CoreV1().Pods("kube-system").List(ctx, options)
+	var pods []corev1.Pod
+	if s.inventoryRead(ctx) {
+		pods, continuation, err = inventoryTypedList[corev1.Pod](ctx, s, query, def, "kube-system", options)
+	} else {
+		result, readErr := query.typed.CoreV1().Pods("kube-system").List(ctx, options)
+		err = readErr
+		if err == nil {
+			pods, continuation = result.Items, result.Continue
+		}
+	}
 	if err != nil {
 		return "unavailable", err
 	}
-	if pods.Continue != "" {
+	if continuation != "" {
 		return "unavailable", nil
 	}
-	return currentMonitoringState(deployment, replicas.Items, pods.Items), nil
+	return currentMonitoringState(deployment, replicas, pods), nil
 }
 
 func currentMonitoringState(deployment *appsv1.Deployment, replicas []appsv1.ReplicaSet, pods []corev1.Pod) string {

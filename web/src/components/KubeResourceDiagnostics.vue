@@ -6,7 +6,7 @@ import {BarChart,LineChart} from 'echarts/charts'
 import {GridComponent,TooltipComponent,LegendComponent} from 'echarts/components'
 import {CanvasRenderer} from 'echarts/renderers'
 import client from '@/api/client'
-import {resourceURL,kubeErrorMessage,formatKubeCPU,formatKubeMemory,type KubeObject,type KubeType} from '@/api/kubernetes'
+import {resourceURL,kubeErrorMessage,kubeSnapshotPending,readKubeSnapshotMeta,formatKubeCPU,formatKubeMemory,type KubeObject,type KubeSnapshotMeta,type KubeType} from '@/api/kubernetes'
 import {podRuntimeContainers,podLifecycle,podMetricRows,podMetricsFresh,appendPodMetricSample,interruptPodMetricHistory,podMetricTrendSegments,podMetricTrendRange,type PodMetricHistory} from '@/utils/kubernetesDiagnostics'
 import {usePreferencesStore} from '@/stores/preferences'
 import {formatDateTime} from '@/utils/time'
@@ -17,6 +17,7 @@ const emit=defineEmits<{follow:[reference:KubeReference]}>()
 const {t,te,locale}=useI18n(),preferences=usePreferencesStore()
 use([BarChart,LineChart,GridComponent,TooltipComponent,LegendComponent,CanvasRenderer])
 const data=ref<KubeObject|null>(null),error=ref(''),loading=ref(false),root=ref<HTMLElement>(),now=ref(Date.now()),history=ref<PodMetricHistory|null>(null)
+const snapshot=ref<KubeSnapshotMeta>({}),snapshotPending=ref(false)
 const metricsExpanded=ref(!props.disclosure)
 let revision=0,request:AbortController|undefined,disposed=false,timer:ReturnType<typeof setInterval>|undefined,observer:ResizeObserver|undefined
 const charts=new Map<string,EChartsType>()
@@ -27,13 +28,16 @@ const revisions=computed<KubeObject[]>(()=>data.value?.revisions??[])
 const tableRows=computed<KubeObject[]>(()=>props.object.kind==='Service'?endpoints.value:revisions.value)
 const containers=computed<KubeObject[]>(()=>podRuntimeContainers(props.object).map(c=>({...c,id:c.name})))
 const lifecycle=computed(()=>podLifecycle(props.object))
-const rows=computed(()=>podMetricRows(props.object,error.value?null:data.value,now.value))
+// 资源快照与 Pod 指标各有采集时钟；继续按原指标时间和容器身份判断可用性。
+const metricData=computed(()=>data.value?.state==='stale'&&data.value.metrics_at?{...data.value,state:'ok'}:data.value)
+const rows=computed(()=>podMetricRows(props.object,error.value?null:metricData.value,now.value))
 const chartHeight=computed(()=>props.trend?(props.compact?125:180):props.compact?Math.max(146,rows.value.length*58+44):Math.max(164,rows.value.length*72+46))
-const trendCurrent=computed(()=>!error.value&&podMetricsFresh(props.object,data.value,now.value)&&rows.value.some(row=>row.cpu.used!==null||row.memory.used!==null))
+const trendCurrent=computed(()=>!error.value&&podMetricsFresh(props.object,metricData.value,now.value)&&rows.value.some(row=>row.cpu.used!==null||row.memory.used!==null))
 const trendHint=computed(()=>{
+ if(snapshotPending.value)return ''
  if(data.value?.state==='forbidden')return t('k8s.podTrendForbidden')
- if(error.value||data.value&&data.value.state!=='ok'||data.value&&podMetricsFresh(props.object,data.value,now.value)&&!trendCurrent.value)return t('k8s.podTrendUnavailable')
- if(data.value&&!podMetricsFresh(props.object,data.value,now.value))return t('k8s.podTrendStale')
+ if(error.value||metricData.value&&metricData.value.state!=='ok'||metricData.value&&podMetricsFresh(props.object,metricData.value,now.value)&&!trendCurrent.value)return t('k8s.podTrendUnavailable')
+ if(metricData.value&&!podMetricsFresh(props.object,metricData.value,now.value))return t('k8s.podTrendStale')
  return history.value?.points.length===1?t('k8s.podTrendSingle'):!history.value?.points.length?t('k8s.podTrendWaiting'):''
 })
 const metricKinds=['cpu','memory'] as const
@@ -84,9 +88,16 @@ async function load(){
  try{const result=await client.get(`${resourceURL(target.cluster,target.type,target.name)}/diagnostics`,{params:{namespace:target.namespace,uid:target.uid},signal:controller.signal})
   if(!isCurrent())return
   if(result.data.uid!==target.uid)throw new Error(t('k8s.resourceChanged'))
-  data.value=result.data;error.value='';now.value=Date.now()
-  if(props.trend&&props.object.kind==='Pod')history.value=appendPodMetricSample(history.value,props.object,result.data,now.value)
- }catch(err){if(isCurrent()){data.value=null;error.value=kubeErrorMessage(err);if(props.trend&&props.object.kind==='Pod')history.value=interruptPodMetricHistory(history.value,props.object)}}
+  const snapshotState=props.object.kind==='Pod'&&!result.data.metrics_at?undefined:result.data.state
+  data.value=result.data;error.value='';snapshot.value=readKubeSnapshotMeta(result.headers,snapshotState);snapshotPending.value=false;now.value=Date.now()
+  if(props.trend&&props.object.kind==='Pod')history.value=appendPodMetricSample(history.value,props.object,metricData.value,now.value)
+ }catch(err){if(isCurrent()){
+  if(kubeSnapshotPending(err)){
+   snapshotPending.value=!data.value;error.value=''
+   if(data.value)snapshot.value={...snapshot.value,stale:true}
+  }else{data.value=null;snapshot.value={};snapshotPending.value=false;error.value=kubeErrorMessage(err)}
+  if(props.trend&&props.object.kind==='Pod')history.value=interruptPodMetricHistory(history.value,props.object)
+ }}
  finally{if(isCurrent()){now.value=Date.now();loading.value=false;void render()}}
 }
 async function render(){
@@ -110,10 +121,10 @@ async function render(){
  }
 }
 function sync(){now.value=Date.now();if(!document.hidden&&props.autoRefresh&&!loading.value)void load()}
-watch(()=>context.value,()=>{data.value=null;history.value=null;error.value='';void load()})
+watch(()=>context.value,()=>{data.value=null;history.value=null;error.value='';snapshot.value={};snapshotPending.value=false;void load()})
 watch(metricsExpanded,()=>void render())
 watch([rows,history,()=>props.trend,()=>preferences.theme,locale],()=>void render())
-watch(()=>props.trend,enabled=>{history.value=null;if(enabled&&props.object.kind==='Pod')history.value=appendPodMetricSample(null,props.object,data.value,now.value)})
+watch(()=>props.trend,enabled=>{history.value=null;if(enabled&&props.object.kind==='Pod')history.value=appendPodMetricSample(null,props.object,metricData.value,now.value)})
 watch(()=>props.refreshToken,()=>void load())
 watch(()=>props.autoRefresh,(enabled,previous)=>{if(enabled&&!previous)void load()})
 onMounted(()=>{void load();observer=new ResizeObserver(entries=>{const width=entries[0]?.contentRect.width??0;if(width>0&&Math.abs(width-observedWidth)>.5){observedWidth=width;void render()}});if(root.value)observer.observe(root.value);timer=setInterval(sync,30000);document.addEventListener('visibilitychange',sync)})
@@ -124,8 +135,10 @@ onBeforeUnmount(()=>{disposed=true;revision++;request?.abort();history.value=nul
   <div v-if="!embedded" class="section-heading"><h4>{{ title }}</h4><a-button size="small" :loading="loading" @click="load">{{ t('k8s.refresh') }}</a-button></div>
   <a-alert v-if="error" type="error" show-icon :message="error"><template #action><a-button size="small" :disabled="loading" :loading="loading" @click="load">重试</a-button></template></a-alert>
   <a-alert v-else-if="data?.state==='partial'||data?.state==='pods_unavailable'" type="warning" show-icon :message="t(data.state==='partial'?'k8s.relatedPartial':'k8s.revisionPodsUnavailable')" />
+  <p v-if="snapshotPending&&object.kind==='Pod'" class="secondary" role="status">{{ t('k8s.snapshotPending') }}</p>
+  <p v-if="snapshot.stale" class="secondary" role="status">{{ t('k8s.snapshotStale') }}<template v-if="snapshot.collectedAt"> · {{ formatDateTime(snapshot.collectedAt) }}</template></p>
   <template v-if="object.kind==='Pod'">
-   <a-alert v-if="!trend&&!error&&data&&data.state!=='ok'" type="warning" :message="t(data.state==='forbidden'?'k8s.nodeMetricsForbidden':'k8s.podMetricsMissing')" />
+   <a-alert v-if="!trend&&!error&&metricData&&metricData.state!=='ok'" type="warning" :message="t(metricData.state==='forbidden'?'k8s.nodeMetricsForbidden':'k8s.podMetricsMissing')" />
    <div v-if="trend" class="trend-caption" :class="{'compact-caption':compact}"><span>{{ t('k8s.podTrendHistory') }}</span><span>{{ t('k8s.podTrendSampleCount',{count:history?.points.length??0}) }}</span></div>
    <p v-if="trend&&trendHint" class="trend-state" :class="{'is-unavailable':!trendCurrent&&!!data}" role="status">{{ trendHint }}</p>
    <div v-if="trend&&disclosure" class="metrics-disclosure"><button type="button" :aria-expanded="metricsExpanded" @click="metricsExpanded=!metricsExpanded">资源指标 <span>CPU {{ metricTotal('cpu') }} · 内存 {{ metricTotal('memory') }}</span><span>{{ metricsExpanded?'收起趋势':'展开趋势' }}</span></button><a-button size="small" :disabled="loading" :loading="loading" @click="load">刷新</a-button></div>
@@ -153,7 +166,7 @@ onBeforeUnmount(()=>{disposed=true;revision++;request?.abort();history.value=nul
    </ResourceTable>
    <h4 class="lifecycle-heading">{{ t('k8s.podLifecycle') }}</h4><a-timeline><a-timeline-item v-for="(point,index) in lifecycle" :key="index" :color="point.status==='True'?'green':point.status==='False'?'red':'gray'"><strong>{{ lifecycleLabel(point.key) }}</strong> <span class="secondary">{{ formatDateTime(point.at) }}</span><div>{{ point.reason }}</div></a-timeline-item></a-timeline></template>
   </template>
-  <ResourceTable v-else class="kube-resource-table" :rows="tableRows" :row-key="object.kind==='Service'?'id':'uid'" :columns="columns" :details="false" keep-header :pagination="tableRows.length>10" :loading="loading" :empty-text="loading?t('k8s.loading'):error?t('k8s.unavailable'):t(object.kind==='Service'?'k8s.noEndpoints':'k8s.noRevisions')">
+  <ResourceTable v-else class="kube-resource-table" :rows="tableRows" :row-key="object.kind==='Service'?'id':'uid'" :columns="columns" :details="false" keep-header :pagination="tableRows.length>10" :loading="loading&&!snapshotPending" :empty-text="snapshotPending?t('k8s.snapshotPending'):loading?t('k8s.loading'):error?t('k8s.unavailable'):t(object.kind==='Service'?'k8s.noEndpoints':'k8s.noRevisions')">
    <template #cell-addresses="{row}"><div v-for="address in row.addresses" :key="address"><code>{{ address }}</code></div><span class="secondary">{{ row.address_type }} · {{ row.node_name||'—' }}</span></template>
    <template #cell-ports="{row}"><div v-for="(port,index) in row.ports??[]" :key="index">{{ port.name?`${port.name} · `:'' }}{{ port.port??'—' }}/{{ port.protocol||'TCP' }}</div></template>
    <template v-for="key in ['ready','serving','terminating']" :key="key" #[`cell-${key}`]="{row}"><a-tag :color="row[key]===true?(key==='terminating'?'warning':'success'):row[key]===false?(key==='ready'?'warning':'default'):'default'">{{ condition(row[key]) }}</a-tag></template>

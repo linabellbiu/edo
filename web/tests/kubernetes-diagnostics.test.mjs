@@ -29,6 +29,13 @@ function metricSummaryHarness(){
  state.now.value=sampledAt
  return {state,props,sampledAt,sample(containers,changes={}){state.data.value={uid:'pod-current',state:'ok',metrics_at:new Date(sampledAt).toISOString(),containers,...changes}}}
 }
+test('资源快照过期时仍按 Pod 指标自身采集时间判断数值是否可用',()=>{
+ const {state,sampledAt,sample}=metricSummaryHarness()
+ sample([{name:'app',cpu:.25,memory:1048576}],{state:'stale'})
+ assert.equal(state.rows.value[0].cpu.used,.25)
+ state.now.value=sampledAt+120_001
+ assert.equal(state.rows.value[0].cpu.used,null)
+})
 test('容器表单编辑镜像时保留原探针、扩展资源、密钥引用、启动参数和挂载选项',()=>{
  const raw={name:'app',image:'old:1',resources:{requests:{cpu:'100m','nvidia.com/gpu':'1'},limits:{cpu:'1','nvidia.com/gpu':'1'}},readinessProbe:{httpGet:{path:'/ready',port:'http',httpHeaders:[{name:'X-Probe',value:'yes'}]}},env:[{name:'TOKEN',valueFrom:{secretKeyRef:{name:'private',key:'token'}}}],envFrom:[{secretRef:{name:'private'}}],securityContext:{runAsNonRoot:true},command:['sh','-c','echo one\necho two'],volumeMounts:[{name:'data',mountPath:'/data',subPathExpr:'$(POD_NAME)',mountPropagation:'HostToContainer'}]}
  const original=JSON.stringify(raw),state=form.containerForm(raw);state.image='new:2'

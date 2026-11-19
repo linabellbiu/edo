@@ -566,13 +566,11 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}
 	dockerService := dockerengine.NewService(resources.Database, secretManager, cfg.Runtime)
 	kubernetesService := kube.NewService(resources.Database, secretManager, cfg.Runtime)
+	kubernetesService.ConfigureInventoryMonitoring()
 	kubernetesService.ConfigureNodeMonitoring(resources.Redis.Client(), resources.Redis.Key("kubernetes", "node-metrics"), logger)
 	k3sService := k3s.NewService(resources.Database, secretManager, kubernetesService, accessService, cfg.Runtime).WithConcurrency(cfg.Worker.Concurrency)
 	sshDeploymentService := sshdeploy.NewService(resources.Database, secretManager, cfg.Runtime)
 	hostService := hostmanager.NewService(resources.Database, secretManager, dockerService, kubernetesService)
-	if err := hostService.RefreshLocalCapabilities(serviceCtx); err != nil {
-		logger.Warn("刷新本地主机能力失败", "operation", "local_host_capability_refresh", "err", err)
-	}
 	deploymentService := deployment.NewService(
 		resources.Database,
 		dockerService,
@@ -706,6 +704,11 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	startBackground("server_kubernetes_rbac_sync", func() error { return kubernetesService.RunRBACSynchronization(serviceCtx) })
 	startBackground("server_kubernetes_node_metrics", func() error { return kubernetesService.RunNodeMonitoring(serviceCtx) })
 	startBackground("server_kubernetes_connections", func() error { return kubernetesService.RunConnectionMonitoring(serviceCtx) })
+	startBackground("server_kubernetes_inventory", func() error { return kubernetesService.RunInventoryMonitoring(serviceCtx) })
+	startBackground("server_kubernetes_topology_hosts", func() error { return kubernetesService.RunTopologyHostSync(serviceCtx) })
+	startBackground("server_host_resources", func() error { return hostService.RunResourceSync(serviceCtx) })
+	startBackground("server_docker_inventory", func() error { return dockerService.RunContainerSync(serviceCtx) })
+	startBackground("server_deployment_runtime", func() error { return deploymentService.RunRuntimeSnapshotSync(serviceCtx) })
 	startBackground("server_k3s_installations", func() error { return k3sService.Run(serviceCtx) })
 	startBackground("server_outbox", func() error { return publisher.Run(serviceCtx) })
 	startBackground("server_task_consumer", func() error { return taskWorker.Run(serviceCtx) })
@@ -727,6 +730,9 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		return nil
 	})
 	startBackground("server_host_runtime_monitor", func() error {
+		if err := hostService.RefreshLocalCapabilities(serviceCtx); err != nil {
+			logger.Warn("刷新本地主机能力失败", "operation", "local_host_capability_refresh", "err", err)
+		}
 		type refreshResult struct {
 			changes []hostmanager.RuntimeStatusChange
 			err     error

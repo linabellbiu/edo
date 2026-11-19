@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm/clause"
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"edo/internal/cache"
 	"edo/internal/configfile"
 	"edo/internal/database"
 	"edo/internal/dockerengine"
@@ -124,14 +125,15 @@ type hostScriptRunner interface {
 }
 
 type Service struct {
-	variables     *releaseVariablesResolver
-	db            *gorm.DB
-	docker        *dockerengine.Service
-	kube          *kube.Service
-	ssh           hostScriptRunner
-	locks         *redislock.Client
-	lockKeyPrefix string
-	logger        *slog.Logger
+	variables        *releaseVariablesResolver
+	db               *gorm.DB
+	docker           *dockerengine.Service
+	kube             *kube.Service
+	ssh              hostScriptRunner
+	locks            *redislock.Client
+	lockKeyPrefix    string
+	logger           *slog.Logger
+	runtimeSnapshots *cache.SnapshotStore[*RuntimeState]
 }
 
 func NewService(
@@ -147,13 +149,14 @@ func NewService(
 		logger = slog.Default()
 	}
 	return &Service{
-		db:            db,
-		docker:        docker,
-		kube:          kubeService,
-		ssh:           sshService,
-		locks:         locks,
-		lockKeyPrefix: strings.TrimSuffix(strings.TrimSpace(lockKeyPrefix), ":"),
-		logger:        logger,
+		db:               db,
+		docker:           docker,
+		kube:             kubeService,
+		ssh:              sshService,
+		locks:            locks,
+		lockKeyPrefix:    strings.TrimSuffix(strings.TrimSpace(lockKeyPrefix), ":"),
+		logger:           logger,
+		runtimeSnapshots: cache.NewSnapshotStore[*RuntimeState](2048, 45*time.Second, 5*time.Minute),
 	}
 }
 

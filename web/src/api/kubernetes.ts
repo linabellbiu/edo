@@ -34,8 +34,17 @@ export const kubeTypes = [
 export function resourceURL(cluster: string, type: KubeType, name?: string) {
   return `/kubernetes/clusters/${encodeURIComponent(cluster)}/resources/${type.resource}${name ? `/${encodeURIComponent(name)}` : ''}`
 }
-export async function listKubeResources(cluster: string, type: KubeType, namespace: string, continuation = '', signal?: AbortSignal, fresh = false) {
-  return (await client.get<{items: KubeObject[]; continue: string}>(resourceURL(cluster, type), { params: {namespace: type.namespaced ? namespace : '', continue: continuation, ...(fresh ? {fresh: 1} : {})}, signal })).data
+export interface KubeSnapshotMeta { collectedAt?: string; stale?: boolean }
+export function readKubeSnapshotMeta(headers?: Record<string, unknown>, state?: unknown): KubeSnapshotMeta {
+  const collectedAt = headers?.['x-edo-snapshot-collected-at']
+  return {
+    ...(typeof collectedAt === 'string' ? { collectedAt } : {}),
+    ...(headers?.['x-edo-snapshot-state'] === 'stale' || state === 'stale' ? { stale: true } : {}),
+  }
+}
+export async function listKubeResources(cluster: string, type: KubeType, namespace: string, continuation = '', signal?: AbortSignal) {
+  const { data, headers } = await client.get<{items: KubeObject[]; continue: string}>(resourceURL(cluster, type), { params: {namespace: type.namespaced ? namespace : '', continue: continuation}, signal })
+  return { ...data, ...readKubeSnapshotMeta(headers) }
 }
 
 export interface KubeServiceEndpoint {
@@ -140,6 +149,9 @@ export function writableSnapshot(object: KubeObject): string {
 }
 export class KubeResourceChanged extends Error {}
 export function kubeErrorMessage(error:unknown):string { return error instanceof KubeResourceChanged ? error.message : apiErrorMessage(error) }
+export function kubeSnapshotPending(error: unknown): boolean {
+  return (error as { response?: { data?: { code?: string } } } | null)?.response?.data?.code === 'kubernetes_snapshot_pending'
+}
 
 // 只接受状态变化；配置变化或同名资源重建后，仍要求用户重新确认。
 export async function withFreshKubeResource<T>(cluster:string,type:KubeType,original:KubeObject,conflict:string,mutate:(current:KubeObject)=>Promise<T>,signal?:AbortSignal):Promise<T> {
@@ -218,10 +230,12 @@ export async function mapNamespaceRequests<T>(names: string[], request: (namespa
   return result
 }
 
-export async function listKubeResourceScopes(cluster: string, type: KubeType, selection: string[], cursor?: Record<string,string>, signal?: AbortSignal, fresh = false) {
+export async function listKubeResourceScopes(cluster: string, type: KubeType, selection: string[], cursor?: Record<string,string>, signal?: AbortSignal) {
   const names = cursor ? Object.keys(cursor) : type.namespaced ? selection : ['*']
-  const pages = await mapNamespaceRequests(names, async namespace => ({namespace, ...await listKubeResources(cluster, type, namespace, cursor?.[namespace] ?? '', signal, fresh)}), signal)
-  return {items: pages.flatMap(page => page.items), cursor: Object.fromEntries(pages.filter(page => page.continue).map(page => [page.namespace, page.continue]))}
+  const pages = await mapNamespaceRequests(names, async namespace => ({namespace, ...await listKubeResources(cluster, type, namespace, cursor?.[namespace] ?? '', signal)}), signal)
+  const collectedAt = pages.map(page => page.collectedAt).filter((value): value is string => Boolean(value)).sort()[0]
+  return {items: pages.flatMap(page => page.items), cursor: Object.fromEntries(pages.filter(page => page.continue).map(page => [page.namespace, page.continue])),
+    ...(collectedAt ? { collectedAt } : {}), ...(pages.some(page => page.stale) ? { stale: true } : {})}
 }
 
 export type KubeWatchEvent = { type: 'ready' | 'ping' | 'reset' | 'degraded' | 'synced' } | { type: 'ADDED' | 'MODIFIED' | 'DELETED'; resource: string; namespace: string; name: string }

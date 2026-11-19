@@ -1109,12 +1109,16 @@ test('未触发项目事件时也丢弃旧项目迟到响应并阻止提交旧�
 const kubeAPI=loadFrontend('../src/api/kubernetes.ts')
 const workspace=loadFrontend('../src/utils/kubernetesWorkspace.ts')
 function completionHarness(view){
-  const pending=deferred(),storage={project:'project-a'},auth=vue.reactive({user:{id:'operator',project_id:'project-a',permissions:[...permissions]},canAny:codes=>codes.some(code=>permissions.includes(code))})
-  const ctx=componentHarness(`../src/views/${view}.vue`,{codes:permissions,query:{view:view==='HostView'?'clusters':'overview'},api:{get:async()=>pending.promise},modules:{
+  const pending=deferred(),replacement=deferred(),reads=[],storage={project:'project-a'},auth=vue.reactive({user:{id:'operator',project_id:'project-a',permissions:[...permissions]},canAny:codes=>codes.some(code=>permissions.includes(code))})
+  const ctx=componentHarness(`../src/views/${view}.vue`,{codes:permissions,query:{view:view==='HostView'?'clusters':'overview'},api:{get:async(path,options)=>{
+    const actor=auth.user.id
+    reads.push({path,actor,signal:options?.signal})
+    return view==='KubernetesView'&&actor!=='operator'?replacement.promise:pending.promise
+  }},modules:{
     '@/stores/auth':{useAuthStore:()=>auth},'@/api/kubernetes':kubeAPI,'@/utils/kubernetesWorkspace':workspace,
     '@/utils/resourceList':{useResourceList:()=>({pagination:{},changePage(){}})},'@/api/infrastructure':{listHosts:async()=>[],listEnvironments:async()=>[]},
   },globals:{localStorage:{getItem:()=>storage.project},document:{hidden:false}}})
-  return {...ctx,pending,storage,auth}
+  return {...ctx,pending,replacement,reads,storage,auth}
 }
 
 test('两个父页面的安装完成回调在等待刷新后核对用户、实际项目、权限和集群选择',async()=>{
@@ -1126,8 +1130,15 @@ test('两个父页面的安装完成回调在等待刷新后核对用户、实�
       if(change==='user')ctx.auth.user.id='other-user'
       if(change==='permission')ctx.auth.user.permissions=[]
       if(change==='cluster'){if(view==='HostView')ctx.route.query.cluster='user-picked';else ctx.state.cluster.value='user-picked'}
+      if(view==='KubernetesView'&&change==='user'){
+        await settle()
+        assert.equal(ctx.reads[0].signal.aborted,true)
+        assert.ok(ctx.reads.some(read=>read.actor==='other-user'&&read.path==='/kubernetes/clusters'))
+        ctx.replacement.resolve({data:{clusters:[{id:'other-user-cluster',is_active:true,default_namespace:'default'}]}})
+      }
       ctx.pending.resolve({data:{clusters:[{id:'new-cluster',is_active:true,default_namespace:'default'}]}});await request;await settle()
       if(view==='HostView')assert.equal(ctx.replacements.length,0,`${view}:${change}`)
+      else if(change==='user')assert.equal(ctx.state.cluster.value,'other-user-cluster')
       else assert.notEqual(ctx.state.cluster.value,'new-cluster',`${view}:${change}`)
     }finally{ctx.stop()}
   }

@@ -366,6 +366,9 @@ func (s *Service) listResourcePage(ctx context.Context, clusterID string, def Re
 
 // 聚合查询复用已读取的集群与授权；实际原生请求继续经过实时权限校验。
 func (s *Service) listAuthorizedResourcePage(ctx context.Context, q *clusterQueries, def ResourceDefinition, namespace string, options metav1.ListOptions, cacheLimit int64) (*unstructured.UnstructuredList, error) {
+	if s.inventoryRead(ctx) {
+		return s.inventoryList(ctx, q, def, namespace, options)
+	}
 	// An actor with no namespace grant gets an empty selector without issuing
 	// a native namespace request. Actual namespace reads remain scope checked.
 	if q.authorization.enforced() && def.Resource == "namespaces" && !q.authorization.has("", "kubernetes.config.read") && len(q.authorization.Namespaces) == 0 {
@@ -433,7 +436,7 @@ func (s *Service) invalidateResourceQueries(clusterID, resource string) {
 }
 
 func (s *Service) SubscribeResourceChanges(ctx context.Context, clusterID string, namespaces []string, allowed map[string]bool) (<-chan ResourceChange, error) {
-	if !s.watchingEnabled() {
+	if !s.inventoryRead(ctx) && !s.watchingEnabled() {
 		return nil, ErrResourceWatchUnavailable
 	}
 	if len(namespaces) > 32 {
@@ -473,6 +476,9 @@ func (s *Service) SubscribeResourceChanges(ctx context.Context, clusterID string
 				}
 			}
 		}
+	}
+	if s.inventoryRead(ctx) {
+		return s.subscribeInventory(ctx, q, selection, permissions)
 	}
 	channel := make(chan ResourceChange, 64)
 	keys := []string{}

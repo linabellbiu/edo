@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/version"
@@ -83,6 +85,7 @@ type Service struct {
 	topologyHosts         *topologyHostIdentityCache
 	queries               *resourceQueryCache
 	connections           *connectionStatusCache
+	inventory             *resourceInventory
 	hostIdentityProbe     hostIdentityReader
 	authorizationResolver func(context.Context, *model.KubernetesCluster, bool) (*clusterAuthorization, error)
 	queryTransaction      bool
@@ -406,15 +409,25 @@ func (s *Service) Pods(ctx context.Context, id, namespace string) ([]Pod, error)
 	if err != nil {
 		return nil, err
 	}
-	clientset := query.typed
 	requestContext, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
 	defer cancel()
-	result, err := clientset.CoreV1().Pods(namespace).List(requestContext, metav1.ListOptions{Limit: 500})
+	options := metav1.ListOptions{Limit: 500}
+	var items []corev1.Pod
+	if s.inventoryRead(requestContext) {
+		def, _ := ResourceType("pods")
+		items, _, err = inventoryTypedList[corev1.Pod](requestContext, s, query, def, namespace, options)
+	} else {
+		var result *corev1.PodList
+		result, err = query.typed.CoreV1().Pods(namespace).List(requestContext, options)
+		if result != nil {
+			items = result.Items
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("查询 Kubernetes Pod 失败: %w", err)
 	}
-	pods := make([]Pod, 0, len(result.Items))
-	for _, item := range result.Items {
+	pods := make([]Pod, 0, len(items))
+	for _, item := range items {
 		containers := make([]string, 0, len(item.Spec.Containers))
 		for _, container := range item.Spec.Containers {
 			containers = append(containers, container.Name)
@@ -437,15 +450,25 @@ func (s *Service) Deployments(ctx context.Context, id, namespace string) ([]Depl
 	if err != nil {
 		return nil, err
 	}
-	clientset := query.typed
 	requestContext, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
 	defer cancel()
-	result, err := clientset.AppsV1().Deployments(namespace).List(requestContext, metav1.ListOptions{Limit: 500})
+	options := metav1.ListOptions{Limit: 500}
+	var items []appsv1.Deployment
+	if s.inventoryRead(requestContext) {
+		def, _ := ResourceType("deployments")
+		items, _, err = inventoryTypedList[appsv1.Deployment](requestContext, s, query, def, namespace, options)
+	} else {
+		var result *appsv1.DeploymentList
+		result, err = query.typed.AppsV1().Deployments(namespace).List(requestContext, options)
+		if result != nil {
+			items = result.Items
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("查询 Kubernetes Deployment 失败: %w", err)
 	}
-	deployments := make([]Deployment, 0, len(result.Items))
-	for _, item := range result.Items {
+	deployments := make([]Deployment, 0, len(items))
+	for _, item := range items {
 		replicas := int32(0)
 		if item.Spec.Replicas != nil {
 			replicas = *item.Spec.Replicas

@@ -74,6 +74,23 @@ test('当前版本、首个 Pod 和普通容器自动联动，非 Deployment 首
  standalone.stop()
 })
 
+test('副本集快照未就绪时等待，过期时继续显示原版次和采集时间',async t=>{
+ const h=harness();t.after(h.stop)
+ const pending={response:{status:503,data:{code:'kubernetes_snapshot_pending'}}}
+ h.requests[0].reject(pending);await flush()
+ assert.equal(h.state.historyState.value,'pending')
+ assert.equal(h.state.historyError.value,'')
+ assert.equal(h.state.revisions.value.length,0)
+ const load=h.state.loadHistory(), collectedAt='2026-11-19T05:00:00Z'
+ h.requests[1].resolve({data:{uid:deployment.metadata.uid,state:'ok',revisions:[revision('rs-current',true)]},headers:{'x-edo-snapshot-state':'stale','x-edo-snapshot-collected-at':collectedAt}})
+ await load
+ assert.equal(h.state.revisionUID.value,'rs-current')
+ assert.deepEqual(h.state.historySnapshot.value,{stale:true,collectedAt})
+ const retry=h.state.loadHistory();h.requests[2].reject(pending);await retry
+ assert.equal(h.state.revisions.value[0].uid,'rs-current')
+ assert.deepEqual(h.state.historySnapshot.value,{stale:true,collectedAt})
+})
+
 test('副本集事件仅回填选中版本，切换时中止旧请求并过滤其他 UID', async () => {
  const h=harness();await h.history()
  const first=h.eventRequests[0]
@@ -349,7 +366,7 @@ test('Service 独立读取并处理分页，撤权清除结果并丢弃迟到响
  requests[1].resolve({items:[match],continue:''});await settleView()
  assert.deepEqual(h.state.workloadServices.value,[match])
  void h.state.loadWorkloadServices(true)
- assert.equal(requests[2].call.fresh,true)
+ assert.equal(requests[2].call.fresh,undefined,'手动重试也只读取已有快照')
  requests[2].reject({isAxiosError:true,response:{status:403}});await settleView()
  assert.equal(h.state.servicesError.value,true)
  assert.deepEqual(h.state.workloadServices.value,[])

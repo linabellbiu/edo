@@ -195,7 +195,7 @@ func (h clusterHandler) pingDocker(c *gin.Context) {
 
 func (h clusterHandler) listContainers(c *gin.Context) {
 	all, _ := strconv.ParseBool(c.DefaultQuery("all", "true"))
-	containers, err := h.docker.Containers(c.Request.Context(), c.Param("id"), all)
+	result, err := h.docker.ContainerListSnapshot(c.Request.Context(), c.Param("id"), all)
 	if err != nil {
 		h.logger.Error("查询 Docker 容器失败", "operation", "docker_container_list", "request_id", requestIDFrom(c), "endpoint_id", c.Param("id"), "err", err)
 		if errors.Is(err, dockerengine.ErrEndpointNotFound) {
@@ -205,7 +205,8 @@ func (h clusterHandler) listContainers(c *gin.Context) {
 		}
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"containers": containers})
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, result)
 }
 
 func (h clusterHandler) listKubernetesClusters(c *gin.Context) {
@@ -424,24 +425,27 @@ func (h clusterHandler) listNamespaces(c *gin.Context) {
 		h.writeKubernetesReadError(c, "kubernetes_namespace_list", err)
 		return
 	}
+	writeKubernetesInventoryHeaders(c)
 	c.JSON(http.StatusOK, gin.H{"namespaces": namespaces})
 }
 
 func (h clusterHandler) listPods(c *gin.Context) {
-	pods, err := h.kube.Pods(c.Request.Context(), c.Param("id"), c.Query("namespace"))
+	pods, err := h.kube.Pods(kubernetesReadContext(c), c.Param("id"), c.Query("namespace"))
 	if err != nil {
 		h.writeKubernetesReadError(c, "kubernetes_pod_list", err)
 		return
 	}
+	writeKubernetesInventoryHeaders(c)
 	c.JSON(http.StatusOK, gin.H{"pods": pods})
 }
 
 func (h clusterHandler) listDeployments(c *gin.Context) {
-	deployments, err := h.kube.Deployments(c.Request.Context(), c.Param("id"), c.Query("namespace"))
+	deployments, err := h.kube.Deployments(kubernetesReadContext(c), c.Param("id"), c.Query("namespace"))
 	if err != nil {
 		h.writeKubernetesReadError(c, "kubernetes_deployment_list", err)
 		return
 	}
+	writeKubernetesInventoryHeaders(c)
 	c.JSON(http.StatusOK, gin.H{"deployments": deployments})
 }
 
@@ -507,6 +511,10 @@ func (h clusterHandler) writeKubernetesError(c *gin.Context, operation string, e
 }
 
 func (h clusterHandler) writeKubernetesReadError(c *gin.Context, operation string, err error) {
+	writeKubernetesInventoryHeaders(c)
+	if writeKubernetesInventoryPending(c, h.logger, operation, err) {
+		return
+	}
 	if writeKubernetesAuthorizationError(c, err) {
 		return
 	}

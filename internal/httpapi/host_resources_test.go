@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -68,7 +67,7 @@ func TestHostResourcesHTTPPermissionsAndProjectIsolation(t *testing.T) {
 				t.Fatalf("主机资源权限错误: status=%d want=%d body=%s", response.Code, test.status, response.Body.String())
 			}
 			if test.status == http.StatusOK {
-				assertHostResourcesOnlySafeUnavailableFields(t, response.Body.Bytes())
+				assertHostResourcesOnlySafePendingFields(t, response.Body.Bytes())
 				if test.name == "cluster-reader" {
 					reader = cookie
 				}
@@ -101,10 +100,10 @@ func TestHostResourcesHTTPPermissionsAndProjectIsolation(t *testing.T) {
 	if selected.Code != http.StatusOK {
 		t.Fatalf("管理员选择准确项目后不能读取主机: status=%d body=%s", selected.Code, selected.Body.String())
 	}
-	assertHostResourcesOnlySafeUnavailableFields(t, selected.Body.Bytes())
+	assertHostResourcesOnlySafePendingFields(t, selected.Body.Bytes())
 }
 
-func assertHostResourcesOnlySafeUnavailableFields(t *testing.T, body []byte) {
+func assertHostResourcesOnlySafePendingFields(t *testing.T, body []byte) {
 	t.Helper()
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope) != 1 || envelope["resources"] == nil {
@@ -126,14 +125,10 @@ func assertHostResourcesOnlySafeUnavailableFields(t *testing.T, body []byte) {
 			t.Fatalf("资源响应包含非资源字段 %q", key)
 		}
 	}
-	for key, want := range map[string]string{"state": `"unavailable"`, "source": `"ssh"`, "scope": `"current_environment"`, "disk_mount": `"/"`, "cpu_cores": "null", "memory_total_bytes": "null", "disk_total_bytes": "null"} {
+	for key, want := range map[string]string{"state": `"pending"`, "source": `"ssh"`, "scope": `"current_environment"`, "disk_mount": `"/"`, "cpu_cores": "null", "memory_total_bytes": "null", "disk_total_bytes": "null", "collected_at": "null"} {
 		if string(fields[key]) != want {
 			t.Fatalf("%s 缺测或采集范围错误: got=%s want=%s", key, fields[key], want)
 		}
-	}
-	var collected time.Time
-	if err := json.Unmarshal(fields["collected_at"], &collected); err != nil || collected.IsZero() {
-		t.Fatalf("缺少真实采集时间: %s", body)
 	}
 	for _, private := range []string{"ssh_username", "ssh_host_key_fingerprint", "ssh_credential_ciphertext", "address", "host-resources-private-user", "host-resources-private-ciphertext", "192.0.2.251"} {
 		if strings.Contains(string(body), private) {

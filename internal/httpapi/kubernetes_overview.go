@@ -29,7 +29,7 @@ func (h clusterHandler) nodeHistory(service *access.Service) gin.HandlerFunc {
 			h.resourceError(c, "kubernetes_node_history_permission", err)
 			return
 		}
-		result, err := h.kube.NodeHistory(c.Request.Context(), c.Param("id"), c.Param("name"), c.Query("uid"), time.Duration(window)*time.Second, workloads)
+		result, err := h.kube.NodeHistory(kubernetesReadContext(c), c.Param("id"), c.Param("name"), c.Query("uid"), time.Duration(window)*time.Second, workloads)
 		if err != nil {
 			if errors.Is(err, kube.ErrNodeHistoryUnavailable) {
 				h.logger.Error("读取节点监控失败", "operation", "kubernetes_node_history", "cluster_id", c.Param("id"), "name", c.Param("name"), "err", err)
@@ -40,6 +40,7 @@ func (h clusterHandler) nodeHistory(service *access.Service) gin.HandlerFunc {
 			return
 		}
 		c.Header("Cache-Control", "no-store")
+		writeKubernetesInventoryHeaders(c)
 		c.JSON(http.StatusOK, result)
 	}
 }
@@ -67,6 +68,7 @@ func (h clusterHandler) overview(service *access.Service) gin.HandlerFunc {
 			h.logger.Warn("集群部分统计不可用", "operation", "kubernetes_overview", "cluster_id", c.Param("id"), "resource", resource, "err", err)
 		}
 		c.Header("Cache-Control", "no-store")
+		writeKubernetesInventoryHeaders(c)
 		c.JSON(http.StatusOK, result)
 	}
 }

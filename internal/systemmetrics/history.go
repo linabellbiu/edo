@@ -26,7 +26,7 @@ type History struct {
 	To              time.Time  `json:"to"`
 	IntervalSeconds int        `json:"interval_seconds"`
 	Points          []Snapshot `json:"points"`
-	Latest          Snapshot   `json:"latest"`
+	Latest          *Snapshot  `json:"latest"`
 }
 
 type historyStore struct {
@@ -78,14 +78,16 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 }
 
-func (s *Service) Current(ctx context.Context) Snapshot {
+// Current 只返回已经完成的后台采样；启动后的第一份样本可能尚未就绪。
+func (s *Service) Current() *Snapshot {
 	s.latestMu.RLock()
+	defer s.latestMu.RUnlock()
 	latest := s.latest
-	s.latestMu.RUnlock()
-	if latest != nil {
-		return *latest
+	if latest == nil {
+		return nil
 	}
-	return s.Snapshot(ctx)
+	result := *latest
+	return &result
 }
 
 func (h *historyStore) append(ctx context.Context, snapshot Snapshot) error {
@@ -162,6 +164,9 @@ func (s *Service) historyAt(ctx context.Context, window time.Duration, after int
 		}
 		result.Points = append(result.Points, point)
 	}
-	result.Latest = s.Current(ctx)
+	result.Latest = s.Current()
+	if result.Latest == nil && len(result.Points) > 0 {
+		result.Latest = &result.Points[len(result.Points)-1]
+	}
 	return result, nil
 }

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {test} from 'node:test'
 import ts from 'typescript'
+import {loadFrontend} from './acceptanceHarness.mjs'
+const kubeAPI=loadFrontend('../src/api/kubernetes.ts')
 const source=readFileSync(new URL('../src/utils/kubernetesNode.ts',import.meta.url),'utf8'),module={exports:{}}
 new Function('require','module','exports',ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText)(()=>({}),module,module.exports)
 const {nodeChartPoints,nodeMetricValue,nodeSampleFresh,nodeConditionState}=module.exports
@@ -42,7 +44,7 @@ function monitorState(){
  const requests=[],hooks={mounted:[],unmounted:[]},options=new Map(),disposed=[],frames=new Map();let resizeCallback,disconnected=false,frameID=0
  const source=readFileSync(new URL('../src/components/KubeNodeMonitor.vue',import.meta.url),'utf8')
  const code=ts.transpileModule(compileScript(parse(source).descriptor,{id:'node-monitor'}).content,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText
- const componentModule={exports:{}},modules={vue:{...vue,onMounted:fn=>hooks.mounted.push(fn),onBeforeUnmount:fn=>hooks.unmounted.push(fn)},'vue-i18n':{useI18n:()=>({t:key=>key,locale:vue.ref('zh-CN')})},'@/api/client':{get:(url,options)=>new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}))},'@/api/kubernetes':{formatKubeCPU:value=>String(value??'—'),formatKubeMemory:value=>String(value??'—'),kubeErrorMessage:err=>err.message},'@/utils/kubernetesNode':module.exports,'@/stores/preferences':{usePreferencesStore:()=>({theme:'light'})},'echarts/core':{use(){},init:element=>({setOption:option=>options.set(element.selector,option),resize(){},dispose:()=>disposed.push(element.selector)})}}
+ const componentModule={exports:{}},modules={vue:{...vue,onMounted:fn=>hooks.mounted.push(fn),onBeforeUnmount:fn=>hooks.unmounted.push(fn)},'vue-i18n':{useI18n:()=>({t:key=>key,locale:vue.ref('zh-CN')})},'@/api/client':{get:(url,options)=>new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}))},'@/api/kubernetes':{...kubeAPI,formatKubeCPU:value=>String(value??'—'),formatKubeMemory:value=>String(value??'—'),kubeErrorMessage:err=>err.message},'@/utils/kubernetesNode':module.exports,'@/stores/preferences':{usePreferencesStore:()=>({theme:'light'})},'echarts/core':{use(){},init:element=>({setOption:option=>options.set(element.selector,option),resize(){},dispose:()=>disposed.push(element.selector)})}}
  new Function('require','module','exports','document','getComputedStyle','ResizeObserver','requestAnimationFrame','cancelAnimationFrame','setInterval','clearInterval',code)(key=>modules[key]??{},componentModule,componentModule.exports,{addEventListener(){},removeEventListener(){}},()=>({getPropertyValue:key=>key==='--edo-primary'?'#526aff':'#758195'}),class{constructor(callback){resizeCallback=callback}observe(){}disconnect(){disconnected=true}},fn=>{frames.set(++frameID,fn);return frameID},id=>frames.delete(id),()=>1,()=>{})
  const scope=vue.effectScope(),props=vue.reactive({cluster:'c1',node:{metadata:{name:'worker',uid:'n1'}},autoRefresh:true,workloads:true})
  const state=scope.run(()=>componentModule.exports.default.setup(props,{expose(){}}))

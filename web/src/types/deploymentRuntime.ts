@@ -1,4 +1,5 @@
 import type { ComposeContainerState, ComposeServiceState } from '@/utils/composeRuntime'
+import type { ResourceSnapshot } from './resourceSnapshot'
 
 export type ContainerControlAction = 'restart' | 'stop' | 'recreate'
 export interface ContainerControlPreview {
@@ -11,4 +12,8 @@ export interface DeploymentRuntimeState {
   resource_id?: string; name: string; namespace?: string; state: string; running: boolean; count?: number
   replicas?: number; ready_replicas?: number; available_replicas?: number; unavailable_replicas?: number
   restart_configured?: boolean; stop_configured?: boolean; output?: string
+}
+export interface DeploymentRuntimeResponse {
+  runtime: DeploymentRuntimeState | null
+  snapshot?: ResourceSnapshot
 }

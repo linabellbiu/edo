@@ -49,7 +49,8 @@ import type { PipelineRunApproval } from '@/types/pipelineApproval'
 import { deploymentRollbackEn, deploymentRollbackZh } from '@/locales/deploymentRollback'
 import { formatDateTime, formatElapsedTime, formatRelativeTime } from '@/utils/time'
 import { composeRuntimeStatus, composeContainerCanTerminal } from '@/utils/composeRuntime'
-import type { ContainerControlAction, DeploymentRuntimeState } from '@/types/deploymentRuntime'
+import type { ContainerControlAction, DeploymentRuntimeResponse, DeploymentRuntimeState } from '@/types/deploymentRuntime'
+import type { ResourceSnapshot } from '@/types/resourceSnapshot'
 import { parsePipelineRunFilters, pipelineRunDateBounds, pipelineRunDateRange, pipelineRunRequestParams, pipelineRunRouteQuery, type PipelineRunFilters } from '@/utils/pipelineRunFilters'
 import { asyncConfirm } from '@/utils/asyncConfirm'
 
@@ -105,6 +106,7 @@ type ApplicationDetailTab='workflows'|'deployments'|'environment'
 const applicationSearch=ref(''),applicationFilter=ref<ApplicationFilter>('all')
 const applicationDetailTabs=ref<Record<string,ApplicationDetailTab>>({}),checkingApplicationIDs=ref<Record<string,boolean>>({})
 const deploymentRuntimeStates=ref<Record<string,DeploymentRuntimeState>>({}),deploymentRuntimeLoading=ref<Record<string,boolean>>({}),deploymentRuntimeErrors=ref<Record<string,string>>({}),deploymentRuntimeAction=ref('')
+const deploymentRuntimeSnapshots=ref<Record<string,ResourceSnapshot>>({}),dockerRuntimeSnapshots=ref<Record<string,ResourceSnapshot>>({})
 const scaleDialog=reactive({open:false,record:null as DeploymentRecord|null,replicas:null as number|null,submitting:false})
 const scaleAutoscaler=reactive({loading:false,error:'',exists:false,min:undefined as number|undefined,max:undefined as number|undefined,current:undefined as number|undefined,cpu:''})
 const scaleRuntime=computed(()=>scaleDialog.record?deploymentRuntimeStates.value[scaleDialog.record.id]:undefined)
@@ -521,6 +523,7 @@ function clearStaleDeploymentState(){
  const ids=currentDeploymentIDs.value
  expandedDeployments.value=retainCurrentDeploymentState(expandedDeployments.value,ids)
  deploymentRuntimeStates.value=retainCurrentDeploymentState(deploymentRuntimeStates.value,ids)
+ deploymentRuntimeSnapshots.value=retainCurrentDeploymentState(deploymentRuntimeSnapshots.value,ids)
  deploymentRuntimeErrors.value=retainCurrentDeploymentState(deploymentRuntimeErrors.value,ids)
  // 正在进行的请求保留 loading 标记，响应回来时再检查当前实例，避免并发重复请求。
  for(const id of staleDeploymentIDs)if(!ids.has(id))staleDeploymentIDs.delete(id)
@@ -583,8 +586,10 @@ function deploymentStatus(record:DeploymentRecord):StatusMeta{
 }
 function currentDeploymentStatus(record:DeploymentRecord):StatusMeta{
  const runtime=deploymentRuntimeStates.value[record.id]
- if(deploymentRuntimeLoading.value[record.id]&&!deploymentRuntimeStates.value[record.id]&&!deploymentRuntimeErrors.value[record.id])return {tone:'info',label:'检查中',live:true}
- if(deploymentRuntimeErrors.value[record.id])return {tone:'warning',label:'状态不可用',live:false}
+ const snapshot=deploymentRuntimeSnapshots.value[record.id]
+ if(snapshot?.state==='stale')return {tone:'warning',label:'上次同步结果',live:false}
+ if(deploymentRuntimeErrors.value[record.id]||snapshot?.state==='unavailable')return {tone:'warning',label:'状态不可用',live:false}
+ if(snapshot?.state==='pending'||deploymentRuntimeLoading.value[record.id]&&!runtime)return {tone:'neutral',label:'等待后台同步',live:false}
  if(runtime){
   if(runtime.kind==='kubernetes'){
    if(runtime.state==='stopped')return {tone:'neutral',label:'已停止',live:false}
@@ -598,7 +603,9 @@ function currentDeploymentStatus(record:DeploymentRecord):StatusMeta{
   }
  }
  if(deploymentKind(record)!=='docker'||!canReadContainerLogs.value)return deploymentStatus(record)
- if(dockerRuntimeErrors.value[record.runtime_id])return {tone:'warning',label:t('applicationCard.containerState.unavailable'),live:false}
+ if(dockerRuntimeSnapshots.value[record.runtime_id]?.state==='pending')return {tone:'neutral',label:'等待后台同步',live:false}
+ if(dockerRuntimeSnapshots.value[record.runtime_id]?.state==='stale')return {tone:'warning',label:'上次同步结果',live:false}
+ if(dockerRuntimeErrors.value[record.runtime_id]||dockerRuntimeSnapshots.value[record.runtime_id]?.state==='unavailable')return {tone:'warning',label:t('applicationCard.containerState.unavailable'),live:false}
  if(!dockerRuntimeLoaded.value[record.runtime_id])return deploymentStatus(record)
  const container=dockerContainerForDeployment(record)
  if(!container)return {tone:'danger',label:t('applicationCard.containerState.missing'),live:false}
@@ -637,7 +644,7 @@ function deploymentDetailsOpen(record:DeploymentRecord){return Boolean(expandedD
 function lifecycleScriptAvailable(record:DeploymentRecord,action:'restart'|'stop'){
  if(record.deployment_plan_kind==='compose_stack'){
   const runtime=deploymentRuntimeStates.value[record.id]
-  return !deploymentRuntimeErrors.value[record.id]&&runtime?.kind==='compose'&&!!runtime.services?.length&&runtime.services.some(service=>!service.run_to_completion)&&runtime.services.every(service=>service.count>0&&(!service.run_to_completion||service.state==='completed'))
+  return !deploymentRuntimeErrors.value[record.id]&&deploymentRuntimeSnapshots.value[record.id]?.state!=='stale'&&runtime?.kind==='compose'&&!!runtime.services?.length&&runtime.services.some(service=>!service.run_to_completion)&&runtime.services.every(service=>service.count>0&&(!service.run_to_completion||service.state==='completed'))
  }
  if(deploymentKind(record)!=='script')return true
  const runtime=deploymentRuntimeStates.value[record.id]
@@ -670,24 +677,29 @@ async function refreshRollbackRecords(){
 }
 async function loadDeploymentRuntime(record:DeploymentRecord,force=false){
  if(record.runtime_deleted_at||!currentDeploymentIDs.value.has(record.id)||staleDeploymentIDs.has(record.id)||!canReadDeployments.value||deploymentRuntimeLoading.value[record.id]||(!force&&deploymentRuntimeStates.value[record.id]))return
+ const scope=resourceScopeKey()
+ const current=()=>!planExecutionDisposed&&scope===resourceScopeKey()&&canReadDeployments.value&&currentDeploymentIDs.value.has(record.id)
  deploymentRuntimeLoading.value[record.id]=true
  try{
-  const response=await client.get<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime`,{timeout:35_000})
-  if(currentDeploymentIDs.value.has(record.id)){
-   deploymentRuntimeStates.value[record.id]=response.data.runtime
+  const {data}=await client.get<DeploymentRuntimeResponse>(`/deployments/${encodeURIComponent(record.id)}/runtime`,{...resourceReadOptions(),timeout:35_000})
+  if(current()){
+   if(data.snapshot)deploymentRuntimeSnapshots.value[record.id]=data.snapshot
+   if(data.runtime)deploymentRuntimeStates.value[record.id]=data.runtime
+   else delete deploymentRuntimeStates.value[record.id]
    delete deploymentRuntimeErrors.value[record.id]
   }
  }catch(error){
-  if(!currentDeploymentIDs.value.has(record.id))return
-  delete deploymentRuntimeStates.value[record.id]
+  if(!current())return
   deploymentRuntimeErrors.value[record.id]=apiErrorMessage(error)
   const code=isAxiosError(error)?error.response?.data?.code:''
   if(code==='deployment_not_current'||code==='runtime_instance_removed'){
+   delete deploymentRuntimeStates.value[record.id]
+   delete deploymentRuntimeSnapshots.value[record.id]
    staleDeploymentIDs.add(record.id)
    // 检查期间可能已完成新部署，重新加载列表，不再请求旧实例。
    void refreshApplicationState()
   }
- }finally{delete deploymentRuntimeLoading.value[record.id]}
+ }finally{if(scope===resourceScopeKey())delete deploymentRuntimeLoading.value[record.id]}
 }
 async function executeDeploymentRuntimeAction(record:DeploymentRecord,action:'restart'|'stop',replicas?:number){
  const key=runtimeActionKey(record,action)
@@ -695,6 +707,7 @@ async function executeDeploymentRuntimeAction(record:DeploymentRecord,action:'re
  try{
   const response=await client.post<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime/${action}`,replicas===undefined?undefined:{replicas},{timeout:3700_000})
   deploymentRuntimeStates.value[record.id]=response.data.runtime
+  delete deploymentRuntimeSnapshots.value[record.id]
   delete deploymentRuntimeErrors.value[record.id]
   if(deploymentKind(record)==='docker')await loadDockerRuntime(record.runtime_id,true)
   const actionLabel=action==='restart'?'重启':'停止'
@@ -728,6 +741,7 @@ async function removeDeploymentRuntime(record:DeploymentRecord){
   deployments.value=deployments.value.map(item=>item.id===record.id?{...item,runtime_deleted_at:deletedAt}:item)
   delete expandedDeployments.value[record.id]
   delete deploymentRuntimeStates.value[record.id]
+  delete deploymentRuntimeSnapshots.value[record.id]
   delete deploymentRuntimeErrors.value[record.id]
   delete deploymentRuntimeLoading.value[record.id]
   message.success('容器实例已删除；下一次部署成功后将自动恢复监控')
@@ -795,7 +809,7 @@ async function openKubernetesDeploymentLogs(record:DeploymentRecord){
 }
 function deploymentReplicasLabel(record:DeploymentRecord){
  const runtime=deploymentRuntimeStates.value[record.id]
- if(!runtime)return deploymentRuntimeLoading.value[record.id]?'读取中…':'—'
+ if(!runtime)return '—'
  const ready=runtime.ready_replicas, replicas=runtime.replicas
  if(ready===undefined||replicas===undefined)return '—'
  return ready+' / '+replicas+' 就绪'
@@ -843,6 +857,9 @@ async function loadScaleAutoscaler(){
 watch([() => scaleDialog.open, resourceScopeKey], ([open, scope], [, previousScope]) => {
  if (!open || scope !== previousScope) scaleAutoscalerRequest?.abort()
  if (scope !== previousScope) {
+  deploymentRuntimeStates.value={};deploymentRuntimeSnapshots.value={};deploymentRuntimeErrors.value={};deploymentRuntimeLoading.value={}
+  dockerRuntimeContainers.value={};dockerRuntimeSnapshots.value={};dockerRuntimeErrors.value={};dockerRuntimeLoaded.value={};dockerRuntimeLoading.value={};dockerRuntimeRequests.clear()
+  staleDeploymentIDs.clear()
   scaleDialog.open=false;scaleDialog.record=null;scaleDialog.replicas=null
   rollbackDialog.open=false;rollbackDialog.sourceID='';rollbackDialog.pipelineRunID=''
  }
@@ -864,6 +881,7 @@ async function submitScale(){
   const response=await client.post<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime/scale`,{replicas},{timeout:3700_000})
   if(!current())return
   deploymentRuntimeStates.value[record.id]=response.data.runtime
+  delete deploymentRuntimeSnapshots.value[record.id]
   message.success(`副本数已调整为 ${replicas}`);scaleDialog.open=false
  }catch(error){if(current())message.error(apiErrorMessage(error))}finally{scaleDialog.submitting=false}
 }
@@ -876,7 +894,8 @@ function dockerContainerForDeployment(record:DeploymentRecord){
 }
 function dockerContainerState(record:DeploymentRecord){
  if(!canReadContainerLogs.value)return t('applicationCard.containerState.noPermission')
- if(dockerRuntimeErrors.value[record.runtime_id])return t('applicationCard.containerState.unavailable')
+ if(dockerRuntimeErrors.value[record.runtime_id]||dockerRuntimeSnapshots.value[record.runtime_id]?.state==='unavailable')return t('applicationCard.containerState.unavailable')
+ if(dockerRuntimeSnapshots.value[record.runtime_id]?.state==='stale')return '上次同步结果'
  const container=dockerContainerForDeployment(record)
  if(!container)return dockerRuntimeLoaded.value[record.runtime_id]?t('applicationCard.containerState.missing'):t('applicationCard.containerState.unchecked')
  const key=['running','created','restarting','paused','exited','dead'].includes(container.state)?container.state:'unknown'
@@ -887,21 +906,26 @@ async function loadDockerRuntime(runtimeID:string,force=false,silent=false){
  const pending=dockerRuntimeRequests.get(runtimeID)
  if(pending){await pending;return}
  if(!silent)dockerRuntimeLoading.value[runtimeID]=true
+ const scope=resourceScopeKey()
+ const current=()=>!planExecutionDisposed&&scope===resourceScopeKey()&&canReadContainerLogs.value
  const request=(async()=>{
   try{
-   const response=await client.get<{containers:DockerContainerRecord[]}>(`/docker/endpoints/${encodeURIComponent(runtimeID)}/containers?all=true`,{timeout:35_000})
+   const response=await client.get<{containers:DockerContainerRecord[]; snapshot?:ResourceSnapshot}>(`/docker/endpoints/${encodeURIComponent(runtimeID)}/containers?all=true`,{...resourceReadOptions(),timeout:35_000})
+   if(!current())return
    dockerRuntimeContainers.value[runtimeID]=response.data.containers||[]
-   dockerRuntimeLoaded.value[runtimeID]=true
+   const snapshot=response.data.snapshot
+   if(snapshot)dockerRuntimeSnapshots.value[runtimeID]=snapshot
+   dockerRuntimeLoaded.value[runtimeID]=!snapshot||snapshot.state==='ok'||snapshot.state==='stale'
    delete dockerRuntimeErrors.value[runtimeID]
   }catch(error){
-   if(!silent){dockerRuntimeContainers.value[runtimeID]=[];dockerRuntimeLoaded.value[runtimeID]=false}
+   if(!current())return
    dockerRuntimeErrors.value[runtimeID]=apiErrorMessage(error)
   }
  })()
  dockerRuntimeRequests.set(runtimeID,request)
  try{await request}finally{
   if(dockerRuntimeRequests.get(runtimeID)===request)dockerRuntimeRequests.delete(runtimeID)
-  if(!silent)dockerRuntimeLoading.value[runtimeID]=false
+  if(!silent&&scope===resourceScopeKey())dockerRuntimeLoading.value[runtimeID]=false
  }
 }
 function toggleDeploymentDetails(record:DeploymentRecord){
@@ -957,9 +981,10 @@ async function openComposeContainerStream(record:DeploymentRecord,containerID:st
  const current=()=>!planExecutionDisposed&&!controller.signal.aborted&&composeContainerController===controller&&scope===resourceScopeKey()&&composeContainerAccess(record.id,action)
  try{
   // 重新读取冻结范围，只接受原容器 ID；容器重建后不按名称替换连接目标。
-  const {data}=await client.get<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime`,{...resourceReadOptions(),timeout:35_000,signal:controller.signal})
+  const {data}=await client.get<DeploymentRuntimeResponse>(`/deployments/${encodeURIComponent(record.id)}/runtime`,{...resourceReadOptions(),timeout:35_000,signal:controller.signal})
   if(!current())return
   const runtime=data.runtime
+  if(!runtime||data.snapshot?.state==='stale'){message.warning('容器状态暂未同步，请稍后重试');return}
   deploymentRuntimeStates.value[record.id]=runtime
   delete deploymentRuntimeErrors.value[record.id]
   const container=runtime.services?.flatMap(service=>service.containers||[]).find(item=>item.id===containerID)
@@ -991,6 +1016,7 @@ function openComposeContainerControl(record:DeploymentRecord,containerID:string,
 function containerControlCompleted(runtime:DeploymentRuntimeState){
  if(!currentDeploymentIDs.value.has(runtime.deployment_id))return
  deploymentRuntimeStates.value[runtime.deployment_id]=runtime;delete deploymentRuntimeErrors.value[runtime.deployment_id]
+ delete deploymentRuntimeSnapshots.value[runtime.deployment_id]
  message.success('容器操作完成')
  const record=applicationDrawerCard.value?.deploymentInstances.find(record=>record.id===runtime.deployment_id)
  if(record&&deploymentKind(record)==='docker')void loadDockerRuntime(record.runtime_id,true)
