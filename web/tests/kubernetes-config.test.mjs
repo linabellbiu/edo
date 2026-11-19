@@ -128,10 +128,9 @@ test('存储类分页读取；关闭抽屉后不接受迟到响应，失败可�
   await new Promise(resolve => setImmediate(resolve)); assert.match(retry.state.classesError.value, /storageClassFailed/); assert.doesNotMatch(retry.state.classesError.value, /private/)
   await retry.state.loadStorageClasses(); assert.equal(retry.state.classesError.value, ''); assert.equal(retry.state.classOptions.value[2].value, 'fast'); retry.stop()
 })
-test('配置和存储的编辑、YAML 快捷按钮检查权限，不重复放入更多菜单，PV 和 SC 不出现编辑入口', () => {
+test('服务与网络、配置中心和存储的编辑与 YAML 入口按资源能力和权限展示', () => {
   const component = load('../src/components/KubeResourceActions.vue', { vue, 'vue-i18n': i18n }).default
-  for (const resource of ['configmaps', 'secrets', 'namespaces', 'persistentvolumeclaims', 'persistentvolumes', 'storageclasses']) {
-    const type = api.kubeTypes.find(type => type.resource === resource)
+  for (const type of api.kubeTypes.filter(type => ['network', 'config', 'storage'].includes(type.group))) {
     const state = component.setup({ type, object: {}, can: () => true }, { expose() {}, emit() {} })
     assert.equal(state.yamlShortcut.value, true); assert.equal(state.editShortcut.value, type.update)
     const denied = component.setup({ type, object: {}, can: () => false }, { expose() {}, emit() {} })

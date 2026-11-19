@@ -15,6 +15,7 @@ import KubeSelect from '@/components/KubeSelect.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import KubeResourceActions from '@/components/KubeResourceActions.vue'
 import KubeResourceCell from '@/components/KubeResourceCell.vue'
+import { vCopyFullText } from '@/directives/copyFullText'
 import KubeResourceDetails from '@/components/KubeResourceDetails.vue'
 import KubeDetailTabs from '@/components/KubeDetailTabs.vue'
 import KubeWorkloadSummary from '@/components/KubeWorkloadSummary.vue'
@@ -52,6 +53,8 @@ function editYaml(){if(detail.value&&detailType.value&&detailType.value.update&&
 function linkApplication(object:KubeObject){void router.push({path:'/applications',query:{delivery_kind:'kubernetes',cluster:cluster.value,namespace:object.metadata.namespace||'default',workload:object.metadata.name,container:object.spec?.template?.spec?.containers?.[0]?.name||''}})}
 const auth = useAuthStore(), route = useRoute(), router=useRouter(), { t } = useI18n()
 const group = computed(() => ['nodes','workloads','config','storage','network'].includes(String(route.query.view)) ? String(route.query.view) : 'overview')
+const compactResourceList = computed(() => ['network', 'config', 'storage'].includes(group.value))
+const resourceSearchHint = computed(() => t(compactResourceList.value ? 'k8s.resourceSearch' : group.value === 'nodes' ? 'k8s.nodeSearch' : 'k8s.search'))
 const fromOverview = computed(() => group.value!=='overview'&&route.query.from==='overview')
 const can = (permission:string) => auth.canAny([permission])
 const overview=ref<OverviewData|null>(null),overviewLoading=ref(false),overviewError=ref(''),joinOpen=ref(false)
@@ -115,10 +118,17 @@ const presented=computed<KubeObject[]>(()=>rows.value.map(object=>({...object,id
 const statusOptions=computed(()=>[...new Map(presented.value.map(row=>[row.state.key,{value:row.state.key,label:`${row.state.text} (${presented.value.filter(item=>item.state.key===row.state.key).length})`}])).values()])
 const displayRows=computed(()=>sortKubeRows(presented.value.filter(row=>(!statusFilter.value||row.state.key===statusFilter.value)&&matchesLabelFilter(row,labelFilter.value)&&(!query.value.trim()||resourceSearchText(row,t).includes(query.value.trim().toLowerCase()))),sortKey.value,sortOrder.value))
 const filtersActive=computed(()=>Boolean(query.value||labelFilter.value||statusFilter.value))
-function clearFilters(){query.value='';labelFilter.value='';statusFilter.value=''}
+const resourceSearchInput = ref<{focus: () => void}>()
+function clearFilters() {
+  query.value = ''
+  labelFilter.value = ''
+  statusFilter.value = ''
+  if (compactResourceList.value) resourceSearchInput.value?.focus()
+}
 const clusterInfo = computed(() => clusters.value.find(item=>item.id===cluster.value))
-const hasRowActions=computed(()=>{const type=activeType.value;if(!type)return false;return type.group==='workloads'||['config','storage'].includes(type.group)||type.update&&can(`${type.permission}.update`)||type.delete&&can(`${type.permission}.delete`)||type.resource==='nodes'&&can('kubernetes.node.delete')})
+const hasRowActions=computed(()=>{const type=activeType.value;if(!type)return false;return compactResourceList.value||type.group==='workloads'||type.update&&can(`${type.permission}.update`)||type.delete&&can(`${type.permission}.delete`)||type.resource==='nodes'&&can('kubernetes.node.delete')})
 const columns = computed(() => activeType.value?resourceColumns(activeType.value,t).map(column=>({...column,sortable:kubeSortableColumns.includes(column.key)})):[])
+const hasLabelsColumn = computed(() => columns.value.some(column => column.key === 'labels'))
 const detail = ref<KubeObject>(),detailType=ref<KubeType>(),detailOrigin=ref(''),detailHistory=ref<Array<{object:KubeObject;type:KubeType;tab:string;templateSection?:'containers'|'storage'|'scheduling';templateIdentity?:string;templateContainerKey?:string}>>([]),detailOpen = ref(false), detailLoading = ref(false), detailError = ref(''),detailSyncError=ref(''), detailTab = ref('basic'), events = ref<KubeObject[]>([]), eventsError = ref(false), relatedPods = ref<KubeObject[]>([]),relatedLoading=ref(false),relatedError=ref(''),relatedPartial=ref(false),relatedLoaded=ref(false)
 const workloadSelections=ref<Record<string,WorkloadExplorerSelection>>({})
 const eventsLoading=ref(false)
@@ -816,33 +826,45 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         </div>
         <h3 v-else>{{ t(group==='overview'?'k8s.overview':activeType?`k8s.type_${activeType.resource}`:'k8s.resources') }}</h3>
       <a-radio-group v-if="group==='nodes'&&activeType?.resource==='nodes'" class="node-view-toggle" :value="nodeView" :disabled="contextDisabled" :aria-label="t('k8sTopology.nodeView')" size="small" button-style="solid" @change="setNodeView($event.target.value)"><a-radio-button value="list">{{ t('k8sTopology.list') }}</a-radio-button><a-radio-button value="topology">{{ t('k8sTopology.mapView') }}</a-radio-button></a-radio-group>
-      <div class="resource-heading-refresh"><a-checkbox v-model:checked="autoRefresh">{{ t('k8s.autoRefresh') }}</a-checkbox><a-button :loading="loading||overviewLoading||topologyLoading" @click="refreshAll"><RefreshCw :size="14" />{{ t('k8s.refresh') }}</a-button></div>
+      <div class="resource-heading-refresh"><a-checkbox v-model:checked="autoRefresh">{{ t('k8s.autoRefresh') }}</a-checkbox><a-button :loading="loading||overviewLoading||topologyLoading" :title="compactResourceList&&lastRefreshed?`${t('k8s.lastRefreshed')} ${formatDateTime(lastRefreshed)}`:undefined" @click="refreshAll"><RefreshCw :size="14" />{{ t('k8s.refresh') }}</a-button></div>
         <template v-if="group==='nodes'&&can('kubernetes.node.create')"><a-button :disabled="!cluster||!clusterInfo?.is_active" @click="joinOpen=true">生成加入命令</a-button><a-button v-if="can('cluster.execute')&&can('cluster.update')&&auth.canAny(['cluster.read','deployment.read'])" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="openProvision('join')"><Plus :size="14" />{{ t('k8s.addNode') }}</a-button></template>
         <a-button v-else-if="group!=='overview'&&activeType?.create&&can(`${activeType.permission}.create`)" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="edit()"><Plus :size="14" />{{ t('k8s.create') }}{{ t(`k8s.type_${activeType.resource}`) }}</a-button>
       </div>
       <template v-if="group==='overview'"><a-empty v-if="cluster&&!selectedNamespaces.length" :description="t('k8s.selectNamespaces')" class="workspace-empty"/><KubeOverview :data="overview" :loading="overviewLoading" :error="overviewError" @select="selectResource" /><a-empty v-if="!cluster&&!overviewLoading" :description="t('k8s.noCluster')" class="workspace-empty" /></template>
       <template v-else-if="showNodeTopology"><KubeNodeTopology :data="topology ?? null" :loading="topologyLoading" :error="topologyError" :cluster-name="clusterInfo?.name" :endpoint="clusterInfo?.api_server" :disabled="contextDisabled" @select="node=>openDetails(node)" @refresh="loadTopology()" /></template>
       <template v-else>
-      <div class="list-filters" :class="{'workload-list-filters':group==='workloads'}">
-        <label class="list-filter-field resource-search"><span>{{ t('k8s.nameOrImage') }}</span><a-input v-model:value="query" allow-clear :placeholder="t(activeType?.resource==='nodes'?'k8s.nodeSearch':'k8s.search')" :aria-label="t(activeType?.resource==='nodes'?'k8s.nodeSearch':'k8s.search')"><template #prefix><Search :size="14" /></template></a-input></label>
-        <label v-if="columns.some(column=>column.key==='status')" class="list-filter-field status-select" for="kube-workspace-status"><span>{{ t('k8s.status') }}</span><KubeSelect id="kube-workspace-status" v-model:value="statusFilter" :options="[{value:'',label:t('k8s.filterStatus')},...statusOptions]" /></label>
-        <label class="list-filter-field label-search"><span>{{ t('k8s.labels') }}</span><a-input v-model:value="labelFilter" allow-clear :placeholder="t('k8s.labelFilter')" :aria-label="t('k8s.labels')"><template #prefix><Filter :size="13" /></template></a-input></label>
-        <a-button :disabled="!filtersActive" @click="clearFilters">{{ t('k8s.clearFilters') }}</a-button>
+      <div class="resource-list-controls" :class="{'compact-list-controls':compactResourceList}">
+        <div v-if="activeType||!compactResourceList" class="list-filters" :class="{'workload-list-filters':group==='workloads'}">
+          <label class="list-filter-field resource-search"><span>{{ t(compactResourceList?'common.search':'k8s.nameOrImage') }}</span><a-input ref="resourceSearchInput" v-model:value="query" allow-clear :placeholder="resourceSearchHint" :aria-label="resourceSearchHint"><template #prefix><Search :size="14" /></template></a-input></label>
+          <label v-if="columns.some(column=>column.key==='status')" class="list-filter-field status-select" for="kube-workspace-status"><span>{{ t('k8s.status') }}</span><KubeSelect id="kube-workspace-status" v-model:value="statusFilter" :options="[{value:'',label:t('k8s.filterStatus')},...statusOptions]" /></label>
+          <label class="list-filter-field label-search"><span>{{ t('k8s.labels') }}</span><a-input v-model:value="labelFilter" allow-clear :placeholder="compactResourceList?'app=web, tier':t('k8s.labelFilter')" :aria-label="t('k8s.labels')"><template #prefix><Filter :size="13" /></template></a-input></label>
+          <a-button v-if="!compactResourceList||filtersActive" :type="compactResourceList?'text':'default'" :disabled="!filtersActive" @click="clearFilters">{{ t('k8s.clearFilters') }}</a-button>
+        </div>
+        <div v-if="!compactResourceList||hasContinuation||filtersActive&&activeType" class="list-meta">
+          <span>
+            <strong v-if="!compactResourceList">{{ activeType?.kind }}</strong>
+            {{ t('k8s.filteredCount',{visible:displayRows.length,total:rows.length}) }}
+            <a-tooltip v-if="hasContinuation" :trigger="['hover','focus','click']" :mouse-enter-delay="0.1" :title="t('k8s.searchLoaded')"><button type="button" class="partial-badge" :aria-label="t('k8s.searchLoaded')">{{ t('k8s.partial') }}</button></a-tooltip>
+          </span>
+          <span v-if="!compactResourceList">{{ t('k8s.lastRefreshed') }} {{ lastRefreshed?formatDateTime(lastRefreshed):'—' }}</span>
+        </div>
       </div>
-      <div class="list-meta"><span><strong>{{ activeType?.kind }}</strong>{{ t('k8s.filteredCount',{visible:displayRows.length,total:rows.length}) }}<a-tooltip v-if="hasContinuation" :trigger="['hover','focus','click']" :mouse-enter-delay="0.1" :title="t('k8s.searchLoaded')"><button type="button" class="partial-badge" :aria-label="t('k8s.searchLoaded')">{{ t('k8s.partial') }}</button></a-tooltip></span><span>{{ t('k8s.lastRefreshed') }} {{ lastRefreshed?formatDateTime(lastRefreshed):'—' }}</span></div>
       <a-alert v-if="error" type="error" show-icon :message="error" class="list-alert"><template #action><a-button size="small" @click="refresh(false,false,true)">{{ t('k8s.refresh') }}</a-button></template></a-alert>
       <a-alert v-if="overviewError&&activeType?.resource==='nodes'" type="warning" show-icon :message="overviewError" class="list-alert" />
-      <a-alert v-if="activeType&&['persistentvolumes','storageclasses'].includes(activeType.resource)" type="info" :message="t('k8s.readonlyStorage')" class="list-alert" />
       <a-empty v-if="!activeType" :description="t('k8s.noPermission')" class="workspace-empty" />
       <a-empty v-else-if="!clusters.length&&!loading&&!error" :description="t('k8s.noCluster')" class="workspace-empty" />
       <ResourceTable v-else :key="contextKey" :id="`kube-list-${activeType.resource}`" keep-header v-model:current-page="currentPage" v-model:rows-per-page="pageSize" :sort-key="sortKey" :sort-order="sortOrder" @sort="sortList"
-        class="kube-resource-table" :class="{ 'kube-workload-table': group === 'workloads' }"
+        class="kube-resource-table" :class="{ 'kube-workload-table': group === 'workloads', 'kube-compact-table':compactResourceList }"
         :rows="displayRows" :columns="columns" :loading="loading" :details="false" :empty-text="t(activeType?.namespaced&&!selectedNamespaces.length?'k8s.selectNamespaces':filtersActive?'k8s.noFilterResults':'k8s.empty')" :active-row-key="detailOpen?detailOrigin:lastViewedRow">
-        <template #empty><div v-if="loading" class="list-loading" role="status">{{ t('k8s.loading') }}</div><a-empty v-else :description="t(error?'k8s.unavailable':activeType?.namespaced&&!selectedNamespaces.length?'k8s.selectNamespaces':filtersActive?'k8s.noFilterResults':'k8s.empty')"><a-button v-if="filtersActive" @click="clearFilters">{{ t('k8s.clearFilters') }}</a-button><a-button v-else-if="error" @click="refresh(false,false,true)">{{ t('k8s.refresh') }}</a-button></a-empty></template>
+        <template #empty><div v-if="loading" class="list-loading" role="status">{{ t('k8s.loading') }}</div><a-empty v-else :description="t(error?'k8s.unavailable':activeType?.namespaced&&!selectedNamespaces.length?'k8s.selectNamespaces':filtersActive?'k8s.noFilterResults':'k8s.empty')"><template v-if="!compactResourceList"><a-button v-if="filtersActive" @click="clearFilters">{{ t('k8s.clearFilters') }}</a-button><a-button v-else-if="error" @click="refresh(false,false,true)">{{ t('k8s.refresh') }}</a-button></template></a-empty></template>
         <template v-for="column in columns" :key="column.key" #[`cell-${column.key}`]="{row}">
-          <div v-if="column.key==='name'" class="resource-identity"><button class="resource-name" :title="row.metadata.name" :class="{deleting:row.metadata.deletionTimestamp}" @click="openDetails(row)">{{ row.metadata.name }}</button><a-tooltip :mouse-enter-delay="0.1" :title="Object.entries(row.metadata.labels??{}).map(([key,value])=>`${key}=${value}`).join(', ')"><span class="secondary">{{ Object.entries(row.metadata.labels??{}).slice(0,2).map(([key,value])=>`${key}=${value}`).join(' · ') || row.kind }}</span></a-tooltip></div>
+          <div v-if="column.key==='name'" class="resource-identity">
+            <button class="resource-name" :title="row.metadata.name" :class="{deleting:row.metadata.deletionTimestamp}" @click="openDetails(row)">{{ row.metadata.name }}</button>
+            <KubeResourceCell v-if="compactResourceList&&!hasLabelsColumn&&row.cells.labels?.text!=='—'" class="resource-label-summary" :cell="row.cells.labels" />
+            <a-tooltip v-if="!compactResourceList" :mouse-enter-delay="0.1" :title="Object.entries(row.metadata.labels??{}).map(([key,value])=>`${key}=${value}`).join(', ')"><span class="secondary">{{ Object.entries(row.metadata.labels??{}).slice(0,2).map(([key,value])=>`${key}=${value}`).join(' · ') || row.kind }}</span></a-tooltip>
+          </div>
           <div v-else-if="column.key==='status'" class="status-cell"><a-tag :color="row.state.tone">{{ row.state.text }}</a-tag><span v-if="row.state.reason" class="secondary status-reason">{{ row.state.reason }}</span><span v-if="row.spec?.unschedulable" class="secondary">{{ t('k8s.schedulingDisabled') }}</span></div>
-          <span v-else-if="column.key==='namespace'" class="namespace-value kube-namespace-badge">{{ row.metadata.namespace }}</span>
+          <span v-else-if="column.key==='namespace'" v-copy-full-text class="namespace-value kube-namespace-badge" :title="row.metadata.namespace">{{ row.metadata.namespace }}</span>
           <span v-else-if="column.key==='created'" class="created-at" :title="formatDateTime(row.metadata.creationTimestamp)">{{ formatDateTime(row.metadata.creationTimestamp) }}</span>
           <template v-else-if="column.key==='usage'"><KubeNodeUsage v-if="row.kind==='Node'" :node="row" :overview="overview" :failed="Boolean(overviewError)" /><div v-else class="usage-cell"><span>{{ formatKubeCPU(overviewError?undefined:usageFor(overview,row)?.cpu) }}</span><span class="secondary">{{ formatKubeMemory(overviewError?undefined:usageFor(overview,row)?.memory) }}</span></div></template>
           <KubeResourceCell v-else :cell="row.cells[column.key]" :date="['jobTiming','lastSchedule'].includes(column.key)" :can-follow="canFollow(row.cells[column.key]?.reference)" @follow="followFromRow(row,$event)" />
@@ -1012,4 +1034,38 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 <style scoped>
 .resource-panel-heading{display:flex;align-items:center;gap:12px;min-height:52px;padding:6px 14px;border-bottom:1px solid var(--edo-border);flex-wrap:wrap}.node-view-toggle{margin-left:auto}.resource-panel-heading>h3{font-size:14px;margin:0 auto 0 0;line-height:30px}.resource-heading-refresh{display:flex;align-items:center;gap:10px;margin-left:auto;font-size:12px}.resource-heading-refresh :deep(.ant-checkbox-wrapper){font-size:12px;color:var(--edo-muted)}.overview-return{padding:4px 8px;border-bottom:1px solid var(--edo-border);background:var(--edo-surface-soft)}.overview-return :deep(.ant-btn){font-size:12px}.list-filters{padding:10px 14px;gap:8px}.resource-search{min-width:180px;max-width:none}.label-search{width:210px}.list-meta{font-size:12px;padding:8px 14px}.kube-resource-table :deep(td){height:56px;padding:9px 14px}.kube-resource-table :deep(th){height:40px;padding:9px 14px}.kube-resource-table :deep(.table-empty-cell){height:220px}.resource-identity,.status-cell{gap:4px}.list-loading{padding:50px;color:var(--edo-muted);font-size:13px}.resource-name:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}.resource-name:hover{text-decoration:underline}.resource-panel :deep(.ant-tag){margin-inline-end:0}.detail-tabs :deep(.ant-tabs-nav){margin-bottom:12px}.kube-resource-table :deep(.resource-pagination){margin:10px 14px}
 @media(max-width:768px){.resource-panel-heading{gap:8px;padding:8px 12px}.resource-heading-refresh{margin-left:auto}.list-filters{padding:10px 12px}.label-search{flex:1;min-width:140px}.status-select{width:135px}.list-meta{padding-inline:12px}.resource-search{min-width:100%;flex-basis:100%}}
+
+.compact-list-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--kube-border);
+}
+.compact-list-controls:empty { display: none; }
+.compact-list-controls .list-filters { display: contents; }
+.compact-list-controls .resource-search { flex: 0 1 280px; min-width: min(100%, 225px); }
+.compact-list-controls .label-search { flex: 0 1 230px; min-width: min(100%, 180px); }
+.compact-list-controls .status-select { flex: 0 1 170px; width: auto; }
+.compact-list-controls :deep(input::placeholder) { color: var(--kube-muted); opacity: 1; }
+.compact-list-controls .list-meta {
+  margin-inline-start: auto;
+  min-height: 32px;
+  padding: 0;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+}
+.compact-list-controls .list-meta > span { flex-wrap: wrap; gap: 6px; }
+.compact-list-controls .list-filters :deep(.ant-btn-text:not(:disabled)) { color: var(--kube-muted); }
+.compact-list-controls .list-filters :deep(.ant-btn-text:not(:disabled):hover) { color: var(--kube-text); }
+
+@media(max-width:640px) {
+  .compact-list-controls { padding-inline: 12px; }
+  .compact-list-controls .resource-search,
+  .compact-list-controls .label-search,
+  .compact-list-controls .status-select { flex-basis: 100%; }
+}
 </style>
