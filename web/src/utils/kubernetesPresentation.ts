@@ -1,14 +1,47 @@
-import { formatKubeQuantity, kubeTypes, podSpec, type KubeObject, type KubeType } from '@/api/kubernetes'
+import { formatKubeQuantity, kubeTypes, podSpec, type KubeObject, type KubeServiceEndpoint, type KubeType } from '@/api/kubernetes'
 import { kubernetesNodeRoles, kubernetesNodeRoleKey } from '@/utils/kubernetesRoles'
 
 type Translate = (key:string, values?:Record<string,unknown>)=>string
 export interface KubeReference { resource:string; name:string; namespace?:string; uid?:string }
-export interface KubePortMapping { mapping: string; nodePort?: number }
+export interface KubePortMapping {
+  mapping: string
+  servicePort: number
+  name: string
+  protocol: string
+  showProtocol: boolean
+  needsResolution: boolean
+  nodePort?: number
+}
 export interface KubeCell { text:string; portMappings?:KubePortMapping[]; secondary?:string; raw?:string; reference?:KubeReference; progress?:number; badge?:'success'|'warning'|'danger'|'neutral'; sortValue?:number }
 export interface KubeStatus { key:string; text:string; tone:string; reason?:string }
 const joined = (values:unknown[]) => values.filter(value=>value!==undefined&&value!==null&&value!=='').join(' · ') || '—'
 const entries = (value:Record<string,unknown>={}) => Object.entries(value).map(([key,value])=>`${key}=${value}`)
 const count = (value:unknown) => typeof value==='number'&&Number.isFinite(value) ? String(value) : '—'
+const validServicePort = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 65535
+const formatPortMapping = (servicePort: number, targetPort: number | string, protocol: string, showProtocol: boolean) => `${servicePort}:${targetPort}${showProtocol ? `/${protocol}` : ''}`
+const formatPortLine = (mapping: string, nodePort?: number) => `${mapping}${nodePort ? ` (NodePort ${nodePort})` : ''}`
+
+export function servicePortTooltipLines(mappings: readonly KubePortMapping[], endpoints: readonly KubeServiceEndpoint[] = []) {
+  const portsByNameAndProtocol = new Map<string, Set<number>>()
+  for (const endpoint of endpoints) {
+    for (const port of endpoint.ports ?? []) {
+      if (!validServicePort(port.port)) continue
+      // EndpointSlice 的名称对应 ServicePort.name，目标端口别名可以不同。
+      const key = `${port.name ?? ''}/${port.protocol ?? 'TCP'}`
+      const ports = portsByNameAndProtocol.get(key) ?? new Set<number>()
+      ports.add(port.port)
+      portsByNameAndProtocol.set(key, ports)
+    }
+  }
+
+  return mappings.map(({mapping, servicePort, name, protocol, showProtocol, needsResolution, nodePort}) => {
+    const targets = needsResolution ? portsByNameAndProtocol.get(`${name}/${protocol}`) : undefined
+    if (!targets) return { text: formatPortLine(mapping, nodePort), resolved: !needsResolution }
+    const numbers = [...targets].sort((a, b) => a - b).join(', ')
+    return { text: formatPortLine(formatPortMapping(servicePort, numbers, protocol, showProtocol), nodePort), resolved: true }
+  })
+}
+
 export function selectorText(selector:KubeObject|undefined, all:string) {
   if(!selector)return '—'
   const labels=selector.matchLabels??{}, expressions=selector.matchExpressions??[]
@@ -98,12 +131,21 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
   const containers=podSpec(object).containers??[],all=t('k8s.allPods')
   const labels=entries(object.metadata?.labels)
   const portSpecs=spec.ports??[]
+  const serviceHasEndpoints = kind === 'Service' && spec.type !== 'ExternalName'
+  const headless = serviceHasEndpoints && isHeadlessService(object)
   const portMappings: KubePortMapping[] = portSpecs.map((port: KubeObject) => {
+    const servicePort = port.port
+    const targetPort = port.targetPort ?? servicePort
     const protocol = port.protocol ?? 'TCP'
-    const protocolSuffix = portSpecs.length > 1 || protocol !== 'TCP' ? `/${protocol}` : ''
-    return { mapping: `${port.port}:${port.targetPort ?? port.port}${protocolSuffix}`, nodePort: port.nodePort || undefined }
+    const showProtocol = portSpecs.length > 1 || protocol !== 'TCP'
+    return {
+      mapping: formatPortMapping(servicePort, targetPort, protocol, showProtocol),
+      servicePort, name: port.name ?? '', protocol, showProtocol,
+      needsResolution: serviceHasEndpoints && (headless || typeof targetPort === 'string'),
+      nodePort: port.nodePort || undefined,
+    }
   })
-  const servicePorts = portMappings.map(({mapping, nodePort}) => `${mapping}${nodePort ? ` (NodePort ${nodePort})` : ''}`)
+  const servicePorts = portMappings.map(({mapping, nodePort}) => formatPortLine(mapping, nodePort))
   const cells:Record<string,KubeCell>={
     labels:cell(joined(labels)),images:cell(joined(containers.map((item:KubeObject)=>item.image)),containers.length?t('k8s.containerCount',{count:containers.length}):undefined),
     selector:cell(selectorText(kind==='Service'?spec.selector&&Object.keys(spec.selector).length?{matchLabels:spec.selector}:undefined:kind==='NetworkPolicy'?spec.podSelector:spec.selector,all)),
@@ -167,9 +209,8 @@ export function isHeadlessService(object: KubeObject) {
 export function serviceAccessHints(object: KubeObject, port: KubeObject | undefined, t: Translate): ServiceAccessHint[] {
   if (object.kind !== 'Service') return []
   const spec = object.spec ?? {}
-  const validPort = (value: number) => Number.isInteger(value) && value > 0 && value <= 65535
   const dnsOnly = spec.type === 'ExternalName' || isHeadlessService(object)
-  if (!dnsOnly && !validPort(port?.port)) return []
+  if (!dnsOnly && !validServicePort(port?.port)) return []
 
   const hints: ServiceAccessHint[] = []
   function add(scope: ServiceAccessHint['scope'], hosts: unknown[], number?: number) {
@@ -190,7 +231,7 @@ export function serviceAccessHints(object: KubeObject, port: KubeObject | undefi
   if (dnsOnly) return hints
 
   add('clusterIP', spec.clusterIPs?.length ? spec.clusterIPs : [spec.clusterIP], servicePort)
-  if (['NodePort', 'LoadBalancer'].includes(spec.type) && validPort(port?.nodePort)) {
+  if (['NodePort', 'LoadBalancer'].includes(spec.type) && validServicePort(port?.nodePort)) {
     add(spec.externalTrafficPolicy === 'Local' ? 'localNodePort' : 'nodePort', [t('k8s.serviceAccessNodeAddress')], port?.nodePort)
   }
   if (spec.type === 'LoadBalancer') {

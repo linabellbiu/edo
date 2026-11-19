@@ -15,7 +15,17 @@ import { createKubernetesPreviewData } from './kubernetes-preview-data.mjs'
 
 // 测试入口使用真实页面和内存适配器；任何未登记请求及写操作都不得触达后端。
 const data = createKubernetesPreviewData()
-const workloadActions = new URLSearchParams(location.search).get('workload_actions') === '1'
+const previewQuery = new URLSearchParams(location.search)
+const workloadActions = previewQuery.get('workload_actions') === '1'
+const endpointPreview = previewQuery.get('port_tooltip')
+const serviceEndpointPorts = [
+  { name: 'ingress', protocol: 'TCP', port: 8080 },
+  { name: 'secure', protocol: 'TCP', port: 8443 },
+]
+if (endpointPreview) data.resources.services[0].spec.ports = [
+  { name: 'ingress', port: 80, targetPort: 'http-backend', protocol: 'TCP', nodePort: 30080 },
+  { name: 'secure', port: 443, targetPort: 'secure-backend', protocol: 'TCP', nodePort: 30443 },
+]
 const inventoryClusters = [{ id: 'local-preview', name: '本地预览集群', api_server: 'https://preview.invalid:6443', default_namespace: 'preview', is_active: true, mode: 'kubeconfig', hosts: [], updated_at: new Date().toISOString() }]
 client.defaults.adapter = async config => {
   config.signal?.throwIfAborted()
@@ -68,7 +78,10 @@ client.defaults.adapter = async config => {
         const revision = data.revisions.find(item => item.uid === params.replica_set_uid && item.name === params.replica_set)
         response = { items: params.replica_set_uid ? data.eventsForRevision(revision) : data.eventsFor(object) }
       }
-      else if (operation === 'diagnostics') response = object.kind === 'Deployment' ? { uid: object.metadata.uid, state: 'ok', revisions: data.revisions } : object.kind === 'Service' ? { uid: object.metadata.uid, state: 'ok', endpoints: [] } : { uid: object.metadata.uid, state: 'ok', metrics_at: new Date().toISOString(), containers: object.status?.phase === 'Running' ? [{ name: 'web', cpu: .021, memory: 162 * 1024 ** 2 }, { name: 'metrics', cpu: .002, memory: 18 * 1024 ** 2 }] : [] }
+      else if (operation === 'diagnostics' && object.kind === 'Service') {
+        response = { uid: object.metadata.uid, state: 'ok', endpoints: endpointPreview === 'resolved' ? [{ addresses: ['10.42.0.10'], ports: serviceEndpointPorts }] : [] }
+      }
+      else if (operation === 'diagnostics') response = object.kind === 'Deployment' ? { uid: object.metadata.uid, state: 'ok', revisions: data.revisions } : { uid: object.metadata.uid, state: 'ok', metrics_at: new Date().toISOString(), containers: object.status?.phase === 'Running' ? [{ name: 'web', cpu: .021, memory: 162 * 1024 ** 2 }, { name: 'metrics', cpu: .002, memory: 18 * 1024 ** 2 }] : [] }
       else if (resource === 'pods' && params.include_deployment) {
         const owner = object.metadata.ownerReferences?.find(item => item.controller === true && item.kind === 'ReplicaSet')
         const revision = data.revisions.find(item => item.uid === owner?.uid)
@@ -125,7 +138,6 @@ if (workloadActions) auth.user.permissions.push('kubernetes.workload.execute', '
 auth.loaded = true
 auth.authorizationState = 'ready'
 const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/kubernetes', component: KubernetesView }, { path: '/hosts', component: { render: () => h(ClusterInventory, { clusters: inventoryClusters, hosts: [], loading: false }) } }] })
-const previewQuery = new URLSearchParams(location.search)
 const view = previewQuery.get('view') || 'overview'
 await router.push({ path: view === 'clusters' ? '/hosts' : '/kubernetes', query: { view, resource: previewQuery.get('resource') || undefined, ...(view === 'clusters' ? {} : { cluster: 'local-preview', namespace: 'preview' }) } })
 createApp(KubernetesWorkspacePreview).use(pinia).use(i18n).use(router).mount('#root')

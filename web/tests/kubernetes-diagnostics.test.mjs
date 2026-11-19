@@ -107,6 +107,53 @@ test('诊断关闭或切换对象后丢弃迟到响应；只允许同命名空�
  assert.equal(state.targetReference({target:{kind:'Pod',name:'web',uid:'p1'}}).namespace,'team')
  const c=state.load();globalThis.document={removeEventListener(){}};unmount();requests[2].resolve({data:{uid:'s1',state:'ok',endpoints:[]}});await c;assert.equal(state.endpoints.value.length,1);assert.equal(requests[2].options.signal.aborted,true)
 })
+test('悬浮时才读取命名端口，合并重复请求并丢弃旧项目、旧版本或已关闭的结果', async () => {
+ const requests = []
+ const endpointAPI = load('../src/api/kubernetes.ts', {'./client': {__esModule:true, default:{get:(url,options)=>new Promise(resolve=>requests.push({url,options,resolve}))}}})
+ const presentation = load('../src/utils/kubernetesPresentation.ts', {'@/api/kubernetes':endpointAPI})
+ const component = load('../src/components/KubeResourceCell.vue', {
+  vue:{...vue,onBeforeUnmount(){}}, 'vue-i18n':{useI18n:()=>({t:key=>key})},
+  '@/api/kubernetes':endpointAPI, '@/utils/kubernetesPresentation':presentation,
+ }).default
+ const service = {kind:'Service',spec:{ports:[{name:'ingress',port:80,targetPort:'http-backend',nodePort:30080}]}}
+ const props = vue.reactive({cell:presentation.resourceCells(service,key=>key).servicePorts,servicePortSource:{scope:'project-a',cluster:'local',namespace:'team',name:'web',uid:'s1',resourceVersion:'1'}})
+ const scope = vue.effectScope()
+ const state = scope.run(()=>component.setup(props,{expose(){},emit(){}}))
+ const finish = async (index, uid, port, resultState = 'ok') => {
+  requests[index].resolve({data:{uid,state:resultState,endpoints:[{ports:[{name:'ingress',port}]}]}})
+  await new Promise(resolve=>setImmediate(resolve))
+ }
+ try {
+  assert.equal(requests.length,0)
+  state.onTooltipOpen(true); state.onTooltipOpen(true)
+  assert.equal(requests.length,1)
+  assert.equal(requests[0].url,'/kubernetes/clusters/local/resources/services/web/diagnostics')
+  assert.deepEqual(requests[0].options.params,{namespace:'team',uid:'s1'})
+  props.servicePortSource = {...props.servicePortSource,scope:'project-b'}
+  assert.equal(requests[0].options.signal.aborted,true)
+  await finish(1,'s1',8080)
+  await finish(0,'s1',9999)
+  assert.deepEqual(state.tooltipLines.value,[{text:'80:8080 (NodePort 30080)',resolved:true}])
+  state.onTooltipOpen(false); state.onTooltipOpen(true)
+  assert.equal(requests.length,2)
+  props.servicePortSource = {...props.servicePortSource,resourceVersion:'2'}
+  await finish(2,'different-uid',8081)
+  assert.equal(state.tooltipNote.value,'k8s.servicePortsUnavailable')
+  assert.deepEqual(state.tooltipLines.value,[{text:'80:http-backend (NodePort 30080)',resolved:false}])
+  state.onTooltipOpen(false); state.onTooltipOpen(true)
+  state.onTooltipOpen(false)
+  assert.equal(requests[3].options.signal.aborted,true)
+  await finish(3,'s1',5555)
+  assert.equal(state.tooltipLines.value[0].resolved,false)
+  state.onTooltipOpen(true)
+  await finish(4,'s1',8082,'partial')
+  assert.equal(state.tooltipNote.value,'k8s.servicePortsPartial')
+  assert.equal(state.tooltipLines.value[0].text,'80:8082 (NodePort 30080)')
+  props.servicePortSource = undefined
+  assert.equal(state.tooltipLines.value[0].resolved,false)
+  assert.equal(requests.length,5)
+ } finally { state.onTooltipOpen(false); scope.stop() }
+})
 test('未修改端口与环境变量时保留同端口多协议和变量展开顺序，空参数不丢失',()=>{
  const raw={name:'app',image:'app:1',ports:[{name:'dns-tcp',containerPort:53,protocol:'TCP'},{name:'dns-udp',containerPort:53,protocol:'UDP'}],env:[{name:'PREFIX',value:'base'},{name:'SECRET',valueFrom:{secretKeyRef:{name:'secret',key:'value'}}},{name:'EXPANDED',value:'$(PREFIX)/$(SECRET)'}],args:['']}
  const state=form.containerForm(raw);state.image='app:2';const result=form.buildContainer(state)

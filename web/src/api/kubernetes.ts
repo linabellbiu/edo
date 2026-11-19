@@ -37,6 +37,25 @@ export function resourceURL(cluster: string, type: KubeType, name?: string) {
 export async function listKubeResources(cluster: string, type: KubeType, namespace: string, continuation = '', signal?: AbortSignal, fresh = false) {
   return (await client.get<{items: KubeObject[]; continue: string}>(resourceURL(cluster, type), { params: {namespace: type.namespaced ? namespace : '', continue: continuation, ...(fresh ? {fresh: 1} : {})}, signal })).data
 }
+
+export interface KubeServiceEndpoint {
+  ports?: ReadonlyArray<{name?: string | null; protocol?: string | null; port?: number | null}> | null
+}
+export interface KubeServicePortSource {
+  cluster: string
+  scope: string
+  namespace: string
+  name: string
+  uid: string
+  resourceVersion?: string
+}
+export async function getKubeServiceEndpoints(source: KubeServicePortSource, signal: AbortSignal) {
+  const type = kubeTypes.find(item => item.resource === 'services')!
+  const {data} = await client.get<{uid: string; state: 'ok' | 'partial'; endpoints?: KubeServiceEndpoint[] | null}>(
+    `${resourceURL(source.cluster, type, source.name)}/diagnostics`, {params: {namespace: source.namespace, uid: source.uid}, signal},
+  )
+  return data
+}
 export const identityOf = (object: KubeObject) => ({ uid: object.metadata.uid, resource_version: object.metadata.resourceVersion })
 export const kubeKey = (object: KubeObject) => String(object.metadata.uid)
 

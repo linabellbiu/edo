@@ -3,12 +3,12 @@ import { computed, ref, watch } from 'vue'
 import {nodeConditionState} from '@/utils/kubernetesNode'
 import {formatDateTime} from '@/utils/time'
 import { useI18n } from 'vue-i18n'
-import { formatKubeQuantity, podSpec, type KubeObject, type KubeType } from '@/api/kubernetes'
+import { formatKubeQuantity, podSpec, type KubeObject, type KubeServicePortSource, type KubeType } from '@/api/kubernetes'
 import { resourceCells, resourceColumns, ingressRoutes, isHeadlessService, podReferences, policyDirections, policyPeer, serviceAccessHints, type KubeReference } from '@/utils/kubernetesPresentation'
 import { kubeContainerDetails, kubeContainerProbes, kubeEnvironmentSources, kubeVolumeDetails } from '@/utils/kubernetesDetails'
 import KubeResourceCell from './KubeResourceCell.vue'
 import KubeServiceAccessHint from './KubeServiceAccessHint.vue'
-const props=defineProps<{object:KubeObject;type:KubeType;canFollow:(reference?:KubeReference)=>boolean;container?:string;containerKey?:string;selectionIdentity?:string;section?:'all'|'containers'|'storage'|'scheduling'}>()
+const props=defineProps<{object:KubeObject;type:KubeType;canFollow:(reference?:KubeReference)=>boolean;container?:string;containerKey?:string;selectionIdentity?:string;section?:'all'|'containers'|'storage'|'scheduling';servicePortSource?:KubeServicePortSource}>()
 const emit=defineEmits<{follow:[reference:KubeReference];container:[name:string];containerKey:[key:string,identity?:string]}>()
 const {t}=useI18n()
 const cells=computed(()=>resourceCells(props.object,t))
@@ -76,7 +76,7 @@ const resources=(container:KubeObject,field:string)=>Object.entries(container.re
 const rawResources=(container:KubeObject,field:string)=>Object.entries(container.resources?.[field]??{}).map(([key,value])=>`${key}: ${value}`).join(' · ')
 </script>
 <template>
-  <section v-if="(!section||section==='all')&&fields.length" class="resource-detail-section kube-facts-section"><h4>{{ t('k8s.resourceSettings') }}</h4><dl class="kube-detail-facts"><div v-for="field in fields" :key="field.key"><dt>{{ field.label }}</dt><dd><KubeResourceCell :cell="cells[field.key]" :date="['jobTiming','lastSchedule'].includes(field.key)" :can-follow="canFollow(cells[field.key]?.reference)" @follow="emit('follow',$event)" /></dd></div></dl></section>
+  <section v-if="(!section||section==='all')&&fields.length" class="resource-detail-section kube-facts-section"><h4>{{ t('k8s.resourceSettings') }}</h4><dl class="kube-detail-facts"><div v-for="field in fields" :key="field.key"><dt>{{ field.label }}</dt><dd><KubeResourceCell :cell="cells[field.key]" :date="['jobTiming','lastSchedule'].includes(field.key)" :can-follow="canFollow(cells[field.key]?.reference)" :service-port-source="field.key==='servicePorts'?servicePortSource:undefined" @follow="emit('follow',$event)" /></dd></div></dl></section>
 
   <section v-if="(!section||section==='all'||section==='containers')&&(containers.length||containerMissing||section==='containers')" class="resource-detail-section kube-container-config">
     <div class="kube-container-layout">

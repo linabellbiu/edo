@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate, type LocationQueryRaw } from 'vue-router'
 import client from '@/api/client'
 import { identityOf, kubeKey, kubeTypes, listKubeResources, listKubeResourceScopes, namespaceSelection, mapNamespaceRequests, mergeNamespaceOverviews, resourceURL, withFreshKubeResource, kubeErrorMessage, KubeResourceChanged, streamKubeEvents, KubeWatchError, usageFor, formatKubeCPU, formatKubeMemory, podSpec, type KubeWatchEvent, type KubeOverview as OverviewData, type KubeCluster, type KubeObject, type KubeResourceDetail, type KubeType } from '@/api/kubernetes'
+import type { KubeServicePortSource } from '@/api/kubernetes'
 import { resourceColumns, resourceCells, resourceStatus, resourceSearchText, matchesLabelFilter, relatedPodMatch, relatedWorkloadServices, type KubeReference } from '@/utils/kubernetesPresentation'
 import KubeNamespaceTree from '@/components/KubeNamespaceTree.vue'
 import '@/styles/kubernetes.css'
@@ -149,6 +150,14 @@ const imageEdit=ref<{cluster:string;type:KubeType;object:KubeObject}>()
 const imageEditor=ref<{confirmLeave:()=>Promise<boolean>}>()
 const manifestObject=ref<KubeObject>()
 const workloadActor=()=>JSON.stringify([auth.user?.id,auth.user?.project_id,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??''])
+function servicePortSource(object: KubeObject): KubeServicePortSource | undefined {
+  const metadata = object.metadata
+  if (object.kind !== 'Service' || !metadata?.uid || !metadata.name || !metadata.namespace || !cluster.value || !can('kubernetes.network.read')) return
+  return {
+    cluster: cluster.value, scope: JSON.stringify([workloadActor(), auth.user?.is_superuser, auth.user?.permissions]),
+    name: metadata.name, namespace: metadata.namespace, uid: metadata.uid, resourceVersion: metadata.resourceVersion,
+  }
+}
 const workloadScope=computed(()=>JSON.stringify([cluster.value,detail.value?.metadata.uid,workloadActor(),can('kubernetes.workload.read')]))
 watch(workloadScope,()=>{imageEdit.value=undefined;manifestObject.value=undefined},{flush:'sync'})
 const canEditWorkloadImage=computed(()=>Boolean(imageEdit.value&&detailOpen.value&&!detailError.value&&!detailSyncError.value&&can('kubernetes.workload.read')&&can('kubernetes.workload.update')))
@@ -867,7 +876,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
           <span v-else-if="column.key==='namespace'" v-copy-full-text class="namespace-value kube-namespace-badge" :title="row.metadata.namespace">{{ row.metadata.namespace }}</span>
           <span v-else-if="column.key==='created'" class="created-at" :title="formatDateTime(row.metadata.creationTimestamp)">{{ formatDateTime(row.metadata.creationTimestamp) }}</span>
           <template v-else-if="column.key==='usage'"><KubeNodeUsage v-if="row.kind==='Node'" :node="row" :overview="overview" :failed="Boolean(overviewError)" /><div v-else class="usage-cell"><span>{{ formatKubeCPU(overviewError?undefined:usageFor(overview,row)?.cpu) }}</span><span class="secondary">{{ formatKubeMemory(overviewError?undefined:usageFor(overview,row)?.memory) }}</span></div></template>
-          <KubeResourceCell v-else :cell="row.cells[column.key]" :date="['jobTiming','lastSchedule'].includes(column.key)" :can-follow="canFollow(row.cells[column.key]?.reference)" @follow="followFromRow(row,$event)" />
+          <KubeResourceCell v-else :cell="row.cells[column.key]" :date="['jobTiming','lastSchedule'].includes(column.key)" :can-follow="canFollow(row.cells[column.key]?.reference)" :service-port-source="column.key==='servicePorts'?servicePortSource(row):undefined" @follow="followFromRow(row,$event)" />
         </template>
         <template v-if="hasRowActions" #actions="{row}"><KubeResourceActions v-if="activeType" :object="row" :type="activeType" :can="can" :terminal-ready="selectedPodContainer(row)?.running === true" :logs-path="podStreamPath(row)" :terminal-path="podStreamPath(row,true)" :loading="busy===row.metadata.uid" :disabled="Boolean(busy)" @details="openDetails(row)" @link="linkApplication(row)" @yaml="openDetails(row,'manifest')" @edit="edit(row)" @pods="openDetails(row,'pods')" @logs="openStream(row)" @terminal="openStream(row,true)" @action="confirmAction(row,$event)" @scale="showScale(row)" @remove="remove(row)" @remove-node="showRemoveNode(row)" /></template>
         <template #pagination="{page,limit,total,changePage,changeLimit}"><div class="kube-pagination"><a-pagination :current="page" :page-size="limit" :total="total" :show-size-changer="false" :show-total="(count:number)=>t('planList.total',{count})" @change="changePage" /><label>{{ t('k8s.rowsPerPage') }}<KubeSelect :value="limit" :aria-label="t('k8s.rowsPerPage')" :options="[10,20,50,100].map(value=>({value,label:String(value)}))" @update:value="(value:unknown)=>changeLimit(Number(value))" /></label></div></template>
@@ -897,7 +906,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 
         <a-tab-pane key="basic" :class="{'workload-overview-pane':workloadDetail}" :tab="t(workloadDetail?'k8s.workloadOverview':'k8s.resourceSettings')">
           <KubeWorkloadSummary v-if="workloadDetail" :object="detail" :type="detailType" :events="events" :events-error="eventsError" :events-loading="detailLoading||eventsLoading"
-            :services="workloadServices" :services-error="servicesError" :services-partial="serviceCatalog?.partial"
+            :services="workloadServices" :services-error="servicesError" :services-partial="serviceCatalog?.partial" :service-port-source="servicePortSource"
             @events="detailTab='events'" @follow="followReference" @retry-services="loadWorkloadServices(true)" />
           <KubeWorkloadExplorer v-if="workloadExplorer" v-show="detailTab==='basic'"
             :visible="detailPresented&&detailTab==='basic'" :key="cluster+detail.metadata.uid" :scope-key="workloadScope" :cluster="cluster" :object="detail" :type="detailType"
@@ -914,7 +923,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
             :disabled="Boolean(busy)||detailLoading||Boolean(detailSyncError)" @container="chooseDetailPodContainer"
             @logs="target=>openDetailPodContainer(target)" @terminal="target=>openDetailPodContainer(target,true)" @files="target=>openDetailPodContainer(target,true,true)"
             @follow="followDetailPodReference" @pod-changed="refreshDetail" />
-          <KubeResourceDetails v-else-if="!workloadDetail" :object="detail" :type="detailType" :container="detail.kind==='Pod'?selectedPodContainerName(detail):undefined" :can-follow="canFollow" @container="value=>selectedContainer[kubeKey(detail!)]=value" @follow="followReference" />
+          <KubeResourceDetails v-else-if="!workloadDetail" :object="detail" :type="detailType" :container="detail.kind==='Pod'?selectedPodContainerName(detail):undefined" :can-follow="canFollow" :service-port-source="servicePortSource(detail)" @container="value=>selectedContainer[kubeKey(detail!)]=value" @follow="followReference" />
           <KubeNodeInfo v-if="detail.kind==='Node'" :node="detail" />
         </a-tab-pane>
         <a-tab-pane v-if="detail.kind==='Service'" key="diagnostics" :tab="t(detail.kind==='Service'?'k8s.serviceEndpoints':detail.kind==='Deployment'?'k8s.deploymentHistory':'k8s.podDiagnostics')"><KubeResourceDiagnostics v-if="detailTab==='diagnostics'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :can-follow="canFollow" @follow="followReference" /></a-tab-pane>

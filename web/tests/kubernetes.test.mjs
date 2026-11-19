@@ -229,9 +229,50 @@ test('存储和网络单元格完整展示绑定、命名端口、多条路径�
  const service={kind:'Service',metadata:{},spec:{type:'NodePort',clusterIPs:['10.0.0.1','fd00::1'],ports:[{port:80,targetPort:'http',nodePort:30080},{port:53,targetPort:53,protocol:'UDP'}]}}
  const ports=presentation.resourceCells(service,translate).servicePorts
  assert.equal(ports.text,'80:http/TCP (NodePort 30080)\n53:53/UDP')
- assert.deepEqual(ports.portMappings,[{mapping:'80:http/TCP',nodePort:30080},{mapping:'53:53/UDP',nodePort:undefined}])
+ assert.deepEqual(ports.portMappings,[
+  {mapping:'80:http/TCP',servicePort:80,name:'',protocol:'TCP',showProtocol:true,needsResolution:true,nodePort:30080},
+  {mapping:'53:53/UDP',servicePort:53,name:'',protocol:'UDP',showProtocol:true,needsResolution:false,nodePort:undefined},
+ ])
  const ingress={spec:{rules:[{host:'a.test',http:{paths:[{path:'/api',pathType:'Prefix',backend:{service:{name:'api',port:{name:'http'}}}}]}},{host:'b.test',http:{paths:[{path:'/',backend:{service:{name:'web',port:{number:80}}}}]}}],defaultBackend:{service:{name:'fallback',port:{number:8080}}}}}
  assert.equal(presentation.ingressRoutes(ingress).length,3);assert.equal(presentation.ingressRoutes(ingress)[0].port,'http');assert.equal(presentation.ingressRoutes(ingress)[2].service,'fallback')
+})
+test('Service 端口提示使用同名同协议 EndpointSlice，完整展示排序去重后的真实数字',()=>{
+ const service={kind:'Service',spec:{type:'NodePort',ports:[
+  {name:'http',port:80,targetPort:'http-target',nodePort:30080},
+  {name:'dns',port:53,targetPort:'dns-target',protocol:'UDP'},
+  {name:'https',port:443,targetPort:6443},
+ ]}}
+ const ports=presentation.resourceCells(service,translate).servicePorts
+ const endpoints=[
+  {ports:[{name:'http',port:9080},{name:'dns',port:5353,protocol:'UDP'},{name:'https',port:7443}]},
+  {ports:[{name:'http',port:8080,protocol:'TCP'},{name:'http-target',port:7080},{name:'dns',port:8053},{name:'http',port:0}]},
+  {ports:[{name:'http',port:8080},{name:'http',port:65536},{name:'dns',port:null,protocol:'UDP'}]},
+  {ports:null},
+ ]
+ assert.deepEqual(presentation.servicePortTooltipLines(ports.portMappings,endpoints),[
+  {text:'80:8080, 9080/TCP (NodePort 30080)',resolved:true},
+  {text:'53:5353/UDP',resolved:true},
+  {text:'443:6443/TCP',resolved:true},
+ ])
+ assert.equal(ports.text,'80:http-target/TCP (NodePort 30080)\n53:dns-target/UDP\n443:6443/TCP')
+ assert.deepEqual(presentation.servicePortTooltipLines(ports.portMappings),[
+  {text:'80:http-target/TCP (NodePort 30080)',resolved:false},
+  {text:'53:dns-target/UDP',resolved:false},
+  {text:'443:6443/TCP',resolved:true},
+ ])
+})
+test('Service 端口提示处理未命名端口和 Headless 的真实数字，ExternalName 保持原配置',()=>{
+ const mappings=spec=>presentation.resourceCells({kind:'Service',spec},translate).servicePorts.portMappings
+ const endpoints=[{ports:[{port:9090}]}]
+ assert.deepEqual(presentation.servicePortTooltipLines(mappings({ports:[{port:80,targetPort:'http-target'}]}),endpoints),[
+  {text:'80:9090',resolved:true},
+ ])
+ assert.deepEqual(presentation.servicePortTooltipLines(mappings({clusterIP:'None',ports:[{port:80,targetPort:8080}]}),endpoints),[
+  {text:'80:9090',resolved:true},
+ ])
+ assert.deepEqual(presentation.servicePortTooltipLines(mappings({type:'ExternalName',ports:[{port:80,targetPort:'http-target'}]}),endpoints),[
+  {text:'80:http-target',resolved:true},
+ ])
 })
 test('搜索只使用资源摘要，Secret 和 ConfigMap 的数据原文不进入索引',()=>{
  for(const kind of ['ConfigMap','Secret']){

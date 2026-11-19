@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import {computed,ref,watch} from 'vue'
 import {useI18n} from 'vue-i18n'
-import {type KubeObject,type KubeType} from '@/api/kubernetes'
+import type {KubeObject,KubeServicePortSource,KubeType} from '@/api/kubernetes'
 import {resourceCells,resourceColumns,selectorText,type KubeReference} from '@/utils/kubernetesPresentation'
 import {workloadConditionTone} from '@/utils/kubernetesWorkloadExplorer'
 import {formatDateTime,formatRelativeTime} from '@/utils/time'
 import KubeResourceCell from './KubeResourceCell.vue'
 import KubeWorkloadEvents from './KubeWorkloadEvents.vue'
 
-const props=defineProps<{object:KubeObject;type:KubeType;events:KubeObject[];eventsError:boolean;eventsLoading?:boolean;services?:KubeObject[];servicesError?:boolean;servicesPartial?:boolean}>()
+const props=defineProps<{object:KubeObject;type:KubeType;events:KubeObject[];eventsError:boolean;eventsLoading?:boolean;services?:KubeObject[];servicesError?:boolean;servicesPartial?:boolean;servicePortSource?:(service:KubeObject)=>KubeServicePortSource|undefined}>()
 const emit=defineEmits<{events:[];follow:[KubeReference];'retry-services':[]}>()
 const {t}=useI18n()
 const cells=computed(()=>resourceCells(props.object,t))
@@ -21,7 +21,7 @@ const serviceSummaries=computed(()=>(props.services??[]).map(service=>{
   return {
     uid,name:{text:name,reference:{resource:'services',name,namespace,uid}},
     type:serviceType?.text,address,addressLabel:t(service.spec?.type==='ExternalName'?'k8s.hostname':'k8s.workloadServiceClusterIP'),
-    ports:servicePorts,
+    ports:servicePorts, portSource:props.servicePortSource?.(service),
   }
 }))
 const metadataExpanded=ref(false)
@@ -63,7 +63,7 @@ const settings=computed(()=>{
       <dl class="workload-service-facts">
        <div v-if="service.address?.text&&service.address.text!=='—'"><dt>{{ service.addressLabel }}</dt><dd>{{ service.address.text }}</dd></div>
        <div v-if="service.address?.secondary&&service.address.secondary!=='—'"><dt>{{ t('k8s.externalAddress') }}</dt><dd>{{ service.address.secondary }}</dd></div>
-       <div v-if="service.ports?.portMappings?.length"><dt>{{ t('k8s.portMapping') }}</dt><dd><KubeResourceCell :cell="service.ports" /></dd></div>
+       <div v-if="service.ports?.portMappings?.length"><dt>{{ t('k8s.portMapping') }}</dt><dd><KubeResourceCell :cell="service.ports" :service-port-source="service.portSource" /></dd></div>
       </dl>
      </li>
     </ul>
