@@ -1238,7 +1238,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               <div class="runtime-input-block">
                 <header>
                   <span><strong>端口映射<DeploymentFieldHelp text="不配置则不发布端口；默认监听地址为 127.0.0.1。单容器固定使用 bridge 网络；多服务网络互联请使用 Docker Compose。" label="端口映射说明" /></strong></span>
-                  <a-button type="link" size="small" @click="addDockerPort"><Plus :size="14" />添加端口</a-button>
+                  <a-button class="edo-button-soft" size="small" @click="addDockerPort"><Plus :size="14" />添加端口</a-button>
                 </header>
                 <div v-for="(port, index) in form.docker_port_mappings" :key="`port-${index}`" class="docker-row docker-port-input-row">
                   <a-input v-model:value="port.host_ip" placeholder="监听地址" />
@@ -1254,7 +1254,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               <div class="runtime-input-block">
                 <header>
                   <span><strong>环境变量<DeploymentFieldHelp text="填写变量名和值。配置会随方案保存，请勿填写密码、令牌等敏感信息。" label="环境变量说明" /></strong></span>
-                  <a-button type="link" size="small" @click="addDockerVariable"><Plus :size="14" />添加变量</a-button>
+                  <a-button class="edo-button-soft" size="small" @click="addDockerVariable"><Plus :size="14" />添加变量</a-button>
                 </header>
                 <div v-for="(item, index) in form.docker_environment_variables" :key="`env-${index}`" class="docker-row docker-key-value-row">
                   <a-input v-model:value="item.name" placeholder="变量名，例如 APP_ENV" />
@@ -1267,7 +1267,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               <div class="runtime-input-block">
                 <header>
                   <span><strong>命名卷<DeploymentFieldHelp text="只允许由 EDO 隔离创建的 Docker 命名卷；不允许配置宿主机目录或 Docker Socket 挂载。" label="命名卷说明" /></strong></span>
-                  <a-button type="link" size="small" @click="addDockerVolume"><Plus :size="14" />添加挂载</a-button>
+                  <a-button class="edo-button-soft" size="small" @click="addDockerVolume"><Plus :size="14" />添加挂载</a-button>
                 </header>
                 <div v-for="(item, index) in form.docker_volume_mounts" :key="`volume-${index}`" class="docker-volume-row">
                   <a-input v-model:value="item.source" placeholder="卷标识，例如 data" />

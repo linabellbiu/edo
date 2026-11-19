@@ -866,7 +866,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
                 <p v-if="missingPodContainer(row)" class="related-container-missing" role="status">所选容器已不存在，请重新选择。</p>
                 <div class="related-pod-stream-actions">
                   <SessionAction kind="container-log" :path="podStreamPath(row)" :title="`${row.metadata.name} / ${selectedPodContainerName(row)}`" :disabled="!allowedRelatedPodStream(row)"><a-button class="kube-action kube-action-info" size="small" :disabled="!allowedRelatedPodStream(row)" @click="openRelatedPodStream(row)">{{ t('k8s.logs') }}</a-button></SessionAction>
-                  <SessionAction v-if="can('terminal.open')" kind="terminal" :path="podStreamPath(row,true)" :title="`${row.metadata.name} / ${selectedPodContainerName(row)}`" :disabled="!allowedRelatedPodStream(row,true)"><a-button class="kube-action kube-action-success" size="small" :disabled="!allowedRelatedPodStream(row,true)" @click="openRelatedPodStream(row,true)">{{ t('k8s.terminal') }}</a-button></SessionAction>
+                  <SessionAction v-if="can('terminal.open')" kind="terminal" :path="podStreamPath(row,true)" :title="`${row.metadata.name} / ${selectedPodContainerName(row)}`" :disabled="!allowedRelatedPodStream(row,true)"><a-button class="kube-action edo-button-soft" data-tone="success" size="small" :disabled="!allowedRelatedPodStream(row,true)" @click="openRelatedPodStream(row,true)">{{ t('k8s.terminal') }}</a-button></SessionAction>
                 </div>
               </div>
             </template>

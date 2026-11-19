@@ -1563,18 +1563,6 @@ onMounted(() => {
 :global(.access-user-modal .ant-select-single.ant-select-open .ant-select-selection-item) {
   color: var(--edo-muted);
 }
-:global(.access-user-modal .ant-modal-footer .ant-btn-primary:not(:disabled)) {
-  --access-user-action-bg: color-mix(in srgb, var(--edo-primary) 84%, var(--edo-text));
-  color: var(--edo-surface);
-  background: var(--access-user-action-bg);
-  border-color: var(--access-user-action-bg);
-}
-:global(.access-user-modal .ant-modal-footer .ant-btn-primary:not(:disabled):hover) {
-  --access-user-action-bg: color-mix(in srgb, var(--edo-primary) 76%, var(--edo-text));
-}
-:global(.access-user-modal .ant-modal-footer .ant-btn-primary:not(:disabled):active) {
-  --access-user-action-bg: color-mix(in srgb, var(--edo-primary) 70%, var(--edo-text));
-}
 .audit-error {
   margin-bottom: 12px;
 }

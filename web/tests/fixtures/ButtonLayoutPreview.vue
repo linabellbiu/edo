@@ -27,6 +27,11 @@ function toggleTheme() {
           <Button :size="size" data-case="trailing-svg">下一步<ArrowRight :size="16" /></Button>
           <Button :size="size" data-case="brand"><RuntimeBrandIcon kind="docker" />运行资源</Button>
           <Button :size="size" type="primary" data-case="primary"><Plus :size="16" />添加主机</Button>
+          <Button :size="size" class="edo-button-soft" data-case="soft-blue">添加端口</Button>
+          <Button :size="size" class="edo-button-soft" data-tone="success" data-case="soft-green">查看容器组</Button>
+          <Button :size="size" class="edo-button-soft" data-tone="warning" data-case="soft-amber">重启</Button>
+          <Button :size="size" type="primary" danger data-case="danger-solid">删除</Button>
+          <Button :size="size" class="edo-button-soft" disabled data-case="soft-disabled">添加端口</Button>
           <Button :size="size" type="link" data-case="link"><ArrowRight :size="16" />查看详情</Button>
           <Button :size="size" type="text" data-case="text"><RefreshCw :size="16" />刷新列表</Button>
           <Button :size="size" danger data-case="danger"><Plus :size="16" />危险操作样式</Button>

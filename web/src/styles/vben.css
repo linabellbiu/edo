@@ -32,6 +32,7 @@
   --edo-tabs-item-height: 28px;
   --edo-tabs-item-height-sm: 24px;
   --edo-tabs-item-height-lg: 32px;
+  --edo-tabs-item-gap: 6px;
   --edo-tabs-bg: var(--edo-surface);
   --edo-tabs-border: var(--edo-border);
   --edo-tabs-divider: color-mix(in srgb, var(--edo-border) 88%, transparent);
@@ -215,6 +216,8 @@ button { color: inherit; }
 .ant-segmented.ant-segmented,
 .edo-segmented-tabs {
   display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
   padding: 3px;
   border: 1px solid var(--edo-tabs-border);
   border-radius: var(--edo-tabs-radius);
@@ -223,14 +226,20 @@ button { color: inherit; }
   color: var(--edo-muted);
   font-weight: 500;
   line-height: normal;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
-/* 功能性分段之间用发丝线分隔；选中与悬停的实底块两侧不画线，避免线条压进色块。 */
-.ant-segmented.ant-segmented .ant-segmented-item { position: relative; }
+.ant-segmented.ant-segmented .ant-segmented-group,
+.edo-segmented-tabs,
+.ant-radio-group:has(> .ant-radio-button-wrapper) {
+  gap: var(--edo-tabs-item-gap);
+}
+/* 单行控件在留白中间显示发丝线，高亮条目两侧仍保留完整间距。 */
 .ant-segmented.ant-segmented .ant-segmented-item + .ant-segmented-item::before,
 .edo-segmented-tabs > .edo-tab-item + .edo-tab-item::before {
   content: "";
   position: absolute;
-  left: 0;
+  inset-inline-start: calc(var(--edo-tabs-item-gap) / -2);
   top: 50%;
   width: 1px;
   height: 14px;
@@ -238,16 +247,18 @@ button { color: inherit; }
   background: var(--edo-tabs-divider);
   transform: translateY(-50%);
   transition: opacity 140ms ease;
+  pointer-events: none;
 }
 .ant-segmented.ant-segmented .ant-segmented-item-selected::before,
 .ant-segmented.ant-segmented .ant-segmented-item-selected + .ant-segmented-item::before,
-.ant-segmented.ant-segmented .ant-segmented-item:has(+ .ant-segmented-item-selected)::before,
-.ant-segmented.ant-segmented .ant-segmented-item:hover::before,
-.ant-segmented.ant-segmented .ant-segmented-item:hover + .ant-segmented-item::before,
-.edo-segmented-tabs > .edo-tab-item:is([aria-selected="true"], [aria-current="page"], [aria-pressed="true"], :hover)::before,
-.edo-segmented-tabs > .edo-tab-item:is([aria-selected="true"], [aria-current="page"], [aria-pressed="true"], :hover) + .edo-tab-item::before { opacity: 0; }
+.ant-segmented.ant-segmented .ant-segmented-item:hover:not(.ant-segmented-item-disabled)::before,
+.ant-segmented.ant-segmented .ant-segmented-item:hover:not(.ant-segmented-item-disabled) + .ant-segmented-item::before,
+.edo-segmented-tabs > .edo-tab-item:is([aria-selected="true"], [aria-current="page"], [aria-pressed="true"], :hover:not(:disabled))::before,
+.edo-segmented-tabs > .edo-tab-item:is([aria-selected="true"], [aria-current="page"], [aria-pressed="true"], :hover:not(:disabled)) + .edo-tab-item::before { opacity: 0; }
 .ant-segmented.ant-segmented .ant-segmented-group { align-items: stretch; }
+.ant-segmented.ant-segmented:not(.ant-segmented-block) .ant-segmented-group { min-width: max-content; }
 .ant-segmented.ant-segmented .ant-segmented-item {
+  position: relative;
   display: flex;
   height: var(--edo-tabs-item-height);
   align-items: center;
@@ -269,6 +280,7 @@ button { color: inherit; }
   color: var(--edo-text);
   background: var(--edo-tabs-hover-bg);
 }
+.ant-segmented.ant-segmented .ant-segmented-item:not(.ant-segmented-item-selected):not(.ant-segmented-item-disabled):hover::after { background-color: transparent; }
 .ant-segmented.ant-segmented .ant-segmented-thumb { border-radius: var(--edo-tabs-item-radius); background: var(--edo-tabs-selected-bg); box-shadow: none; }
 .ant-segmented.ant-segmented .ant-segmented-item-selected {
   color: var(--edo-tabs-selected-color);
@@ -283,10 +295,10 @@ button { color: inherit; }
 .ant-segmented.ant-segmented.ant-segmented-sm .ant-segmented-item { height: var(--edo-tabs-item-height-sm); }
 .ant-segmented.ant-segmented.ant-segmented-sm .ant-segmented-item + .ant-segmented-item::before { height: 12px; }
 
-/* 功能性单选按钮组（安装方式、镜像来源、授权范围等）与分段控件同一套外观：
-   浅色容器 + 发丝边框与分隔线 + 浅靛蓝选中，不再使用整块高饱和品牌蓝。 */
+/* 按钮式单选组可在窄屏换行，靠统一留白分隔条目。 */
 .ant-radio-group:has(> .ant-radio-button-wrapper) {
   display: inline-flex;
+  max-width: 100%;
   flex-wrap: wrap;
   align-items: center;
   padding: 3px;
@@ -308,17 +320,7 @@ button { color: inherit; }
   line-height: var(--edo-tabs-item-height);
   transition: color 140ms ease, background-color 140ms ease;
 }
-.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper::before {
-  top: 50%;
-  inset-inline-start: 0;
-  width: 1px;
-  height: 14px;
-  border-radius: 1px;
-  background: var(--edo-tabs-divider);
-  transform: translateY(-50%);
-  transition: opacity 140ms ease;
-}
-.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:first-child::before { display: none; }
+.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper::before { display: none; }
 .ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:not(.ant-radio-button-wrapper-checked):not(.ant-radio-button-wrapper-disabled):hover {
   color: var(--edo-text);
   background: var(--edo-tabs-hover-bg);
@@ -329,10 +331,6 @@ button { color: inherit; }
   box-shadow: none;
   font-weight: 600;
 }
-.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper-checked::before,
-.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:has(+ .ant-radio-button-wrapper-checked)::before,
-.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:hover::before,
-.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper:hover + .ant-radio-button-wrapper::before { opacity: 0; }
 .ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper-disabled {
   color: color-mix(in srgb, var(--edo-muted) 55%, transparent);
   background: transparent;
@@ -351,19 +349,15 @@ button { color: inherit; }
 .edo-segmented-tabs {
   display: flex;
   width: max-content;
-  max-width: 100%;
   margin-bottom: 14px;
-  overflow-x: auto;
-  scrollbar-width: none;
 }
-.ant-segmented.ant-segmented.edo-page-tabs::-webkit-scrollbar,
+.ant-segmented.ant-segmented::-webkit-scrollbar,
 .edo-segmented-tabs::-webkit-scrollbar { display: none; }
-.ant-segmented.ant-segmented.edo-page-tabs .ant-segmented-group { min-width: max-content; }
 .ant-segmented.ant-segmented.edo-page-tabs .ant-segmented-item { height: var(--edo-tabs-item-height-lg); }
 .ant-segmented.ant-segmented.edo-page-tabs .ant-segmented-item-label { padding: 0 16px; font-size: 13.5px; }
 
 /* 保留原生链接与页签的键盘和导航语义，视觉沿用 Segmented。 */
-.edo-segmented-tabs { min-width: 0; margin-bottom: 0; }
+.edo-segmented-tabs { margin-bottom: 0; }
 .edo-segmented-tabs > .edo-tab-item {
   display: flex;
   position: relative;

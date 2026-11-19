@@ -163,7 +163,7 @@ test('语义修复保留创建请求字段、成功关闭、失败保稿及授�
 const rgb = value => { const hex = value.replace('#', ''); return (hex.length === 3 ? [...hex].map(char => char + char).join('') : hex).match(/../g).map(part => parseInt(part, 16)) }
 const luminance = color => rgb(color).map(value => value / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0)
 const ratio = (one, two) => (Math.max(luminance(one), luminance(two)) + .05) / (Math.min(luminance(one), luminance(two)) + .05)
-test('用户 modal 局部编译样式复用主题 tokens，浅深色 placeholder/创建各状态理论对比度达标', () => {
+test('创建用户弹窗复用共用主按钮与占位符配色，两种主题均可读', () => {
   const compiled = compileStyle({ source: descriptor.styles[0].content, filename: 'AccessView.vue', id: 'data-v-access-user-a11y', scoped: true })
   assert.deepEqual(compiled.errors, [])
   const css = postcss.parse(compiled.code), rules = []
@@ -173,21 +173,15 @@ test('用户 modal 局部编译样式复用主题 tokens，浅深色 placeholder
   assert.ok(placeholder); assert.equal(declaration(placeholder, 'color'), 'var(--edo-muted)')
   const openedSelection = rules.find(rule => rule.selector === '.access-user-modal .ant-select-single.ant-select-open .ant-select-selection-item')
   assert.ok(openedSelection); assert.equal(declaration(openedSelection, 'color'), 'var(--edo-muted)')
-  const button = rules.filter(rule => rule.selector.includes('.ant-modal-footer .ant-btn-primary:not(:disabled)'))
-  assert.equal(button.length, 3)
-  const base = button.find(rule => !rule.selector.endsWith(':hover') && !rule.selector.endsWith(':active'))
-  assert.equal(declaration(base, 'color'), 'var(--edo-surface)')
-  assert.equal(declaration(base, 'background'), 'var(--access-user-action-bg)')
+  assert.ok(!rules.some(rule => rule.selector.includes('.ant-btn-primary')))
+  const buttonStyles = postcss.parse(readFileSync(new URL('../src/styles/buttons.css', import.meta.url), 'utf8'))
+  const base = buttonStyles.nodes.find(rule => rule.type === 'rule' && rule.selectors.includes('.ant-btn-primary'))
+  const palette = buttonStyles.nodes.find(rule => rule.type === 'rule' && rule.selector === ':root')
+  assert.equal(declaration(base, '--edo-button-fill'), 'var(--edo-button-primary-bg)')
+  assert.ok(ratio(declaration(base, '--edo-button-label'), declaration(palette, '--edo-button-primary-bg')) >= 4.5)
   const themes = postcss.parse(readFileSync(new URL('../src/styles/vben.css', import.meta.url), 'utf8')).nodes.filter(node => node.type === 'rule' && [':root', ':root[data-theme="dark"]'].includes(node.selector))
   for (const theme of themes) {
     const token = key => declaration(theme, key)
     assert.ok(ratio(token('--edo-muted'), token('--edo-surface')) >= 4.5)
-    for (const rule of button) {
-      const weight = /var\(--edo-primary\)\s+(\d+)%/.exec(declaration(rule, '--access-user-action-bg'))
-      assert.ok(weight)
-      const fraction = Number(weight[1]) / 100
-      const mixed = '#' + rgb(token('--edo-primary')).map((value, index) => Math.round(value * fraction + rgb(token('--edo-text'))[index] * (1 - fraction)).toString(16).padStart(2, '0')).join('')
-      assert.ok(ratio(mixed, token('--edo-surface')) >= 4.5, `${theme.selector} ${rule.selector}`)
-    }
   }
 })

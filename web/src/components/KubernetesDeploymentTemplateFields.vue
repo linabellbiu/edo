@@ -63,7 +63,7 @@ function port(index:number,patch:Partial<KubernetesDeploymentSettings['ports'][n
      </div>
     </section>
     <span v-if="!modelValue.ports.length" class="kube-port-empty">未配置端口</span>
-    <a-button class="kube-port-add" :disabled="networkDisabled||modelValue.ports.length>=32" @click="addPort"><Plus :size="15"/>添加端口</a-button>
+    <a-button class="kube-port-add edo-button-soft" :disabled="networkDisabled||modelValue.ports.length>=32" @click="addPort"><Plus :size="15"/>添加端口</a-button>
     </template>
     <p v-if="portsError" class="kube-runtime-error" role="alert">{{portsError}}</p>
     <p v-if="k3d&&usesNodePort&&serviceType!=='ExternalName'" class="kube-service-note" role="note">k3d 容器集群：节点端口由 EDO 发布到宿主机（仅 TCP），部署后使用宿主机 IP:节点端口访问。</p>

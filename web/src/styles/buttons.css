@@ -1,4 +1,81 @@
-/* 统一图标与文字的布局，按钮尺寸、颜色及键盘焦点继续使用组件库与业务样式。 */
+/* 统一操作色与键盘焦点，复用组件库的尺寸和禁用样式。 */
+:root {
+  --edo-button-primary-bg: #376cc2;
+  --edo-button-danger-bg: #c73b57;
+  --edo-button-danger-text: var(--edo-button-danger-bg);
+  --edo-button-soft-blue-bg: #e3ebf7;
+  --edo-button-soft-blue-text: #285192;
+  --edo-button-soft-green-bg: #dff5e8;
+  --edo-button-soft-green-text: #24644d;
+  --edo-button-soft-amber-bg: #fff1d8;
+  --edo-button-soft-amber-text: #855414;
+  --edo-button-focus: var(--edo-button-primary-bg);
+}
+
+:root[data-theme="dark"] {
+  --edo-button-danger-text: #f395a8;
+  --edo-button-soft-blue-bg: #26374e;
+  --edo-button-soft-blue-text: #bcd5f9;
+  --edo-button-soft-green-bg: #194337;
+  --edo-button-soft-green-text: #a1d9c3;
+  --edo-button-soft-amber-bg: #4b391e;
+  --edo-button-soft-amber-text: #e5c998;
+  --edo-button-focus: #a9c5fb;
+}
+
+.ant-btn-primary,
+.ant-modal-confirm-btns > .ant-btn-dangerous {
+  --edo-button-fill: var(--edo-button-primary-bg);
+  --edo-button-label: #fff;
+  --edo-button-shade: #000;
+}
+
+.ant-btn-primary.ant-btn-dangerous,
+.ant-modal-confirm-btns > .ant-btn-dangerous {
+  --edo-button-fill: var(--edo-button-danger-bg);
+}
+
+.ant-btn.ant-btn-dangerous:not(:disabled):not(.ant-btn-primary, [aria-disabled="true"], .ant-btn-background-ghost):not(.ant-modal-confirm-btns > *) {
+  color: var(--edo-button-danger-text);
+}
+.ant-btn.ant-btn-dangerous:is(.ant-btn-default, .ant-btn-dashed):not(:disabled):not([aria-disabled="true"], .ant-btn-background-ghost):not(.ant-modal-confirm-btns > *) {
+  border-color: var(--edo-button-danger-text);
+}
+
+.edo-button-soft {
+  --edo-button-fill: var(--edo-button-soft-blue-bg);
+  --edo-button-label: var(--edo-button-soft-blue-text);
+  --edo-button-shade: var(--edo-button-label);
+}
+
+.edo-button-soft[data-tone="success"] {
+  --edo-button-fill: var(--edo-button-soft-green-bg);
+  --edo-button-label: var(--edo-button-soft-green-text);
+}
+.edo-button-soft[data-tone="warning"] {
+  --edo-button-fill: var(--edo-button-soft-amber-bg);
+  --edo-button-label: var(--edo-button-soft-amber-text);
+}
+
+.ant-btn:is(.ant-btn-primary, .edo-button-soft, .ant-modal-confirm-btns > .ant-btn-dangerous):not(:disabled, [aria-disabled="true"], .ant-btn-background-ghost) {
+  color: var(--edo-button-label);
+  background-color: var(--edo-button-fill);
+  border-color: transparent;
+  box-shadow: none;
+}
+.ant-btn:is(.ant-btn-primary, .edo-button-soft, .ant-modal-confirm-btns > .ant-btn-dangerous):not(:disabled, [aria-disabled="true"], .ant-btn-background-ghost):is(:hover, :active) {
+  color: var(--edo-button-label);
+  background-color: color-mix(in srgb, var(--edo-button-fill), var(--edo-button-shade) var(--edo-button-shade-amount, 7%));
+  border-color: transparent;
+}
+.ant-btn:active { --edo-button-shade-amount: 12%; }
+
+.ant-btn.ant-btn:not(:disabled, [aria-disabled="true"]):focus-visible {
+  outline: 2px solid var(--edo-button-focus);
+  outline-offset: 2px;
+}
+
+/* 统一图标与文字的布局。 */
 .ant-btn.ant-btn {
   display: inline-flex;
   align-items: center;

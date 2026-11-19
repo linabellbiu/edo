@@ -6,9 +6,9 @@ import postcss from 'postcss'
 const styleSource = readFileSync(new URL('../src/styles/vben.css', import.meta.url), 'utf8')
 const styleRoot = postcss.parse(styleSource)
 
-function ruleDeclarations(selector) {
+function ruleDeclarations(selector, root = styleRoot) {
   const merged = {}
-  styleRoot.walkRules(rule => {
+  root.walkRules(rule => {
     if (rule.parent && rule.parent.type === 'atrule') return
     if (!rule.selectors.includes(selector)) return
     Object.assign(merged, Object.fromEntries(rule.nodes.filter(node => node.type === 'decl').map(node => [node.prop, node.value])))
@@ -115,9 +115,10 @@ test('功能性分段之间用发丝分隔线，选中与悬停两侧不压线',
   const divider = ruleDeclarations('.ant-segmented.ant-segmented .ant-segmented-item + .ant-segmented-item::before')
   assert.equal(divider.width, '1px')
   assert.equal(divider.background, 'var(--edo-tabs-divider)')
+  assert.equal(divider['inset-inline-start'], 'calc(var(--edo-tabs-item-gap) / -2)')
+  assert.equal(divider['pointer-events'], 'none')
   assert.match(styleSource, /ant-segmented-item-selected \+ \.ant-segmented-item::before/)
-  assert.match(styleSource, /ant-segmented-item:has\(\+ \.ant-segmented-item-selected\)::before/)
-  assert.match(styleSource, /ant-segmented-item:hover \+ \.ant-segmented-item::before/)
+  assert.match(styleSource, /ant-segmented-item:hover:not\(\.ant-segmented-item-disabled\) \+ \.ant-segmented-item::before/)
   assert.equal(ruleDeclarations('.ant-segmented.ant-segmented.ant-segmented-sm .ant-segmented-item + .ant-segmented-item::before').height, '12px')
   const light = palette('light'), dark = palette('dark')
   assert.equal(light['--edo-tabs-border'], 'var(--edo-border)')
@@ -125,11 +126,24 @@ test('功能性分段之间用发丝分隔线，选中与悬停两侧不压线',
   assert.ok(dark['--edo-tabs-divider'] && dark['--edo-tabs-divider'] !== light['--edo-tabs-divider'], '深色需要独立的发丝线颜色')
 })
 
+test('原生页签、分段筛选与按钮式单选统一使用真实的条目间距', () => {
+  const light = palette('light'), dark = palette('dark')
+  assert.equal(light['--edo-tabs-item-gap'], '6px')
+  assert.equal(dark['--edo-tabs-item-gap'], light['--edo-tabs-item-gap'])
+  for (const selector of [
+    '.edo-segmented-tabs',
+    '.ant-segmented.ant-segmented .ant-segmented-group',
+    '.ant-radio-group:has(> .ant-radio-button-wrapper)',
+  ]) assert.equal(ruleDeclarations(selector).gap, 'var(--edo-tabs-item-gap)', selector)
+})
+
 test('页面页签保留横向滚动、标签内边距与键盘焦点环', () => {
   const pageTabs = ruleDeclarations('.ant-segmented.ant-segmented.edo-page-tabs')
-  assert.equal(pageTabs['overflow-x'], 'auto')
   assert.equal(pageTabs.width, 'max-content')
-  assert.equal(pageTabs['max-width'], '100%')
+  for (const selector of ['.ant-segmented.ant-segmented', '.edo-segmented-tabs']) {
+    assert.equal(ruleDeclarations(selector)['overflow-x'], 'auto')
+    assert.equal(ruleDeclarations(selector)['max-width'], '100%')
+  }
   assert.equal(ruleDeclarations('.ant-segmented.ant-segmented.edo-page-tabs .ant-segmented-item-label').padding, '0 16px')
   assert.ok(styleSource.includes('.ant-segmented.ant-segmented .ant-segmented-item:has(.ant-segmented-item-input:focus-visible)'), '键盘焦点必须落在条目本身并显示焦点环')
   assert.ok(styleSource.includes('.ant-segmented.ant-segmented.ant-segmented-disabled .ant-segmented-item-selected'), '禁用时分段控件不得保持高亮选中')
@@ -146,15 +160,37 @@ test('功能性单选按钮组与分段控件同一套外观，不再使用整�
   assert.equal(item.border, '0')
   assert.equal(item.color, 'var(--edo-muted)')
   const divider = ruleDeclarations('.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper::before')
-  assert.equal(divider.width, '1px')
-  assert.equal(divider.background, 'var(--edo-tabs-divider)')
+  assert.equal(group['flex-wrap'], 'wrap')
+  assert.equal(divider.display, 'none', '换行时留白独立分隔各项')
   const checked = ruleDeclarations('.ant-radio-group:has(> .ant-radio-button-wrapper) > .ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled)')
   assert.equal(checked.background, 'var(--edo-tabs-selected-bg)')
   assert.equal(checked.color, 'var(--edo-tabs-selected-color)')
-  assert.match(styleSource, /ant-radio-button-wrapper:has\(\+ \.ant-radio-button-wrapper-checked\)::before/)
-  assert.match(styleSource, /ant-radio-button-wrapper:hover \+ \.ant-radio-button-wrapper::before/)
   // 选中态不允许回落到高饱和品牌蓝实底。
-  const solidBlue = [...styleRoot.nodes].some(() => false)
   assert.ok(!/ant-radio-button-wrapper-checked[^{]*\{[^}]*background:\s*(#4f6ef7|var\(--edo-primary\))/.test(styleSource), '单选按钮组不得使用品牌蓝实底')
   assert.ok(!styleSource.includes('ant-radio-button-wrapper-disabled\n'), '禁用项需要单独降对比而非隐藏')
+})
+
+test('主操作、辅助操作、正向操作、影响提示与破坏性确认共用可读配色', () => {
+  const buttons = postcss.parse(readFileSync(new URL('../src/styles/buttons.css', import.meta.url), 'utf8'))
+  const light = ruleDeclarations(':root', buttons)
+  const dark = { ...light, ...ruleDeclarations(':root[data-theme="dark"]', buttons) }
+  const primary = ruleDeclarations('.ant-btn-primary', buttons)
+  const danger = ruleDeclarations('.ant-modal-confirm-btns > .ant-btn-dangerous', buttons)
+  assert.equal(primary['--edo-button-fill'], 'var(--edo-button-primary-bg)')
+  assert.equal(danger['--edo-button-fill'], 'var(--edo-button-danger-bg)')
+  for (const [theme, colors] of [['light', light], ['dark', dark]]) {
+    assert.ok(contrast(resolve(colors['--edo-button-focus'], colors), palette(theme)['--edo-bg']) >= 3)
+    for (const variant of [primary, danger]) {
+      assert.ok(contrast(variant['--edo-button-label'], resolve(variant['--edo-button-fill'], colors)) >= 4.5)
+    }
+    for (const [selector, tone] of [
+      ['.edo-button-soft', 'blue'],
+      ['.edo-button-soft[data-tone="success"]', 'green'],
+      ['.edo-button-soft[data-tone="warning"]', 'amber'],
+    ]) {
+      const variant = ruleDeclarations(selector, buttons)
+      assert.equal(variant['--edo-button-fill'], `var(--edo-button-soft-${tone}-bg)`)
+      assert.ok(contrast(resolve(variant['--edo-button-label'], colors), resolve(variant['--edo-button-fill'], colors)) >= 4.5, tone)
+    }
+  }
 })

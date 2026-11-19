@@ -38,7 +38,6 @@
   --workload-neutral-bg: #f4f5f7;
   --workload-neutral-text: #687182;
   --workload-neutral-border: #e0e3e9;
-  --workload-action-run: #a76809;
   --workload-progress-bg: #eef2ff;
   --workload-progress-text: #4560d8;
   --workload-progress-border: #c9d3f5;
@@ -88,7 +87,6 @@
   --workload-neutral-bg: #252a33;
   --workload-neutral-text: #b4c0ce;
   --workload-neutral-border: #3a414d;
-  --workload-action-run: #a76809;
   --workload-progress-bg: #20294d;
   --workload-progress-text: #a9b8ff;
   --workload-progress-border: #3e5680;
@@ -132,7 +130,7 @@
 
 /* 详情占满可用高度，长内容由所属模块滚动，不再撑高整个抽屉。 */
 
-/* 工作负载详情头部的操作做成实底按钮，按“修改 / 运行”区分颜色，比列表里的轻量按钮更醒目。 */
+/* 工作负载详情头部沿用共用操作色，并保持紧凑尺寸。 */
 .kube-workload-drawer .resource-detail-compact-header { gap: 12px; }
 .kube-workload-drawer .resource-detail-compact-title { max-width: min(32%, 380px); color: var(--workload-title); font-size: 17px; font-weight: 700; line-height: 1.35; }
 .kube-workload-drawer .resource-detail-compact-actions .detail-context { margin: 0; color: var(--workload-muted); font-size: 13px; font-weight: 500; }
@@ -142,12 +140,6 @@
 .kube-workload-drawer .resource-detail-compact-actions .resource-row-actions .ant-btn,
 .workload-pod-runtime .runtime-pod-actions .ant-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding-inline: 10px; border-radius: 7px; font-size: 13px; font-weight: 600; }
 .kube-workload-drawer .resource-detail-compact-actions .resource-row-actions .ant-btn svg { flex: none; }
-.kube-workload-drawer .resource-detail-compact-actions .kube-action-edit.ant-btn:not(:disabled),
-.kube-workload-drawer .resource-detail-compact-actions .kube-action-images.ant-btn:not(:disabled) { border-color: var(--workload-selected); background: var(--workload-selected); color: var(--workload-on-selected); }
-.kube-workload-drawer .resource-detail-compact-actions .kube-action-edit.ant-btn:not(:disabled):hover,
-.kube-workload-drawer .resource-detail-compact-actions .kube-action-images.ant-btn:not(:disabled):hover { border-color: color-mix(in srgb, var(--workload-selected) 86%, #000); background: color-mix(in srgb, var(--workload-selected) 86%, #000); color: var(--workload-on-selected); }
-.kube-workload-drawer .resource-detail-compact-actions .kube-action-run.ant-btn:not(:disabled) { border-color: var(--workload-action-run); background: var(--workload-action-run); color: #fff; }
-.kube-workload-drawer .resource-detail-compact-actions .kube-action-run.ant-btn:not(:disabled):hover { border-color: color-mix(in srgb, var(--workload-action-run) 86%, #000); background: color-mix(in srgb, var(--workload-action-run) 86%, #000); color: #fff; }
 .kube-workload-drawer .resource-detail-compact-actions :is(.kube-action-scale,.kube-action-yaml,.kube-action-link).ant-btn:not(:disabled),
 .workload-pod-runtime .runtime-pod-actions .kube-action-yaml.ant-btn:not(:disabled) { border-color: var(--workload-border); background: var(--workload-column); color: var(--workload-text); }
 .kube-workload-drawer .resource-detail-compact-actions :is(.kube-action-scale,.kube-action-yaml,.kube-action-link).ant-btn:not(:disabled):hover,

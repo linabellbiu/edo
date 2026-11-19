@@ -54,7 +54,7 @@ test('工作负载配色由自足入口管理，明暗主题完整覆盖各个�
  const entryRules=postcss.parse(entry).nodes,importIndex=entryRules.findIndex(node=>node.type==='atrule'&&node.name==='import'&&/['"]\.\/kubernetes-workload\.css['"]/.test(node.params))
  assert.ok(importIndex>=0);assert.ok(importIndex<entryRules.findIndex(node=>node.type==='rule'))
  const light=palette('light'),dark=palette('dark')
- for(const theme of ['light','dark'])for(const name of ['accent','on-accent','bar','on-bar','header','on-header','page','selected','on-selected','idle','hover','on-hover','column','heading','title','stripe','text','muted','link','focus','chart-cpu','action-run'])assert.match(palette(theme)[`--workload-${name}`],/^#[\da-f]{3}(?:[\da-f]{3})?$/i,`${theme}/${name}`)
+ for(const theme of ['light','dark'])for(const name of ['accent','on-accent','bar','on-bar','header','on-header','page','selected','on-selected','idle','hover','on-hover','column','heading','title','stripe','text','muted','link','focus','chart-cpu'])assert.match(palette(theme)[`--workload-${name}`],/^#[\da-f]{3}(?:[\da-f]{3})?$/i,`${theme}/${name}`)
  assert.deepEqual(Object.keys(dark).sort(),Object.keys(light).sort())
  for(const name of Object.keys(light))assert.ok(Object.hasOwn(declarationsFor([shared],":root[data-theme='dark']"),name),`暗色需要显式覆盖 ${name}`)
  const references=[...Object.values(components).flatMap(component=>component.styles.map(style=>style.toString())),readFileSync(new URL('../src/components/KubeResourceDiagnostics.vue',import.meta.url),'utf8')].join('\n')
@@ -63,7 +63,7 @@ test('工作负载配色由自足入口管理，明暗主题完整覆盖各个�
 
 test('填充选中、标题、普通内容与状态标签的正文对比度充足',()=>{
  for(const theme of ['light','dark']){
-  const colors=palette(theme),pairs=[['on-accent','accent'],['on-bar','bar'],['on-header','header'],['on-accent','action-run'],['on-selected','selected'],['text','page'],['text','hover'],['on-hover','hover'],['title','column'],['title','heading'],['title','idle'],['text','idle'],['text','column'],['text','heading'],['text','stripe'],['muted','heading'],['muted','column'],['muted','idle'],['muted','hover'],['link','column'],['link','idle'],['link','hover']]
+  const colors=palette(theme),pairs=[['on-accent','accent'],['on-bar','bar'],['on-header','header'],['on-selected','selected'],['text','page'],['text','hover'],['on-hover','hover'],['title','column'],['title','heading'],['title','idle'],['text','idle'],['text','column'],['text','heading'],['text','stripe'],['muted','heading'],['muted','column'],['muted','idle'],['muted','hover'],['link','column'],['link','idle'],['link','hover']]
   for(const state of ['ready','warning','error','neutral','progress'])pairs.push([`${state}-text`,`${state}-bg`])
   for(const [foreground,background] of pairs)assert.ok(contrast(colors[`--workload-${foreground}`],colors[`--workload-${background}`])>=4.5,`${theme}/${foreground}/${background} 对比度不足`)
  }
@@ -138,11 +138,6 @@ test('工作负载通过填充和留白分区，不使用嵌套线框或选中�
  assert.match(heading.background,/var\(--workload-bar\)/);assert.match(heading.color,/var\(--workload-on-bar\)/)
  assert.equal(declarationsFor(runtime.styles,'.runtime-conditions')['grid-template-columns'],'minmax(0,1fr)')
  assert.equal(declarationsFor(runtime.styles,'.runtime-pod-card').background,'var(--workload-column)')
- const editAction=declarationsFor([shared],'.kube-workload-drawer .resource-detail-compact-actions .kube-action-edit.ant-btn:not(:disabled)')
- assert.equal(editAction.background,'var(--workload-selected)','详情头部修改类操作使用实底品牌色')
- assert.equal(editAction.color,'var(--workload-on-selected)')
- const runAction=declarationsFor([shared],'.kube-workload-drawer .resource-detail-compact-actions .kube-action-run.ant-btn:not(:disabled)')
- assert.equal(runAction.background,'var(--workload-action-run)','运行类操作与修改类操作区分颜色')
  const pane=declarationsFor([shared],'.kube-workload-drawer .detail-tabs .ant-tabs-tabpane.workload-overview-pane')
  assert.equal(pane.background,'var(--workload-page)','概览面板使用中性页面底色区分白卡')
  assert.match(declarationsFor(explorer.styles,'.revision-item.selected::after')['border-left'],/var\(--workload-selected\)/,'选中版本以指针形状指向对应容器组')

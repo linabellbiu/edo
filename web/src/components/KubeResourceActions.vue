@@ -27,14 +27,14 @@ const more=computed(()=>editable.value&&!editShortcut.value||!workloadToolbar.va
 <template>
   <ResourceRowActions class="kube-resource-actions" :more="more" :loading="loading">
     <a-button v-if="type.group==='workloads'&&!inDrawer" class="kube-action kube-action-info" size="small" :disabled="disabled" @click="emit('details')">{{ t('resourceList.details') }}</a-button>
-    <a-button v-if="controller&&!inDrawer" class="kube-action kube-action-success" size="small" :disabled="disabled" @click="emit('pods')">{{ t('k8s.podConsole') }}</a-button>
+    <a-button v-if="controller&&!inDrawer" class="kube-action edo-button-soft" data-tone="success" size="small" :disabled="disabled" @click="emit('pods')">{{ t('k8s.podConsole') }}</a-button>
     <a-button v-if="type.resource==='pods'&&!hideContainerActions" class="kube-action kube-action-info" size="small" :disabled="disabled||logsPath===''" @click="emit('logs')">{{ t('k8s.logs') }}</a-button><SessionPopoutLink v-if="type.resource==='pods'&&!hideContainerActions&&logsPath" kind="container-log" :path="logsPath" :title="object.metadata.name" :disabled="disabled" />
     <a-button v-if="directRuntime&&['deployments','statefulsets'].includes(type.resource)" class="kube-action kube-action-scale" size="small" :disabled="disabled" @click="emit('scale')">
       <Scaling :size="14" aria-hidden="true" />{{ t('k8s.scale') }}<span v-if="replicas" class="workload-toolbar-replicas" :data-tone="replicas.badge" :title="t('k8s.readyReplicas')">{{ replicas.text }}</span>
     </a-button>
-    <a-button v-if="workloadToolbar&&editable&&supportsWorkloadImageEdit(type)" class="kube-action kube-action-images" size="small" :disabled="disabled" @click="emit('images')"><Box :size="14" aria-hidden="true" />{{ t('k8s.adjustImage') }}</a-button>
-    <a-button v-if="directRuntime" class="kube-action kube-action-warning kube-action-run" size="small" :disabled="disabled" @click="emit('action','restart')"><RefreshCw :size="14" aria-hidden="true" />{{ t('k8s.restart') }}</a-button>
-    <a-button v-if="editShortcut" class="kube-action kube-action-warning kube-action-edit" size="small" :disabled="disabled" @click="emit('edit')"><Pencil :size="14" aria-hidden="true" />{{ t('k8s.edit') }}</a-button>
+    <a-button v-if="workloadToolbar&&editable&&supportsWorkloadImageEdit(type)" class="kube-action" type="primary" size="small" :disabled="disabled" @click="emit('images')"><Box :size="14" aria-hidden="true" />{{ t('k8s.adjustImage') }}</a-button>
+    <a-button v-if="directRuntime" class="kube-action edo-button-soft" data-tone="warning" size="small" :disabled="disabled" @click="emit('action','restart')"><RefreshCw :size="14" aria-hidden="true" />{{ t('k8s.restart') }}</a-button>
+    <a-button v-if="editShortcut" class="kube-action kube-action-edit" :type="workloadToolbar?'primary':'default'" size="small" :disabled="disabled" @click="emit('edit')"><Pencil :size="14" aria-hidden="true" />{{ t('k8s.edit') }}</a-button>
     <a-button v-if="yamlShortcut" class="kube-action kube-action-yaml" size="small" :disabled="disabled" @click="emit('yaml')"><FileCode2 v-if="workloadToolbar" :size="14" aria-hidden="true" />YAML</a-button>
     <a-button v-if="workloadToolbar&&linkable" class="kube-action kube-action-link" size="small" :disabled="disabled" @click="emit('link')"><Link2 :size="14" aria-hidden="true" />{{ t('delivery.link') }}</a-button>
     <a-button v-if="workloadToolbar&&removable" class="kube-action kube-action-remove" size="small" danger :disabled="disabled" @click="emit('remove')"><Trash2 :size="14" aria-hidden="true" />{{ t('k8s.remove') }}</a-button>

@@ -83,12 +83,8 @@
 }
 .kube-action.ant-btn:not(:disabled):hover,
 .kube-resource-actions .resource-more-button.ant-btn:not(:disabled):hover { color: var(--kube-link); background: var(--kube-selected); border-color: var(--kube-link); }
-.kube-action-success.ant-btn:not(:disabled) { color: var(--kube-success); border-color: var(--kube-success-border); background: var(--kube-success-bg); }
-.kube-action-success.ant-btn:not(:disabled):hover { color: var(--kube-success); border-color: var(--kube-success); background: var(--kube-success-bg); }
 .kube-action-edit.ant-btn:not(:disabled) { color: var(--kube-link); border-color: var(--kube-control-border); background: var(--kube-surface); }
 .kube-action-edit.ant-btn:not(:disabled):hover { color: var(--kube-link); border-color: var(--kube-link); background: var(--kube-selected); }
-.kube-action-warning.ant-btn:not(:disabled) { color: var(--kube-warning); border-color: var(--kube-warning-border); background: var(--kube-warning-bg); }
-.kube-action-warning.ant-btn:not(:disabled):hover { color: var(--kube-warning); border-color: var(--kube-warning); background: var(--kube-warning-bg); }
 .kube-action.ant-btn:focus-visible,
 .kube-resource-actions .resource-more-button.ant-btn:focus-visible { outline: 2px solid var(--kube-focus); outline-offset: 2px; }
 .kube-action.ant-btn:disabled,

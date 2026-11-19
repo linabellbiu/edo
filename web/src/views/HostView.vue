@@ -1075,7 +1075,6 @@ onBeforeUnmount(() => {
 :global([data-theme="dark"] .host-page){--host-link:#a5b7ff;--host-ready:#6cdaa5}
 .host-page .host-cluster-link{color:var(--host-link)}
 .host-page :deep(.host-node-roles .ant-tag-processing){color:var(--host-link)}
-.host-workspace :deep(.ant-btn-primary){background:#4057d6;border-color:#4057d6;color:#fff}
 .host-group-filter{display:flex;min-width:150px;max-width:100%;align-items:center}
 .host-group-filter select,.host-page-size select{min-height:32px;max-width:100%;padding:4px 28px 4px 10px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface);color:var(--edo-text);font:inherit;font-size:13px}
 .host-group-filter select{width:100%}

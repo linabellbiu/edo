@@ -119,12 +119,10 @@ test('共用表格保留清晰表头、列线、末行线和不透明固定操�
 })
 
 test('查看、修改和执行按钮各自保留语义，hover 不影响禁用态，键盘焦点独立可见',()=>{
- for(const [kind,tone] of [['success','success'],['warning','warning']]){
-  const base=declarations([shared],`.kube-action-${kind}.ant-btn:not(:disabled)`)
-  const hover=declarations([shared],`.kube-action-${kind}.ant-btn:not(:disabled):hover`)
-  assert.equal(base.color,`var(--kube-${tone})`);assert.equal(hover.color,base.color)
-  assert.equal(hover['border-color'],base.color)
- }
+ const actions=read('../src/components/KubeResourceActions.vue')
+ assert.match(actions,/class="kube-action edo-button-soft" data-tone="success"[^>]+emit\('pods'\)/)
+ assert.match(actions,/class="kube-action edo-button-soft" data-tone="warning"[^>]+emit\('action','restart'\)/)
+ assert.match(actions,/class="kube-action kube-action-edit" :type="workloadToolbar\?'primary':'default'"/)
  assert.equal(declarations([shared],'.kube-action.ant-btn:disabled').cursor,'not-allowed')
  assert.equal(declarations([shared],'.kube-action.ant-btn:focus-visible').outline,'2px solid var(--kube-focus)')
  assert.equal(declarations([tokens],'.kube-workspace .partial-badge').font,'inherit')
