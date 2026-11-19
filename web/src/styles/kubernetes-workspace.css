@@ -2,6 +2,8 @@
 :root {
   --kube-radius-card: 12px;
   --kube-radius-control: 8px;
+  --kube-primary-value-size: 12px;
+  --kube-primary-value-weight: 600;
   --kube-surface: #ffffff;
   --kube-surface-soft: #f7f9fc;
   --kube-heading: #eef2f6;

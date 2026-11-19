@@ -56,6 +56,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.kube-workspace .kube-resource-table .resource-table tbody :is(
+  .resource-name, .namespace-value, .status-cell > .ant-tag,
+  .cell-primary, .cell-link, .resource-value, .json-cell,
+  .usage-cell > :first-child, .meter-percent, .meter-values > b
+):not(.resource-label-summary *) {
+  font-size: var(--kube-primary-value-size);
+  font-weight: var(--kube-primary-value-weight);
+}
 .kube-workspace .kube-compact-table .resource-row-actions .ant-btn { border-radius: var(--kube-radius-control); box-shadow: none; }
 .kube-workspace .kube-compact-table .resource-more-button.ant-btn:not(:disabled) {
   color: var(--kube-muted);

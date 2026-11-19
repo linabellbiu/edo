@@ -105,7 +105,11 @@ onBeforeUnmount(cancelLookup)
 .with-port-mappings { max-width: 100%; min-width: 0; }
 .port-mapping-list { display: grid; justify-items: start; gap: 4px; max-width: 100%; }
 .kube-port-badge { max-width: 100%; overflow-wrap: break-word; font-variant-numeric: tabular-nums; }
-.port-mapping-value { color: var(--kube-text); font-weight: 600; }
+.port-mapping-value {
+  color: var(--kube-text);
+  font-size: var(--kube-primary-value-size);
+  font-weight: var(--kube-primary-value-weight);
+}
 .port-mapping-node { white-space: nowrap; }
 .port-tooltip { max-width: calc(100vw - 48px); max-height: 60dvh; overflow: auto; font-variant-numeric: tabular-nums; }
 .port-tooltip-line { white-space: nowrap; }
