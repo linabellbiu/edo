@@ -375,6 +375,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
     <h3>{{ t('releasePlan.emptyTitle') }}</h3>
     <p>{{ t('releasePlan.emptyDescription') }}</p>
     <a-button v-if="canCreate" type="primary" @click="emit('create')">{{ t('releasePlan.create') }}</a-button>
+    </div>
   </div>
   <ResourceDetailDrawer v-model:open="detailOpen" :title="detailPlan ? planTitle(detailPlan) : ''">
     <template #actions>
