@@ -14,7 +14,8 @@ const detail = { props: ['open', 'title'], setup: (props, { slots }) => () => pr
 const actions = { setup: (_, { slots }) => () => vue.h('div', [slots.default?.(), vue.h('menu', slots.more?.())]) }
 const modules = {
   vue, 'vue-i18n': { useI18n: () => ({ t: key => key }) },
-  'lucide-vue-next': Object.fromEntries(['Download', 'FileCode2', 'Package', 'RefreshCw', 'Upload'].map(name => [name, pass('i')])),
+  'lucide-vue-next': Object.fromEntries(['Download', 'FileCode2', 'Package', 'Plus', 'RefreshCw', 'Upload'].map(name => [name, pass('i')])),
+  '@/components/PageToolbar.vue': { __esModule: true, default: pass('div') },
   '@/components/ResourceDetailDrawer.vue': { __esModule: true, default: detail },
   '@/components/ResourceRowActions.vue': { __esModule: true, default: actions },
   '@/components/ResourceTable.vue': { __esModule: true, default: pass('div') },

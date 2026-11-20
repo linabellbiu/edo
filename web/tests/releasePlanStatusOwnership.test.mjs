@@ -27,6 +27,7 @@ const component = compile(compileScript(parse(source).descriptor, { id: 'release
   'lucide-vue-next': Object.fromEntries(['Boxes', 'ChevronRight', 'Clock3', 'GitBranch', 'GitCommit', 'ListChecks', 'Pencil', 'Play', 'Plus', 'Power', 'PowerOff', 'Route', 'TerminalSquare', 'Trash2'].map(name => [name, pass('i')])),
   '@/utils/time': { formatDateTime: value => value || '', formatRelativeTime: value => value || '' },
   '@/utils/resourceList': list,
+  '@/components/PageToolbar.vue': { __esModule: true, default: pass('div') },
   '@/components/ResourceDetailDrawer.vue': { __esModule: true, default: detail },
   '@/components/ResourceRowActions.vue': { __esModule: true, default: actions },
   '@/styles/plan-list.css': {},

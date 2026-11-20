@@ -3,10 +3,11 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { UploadProps } from 'ant-design-vue'
 import {
-  Download, FileCode2, Package, RefreshCw, Upload,
+  Download, FileCode2, Package, Plus, RefreshCw, Upload,
 } from 'lucide-vue-next'
 
 import type { ResourceRecord } from '@/api/resources'
+import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
@@ -97,6 +98,8 @@ const emit = defineEmits<{
   edit: [plan: BuildPlan]
   toggle: [plan: BuildPlan]
   remove: [plan: BuildPlan]
+  refresh: []
+  create: []
   'refresh-artifacts': []
   upload: [file: File]
   download: [artifact: Artifact]
@@ -259,6 +262,10 @@ function formatTime(value: string) {
 
 <template>
   <div class="expandable-plan-list build-plan-list vben-card">
+    <PageToolbar>
+      <a-button :loading="loading" @click="emit('refresh')"><RefreshCw :size="15" />刷新</a-button>
+      <a-button v-if="canCreate" type="primary" @click="emit('create')"><Plus :size="15" />新建</a-button>
+    </PageToolbar>
     <a-table
       class="plan-table resource-list-table" row-key="id" size="small" table-layout="fixed"
       :columns="planColumns" :data-source="plans" :loading="loading"

@@ -2382,7 +2382,7 @@ onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())contro
 onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();composeContainerController?.abort();resetArtifactRequests();formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
 </script>
 
-<template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar v-if="props.section==='build-plans'||(props.section==='release-plans'&&releaseView==='plans')"><a-tag v-if="props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':'新建' }}</a-button></PageToolbar>
+<template><section :class="{'applications-page':props.section==='applications'}">
 <a-alert v-for="(error,key) in resourceErrors" :key="key" type="error" show-icon :message="`${resourceLabels[key]}：${error}`" class="resource-load-error"><template #action><a-button size="small" :loading="resourcePending[key]" @click="resourceReaders[key]?.()">重试</a-button></template></a-alert>
 <div v-if="props.section==='applications'" class="apps-workspace">
   <div class="apps-filter-bar">
@@ -2600,6 +2600,8 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
  @edit="edit"
  @toggle="confirmBuildPlanStatus"
  @remove="confirmDeleteBuildPlan"
+ @refresh="refresh"
+ @create="create"
  @refresh-artifacts="loadArtifacts"
  @upload="uploadArtifact"
  @download="downloadArtifact"
@@ -2747,6 +2749,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
  :applications="applications"
  :pipeline-runs="runs"
  :loading="loading"
+ @refresh="refresh"
  :can-create="auth.canAny([`${sectionPermission}.create`])"
  :can-update="auth.canAny([`${sectionPermission}.update`])"
  :can-delete="auth.canAny([`${sectionPermission}.delete`])"

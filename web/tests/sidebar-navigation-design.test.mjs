@@ -76,8 +76,6 @@ function resolve(value, tokens) {
 const expectedItems = [
   ['nav.settings', '/settings'],
   ['nav.monitor', '/system-monitor'],
-  ['nav.logs', '/logs'],
-  ['nav.tasks', '/operations?section=tasks'],
   ['nav.users', '/access?view=users'],
   ['nav.roles', '/access?view=roles'],
   ['nav.audit', '/access?view=audit'],
@@ -85,8 +83,6 @@ const expectedItems = [
 const expectedPermissions = {
   '/settings': [],
   '/system-monitor': ['monitor.read'],
-  '/logs': ['monitor.read'],
-  '/operations?section=tasks': ['task.read'],
   '/access?view=users': ['user.read', 'user.create', 'user.update', 'user.delete', 'department.read', 'department.create', 'department.update', 'department.delete'],
   '/access?view=roles': ['role.read', 'role.create', 'role.update', 'role.delete'],
   '/access?view=audit': ['audit.read'],
@@ -97,7 +93,8 @@ test('系统与安全按“系统配置 → 运行观测 → 后台任务 → �
   assert.deepEqual(security.items.map(item => [item.label, item.path]), expectedItems)
   for (const item of security.items) assert.deepEqual(item.permissions, expectedPermissions[item.path], item.path)
   const monitor = security.items.findIndex(item => item.path === '/system-monitor')
-  assert.equal(security.items[monitor + 1].path, '/logs', '同属 monitor.read 的监控与日志必须相邻')
+  assert.equal(security.items[monitor + 1].path, '/access?view=users', '监控之后直接进入账号与权限')
+  assert.ok(!security.items.some(item => item.path === '/logs' || item.path === '/operations?section=tasks'), '日志与任务中心不再出现在侧栏')
   assert.deepEqual(
     security.items.filter(item => item.path.startsWith('/access')).map(item => new URL(item.path, 'http://edo.local').searchParams.get('view')),
     ['users', 'roles', 'audit'],

@@ -14,12 +14,14 @@ import {
   Plus,
   Power,
   PowerOff,
+  RefreshCw,
   Route,
   TerminalSquare,
   Trash2,
 } from 'lucide-vue-next'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
 import { useResourceList } from '@/utils/resourceList'
+import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import '@/styles/plan-list.css'
@@ -112,6 +114,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   create: []
+  refresh: []
   execute: [planID: string]
   executeApplication: [planID: string, membershipID: string]
   edit: [planID: string]
@@ -314,11 +317,17 @@ function sourceMeta(item: ReleaseGroupApplication) {
 </script>
 
 <template>
-  <div v-if="loading && !plans.length" class="plan-loading vben-card">
-    <a-skeleton active :paragraph="{ rows: 8 }" />
-  </div>
+  <div class="vben-card release-plan-list-card">
+    <PageToolbar>
+      <a-tag color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag>
+      <a-button :loading="loading" @click="emit('refresh')"><RefreshCw :size="15" />刷新</a-button>
+      <a-button v-if="canCreate" type="primary" @click="emit('create')"><Plus :size="15" />{{ t('releasePlan.create') }}</a-button>
+    </PageToolbar>
+    <div v-if="loading && !plans.length" class="plan-loading">
+      <a-skeleton active :paragraph="{ rows: 8 }" />
+    </div>
 
-  <div v-else-if="plans.length" class="expandable-plan-list vben-card">
+    <div v-else-if="plans.length" class="expandable-plan-list">
     <a-table
       class="plan-table resource-list-table" row-key="id" size="small" table-layout="fixed" :columns="planColumns" :data-source="plans"
       :pagination="planPagination" :scroll="{ x: 1300 }"
@@ -361,8 +370,8 @@ function sourceMeta(item: ReleaseGroupApplication) {
     </a-table>
   </div>
 
-  <div v-else class="plan-empty vben-card">
-    <span><ListChecks /></span>
+    <div v-else class="plan-empty">
+      <span><ListChecks /></span>
     <h3>{{ t('releasePlan.emptyTitle') }}</h3>
     <p>{{ t('releasePlan.emptyDescription') }}</p>
     <a-button v-if="canCreate" type="primary" @click="emit('create')">{{ t('releasePlan.create') }}</a-button>
@@ -468,7 +477,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
 .plan-app-copy{display:grid;min-width:0;grid-template-columns:minmax(140px,1fr) minmax(220px,1fr);gap:4px 20px}.plan-app-copy strong,.plan-app-copy>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-copy strong{grid-column:1;grid-row:1;font-size:13px}.plan-app-copy>span{display:flex;align-items:center;gap:4px;grid-column:1;grid-row:2;color:var(--edo-muted);font-size:12px}.plan-app-copy>span svg{width:13px;height:13px;flex:0 0 13px}.plan-app-copy>.plan-app-execution{grid-column:2;grid-row:1}.plan-app-copy .tone-info{color:var(--edo-primary)}.plan-app-copy .tone-success{color:var(--edo-success,#2ab573)}.plan-app-copy .tone-danger{color:var(--edo-danger,#ed5965)}
 .plan-app-time{display:flex;min-width:0;align-items:center;gap:4px;grid-column:2;grid-row:2;color:var(--edo-muted);font-size:12px}.plan-app-time svg{width:12px;flex:0 0 12px}.plan-app-time span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-time em{flex:0 0 auto;font-style:normal;white-space:nowrap}
 .plan-app-actions{display:flex;align-items:center;justify-content:flex-end;gap:3px}.plan-app-actions em{padding:3px 6px;border-radius:4px;color:var(--edo-success,#2ab573);background:var(--edo-surface-soft);font-size:12px;font-style:normal;white-space:nowrap}.plan-app-actions em.disabled{color:var(--edo-muted)}.plan-app-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px}
-.plan-empty{display:grid;min-height:460px;place-items:center;align-content:center;padding:32px;text-align:center}.plan-empty>span{display:grid;width:58px;height:58px;place-items:center;border-radius:18px;color:var(--edo-primary);background:var(--edo-primary-soft)}.plan-empty>span svg{width:25px}.plan-empty h3{margin:15px 0 0;font-size:16px}.plan-empty p{max-width:420px;margin:6px 0 16px;color:var(--edo-muted);font-size:12px}
+.plan-empty{display:grid;min-height:240px;place-items:center;align-content:center;padding:32px;text-align:center}.plan-empty>span{display:grid;width:58px;height:58px;place-items:center;border-radius:18px;color:var(--edo-primary);background:var(--edo-primary-soft)}.plan-empty>span svg{width:25px}.plan-empty h3{margin:15px 0 0;font-size:16px}.plan-empty p{max-width:420px;margin:6px 0 16px;color:var(--edo-muted);font-size:12px}
 @media(max-width:1100px){.plan-app-copy{grid-template-columns:minmax(0,1fr)}.plan-app-copy>.plan-app-execution{grid-column:1;grid-row:3}.plan-app-time{grid-column:1;grid-row:4}}
 @media(max-width:760px){.plan-application{grid-template-columns:30px minmax(0,1fr)}.plan-app-actions{grid-column:2;justify-content:flex-start;flex-wrap:wrap}.plan-groups>header{flex-wrap:wrap}}
 .plan-groups>header h3{font-size:14px}.plan-application{min-height:64px}.plan-app-actions{flex-wrap:wrap}.plan-app-actions :deep(.ant-btn){font-size:12px}.plan-app-copy strong{font-size:13px}

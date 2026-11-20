@@ -81,7 +81,7 @@ test('凭据、环境、登录方式、部署方案列表同样把操作栏放�
 })
 test('代码仓库、镜像仓库、运行记录列表的操作栏也在卡片顶部', () => {
   const devops = source('DevOpsView.vue')
-  assert.ok(/<PageToolbar v-if="props.section==='build-plans'\|\|\(props.section==='release-plans'&&releaseView==='plans'\)">/.test(devops), '通用列表不再使用卡片外操作栏')
+  assert.ok(!/<template><section[^>]*><PageToolbar/.test(devops), '通用列表不再使用卡片外操作栏')
   assert.ok(/<div class="vben-card resources-list-card">\s*<PageToolbar>/.test(devops), '代码仓库与镜像仓库操作栏应在卡片顶部')
   assert.ok(/class="run-workspace vben-card">\s*<PageToolbar>/.test(devops), '运行记录操作栏应在卡片顶部')
 })
@@ -102,4 +102,13 @@ test('所有页面操作栏都落在白色卡面：独立工具栏自带卡片�
   const domain = source('DomainView.vue')
   assert.match(domain, /<div class="vben-card">\s*<PageToolbar>/, '域名页操作栏应在列表卡片顶部')
   assert.equal((domain.match(/<PageToolbar/g) || []).length, 1, '域名页只保留一个操作栏')
+})
+test('构建方案与发布计划的操作栏在各自列表卡片顶部', () => {
+  const devops = source('DevOpsView.vue')
+  assert.ok(!/<template><section[^>]*><PageToolbar/.test(devops), 'DevOps 工作区不再有卡片外操作栏')
+  const buildPlan = readFileSync(new URL('../src/components/BuildPlanWorkspace.vue', import.meta.url), 'utf8')
+  assert.match(buildPlan, /<div class="expandable-plan-list build-plan-list vben-card">\s*<PageToolbar>/, '构建方案操作栏应在卡片顶部')
+  const release = readFileSync(new URL('../src/components/ReleasePlanWorkspace.vue', import.meta.url), 'utf8')
+  assert.match(release, /<div class="vben-card release-plan-list-card">\s*<PageToolbar>/, '发布计划操作栏应在卡片顶部')
+  assert.ok(!/plan-empty vben-card/.test(release), '发布计划空状态不再单独成卡')
 })
