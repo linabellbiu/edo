@@ -155,8 +155,8 @@ onBeforeUnmount(() => {
               <component v-else :is="panel.icon" />
             </header>
             <dl><div v-for="item in panel.definitions" :key="item.key">
-              <template v-else><dt>{{ item.name }}</dt><dd :class="{ danger: ['failed', 'dead'].includes(item.key) }">{{ currentValue(item) }}</dd>
-              <MetricTrend :history="history" :definitions="[item]" /></template>
+              <dt>{{ item.name }}</dt><dd :class="{ danger: ['failed', 'dead'].includes(item.key) }">{{ currentValue(item) }}</dd>
+              <MetricTrend :history="history" :definitions="[item]" />
             </div></dl>
           </article>
         </div>
