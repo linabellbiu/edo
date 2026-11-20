@@ -4,18 +4,26 @@ import { ChevronDown, ChevronRight, RefreshCw, Search } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import type { KubeCluster } from '@/api/kubernetes'
 
-const props = defineProps<{ clusters: KubeCluster[]; cluster: string; namespaces: string[]; selected: string[]; namespaced?: boolean; ready?: boolean; loading?: boolean; error?: string; disabled?: boolean }>()
-const emit = defineEmits<{ cluster: [id: string, all?: boolean]; selection: [names: string[]]; retry: [] }>()
+const props = defineProps<{ clusters: KubeCluster[]; cluster: string; namespaces: string[]; selected: string[]; namespaceCatalogs?: Record<string,{names:string[];ready?:boolean;error?:string}>; namespaced?: boolean; ready?: boolean; loading?: boolean; error?: string; disabled?: boolean }>()
+const emit = defineEmits<{ cluster: [id: string, all?: boolean]; selection: [names: string[], clusterID?:string]; expand: [id:string]; retry: [] }>()
 const { t } = useI18n()
 const search = ref(''), expanded = ref(''),mobileOpen=ref(false)
 const currentCluster=computed(()=>props.clusters.find(item=>item.id===props.cluster))
 const namespaceEnabled = computed(() => props.namespaced !== false)
 watch(() => props.cluster, id => { expanded.value = id }, { immediate: true })
-watch(namespaceEnabled, () => { search.value = '' })
+watch(namespaceEnabled, enabled => { search.value = '';if(enabled)expanded.value=props.cluster })
 const all = computed(() => props.selected.includes('*'))
 const needle = computed(() => search.value.trim().toLowerCase())
-const visibleNamespaces = computed(() => namespaceEnabled.value ? props.namespaces.filter(name => !needle.value || name.toLowerCase().includes(needle.value) || props.clusters.find(item => item.id === props.cluster)?.name.toLowerCase().includes(needle.value)) : [])
-const visibleClusters = computed(() => props.clusters.filter(item => !needle.value || item.name.toLowerCase().includes(needle.value) || item.id === props.cluster && visibleNamespaces.value.length))
+const expandedNamespaces = computed(() => expanded.value===props.cluster?props.namespaces:props.namespaceCatalogs?.[expanded.value]?.names??[])
+const expandedError = computed(() => expanded.value===props.cluster?props.error:props.namespaceCatalogs?.[expanded.value]?.error)
+const expandedReady = computed(() => expanded.value===props.cluster?props.ready:props.namespaceCatalogs?.[expanded.value]?.ready??false)
+const visibleNamespaces = computed(() => namespaceEnabled.value ? expandedNamespaces.value.filter(name => !needle.value || name.toLowerCase().includes(needle.value) || props.clusters.find(item => item.id === expanded.value)?.name.toLowerCase().includes(needle.value)) : [])
+const visibleClusters = computed(() => props.clusters.filter(item => !needle.value || item.name.toLowerCase().includes(needle.value) || item.id === expanded.value && visibleNamespaces.value.length))
+function toggleExpanded(id:string) {
+  if(!namespaceEnabled.value||props.disabled||!props.clusters.some(item=>item.id===id&&item.is_active))return
+  expanded.value=expanded.value===id?'':id
+  emit('expand',expanded.value)
+}
 function chooseCluster(id: string) {
   if (props.disabled) return
   expanded.value = id
@@ -29,10 +37,13 @@ function toggleAll(item: KubeCluster) {
 }
 function toggleNamespace(name: string, checked: boolean) {
   if (!namespaceEnabled.value || props.disabled) return
-  const selected = new Set(all.value ? props.namespaces : props.selected)
+  const id=expanded.value||props.cluster
+  if(!props.clusters.some(item=>item.id===id&&item.is_active)||!expandedNamespaces.value.includes(name))return
+  const selected = new Set(id===props.cluster?(all.value ? props.namespaces : props.selected):[])
   if (checked) selected.add(name)
   else selected.delete(name)
-  emit('selection', [...selected].sort())
+  if(id===props.cluster)emit('selection', [...selected].sort())
+  else emit('selection', [...selected].sort(),id)
 }
 function refreshNamespaces() {
   if (props.disabled || props.loading || !namespaceEnabled.value || !currentCluster.value?.is_active) return
@@ -47,18 +58,19 @@ function refreshNamespaces() {
     <div class="namespace-tree-scroll">
       <section v-for="item in visibleClusters" :key="item.id" class="namespace-tree-branch" :class="{active:item.id===cluster}">
         <div class="namespace-cluster-row" :class="{'cluster-only':!namespaceEnabled,selected:!namespaceEnabled&&item.id===cluster,'is-disabled':disabled||!item.is_active}">
-          <button v-if="namespaceEnabled" type="button" class="namespace-expander" :aria-expanded="expanded===item.id" :aria-label="t(expanded===item.id?'k8s.collapseCluster':'k8s.expandCluster',{name:item.name})" :disabled="disabled||!item.is_active" @click="expanded===item.id?expanded='':chooseCluster(item.id)"><ChevronDown aria-hidden="true" v-if="expanded===item.id" :size="14"/><ChevronRight aria-hidden="true" v-else :size="14"/></button>
+          <button v-if="namespaceEnabled" type="button" class="namespace-expander" :aria-expanded="expanded===item.id" :aria-label="t(expanded===item.id?'k8s.collapseCluster':'k8s.expandCluster',{name:item.name})" :disabled="disabled||!item.is_active" @click="toggleExpanded(item.id)"><ChevronDown aria-hidden="true" v-if="expanded===item.id" :size="14"/><ChevronRight aria-hidden="true" v-else :size="14"/></button>
           <label v-if="namespaceEnabled" class="namespace-cluster-checkbox" :class="{'is-disabled':disabled||!item.is_active}"><input type="checkbox" :checked="item.id===cluster&&all" :indeterminate.prop="item.id===cluster&&!all&&selected.length>0" :aria-checked="item.id===cluster&&!all&&selected.length>0?'mixed':undefined" :disabled="disabled||!item.is_active" :aria-label="t('k8s.selectClusterNamespaces',{name:item.name})" @change="toggleAll(item)" /></label>
           <a-radio v-else name="kube-workspace-cluster" :checked="item.id===cluster" :disabled="disabled||!item.is_active" :aria-label="item.name" @change="chooseCluster(item.id)" />
-          <button type="button" class="namespace-cluster-name" :class="{inactive:!item.is_active}" :disabled="disabled||!item.is_active" :title="item.name" @click="chooseCluster(item.id)">{{ item.name }}</button>
+          <button v-if="namespaceEnabled" type="button" class="namespace-cluster-name" :class="{inactive:!item.is_active}" :disabled="disabled||!item.is_active" :title="item.name" :aria-expanded="expanded===item.id" @click="toggleExpanded(item.id)">{{ item.name }}</button>
+          <span v-else class="namespace-cluster-name" :title="item.name">{{ item.name }}</span>
           <button v-if="namespaceEnabled&&item.id===cluster" type="button" class="namespace-refresh" :aria-label="t(loading?'k8s.refreshingNamespaces':'k8s.refreshNamespaces',{name:item.name})" :title="t('k8s.refreshNamespaces',{name:item.name})" :aria-busy="Boolean(loading)" :disabled="disabled||!item.is_active||loading" @click="refreshNamespaces"><RefreshCw aria-hidden="true" :size="14" :class="{'is-spinning':loading}" /></button>
         </div>
-        <div v-if="namespaceEnabled&&expanded===item.id&&item.id===cluster" class="namespace-children">
-          <div v-for="name in visibleNamespaces" :key="name" class="namespace-tree-item" :class="{selected:all||selected.includes(name),'is-disabled':disabled}">
-            <a-checkbox :checked="all||selected.includes(name)" :disabled="disabled" :aria-label="name" @change="toggleNamespace(name,$event.target.checked)"><span :title="name">{{ name }}</span></a-checkbox>
+        <div v-if="namespaceEnabled&&expanded===item.id" class="namespace-children">
+          <div v-for="name in visibleNamespaces" :key="name" class="namespace-tree-item" :class="{selected:item.id===cluster&&(all||selected.includes(name)),'is-disabled':disabled}">
+            <label class="namespace-child-checkbox"><input type="checkbox" :checked="item.id===cluster&&(all||selected.includes(name))" :disabled="disabled" :aria-label="name" @change="toggleNamespace(name,($event.target as HTMLInputElement).checked)" /></label><span class="namespace-child-name" :title="name">{{ name }}</span>
           </div>
-          <div v-if="error" class="namespace-error" role="alert">{{ error }}</div>
-          <p v-else-if="!visibleNamespaces.length&&ready!==false" class="namespace-empty">{{ t('k8s.noNamespaceMatches') }}</p>
+          <div v-if="expandedError" class="namespace-error" role="alert">{{ expandedError }}</div>
+          <p v-else-if="!visibleNamespaces.length&&expandedReady!==false" class="namespace-empty">{{ t('k8s.noNamespaceMatches') }}</p>
         </div>
       </section>
       <p v-if="!visibleClusters.length" class="namespace-empty">{{ t(!clusters.length?'k8s.noCluster':namespaceEnabled?'k8s.noNamespaceMatches':'k8s.noClusterMatches') }}</p>
@@ -79,9 +91,13 @@ h3{margin:0;font-size:13px;font-weight:600;color:var(--kube-text)}
 .namespace-tree-branch.active>.namespace-cluster-row:not(.is-disabled){background:var(--kube-selected)}
 .namespace-cluster-row.cluster-only.selected:not(.is-disabled){background:var(--kube-selected)}
 .namespace-cluster-checkbox{display:grid;place-items:center;width:24px;min-height:28px;flex-shrink:0;border-radius:3px;cursor:pointer}
+.namespace-child-checkbox{display:grid;place-items:center;width:24px;min-height:28px;flex-shrink:0;border-radius:3px;cursor:pointer}
 .namespace-cluster-checkbox:not(.is-disabled):hover{background:var(--kube-hover)}
 .namespace-cluster-checkbox.is-disabled{cursor:not-allowed}
 .namespace-cluster-checkbox input{width:16px;height:16px;margin:0;accent-color:var(--kube-link);cursor:inherit}
+.namespace-child-checkbox input{width:16px;height:16px;margin:0;accent-color:var(--kube-link);cursor:inherit}
+.namespace-child-checkbox input:focus-visible{outline:2px solid var(--kube-focus);outline-offset:3px}
+.namespace-tree-item.is-disabled .namespace-child-checkbox{cursor:not-allowed}
 .namespace-cluster-checkbox input:focus-visible{outline:2px solid var(--kube-focus);outline-offset:3px}
 .namespace-expander,.namespace-cluster-name,.namespace-refresh{border:0;background:none;color:var(--kube-text);cursor:pointer;font:inherit;text-align:left;border-radius:3px}
 .namespace-refresh{display:grid;place-items:center;width:24px;min-height:28px;padding:2px;flex-shrink:0;color:var(--kube-muted)}
@@ -93,13 +109,12 @@ h3{margin:0;font-size:13px;font-weight:600;color:var(--kube-text)}
 .namespace-cluster-name:not(:disabled):hover,.namespace-expander:not(:disabled):hover,.namespace-refresh:not(:disabled):hover{background:var(--kube-hover);color:var(--kube-link)}
 .namespace-cluster-name:disabled,.namespace-expander:disabled,.scope-toggle:disabled,.namespace-refresh:disabled{cursor:not-allowed;color:var(--kube-muted);opacity:.55}
 .namespace-cluster-name:focus-visible,.namespace-expander:focus-visible,.scope-toggle:focus-visible,.namespace-refresh:focus-visible{outline:2px solid var(--kube-focus);outline-offset:1px}
-.namespace-children{padding-left:24px;padding-top:4px}
-.namespace-tree-item{display:flex;align-items:center;min-height:34px;padding:4px 8px;border-radius:8px;color:var(--kube-muted);font-size:13px}
-.namespace-tree-item :deep(.ant-checkbox-wrapper)>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.namespace-children{padding-left:30px;padding-top:4px}
+.namespace-tree-item{display:flex;align-items:center;gap:6px;min-height:34px;padding:4px 3px;border-radius:8px;color:var(--kube-muted);font-size:13px}
+.namespace-child-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .namespace-tree-item:not(.is-disabled):hover{background:var(--kube-hover)}
 .namespace-tree-item:not(.is-disabled):focus-within{outline:2px solid var(--kube-focus);outline-offset:-2px}
 .namespace-tree-item.is-disabled{color:var(--kube-muted);background:var(--kube-surface-soft);cursor:not-allowed}
-.namespace-tree-item :deep(.ant-checkbox-wrapper){display:flex;align-items:center;line-height:1.6;width:100%;min-width:0;color:inherit;font-size:13px}
 .namespace-selection-hint{margin:0;border-top:1px solid var(--kube-border);padding-top:8px;font-size:12px;color:var(--kube-muted)}
 .namespace-empty,.namespace-error{font-size:12px;color:var(--kube-muted);overflow-wrap:anywhere;padding:8px 0;margin:0;line-height:1.6}
 .namespace-error{color:var(--kube-danger)}

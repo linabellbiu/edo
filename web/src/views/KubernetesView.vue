@@ -247,8 +247,33 @@ watch(showNodeTopology, (show, previous) => { if (!show && previous) { void refr
 onMounted(() => { topologyTimer = setInterval(() => { if (!document.hidden && autoRefresh.value && !contextDisabled.value && !detailOpen.value) void loadTopology(true) }, 30_000) })
 onBeforeUnmount(() => { topologyRevision++; topologyController?.abort(); if (topologyTimer) clearInterval(topologyTimer) })
 const clusterScopes=new Map<string,string[]>(Object.entries(workspacePreferences.value.scopes??{}))
+const namespaceCatalogs=ref<Record<string,{names:string[];ready?:boolean;error?:string}>>({})
+let namespaceBrowseController:AbortController|undefined
+const namespaceBrowseIdentity=()=>JSON.stringify([workloadActor(),auth.user?.is_superuser,auth.user?.permissions])
+function cancelNamespaceBrowse(){namespaceBrowseController?.abort();namespaceBrowseController=undefined}
+async function browseNamespaces(id:string){
+  cancelNamespaceBrowse()
+  if(!id||id===cluster.value||!namespaceScoped.value||contextDisabled.value||!clusters.value.some(item=>item.id===id&&item.is_active))return
+  const request=new AbortController(),identity=namespaceBrowseIdentity()
+  namespaceBrowseController=request
+  // 展开只读取已有目录快照，不切换资源范围或写入勾选偏好。
+  namespaceCatalogs.value[id]??={names:[],ready:false}
+  const isCurrent=()=>mounted&&namespaceBrowseController===request&&!request.signal.aborted&&identity===namespaceBrowseIdentity()
+  try{
+    const {data}=await client.get<{namespaces:string[]}>(`/kubernetes/clusters/${encodeURIComponent(id)}/namespaces`,{signal:request.signal})
+    if(isCurrent())namespaceCatalogs.value[id]={names:data.namespaces,ready:true}
+  }catch(err){if(isCurrent()&&!kubeSnapshotPending(err))namespaceCatalogs.value[id]={...namespaceCatalogs.value[id]!,error:kubeErrorMessage(err)}}
+  finally{if(namespaceBrowseController===request)namespaceBrowseController=undefined}
+}
+watch(namespaceBrowseIdentity,()=>{cancelNamespaceBrowse();namespaceCatalogs.value={}},{flush:'sync'})
+onBeforeUnmount(cancelNamespaceBrowse)
 function selectCluster(id:string,all=false){if(!contextDisabled.value){if(all)clusterScopes.set(id,['*']);if(id===cluster.value&&all)selectedNamespaces.value=['*'];else cluster.value=id}}
-function selectNamespaces(names:string[]){if(!contextDisabled.value)selectedNamespaces.value=namespaceSelection(names)}
+function selectNamespaces(names:string[],id=cluster.value){
+  if(contextDisabled.value)return
+  const selection=namespaceSelection(names)
+  if(id===cluster.value)selectedNamespaces.value=selection
+  else if(clusters.value.some(item=>item.id===id&&item.is_active)){clusterScopes.set(id,selection);cluster.value=id}
+}
 function storeScope(){
   if(!cluster.value||!mounted)return
   clusterScopes.set(cluster.value,[...selectedNamespaces.value])
@@ -913,7 +938,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 <template>
   <div class="kube-workspace">
     <div class="kube-workspace-grid">
-    <KubeNamespaceTree :clusters="clusters" :cluster="cluster" :namespaces="knownNamespaces" :selected="selectedNamespaces" :namespaced="namespaceScoped" :ready="namespaceDirectoryReady" :loading="namespaceLoading" :error="namespaceError" :disabled="contextDisabled" @cluster="selectCluster" @selection="selectNamespaces" @retry="loadNamespaces(true)"/>
+    <KubeNamespaceTree :clusters="clusters" :cluster="cluster" :namespaces="knownNamespaces" :selected="selectedNamespaces" :namespace-catalogs="namespaceCatalogs" :namespaced="namespaceScoped" :ready="namespaceDirectoryReady" :loading="namespaceLoading" :error="namespaceError" :disabled="contextDisabled" @cluster="selectCluster" @selection="selectNamespaces" @expand="browseNamespaces" @retry="loadNamespaces(true)"/>
     <section ref="resourcePanel" class="resource-panel" :aria-label="t(group==='overview'?'k8s.overview':activeType?`k8s.type_${activeType.resource}`:'k8s.resources')">
       <div v-if="fromOverview" class="overview-return"><a-button type="link" :disabled="contextDisabled" @click="backToOverview"><ArrowLeft :size="14" />{{ t('k8s.backOverview') }}</a-button></div>
       <div class="resource-panel-heading">

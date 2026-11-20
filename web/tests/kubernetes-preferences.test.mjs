@@ -17,7 +17,7 @@ function storage() {
   const values = new Map()
   return { values, getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }
 }
-async function harness({ saved = storage(), path = '/kubernetes?view=workloads', user = 'reader', project = 'project-a', clusters = catalog } = {}) {
+async function harness({ saved = storage(), path = '/kubernetes?view=workloads', user = 'reader', project = 'project-a', clusters = catalog, namespaceRead } = {}) {
   saved.setItem('edo.project', project)
   const helpers = loadFrontend('../src/utils/kubernetesWorkspace.ts', {}, { localStorage: saved })
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/kubernetes', component: {} }] })
@@ -39,7 +39,7 @@ async function harness({ saved = storage(), path = '/kubernetes?view=workloads',
     '@/api/client': { __esModule: true, default: { get: async (path, options) => {
       reads.push({ path, options })
       if (path === '/kubernetes/clusters') return { data: { clusters: structuredClone(clusters) } }
-      if (path.endsWith('/namespaces')) return { data: { namespaces: ['default', 'prod', 'test', 'system'] } }
+      if (path.endsWith('/namespaces')) return namespaceRead?.(path, options) ?? { data: { namespaces: ['default', 'prod', 'test', 'system'] } }
       return { data: { counts: {}, usage: {}, nodes: [], phases: {} } }
     } } },
   }, {
@@ -100,6 +100,42 @@ test('集群级页面沿用保存的命名空间范围，返回资源列表不�
   await h.router.push({ query: { ...h.route.query, view: 'workloads' } }); await settle()
   assert.deepEqual(h.state.selectedNamespaces.value, ['prod', 'test'])
   assert.deepEqual(h.listReads.at(-1).selection, ['prod', 'test'])
+})
+
+test('展开其他集群只读目录，不更改URL、本地勾选、资源列表或当前集群；点击框选后才切换', async t => {
+  const h = await harness(); t.after(h.stop)
+  h.state.selectNamespaces(['prod', 'test']); await settle()
+  const beforeURL = h.route.fullPath, beforeSaved = h.helpers.readKubeWorkspacePreferences('reader', 'project-a')
+  const beforeReads = h.listReads.length
+  await h.state.browseNamespaces('b'); await settle()
+  assert.equal(h.state.cluster.value, 'a')
+  assert.deepEqual(h.state.selectedNamespaces.value, ['prod', 'test'])
+  assert.deepEqual(h.state.namespaceCatalogs.value.b.names, ['default', 'prod', 'test', 'system'])
+  assert.equal(h.route.fullPath, beforeURL)
+  assert.equal(h.listReads.length, beforeReads)
+  assert.deepEqual(h.helpers.readKubeWorkspacePreferences('reader', 'project-a'), beforeSaved)
+  h.state.selectNamespaces(['system'], 'b'); await settle()
+  assert.equal(h.state.cluster.value, 'b')
+  assert.deepEqual(h.state.selectedNamespaces.value, ['system'])
+  assert.deepEqual(h.helpers.readKubeWorkspacePreferences('reader', 'project-a').scopes.a, ['prod', 'test'])
+})
+
+test('目录收起或权限变化后丢弃迟到的浏览结果，不污染已选范围', async t => {
+  const pending = []
+  const h = await harness({ namespaceRead: (path, options) => path.includes('/b/') ? new Promise(resolve => pending.push({ options, resolve })) : undefined }); t.after(h.stop)
+  const first = h.state.browseNamespaces('b')
+  assert.equal(pending[0].options.signal.aborted, false)
+  await h.state.browseNamespaces('')
+  assert.equal(pending[0].options.signal.aborted, true)
+  pending[0].resolve({ data: { namespaces: ['late'] } }); await first
+  assert.deepEqual(h.state.namespaceCatalogs.value.b.names, [])
+  const second = h.state.browseNamespaces('b')
+  h.auth.user.permissions = ['cluster.read']; await settle()
+  assert.equal(pending[1].options.signal.aborted, true)
+  pending[1].resolve({ data: { namespaces: ['private'] } }); await second
+  assert.deepEqual(h.state.namespaceCatalogs.value, {})
+  assert.equal(h.state.cluster.value, 'a')
+  assert.deepEqual(h.state.selectedNamespaces.value, ['default'])
 })
 
 test('用户与项目隔离；同页切换身份不把旧范围写入新身份或继续复用旧目录', async t => {
