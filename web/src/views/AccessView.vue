@@ -1076,32 +1076,7 @@ onMounted(() => {
 
 <template>
   <section>
-    <PageToolbar>
-      <a-button :loading="loading || auditLoading" :disabled="!authorizationReady" @click="refresh">
-        <RefreshCw :size="15" />刷新
-      </a-button>
-      <a-button
-        v-if="active === 'users' && canAny(['user.create'])"
-        type="primary"
-        @click="resetUser(); userFormOpen = true"
-      >
-        <Plus :size="15" />创建用户
-      </a-button>
-      <a-button
-        v-if="active === 'departments' && auth.user?.is_superuser && canAny(['department.create'])"
-        type="primary"
-        @click="resetDepartment(); departmentFormOpen = true"
-      >
-        <Plus :size="15" />创建部门
-      </a-button>
-      <a-button
-        v-if="active === 'roles' && canAny(['role.create'])"
-        type="primary"
-        @click="createRole"
-      >
-        <Plus :size="15" />创建角色
-      </a-button>
-    </PageToolbar>
+    
 
     <div class="access-tabs edo-segmented-tabs edo-page-tabs" role="group" aria-label="访问控制页面">
       <button
@@ -1133,7 +1108,34 @@ onMounted(() => {
       </article>
     </div>
 
-    <div v-if="active === 'users'" class="access-filter-bar vben-card">
+    <div class="vben-card access-list-card">
+      <PageToolbar>
+      <a-button :loading="loading || auditLoading" :disabled="!authorizationReady" @click="refresh">
+        <RefreshCw :size="15" />刷新
+      </a-button>
+      <a-button
+        v-if="active === 'users' && canAny(['user.create'])"
+        type="primary"
+        @click="resetUser(); userFormOpen = true"
+      >
+        <Plus :size="15" />创建用户
+      </a-button>
+      <a-button
+        v-if="active === 'departments' && auth.user?.is_superuser && canAny(['department.create'])"
+        type="primary"
+        @click="resetDepartment(); departmentFormOpen = true"
+      >
+        <Plus :size="15" />创建部门
+      </a-button>
+      <a-button
+        v-if="active === 'roles' && canAny(['role.create'])"
+        type="primary"
+        @click="createRole"
+      >
+        <Plus :size="15" />创建角色
+      </a-button>
+    </PageToolbar>
+      <div v-if="active === 'users'" class="access-filter-bar">
       <a-input v-model:value="userQuery" allow-clear placeholder="搜索用户名、昵称、部门或角色">
         <template #prefix><Search :size="15" /></template>
       </a-input>
@@ -1145,20 +1147,19 @@ onMounted(() => {
       <a-select v-model:value="userRoleID" allow-clear placeholder="全部角色" :options="userRoleOptions" />
       <span>显示 {{ filteredUsers.length }} / {{ users.length }} 人</span>
     </div>
-    <div v-else-if="active === 'departments'" class="access-filter-bar compact vben-card">
+    <div v-else-if="active === 'departments'" class="access-filter-bar compact">
       <a-input v-model:value="departmentQuery" allow-clear placeholder="搜索部门名称或说明">
         <template #prefix><Search :size="15" /></template>
       </a-input>
       <span>显示 {{ filteredDepartments.length }} / {{ departments.length }} 个部门</span>
     </div>
-    <div v-else-if="active === 'roles'" class="access-filter-bar compact vben-card">
+    <div v-else-if="active === 'roles'" class="access-filter-bar compact">
       <a-input v-model:value="roleQuery" allow-clear placeholder="搜索角色名称、标识或说明">
         <template #prefix><Search :size="15" /></template>
       </a-input>
       <span>显示 {{ filteredRoles.length }} / {{ roles.length }} 个角色</span>
     </div>
 
-    <div class="vben-card">
       <ResourceTable
         v-if="active === 'users'"
         :rows="filteredUsers"
@@ -1636,6 +1637,11 @@ onMounted(() => {
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.access-list-card .access-filter-bar {
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--edo-border);
 }
 
 .access-filter-bar {

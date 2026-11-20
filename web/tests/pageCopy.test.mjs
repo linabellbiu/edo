@@ -85,3 +85,21 @@ test('代码仓库、镜像仓库、运行记录列表的操作栏也在卡片�
   assert.ok(/<div class="vben-card resources-list-card">\s*<PageToolbar>/.test(devops), '代码仓库与镜像仓库操作栏应在卡片顶部')
   assert.ok(/class="run-workspace vben-card">\s*<PageToolbar>/.test(devops), '运行记录操作栏应在卡片顶部')
 })
+test('所有页面操作栏都落在白色卡面：独立工具栏自带卡片外观，列表页收进内容卡片', () => {
+  const css = readFileSync(new URL('../src/styles/vben.css', import.meta.url), 'utf8')
+  assert.match(css, /\.page-toolbar \{[^}]*border-radius: 12px[^}]*background: var\(--edo-surface\)/, '独立工具条必须是白色卡面，不能直接铺在灰底上')
+  assert.match(css, /\.vben-card > \.page-toolbar \{[^}]*border: 0[^}]*border-bottom: 1px solid var\(--edo-border\)/, '放进内容卡片的工具条去掉外框只保留底部分隔')
+
+  const access = source('AccessView.vue')
+  assert.match(access, /<div class="vben-card access-list-card">\s*<PageToolbar>/, '访问控制操作栏应在列表卡片顶部')
+  assert.equal((access.match(/<PageToolbar/g) || []).length, 1, '访问控制页只保留一个操作栏')
+  assert.ok(!/access-filter-bar[^"]*vben-card/.test(access), '访问控制筛选行不再单独成卡片')
+
+  const infra = source('InfrastructureView.vue')
+  assert.ok(!/<PageToolbar/.test(infra), '基础设施工作区不再有页面级工具条')
+  assert.match(infra, /class="tree-refresh"[^>]*aria-label="刷新主机与运行时"/, '刷新入口移到资源导航标题旁')
+
+  const domain = source('DomainView.vue')
+  assert.match(domain, /<div class="vben-card">\s*<PageToolbar>/, '域名页操作栏应在列表卡片顶部')
+  assert.equal((domain.match(/<PageToolbar/g) || []).length, 1, '域名页只保留一个操作栏')
+})

@@ -206,11 +206,13 @@ button { color: inherit; }
 .command-results > button:hover { color: var(--edo-primary); background: var(--edo-primary-soft); }
 .command-results kbd { color: var(--edo-muted); }
 
-.page-toolbar { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+/* 页面操作栏统一落在白色卡片面上：不直接在灰底上铺一条工具栏。
+   放进内容卡片时由 .vben-card > .page-toolbar 去掉外框，只保留底部分隔。 */
+.page-toolbar { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; padding: 8px 14px; border: 1px solid var(--edo-border); border-radius: 12px; background: var(--edo-surface); }
 .page-toolbar-summary { min-width: 0; color: var(--edo-muted); font-size: 13px; }
 .page-toolbar-actions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-inline-start: auto; }
 /* 列表页把操作栏与筛选并入内容卡片，页面上方不再留出一条空白带。 */
-.vben-card > .page-toolbar { min-height: 0; margin: 0; padding: 9px 14px; border-bottom: 1px solid var(--edo-border); }
+.vben-card > .page-toolbar { min-height: 0; margin: 0; padding: 9px 14px; border: 0; border-bottom: 1px solid var(--edo-border); border-radius: 0; background: transparent; }
 .vben-card > .card-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--edo-border); }
 /* 分段控件（页面页签、筛选与范围）统一为浅色实底：选中用浅靛蓝 + 靛蓝文字，
    不使用渐变、外发光或内阴影；选中块与相邻条目同高，不允许溢出容器。 */

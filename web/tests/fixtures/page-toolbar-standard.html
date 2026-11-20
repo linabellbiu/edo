@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>页面操作栏统一规范</title>
+<link rel="stylesheet" href="/src/styles/vben.css"></head>
+<body><div class="vben-content" style="min-height:auto">
+  <div class="page-toolbar">
+    <span class="page-toolbar-summary">系统监控 · 2026/11/20 17:20:11</span>
+    <div class="page-toolbar-actions"><button style="height:32px;padding:0 12px;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface)">刷新</button></div>
+  </div>
+  <div class="vben-card" style="padding:16px;color:var(--edo-muted)">内容卡片（概览 / 系统监控这类多卡片页：操作栏为独立白色条）</div>
+
+  <div class="page-toolbar" style="margin-top:16px">
+    <div class="page-toolbar-actions">
+      <span style="display:inline-flex;align-items:center;gap:8px;width:280px;height:32px;padding:0 10px;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface-soft);color:var(--edo-muted)">搜索</span>
+      <button style="height:32px;padding:0 12px;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface)">刷新</button>
+      <button style="height:32px;padding:0 12px;border:1px solid var(--edo-primary);border-radius:8px;background:var(--edo-primary);color:#fff">新建</button>
+    </div>
+  </div>
+  <div class="vben-card" style="padding:16px;color:var(--edo-muted)">内容卡片（一个页面只有一张主卡时，仍可把操作栏放进卡片顶部，见下方）</div>
+
+  <div class="vben-card" style="margin-top:16px;overflow:hidden">
+    <div class="page-toolbar"><div class="page-toolbar-actions">
+      <button style="height:32px;padding:0 12px;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface)">刷新</button>
+      <button style="height:32px;padding:0 12px;border:1px solid var(--edo-primary);border-radius:8px;background:var(--edo-primary);color:#fff">新建</button>
+    </div></div>
+    <div style="padding:14px;border-top:0;color:var(--edo-muted)">卡片内工具条（代码仓库 / 凭据 / 环境 / 变量与密钥等列表页）</div>
+  </div>
+</div></body></html>

@@ -70,9 +70,10 @@ onMounted(refresh)
 onBeforeUnmount(()=>{disposed=true;refreshRequest++;recordsRequest++;accountForm.config={}})
 </script>
 
-<template><section class="dns-workspace"><PageToolbar><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="auth.canAny(['dns.create'])" type="primary" @click="newDomain"><Plus :size="15"/>添加域名</a-button></PageToolbar>
+<template><section class="dns-workspace">
 <div class="dns-workspace-grid"><DNSProviderTree :providers="providers" :accounts="accounts" :provider="scopeProvider" :selected="scopeAccounts" :loading="loading" :can-create="auth.canAny(['dns.create'])" :can-update="auth.canAny(['dns.update'])" :can-delete="auth.canAny(['dns.delete'])" @selection="selectScope" @add="newAccount()" @manage="manageAccount"/><div class="dns-workspace-content">
 <div class="vben-card">
+  <PageToolbar><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="auth.canAny(['dns.create'])" type="primary" @click="newDomain"><Plus :size="15"/>添加域名</a-button></PageToolbar>
   <div class="resource-filter-bar"><a-input v-model:value="domainSearch" allow-clear placeholder="搜索域名、账号、厂商或说明" aria-label="搜索域名列表"><template #prefix><Search :size="15"/></template></a-input></div>
   <ResourceTable v-model:current-page="domainPage" :rows="filteredDomains" :columns="domainColumns" :loading="loading" :details="false" :active-row-key="detailOpen?selectedID:''" :empty-text="domainSearch.trim()?'没有匹配的域名':'暂无数据'">
     <template #cell-provider="{value}">{{ providerName(String(value)) }}</template>
