@@ -54,7 +54,7 @@ test('工作负载配色由自足入口管理，明暗主题完整覆盖各个�
  const entryRules=postcss.parse(entry).nodes,importIndex=entryRules.findIndex(node=>node.type==='atrule'&&node.name==='import'&&/['"]\.\/kubernetes-workload\.css['"]/.test(node.params))
  assert.ok(importIndex>=0);assert.ok(importIndex<entryRules.findIndex(node=>node.type==='rule'))
  const light=palette('light'),dark=palette('dark')
- for(const theme of ['light','dark'])for(const name of ['accent','on-accent','bar','on-bar','header','on-header','page','selected','on-selected','idle','hover','on-hover','column','heading','title','stripe','text','muted','link','focus','chart-cpu'])assert.match(palette(theme)[`--workload-${name}`],/^#[\da-f]{3}(?:[\da-f]{3})?$/i,`${theme}/${name}`)
+ for(const theme of ['light','dark'])for(const name of ['accent','on-accent','bar','on-bar','header','on-header','page','revision-selected','pod-selected','on-selected','idle','hover','on-hover','column','heading','title','stripe','text','muted','link','focus','chart-cpu'])assert.match(palette(theme)[`--workload-${name}`],/^#[\da-f]{3}(?:[\da-f]{3})?$/i,`${theme}/${name}`)
  assert.deepEqual(Object.keys(dark).sort(),Object.keys(light).sort())
  for(const name of Object.keys(light))assert.ok(Object.hasOwn(declarationsFor([shared],":root[data-theme='dark']"),name),`暗色需要显式覆盖 ${name}`)
  const references=[...Object.values(components).flatMap(component=>component.styles.map(style=>style.toString())),readFileSync(new URL('../src/components/KubeResourceDiagnostics.vue',import.meta.url),'utf8')].join('\n')
@@ -63,13 +63,13 @@ test('工作负载配色由自足入口管理，明暗主题完整覆盖各个�
 
 test('填充选中、标题、普通内容与状态标签的正文对比度充足',()=>{
  for(const theme of ['light','dark']){
-  const colors=palette(theme),pairs=[['on-accent','accent'],['on-bar','bar'],['on-header','header'],['on-selected','selected'],['text','page'],['text','hover'],['on-hover','hover'],['title','column'],['title','heading'],['title','idle'],['text','idle'],['text','column'],['text','heading'],['text','stripe'],['muted','heading'],['muted','column'],['muted','idle'],['muted','hover'],['link','column'],['link','idle'],['link','hover']]
+  const colors=palette(theme),pairs=[['on-accent','accent'],['on-bar','bar'],['on-header','header'],['on-selected','revision-selected'],['on-selected','pod-selected'],['text','page'],['text','hover'],['on-hover','hover'],['title','column'],['title','heading'],['title','idle'],['text','idle'],['text','column'],['text','heading'],['text','stripe'],['muted','heading'],['muted','column'],['muted','idle'],['muted','hover'],['link','column'],['link','idle'],['link','hover']]
   for(const state of ['ready','warning','error','neutral','progress'])pairs.push([`${state}-text`,`${state}-bg`])
   for(const [foreground,background] of pairs)assert.ok(contrast(colors[`--workload-${foreground}`],colors[`--workload-${background}`])>=4.5,`${theme}/${foreground}/${background} 对比度不足`)
  }
 })
 
-test('品牌靛蓝选中、浅靛蓝悬停与普通项有清晰层次，状态色保持独立',()=>{
+test('副本集和 Pod 的两种绿色选中与浅靛蓝悬停、健康状态保持独立',()=>{
  const luminance=hex=>channels(hex).reduce((sum,value,index)=>sum+value*[.2126,.7152,.0722][index],0)
  for(const theme of ['light','dark']){
   const colors=palette(theme)
@@ -77,22 +77,26 @@ test('品牌靛蓝选中、浅靛蓝悬停与普通项有清晰层次，状态�
    const value=luminance(colors[`--workload-${surface}`])
    assert.ok(theme==='light'?value>.8:value<.08,`${theme}/${surface} 大面积表面过深或过亮`)
   }
-  const selected=channels(colors['--workload-selected']),idle=channels(colors['--workload-idle']),hover=channels(colors['--workload-hover'])
-  assert.ok(selected[2]>selected[1]&&selected[1]>selected[0],`${theme} 选中需有明确蓝色强调`)
-  for(const [name,value] of [['idle',idle],['hover',hover]])assert.ok(value[2]>value[1]&&value[1]>value[0],`${theme}/${name} 使用品牌靛蓝填充`)
-  assert.notEqual(colors['--workload-idle'],colors['--workload-hover'])
-  assert.notEqual(colors['--workload-selected'],colors['--workload-hover'])
-  assert.notEqual(colors['--workload-selected'],colors['--workload-idle'])
-  for(const surface of ['idle','hover','selected'])assert.notEqual(colors[`--workload-${surface}`],colors['--workload-ready-bg'])
+  const selectedSurfaces=['revision-selected','pod-selected']
+  for(const name of selectedSurfaces){
+   const [red,green,blue]=channels(colors[`--workload-${name}`])
+   assert.ok(green>red&&green>blue,`${theme}/${name} 选中使用绿色`)
+  }
+  for(const name of ['idle','hover']){
+   const [red,green,blue]=channels(colors[`--workload-${name}`])
+   assert.ok(blue>green&&green>red,`${theme}/${name} 使用品牌靛蓝填充`)
+  }
+  const surfaces=[...selectedSurfaces,'idle','hover','ready-bg']
+  assert.equal(new Set(surfaces.map(name=>colors[`--workload-${name}`])).size,surfaces.length,`${theme} 各填充色独立`)
   assert.notEqual(colors['--workload-on-hover'],colors['--workload-ready-text'])
  }
 })
 
 test('版本与 Pod 实底选中的标题和信息均可读，悬停不改写选中、禁用或健康状态',()=>{
  const roots=components.KubeWorkloadExplorer.styles,entries=rules(roots)
- for(const name of ['revision-item','pod-item']){
+ for(const [name,selectedToken] of [['revision-item','revision-selected'],['pod-item','pod-selected']]){
   const selected=declarationsFor(roots,`.${name}.selected`)
-  assert.match(selected.background,/var\(--workload-selected\)/,name)
+  assert.equal(selected.background,`var(--workload-${selectedToken})`,name)
   assert.equal(selected.color,'var(--workload-on-selected)',name)
   assert.ok(!selected['box-shadow']||selected['box-shadow']==='none',name)
   const titleSelector=name==='revision-item'?'.revision-item.selected .revision-heading strong':'.pod-item.selected .pod-heading strong'
@@ -140,7 +144,7 @@ test('工作负载通过填充和留白分区，不使用嵌套线框或选中�
  assert.equal(declarationsFor(runtime.styles,'.runtime-pod-card').background,'var(--workload-column)')
  const pane=declarationsFor([shared],'.kube-workload-drawer .detail-tabs .ant-tabs-tabpane.workload-overview-pane')
  assert.equal(pane.background,'var(--workload-page)','概览面板使用中性页面底色区分白卡')
- assert.match(declarationsFor(explorer.styles,'.revision-item.selected::after')['border-left'],/var\(--workload-selected\)/,'选中版本以指针形状指向对应容器组')
+ assert.equal(declarationsFor(explorer.styles,'.revision-item.selected::after')['border-left'],'6px solid var(--workload-revision-selected)','指针与副本集选中底色一致')
  assert.equal(declarationsFor(runtime.styles,'.runtime-container.selected').background,'var(--workload-column)')
  assert.equal(declarationsFor(runtime.styles,'.runtime-container.selected .container-heading').background,'var(--workload-idle)')
  assert.equal(declarationsFor(runtime.styles,'.runtime-container.selected .container-heading>strong').color,'var(--workload-title)')

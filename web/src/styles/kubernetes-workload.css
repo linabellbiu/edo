@@ -8,7 +8,8 @@
   --workload-header: #f8f9fb;
   --workload-on-header: #687182;
   --workload-page: #f5f6f8;
-  --workload-selected: #4f5cb0;
+  --workload-revision-selected: #356641;
+  --workload-pod-selected: #176e64;
   --workload-on-selected: #fff;
   --workload-selected-border: #a9b6f2;
   --workload-idle: #eef2ff;
@@ -57,7 +58,8 @@
   --workload-header: #1e2027;
   --workload-on-header: #959dab;
   --workload-page: #0f1014;
-  --workload-selected: #4654a8;
+  --workload-revision-selected: #2d6040;
+  --workload-pod-selected: #1b6960;
   --workload-on-selected: #fff;
   --workload-selected-border: #6d7fd8;
   --workload-idle: #20294d;
