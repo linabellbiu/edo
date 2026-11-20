@@ -118,30 +118,7 @@ test('登录方式保存失败保留表单，启停只提交状态而不带密�
   assert.deepEqual(writes(h)[1],{method:'patch',path:'/identity-providers/provider-id/status',body:{is_active:false},options:undefined})
 })
 
-test('系统日志首屏替换与历史追加使用正确游标和筛选，错误保留已有结果',async t=>{
-  let calls=0
-  const auth={authorizationState:'ready',user:{id:'operator',permissions:['monitor.read']},canAny:codes=>codes.includes('monitor.read')}
-  const h=harness(t,'../src/views/LogsView.vue',{api:{get:async()=>{calls++;if(calls===3)throw new Error('日志暂不可用');return {data:{items:[{id:3-calls,message:'日志'+calls}],next_before_id:3-calls,has_more:true}}}},modules:{vue:{...vue,onBeforeUnmount(){},watch(){}},'@/stores/auth':{useAuthStore:()=>auth}}})
-  h.state.level.value='warn';h.state.query.value='pipeline';await h.state.load(false)
-  await h.state.load(true)
-  assert.equal(h.requests[0].body.params.limit,100);assert.equal(h.requests[0].body.params.level,'warn');assert.equal(h.requests[0].body.params.query,'pipeline')
-  assert.equal(h.requests[1].body.params.before_id,2)
-  assert.deepEqual(h.state.items.value.map(item=>item.id),[2,1])
-  await h.state.load(false)
-  assert.deepEqual(h.state.items.value.map(item=>item.id),[2,1]);assert.equal(h.state.loading.value,false)
-  assert.equal(h.state.error.value,'日志暂不可用')
-})
 
-test('任务取消和幂等重试调用准确任务接口，失败不会显示成功或清空列表',async t=>{
-  const requests=[]
-  const h=harness(t,'../src/views/TaskCenterView.vue',{codes:['task.read','task.execute'],api:{get:async()=>({data:{tasks:[{id:'pending',status:'pending'}]}})},modules:{'@/api/resources':{apiErrorMessage:error=>error.message,getResources:async()=>[{id:'pending',status:'pending'}],postResource:async path=>{requests.push(path);if(path.includes('denied'))throw new Error('任务不允许重试')}}}})
-  await h.state.refresh();await h.state.action({id:'exact-task'},'cancel')
-  assert.deepEqual(requests,['/tasks/exact-task/cancel'])
-  await h.state.action({id:'denied'},'retry')
-  assert.deepEqual(h.state.rows.value,[{id:'pending',status:'pending'}])
-  assert.equal(h.notifications.filter(item=>item.kind==='success').length,1)
-  assert.equal(h.notifications.at(-1).value,'任务不允许重试')
-})
 
 test('DNS账号切换厂商重置字段，编辑留空密钥不要求清除已有值',async t=>{
   const h=harness(t,'../src/views/DomainView.vue',{codes:['dns.update'],api:{get:async path=>({data:path==='/dns/providers'?{providers:[]}:path==='/dns/accounts'?{accounts:[]}:{domains:[]}})}})

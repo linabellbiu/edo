@@ -1,4 +1,4 @@
-export type SessionKind = 'container-log' | 'terminal' | 'pipeline-log' | 'installation-log' | 'system-log' | 'preflight-log'
+export type SessionKind = 'container-log' | 'terminal' | 'pipeline-log' | 'installation-log' | 'preflight-log'
 export interface SessionTarget {
   kind: SessionKind
   path?: string
@@ -39,7 +39,6 @@ export function sessionPermissions(target: SessionTarget): string[] {
   if (target.kind === 'pipeline-log') return ['pipeline_run.read']
   if (target.kind === 'installation-log') return ['cluster.create', 'kubernetes.node.create', 'kubernetes.k3s.uninstall']
   if (target.kind === 'preflight-log') return ['cluster.create', 'kubernetes.node.create']
-  if (target.kind === 'system-log') return ['monitor.read']
   const socket = sessionSocketTarget(target.kind, target.path)
   return socket ? [socket.permission] : []
 }
@@ -49,7 +48,6 @@ export function validSessionTarget(target: SessionTarget): boolean {
   if (target.kind === 'pipeline-log') return validID(target.runID) && (!target.nodeID || validID(target.nodeID))
   if (target.kind === 'installation-log') return validID(target.installationID)
   if (target.kind === 'preflight-log') return validID(target.channel)
-  if (target.kind === 'system-log') return !target.level || ['debug', 'info', 'warn', 'warning', 'error'].includes(target.level)
   return Boolean(sessionSocketTarget(target.kind, target.path))
 }
 

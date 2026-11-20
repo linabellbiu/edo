@@ -13,7 +13,6 @@ import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
 import TerminalDrawer from '@/components/TerminalDrawer.vue'
 
 const InstallationLogView = defineAsyncComponent(() => import('@/views/InstallationLogView.vue'))
-const LogsView = defineAsyncComponent(() => import('@/views/LogsView.vue'))
 const PreflightLogView = defineAsyncComponent(() => import('@/views/PreflightLogView.vue'))
 const route = useRoute(), auth = useAuthStore()
 const target = computed(() => parseSessionTarget(route.query))
@@ -102,7 +101,6 @@ onBeforeUnmount(() => {
       <PipelineLogDrawer v-else-if="target.kind === 'pipeline-log'" standalone :open="true" :title="title" :run-i-d="target.runID!" :node-i-d="target.nodeID" initial-status="" />
       <InstallationLogView v-else-if="target.kind === 'installation-log'" :installation-i-d="target.installationID!" />
       <PreflightLogView v-else-if="target.kind === 'preflight-log'" :channel="target.channel!" :title="title" />
-      <LogsView v-else-if="target.kind === 'system-log'" standalone :initial-query="target.query" :initial-level="target.level" />
     </template>
   </main>
 </template>

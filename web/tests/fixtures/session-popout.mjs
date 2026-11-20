@@ -36,7 +36,6 @@ client.defaults.adapter=async config=>{
   if(url.pathname.endsWith('/pods/preview-web/diagnostics'))return response({uid:pod.metadata.uid,state:'ok',metrics_at:new Date().toISOString(),containers:[{name:'web',cpu:.002,memory:12*1024**2}]})
   if(url.pathname==='/pipeline-runs/preview-run/logs')return response({logs:pipelineLogs,status:'succeeded',next_after_id:2})
   if(url.pathname==='/kubernetes/k3s/installations/preview-installation')return response(installation)
-  if(url.pathname==='/logs')return response({items:[{id:1,created_at:created,level:'info',operation:'pipeline.build',message:'构建模拟日志：镜像推送完成',fields:{run_id:'preview-run'}}],next_before_id:0,has_more:false})
   throw new Error(`本地夹具未登记只读接口：${url.pathname}`)
 }
 const originalFetch=window.fetch.bind(window)

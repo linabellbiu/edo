@@ -80,7 +80,7 @@ test('拒绝外站、任意 API、路径规范化、重复和敏感参数，不�
   ]) {
     for (const kind of ['container-log', 'terminal']) assert.equal(targets.sessionSocketTarget(kind, path), null, path)
   }
-  for (const query of [{ kind: ['terminal'] }, { kind: 'pipeline-log', runID: ['one', 'two'] }, { kind: 'pipeline-log', runID: '..' }, { kind: 'system-log', level: 'secret' }, { kind: 'unknown' }]) {
+  for (const query of [{ kind: ['terminal'] }, { kind: 'pipeline-log', runID: ['one', 'two'] }, { kind: 'pipeline-log', runID: '..' }, { kind: 'unknown' }]) {
     assert.equal(targets.parseSessionTarget(query), null)
   }
   assert.equal(targets.sessionPopoutURL({ kind: 'pipeline-log', runID: 'run-a' }, '../project'), '')
