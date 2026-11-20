@@ -1110,14 +1110,17 @@ onMounted(() => {
       </a-button>
     </PageToolbar>
 
-    <a-segmented
-      :value="active"
-      :options="tabs.map((item) => ({ value: item.key, label: item.label }))"
-      :disabled="!authorizationReady"
-      class="edo-page-tabs"
-      aria-label="访问控制页面"
-      @change="(value: string) => selectTab(value)"
-    />
+    <div class="access-tabs edo-segmented-tabs edo-page-tabs" role="group" aria-label="访问控制页面">
+      <button
+        v-for="tab in tabs"
+        :key="tab.key"
+        type="button"
+        class="edo-tab-item"
+        :aria-pressed="active === tab.key"
+        :disabled="!authorizationReady"
+        @click="selectTab(tab.key)"
+      >{{ tab.label }}</button>
+    </div>
 
     <div v-if="active !== 'audit'" class="access-summary">
       <article>
@@ -1578,6 +1581,10 @@ onMounted(() => {
   margin-top: 12px;
   color: var(--edo-muted);
 }
+
+.access-tabs { margin-bottom: 14px; }
+.access-tabs > .edo-tab-item,
+.access-tabs > .edo-tab-item + .edo-tab-item::before { transition: none; }
 
 .access-summary {
   display: grid;

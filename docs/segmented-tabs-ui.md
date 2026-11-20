@@ -1,6 +1,6 @@
 # 分段控件与按钮视觉规范
 
-页面页签和功能性单选控件共用 `web/src/styles/vben.css` 中的分段样式。系统设置、访问控制等使用 Ant Design Segmented。需要原生链接或页签语义时，使用 `.edo-segmented-tabs`、`.edo-tab-item` 和原有的导航及选中属性。视觉契约由 `web/tests/segmented-tabs-design.test.mjs` 校验。
+页面页签和功能性单选控件共用 `web/src/styles/vben.css` 中的分段样式。系统设置使用 Ant Design Segmented。访问控制使用 `.edo-segmented-tabs` 和 `.edo-tab-item`，选中底色随当前页签直接切换。原生链接和页签也复用这两个样式类及各自的导航和选中属性。视觉契约由 `web/tests/segmented-tabs-design.test.mjs` 校验。
 
 ## 规则
 
