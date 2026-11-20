@@ -41,3 +41,13 @@ test('集群工作台不再保留重复的集群上下文条，项目页搜索�
   assert.ok(toolbar.includes('workspace-search'), '项目搜索放在操作栏内')
   assert.ok(!/<div class="workspace-search">/.test(projects), '项目页不再单独占用一行搜索')
 })
+test('列表页操作栏并入内容卡片，页面上方不再留出空白带', () => {
+  const projects = source('ProjectsView.vue')
+  assert.ok(/<div class="vben-card projects-card"><PageToolbar>/.test(projects), '项目页操作栏应在卡片内')
+  const variables = source('DeliveryVariablesView.vue')
+  assert.ok(variables.includes('vben-card variables-card'), '变量页操作栏应在卡片内')
+  assert.ok(variables.includes('card-filters'), '变量页筛选行使用卡片内样式')
+  const css = readFileSync(new URL('../src/styles/vben.css', import.meta.url), 'utf8')
+  assert.ok(css.includes('.vben-card > .page-toolbar'), '共用卡片内操作栏样式')
+  assert.ok(css.includes('.vben-card > .card-filters'), '共用卡片内筛选行样式')
+})

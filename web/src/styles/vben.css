@@ -209,6 +209,9 @@ button { color: inherit; }
 .page-toolbar { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .page-toolbar-summary { min-width: 0; color: var(--edo-muted); font-size: 13px; }
 .page-toolbar-actions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-inline-start: auto; }
+/* 列表页把操作栏与筛选并入内容卡片，页面上方不再留出一条空白带。 */
+.vben-card > .page-toolbar { min-height: 0; margin: 0; padding: 9px 14px; border-bottom: 1px solid var(--edo-border); }
+.vben-card > .card-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--edo-border); }
 /* 分段控件（页面页签、筛选与范围）统一为浅色实底：选中用浅靛蓝 + 靛蓝文字，
    不使用渐变、外发光或内阴影；选中块与相邻条目同高，不允许溢出容器。 */
 .ant-segmented.ant-segmented,

@@ -148,14 +148,15 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
   <div class="variables-workspace" :class="{'is-embedded':embedded}">
     <a-alert v-if="!can('read')" type="warning" show-icon :message="scopeMessage"/>
     <template v-else>
+    <div class="vben-card variables-card">
     <PageToolbar>
       <a-button :loading="loading" @click="load"><RefreshCw :size="15"/>刷新</a-button>
       <a-button v-if="can('create')" type="primary" @click="edit()"><Plus :size="15"/>{{configurationFiles||embedded?'添加配置':'添加变量'}}</a-button>
     </PageToolbar>
     <a-alert v-if="error" type="error" show-icon :message="error"/>
-    <div v-if="embedded" class="variable-filters"><label class="environment-choice">主机组<a-select v-model:value="environmentFilter" aria-label="主机组" :options="[{value:'',label:'全部主机组（通用配置）'},...environments.map(v=>({value:v.id,label:v.name}))]"/></label><a :href="configurationFiles?'/configuration-files':'/delivery-variables'" target="_blank" rel="noopener">{{configurationFiles?'管理项目配置':'管理项目共享变量'}}</a></div>
-    <div v-else class="variable-filters"><a-input v-model:value="search" placeholder="搜索名称或说明" allow-clear/><a-select v-if="!configurationFiles" v-model:value="usage" :options="[{value:'all',label:'全部用途'},{value:'build',label:'构建与检查'},{value:'deploy',label:'应用运行与部署'}]"/></div>
-    <div class="vben-card"><ResourceTable :rows="filtered" :details="false" :columns="columns" :loading="loading">
+    <div v-if="embedded" class="variable-filters card-filters"><label class="environment-choice">主机组<a-select v-model:value="environmentFilter" aria-label="主机组" :options="[{value:'',label:'全部主机组（通用配置）'},...environments.map(v=>({value:v.id,label:v.name}))]"/></label><a :href="configurationFiles?'/configuration-files':'/delivery-variables'" target="_blank" rel="noopener">{{configurationFiles?'管理项目配置':'管理项目共享变量'}}</a></div>
+    <div v-else class="variable-filters card-filters"><a-input v-model:value="search" placeholder="搜索名称或说明" allow-clear/><a-select v-if="!configurationFiles" v-model:value="usage" :options="[{value:'all',label:'全部用途'},{value:'build',label:'构建与检查'},{value:'deploy',label:'应用运行与部署'}]"/></div>
+    <ResourceTable :rows="filtered" :details="false" :columns="columns" :loading="loading">
       <template #cell-name="{row}"><strong>{{embedded&&row.kind==='env_text'?'环境变量（文本）':row.name}}</strong><small class="variable-description">{{row.description}}</small></template>
       <template #cell-usage="{row}">{{row.usage==='build'?'构建与检查':'运行与部署'}}<small class="variable-description">{{variableKindLabel(row.kind as DeliveryVariableKind)}}</small></template>
       <template #cell-scope="{row}">{{row.application_id?(applicationNames[row.application_id as string]||'指定应用'):'当前项目共享'}} · {{row.environment_id?(environmentNames[row.environment_id as string]||'指定主机组'):'全部主机组'}}</template>
@@ -209,7 +210,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
 </template>
 
 <style scoped>
-.variables-workspace{display:grid;min-width:0;gap:16px}.variables-workspace>.vben-card{min-width:0}.variables-workspace :deep(.resource-table){min-width:880px}.variables-workspace.is-embedded :deep(.resource-table){min-width:580px}.variable-filters{display:flex;align-items:center;flex-wrap:wrap;gap:12px}.environment-choice{display:flex;align-items:center;gap:10px}.environment-choice .ant-select{min-width:220px}.variable-filters>.ant-input-affix-wrapper{max-width:420px}.variable-filters>.ant-select{min-width:180px}.variable-description{display:block;color:var(--edo-muted);margin-top:4px}.variable-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}@media(max-width:650px){.variable-filters{flex-direction:column}.variable-form-grid{grid-template-columns:1fr}}
+.variables-workspace{display:grid;min-width:0;gap:16px}.variables-workspace>.vben-card{min-width:0}.variables-card{overflow:hidden}.variables-card>.ant-alert{margin:10px 14px}.variables-workspace :deep(.resource-table){min-width:880px}.variables-workspace.is-embedded :deep(.resource-table){min-width:580px}.variable-filters{display:flex;align-items:center;flex-wrap:wrap;gap:12px}.environment-choice{display:flex;align-items:center;gap:10px}.environment-choice .ant-select{min-width:220px}.variable-filters>.ant-input-affix-wrapper{max-width:420px}.variable-filters>.ant-select{min-width:180px}.variable-description{display:block;color:var(--edo-muted);margin-top:4px}.variable-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}@media(max-width:650px){.variable-filters{flex-direction:column}.variable-form-grid{grid-template-columns:1fr}}
 </style>
 
 <style scoped>
