@@ -184,12 +184,11 @@ onMounted(refresh)
 
 <template>
   <section>
-    <PageToolbar>
-      <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
-      <a-button v-if="auth.canAny(['deployment.create'])" type="primary" @click="create"><Plus :size="15" />创建环境</a-button>
-    </PageToolbar>
-
-    <div class="vben-card">
+    <div class="vben-card environments-card">
+      <PageToolbar>
+        <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
+        <a-button v-if="auth.canAny(['deployment.create'])" type="primary" @click="create"><Plus :size="15" />创建环境</a-button>
+      </PageToolbar>
       <a-table class="resource-list-table" :columns="columns" :data-source="environments" :loading="loading" :pagination="pagination" :scroll="{ x: 1300 }" row-key="id" table-layout="fixed" :locale="{ emptyText: t('resourceList.environmentEmpty') }" :row-class-name="(row: InfrastructureEnvironment) => detailOpen && selectedID === row.id ? 'resource-selected' : ''" @change="changePage">
         <template #bodyCell="{ column, record: environment }">
           <div v-if="column.key === 'name'">

@@ -97,11 +97,11 @@ onMounted(refresh)
 
 <template>
   <div class="identity-settings" role="region" :aria-label="t('loginAuth.title')">
-    <PageToolbar>
-      <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />{{ t('loginAuth.refresh') }}</a-button>
-      <a-button v-if="auth.canAny(['identity.create'])" type="primary" @click="create"><Plus :size="15" />{{ t('loginAuth.add') }}</a-button>
-    </PageToolbar>
-    <div class="vben-card">
+    <div class="vben-card identity-providers-card">
+      <PageToolbar>
+        <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />{{ t('loginAuth.refresh') }}</a-button>
+        <a-button v-if="auth.canAny(['identity.create'])" type="primary" @click="create"><Plus :size="15" />{{ t('loginAuth.add') }}</a-button>
+      </PageToolbar>
       <ResourceTable :rows="items" :columns="columns" :loading="loading">
         <template #cell-type="{ value }"><a-tag>{{ types.includes(value as ProviderType) ? t(`loginAuth.${value}`) : value }}</a-tag></template>
         <template v-if="auth.canAny(['identity.update'])" #actions="{ row }"><a-button type="link" @click="edit(row as Provider)">{{ t('loginAuth.edit') }}</a-button><a-button type="link" @click="toggle(row as Provider)">{{ t(row.is_active ? 'loginAuth.disable' : 'loginAuth.enable') }}</a-button></template>

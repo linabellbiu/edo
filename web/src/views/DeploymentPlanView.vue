@@ -1078,14 +1078,13 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
 
 <template>
   <section>
-    <PageToolbar v-if="!inline">
-      <a-button v-if="canDefaults" @click="openDefaults()">{{ t('delivery.defaults') }}</a-button>
-      <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
-      <a-button v-if="canCreate" type="primary" @click="create"><Plus :size="15" />新建部署方案</a-button>
-    </PageToolbar>
-
     <template v-if="!inline&&!formOpen"><a-alert v-for="(error,key) in resourceErrors" :key="key" class="resource-load-error" type="error" show-icon :message="`${resourceLabels[key]}：${error}`"><template #action><a-button size="small" :loading="resourcePending[key]" @click="readPlanResource(key)">重试</a-button></template></a-alert></template>
     <div v-if="!inline" class="expandable-plan-list deployment-plan-list vben-card">
+      <PageToolbar>
+        <a-button v-if="canDefaults" @click="openDefaults()">{{ t('delivery.defaults') }}</a-button>
+        <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
+        <a-button v-if="canCreate" type="primary" @click="create"><Plus :size="15" />新建部署方案</a-button>
+      </PageToolbar>
       <a-table
         class="plan-table resource-list-table" row-key="id" size="small" table-layout="fixed" :columns="planColumns" :data-source="plans"
         :loading="loading&&!plans.length" :pagination="planPagination" :scroll="{ x: 1520 }" :row-class-name="planRowClass"

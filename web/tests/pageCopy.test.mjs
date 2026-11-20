@@ -70,3 +70,12 @@ test('应用列表把自动更新、刷新、新建收进筛选行，保持单�
   const css = readFileSync(new URL('../src/styles/application-workspace.css', import.meta.url), 'utf8')
   assert.ok(css.includes('.apps-filter-actions'), '筛选行操作区样式存在')
 })
+test('凭据、环境、登录方式、部署方案列表同样把操作栏放进卡片顶部', () => {
+  const expectations = [
+    ['CredentialView.vue', /<div class="vben-card credentials-card">\s*<PageToolbar>/],
+    ['EnvironmentView.vue', /<div class="vben-card environments-card">\s*<PageToolbar>/],
+    ['IdentityProvidersView.vue', /<div class="vben-card identity-providers-card">\s*<PageToolbar>/],
+    ['DeploymentPlanView.vue', /class="expandable-plan-list deployment-plan-list vben-card">\s*<PageToolbar>/],
+  ]
+  for (const [name, pattern] of expectations) assert.ok(pattern.test(source(name)), name + ' 的操作栏应在卡片顶部')
+})
