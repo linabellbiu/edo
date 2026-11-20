@@ -125,7 +125,7 @@ test('版本与Pod列表有listitem，长名称自然换行；列内恢复不滚
  props.visible=false;state.root.value={querySelector:selector=>selector==='.pod-column'?column:undefined};await state.restoreVisibleSelection();assert.equal(column.scrollTop,58)
  props.visible=true;await flush();assert.equal(column.scrollTop,16);assert.equal(state.podUID.value,'missing')
  assert.doesNotMatch(file,/\.scrollIntoView\(|\.focus\(/)
- assert.match(file,/\.explorer-column,\.is-deployment \.revision-column,\.is-deployment \.pod-column \{ max-height: none; overflow: visible; \}/)
+ assert.match(file,/\.explorer-column,\.has-context-column \.revision-column,\.has-context-column \.pod-column \{ max-height: none; overflow: visible; \}/)
  scope.stop()
 })
 

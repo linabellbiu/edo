@@ -11,6 +11,7 @@ import { loadFrontend } from './acceptanceHarness.mjs'
 const api = loadFrontend('../src/api/kubernetes.ts')
 const workspace = loadFrontend('../src/utils/kubernetesWorkspace.ts')
 const presentation = loadFrontend('../src/utils/kubernetesPresentation.ts', { '@/api/kubernetes': api, '@/utils/kubernetesRoles': loadFrontend('../src/utils/kubernetesRoles.ts') })
+const explorerHelpers = loadFrontend('../src/utils/kubernetesWorkloadExplorer.ts')
 const podType = api.kubeTypes.find(item => item.resource === 'pods')
 const settle = async () => { await vue.nextTick(); await new Promise(resolve => setImmediate(resolve)); await vue.nextTick() }
 function pod(uid = 'pod-a') {
@@ -41,7 +42,27 @@ async function harness(getResource) {
   state.cluster.value = 'cluster-a'; await settle()
   const current = pod()
   state.detail.value = current; state.detailType.value = podType; state.detailOpen.value = true; state.detailLoading.value = false
-  return { state, blocked, messages, requests, target: container => ({ cluster: 'cluster-a', namespace: 'team', podUID: 'pod-a', container }), stop() { state.cancelListPersist(); scope.stop() } }
+  return { state, blocked, messages, requests, target: container => ({ cluster: 'cluster-a', namespace: 'team', podUID: 'pod-a', container }), attachExplorer() {
+    const explorer = loadFrontend('../src/components/KubeWorkloadExplorer.vue', {
+      vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
+      'vue-i18n': { useI18n: () => ({ t: key => key }) },
+      '@/api/kubernetes': api, '@/utils/kubernetesPresentation': presentation,
+      '@/utils/kubernetesWorkspace': workspace, '@/utils/kubernetesWorkloadExplorer': explorerHelpers,
+    }).default
+    const props = {
+      get cluster() { return state.cluster.value },
+      get object() { return state.detail.value },
+      get disabled() { return !state.detailOpen.value || Boolean(state.busy.value || state.detailLoading.value || state.detailError.value || state.detailSyncError.value) },
+      get selection() { return state.workloadSelection.value },
+      type: podType, pods: [], can: code => !blocked.has(code), canFollow: state.canFollowWorkloadRuntime,
+    }
+    return scope.run(() => explorer.setup(props, { expose() {}, emit(event, ...args) {
+      if (event === 'selection') state.workloadSelections.value[state.workloadSelectionKey.value] = args[0]
+      if (event === 'logs') state.openWorkloadStream(...args)
+      if (event === 'terminal') state.openWorkloadStream(...args, true)
+      if (event === 'follow') void state.followReference(...args)
+    } }))
+  }, stop() { state.cancelListPersist(); scope.stop() } }
 }
 
 test('从 Pod 列表直接进入 Deployment 三栏并选中原 Pod，不先渲染 Pod 详情', async () => {
@@ -99,85 +120,112 @@ test('从关联资源进入 Pod 所属 Deployment，返回后保留原资源及�
 })
 
 test('初始默认普通容器，显式选择失效后保留名称并停止日志和弹出链接', async () => {
-  const h = await harness(), current = h.state.detail.value
-  assert.equal(h.state.selectedPodContainer(current).name, 'web')
-  h.state.chooseDetailPodContainer(h.target('metrics'))
-  assert.equal(h.state.selectedPodContainer(current).name, 'metrics'); assert.equal(h.state.stream.value.open, false)
+  const h = await harness(), explorer = h.attachExplorer(), current = h.state.detail.value
+  assert.equal(explorer.selectedContainer.value.name, 'web')
+  explorer.chooseRuntimeContainer(h.target('metrics'))
+  assert.equal(explorer.selectedContainer.value.name, 'metrics'); assert.equal(h.state.stream.value.open, false)
+  explorer.openRuntimeContainer(h.target('metrics'))
+  h.state.stream.value.open = false
   current.spec.containers = current.spec.containers.filter(item => item.name !== 'metrics')
-  assert.equal(h.state.selectedPodContainer(current), undefined)
-  assert.equal(h.state.selectedPodContainerName(current), 'metrics'); assert.equal(h.state.missingPodContainer(current), true)
+  assert.equal(explorer.selectedContainer.value, undefined)
+  assert.equal(explorer.containerName.value, 'metrics'); assert.equal(h.state.missingPodContainer(current), true)
   assert.equal(h.state.podStreamPath(current), ''); assert.equal(h.state.podStreamPath(current, true), '')
-  h.state.openStream(current); assert.equal(h.state.stream.value.open, false)
-  h.state.chooseDetailPodContainer(h.target('web')); assert.equal(h.state.missingPodContainer(current), false)
+  explorer.openRuntimeContainer(h.target('metrics')); assert.equal(h.state.stream.value.open, false)
+  explorer.chooseRuntimeContainer(h.target('web')); assert.equal(explorer.selectedContainer.value.name, 'web')
   h.stop()
 })
 
 test('Pod 直接点击只切换容器；打开日志与新窗口使用相同 UID 和容器路径', async () => {
-  const h = await harness()
-  h.state.chooseDetailPodContainer(h.target('metrics')); assert.equal(h.state.stream.value.open, false)
+  const h = await harness(), explorer = h.attachExplorer()
+  explorer.chooseRuntimeContainer(h.target('metrics')); assert.equal(h.state.stream.value.open, false)
+  explorer.openRuntimeContainer(h.target('metrics'))
   const path = h.state.podStreamPath(h.state.detail.value)
-  h.state.openDetailPodContainer(h.target('metrics'))
   assert.equal(h.state.stream.value.open, true); assert.equal(h.state.stream.value.path, path)
   assert.match(path, /\/pods\/web\/containers\/metrics\/logs\/ws\?project_id=project-a&pod_uid=pod-a$/)
   assert.equal(h.state.stream.value.title, 'web / metrics')
   h.state.stream.value.open = false
-  h.state.openDetailPodContainer(h.target('debug'), true)
+  explorer.openRuntimeContainer(h.target('debug'), true)
   assert.equal(h.state.stream.value.path, h.state.podStreamPath(h.state.detail.value, true))
   assert.equal(h.state.stream.value.terminal, true)
   h.stop()
 })
 
 test('迟到的旧集群、命名空间、Pod UID 和不存在容器不能切换或打开当前目标', async () => {
-  const h = await harness()
+  const h = await harness(), explorer = h.attachExplorer()
   for (const target of [{ ...h.target('metrics'), cluster: 'old-cluster' }, { ...h.target('metrics'), namespace: 'other' }, { ...h.target('metrics'), podUID: 'pod-old' }, h.target('removed')]) {
-    h.state.chooseDetailPodContainer(target); h.state.openDetailPodContainer(target); h.state.openDetailPodContainer(target, true)
-    assert.equal(h.state.selectedPodContainer(h.state.detail.value).name, 'web'); assert.equal(h.state.stream.value.open, false)
+    explorer.chooseRuntimeContainer(target); explorer.openRuntimeContainer(target); explorer.openRuntimeContainer(target, true)
+    assert.equal(explorer.selectedContainer.value.name, 'web'); assert.equal(h.state.stream.value.open, false)
   }
   h.state.detail.value = pod('replacement')
-  h.state.openDetailPodContainer(h.target('web')); assert.equal(h.state.stream.value.open, false)
+  explorer.openRuntimeContainer(h.target('web')); assert.equal(h.state.stream.value.open, false)
   h.stop()
 })
 
 test('Pod 独立详情不提供自身完整详情跳转，节点与其他 Pod 关联仍按权限开放', async () => {
-  const h = await harness(), self = { resource: 'pods', name: 'web', namespace: 'team', uid: 'pod-a' }
-  assert.equal(h.state.canFollowDetailPodReference(self), false)
-  assert.equal(h.state.canFollowDetailPodReference({ ...self, uid: undefined }), false)
-  h.state.followDetailPodReference(self, h.target('web'))
+  const h = await harness(), explorer = h.attachExplorer(), self = { resource: 'pods', name: 'web', namespace: 'team', uid: 'pod-a' }
+  assert.equal(h.state.canFollowWorkloadRuntime(self), false)
+  assert.equal(h.state.canFollowWorkloadRuntime({ ...self, uid: undefined }), false)
+  explorer.followRuntimeReference(self, h.target('web'))
   assert.equal(h.state.detailHistory.value.length, 0); assert.equal(h.state.detail.value.metadata.uid, 'pod-a')
-  assert.equal(h.state.canFollowDetailPodReference({ resource: 'nodes', name: 'worker-a' }), true)
-  assert.equal(h.state.canFollowDetailPodReference({ ...self, name: 'other-pod', uid: 'pod-b' }), true)
+  assert.equal(h.state.canFollowWorkloadRuntime({ resource: 'nodes', name: 'worker-a' }), true)
+  assert.equal(h.state.canFollowWorkloadRuntime({ ...self, name: 'other-pod', uid: 'pod-b' }), true)
   h.blocked.add('kubernetes.node.read')
-  assert.equal(h.state.canFollowDetailPodReference({ resource: 'nodes', name: 'worker-a' }), false)
+  assert.equal(h.state.canFollowWorkloadRuntime({ resource: 'nodes', name: 'worker-a' }), false)
   h.stop()
 })
 
 test('读取中、读取失败、关闭详情和撤销权限均阻止直接容器操作', async () => {
-  const h = await harness()
+  const h = await harness(), explorer = h.attachExplorer()
   for (const [field, value] of [['busy', 'operation'], ['detailLoading', true], ['detailError', '读取失败'], ['detailSyncError', '同步失败'], ['detailOpen', false]]) {
     const before = h.state[field].value; h.state[field].value = value
-    h.state.chooseDetailPodContainer(h.target('metrics')); h.state.openDetailPodContainer(h.target('metrics'))
-    assert.equal(h.state.selectedPodContainer(h.state.detail.value).name, 'web', field); assert.equal(h.state.stream.value.open, false, field)
+    explorer.chooseRuntimeContainer(h.target('metrics')); explorer.openRuntimeContainer(h.target('metrics'))
+    h.state.openWorkloadStream(h.state.detail.value, 'metrics')
+    assert.equal(explorer.selectedContainer.value.name, 'web', field); assert.equal(h.state.stream.value.open, false, field)
     h.state[field].value = before
   }
   h.blocked.add('kubernetes.workload.read')
-  h.state.chooseDetailPodContainer(h.target('metrics')); h.state.openDetailPodContainer(h.target('metrics'))
+  explorer.chooseRuntimeContainer(h.target('metrics')); explorer.openRuntimeContainer(h.target('metrics'))
   assert.equal(h.state.podStreamPath(h.state.detail.value), ''); assert.equal(h.state.stream.value.open, false)
   h.blocked.delete('kubernetes.workload.read'); h.blocked.add('terminal.open')
-  h.state.openDetailPodContainer(h.target('web'), true); assert.equal(h.state.stream.value.open, false)
+  explorer.openRuntimeContainer(h.target('web'), true); assert.equal(h.state.stream.value.open, false)
   assert.equal(h.state.podStreamPath(h.state.detail.value, true), '')
   h.stop()
 })
 
 test('Init 可查看日志但不能打开终端，停止或删除中的容器不生成终端入口', async () => {
-  const h = await harness()
-  h.state.openDetailPodContainer(h.target('prepare'), true); assert.equal(h.state.stream.value.open, false)
-  h.state.openDetailPodContainer(h.target('prepare')); assert.equal(h.state.stream.value.terminal, false); assert.match(h.state.stream.value.path, /containers\/prepare\/logs/)
-  h.state.stream.value.open = false; h.state.chooseDetailPodContainer(h.target('web'))
+  const h = await harness(), explorer = h.attachExplorer()
+  explorer.openRuntimeContainer(h.target('prepare'), true); assert.equal(h.state.stream.value.open, false)
+  explorer.openRuntimeContainer(h.target('prepare')); assert.equal(h.state.stream.value.terminal, false); assert.match(h.state.stream.value.path, /containers\/prepare\/logs/)
+  h.state.stream.value.open = false
   h.state.detail.value.metadata.deletionTimestamp = '2026-11-17T00:00:00Z'
-  h.state.openDetailPodContainer(h.target('web'), true); assert.equal(h.state.stream.value.open, false); assert.equal(h.state.podStreamPath(h.state.detail.value, true), '')
+  explorer.openRuntimeContainer(h.target('web'), true); assert.equal(h.state.stream.value.open, false); assert.equal(h.state.podStreamPath(h.state.detail.value, true), '')
   delete h.state.detail.value.metadata.deletionTimestamp
   h.state.detail.value.status.containerStatuses[0].state = { terminated: { exitCode: 1 } }
-  h.state.openDetailPodContainer(h.target('web'), true); assert.equal(h.state.stream.value.open, false)
+  explorer.openRuntimeContainer(h.target('web'), true); assert.equal(h.state.stream.value.open, false)
+  h.stop()
+})
+
+test('Job 与独立 Pod 走三栏并选中自身，概览和模板共用容器选择', async () => {
+  const current = pod(), h = await harness(() => ({ object: current, deployment: null }))
+  current.metadata.ownerReferences = [
+    { kind: 'ConfigMap', name: 'unrelated', uid: 'config-a', controller: false },
+    { kind: 'Job', apiVersion: 'batch/v1', name: 'installer', uid: 'job-a', controller: true },
+  ]
+  await h.state.openDetails(current, 'basic', podType)
+  const explorer = h.attachExplorer()
+  assert.equal(explorer.visiblePods.value.length, 1)
+  assert.equal(explorer.selectedPod.value.metadata.uid, current.metadata.uid)
+  assert.deepEqual(explorer.podControllerLink.value, { resource: 'jobs', name: 'installer', namespace: 'team', uid: 'job-a' })
+  assert.equal(h.state.needsRelatedPods.value, false)
+  explorer.chooseRuntimeContainer(h.target('metrics'))
+  await settle()
+  assert.equal(h.state.workloadSelection.value.containerName, 'metrics')
+  h.state.rememberTemplatePodContainer('web')
+  await settle()
+  assert.equal(explorer.containerName.value, 'web')
+  h.state.detail.value.metadata.ownerReferences = current.metadata.ownerReferences.slice(0, 1)
+  assert.equal(explorer.podController.value, undefined)
+  assert.equal(explorer.selectedPod.value.metadata.uid, current.metadata.uid)
   h.stop()
 })
 
@@ -229,7 +277,8 @@ test('Pod 总览与关联表格使用直接容器项，页头不再保留容器�
   const source = readFileSync(new URL('../src/views/KubernetesView.vue', import.meta.url), 'utf8')
   const template = parse(source).descriptor.template.content
   assert.doesNotMatch(template, /containerOptions|container-select/)
-  assert.match(template, /<KubeWorkloadPodRuntime[^>]+:can-follow="canFollowDetailPodReference"[^>]+@container="chooseDetailPodContainer"/)
+  assert.match(template, /<KubeWorkloadExplorer v-if="workloadDetail"/)
+  assert.doesNotMatch(template, /<KubeWorkloadPodRuntime/)
   assert.match(template, /@click="chooseRelatedPodContainer\(row,item.name\)"/)
   assert.match(template, /:aria-pressed="selectedPodContainer\(row\)\?\.name===item.name"/)
   assert.match(template, /:disabled="!allowedRelatedPodStream\(row,true\)"/)

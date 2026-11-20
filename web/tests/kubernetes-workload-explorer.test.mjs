@@ -326,7 +326,7 @@ async function viewHarness({readServices=async()=>({items:[],continue:''})}={}){
 
 test('工作负载概览默认加载关联 Pod 和事件，后台同步保留概览并刷新两者',async()=>{
  const h=await viewHarness();await h.state.openDetails(h.workload);await settleView()
- assert.equal(h.state.detailTab.value,'basic');assert.equal(h.state.workloadExplorer.value,true);assert.equal(h.state.relatedLoaded.value,true)
+ assert.equal(h.state.detailTab.value,'basic');assert.equal(h.state.workloadDetail.value,true);assert.equal(h.state.relatedLoaded.value,true)
  assert.deepEqual(h.state.relatedPods.value.map(item=>item.metadata.uid),['pod-a','pod-b'])
  const eventsBefore=h.calls.filter(call=>call.url.endsWith('/events')).length,podsBefore=h.lists.length
  h.advance(11000);await h.state.syncDetails();await settleView()
@@ -383,11 +383,11 @@ test('Service 独立读取并处理分页，撤权清除结果并丢弃迟到响
  assert.equal(requests.length,5)
 })
 
-test('工作负载查看 Pod 与历史诊断快捷入口归到概览，普通 Pod 保留自身诊断页',async()=>{
+test('工作负载查看 Pod 与历史诊断快捷入口统一进入概览，直接 Pod 无需加载关联列表',async()=>{
  const h=await viewHarness()
  for(const tab of ['pods','diagnostics']){await h.state.openDetails(h.workload,tab);await settleView();assert.equal(h.state.detailTab.value,'basic');assert.equal(h.state.needsRelatedPods.value,true)}
  await h.state.openDetails(h.podA,'diagnostics',api.kubeTypes.find(type=>type.resource==='pods'));await settleView()
- assert.equal(h.state.detailTab.value,'diagnostics');assert.equal(h.state.workloadExplorer.value,false);h.stop()
+ assert.equal(h.state.detailTab.value,'basic');assert.equal(h.state.workloadDetail.value,true);assert.equal(h.state.needsRelatedPods.value,false);h.stop()
 })
 
 test('工作负载日志桥接使用当前 Pod 精确容器，UID、命名空间或容器失效时拒绝打开',async()=>{

@@ -24,6 +24,7 @@ const props = defineProps<{
   refreshToken: number
   disabled?: boolean
   podActions?: boolean
+  hideEvents?: boolean
   can: (permission: string) => boolean
   canFollow: (reference: KubeReference) => boolean
 }>()
@@ -138,7 +139,7 @@ function follow(reference: KubeReference) {
 function retryEvents() { if (!props.disabled && readable.value && !eventsLoading.value) void loadEvents() }
 function toggleEvents() { eventsDisclosureTouched = true; eventsExpanded.value = !eventsExpanded.value }
 async function loadEvents() {
-  if (!readable.value || !props.cluster || !props.pod.metadata.uid) return
+  if (props.hideEvents || !readable.value || !props.cluster || !props.pod.metadata.uid) return
   controller?.abort()
   const request = new AbortController(), current = ++revision, identity = context.value
   controller = request; eventsLoading.value = true
@@ -152,7 +153,7 @@ async function loadEvents() {
     if (!disposed && current === revision && !request.signal.aborted && identity === context.value && readable.value) { events.value = []; eventsError.value = kubeErrorMessage(error) }
   } finally { if (!disposed && current === revision) eventsLoading.value = false }
 }
-watch([context, readable], () => {
+watch([context, readable, () => props.hideEvents], () => {
   revision++; controller?.abort(); events.value = []; eventsError.value = ''; eventsLoading.value = false
   eventsDisclosureTouched = false; eventsExpanded.value = false
   if (readable.value) void loadEvents()
@@ -166,10 +167,12 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); downlo
 
 <template>
   <div class="workload-pod-runtime" :aria-busy="eventsLoading">
-    <a-alert v-if="eventsError" type="warning" show-icon message="Pod 事件读取失败"><template #action><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">重试</a-button></template></a-alert>
-    <details class="runtime-events" :open="eventsExpanded" aria-label="所选 Pod 事件"><summary @click.prevent="toggleEvents">Pod 事件 <span>{{ eventsLoading ? '读取中' : eventsError ? '读取失败' : `${events.length} 条` }}</span><span v-if="warningCount" class="event-warning-count">{{ warningCount }} 条警告</span></summary>
-      <KubeWorkloadEvents :events="events" :error="Boolean(eventsError)" :error-text="eventsError" :loading="eventsLoading" compact empty-text="该 Pod 暂无事件"><template #actions><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">刷新</a-button></template></KubeWorkloadEvents>
-    </details>
+    <template v-if="!hideEvents">
+      <a-alert v-if="eventsError" type="warning" show-icon message="Pod 事件读取失败"><template #action><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">重试</a-button></template></a-alert>
+      <details class="runtime-events" :open="eventsExpanded" aria-label="所选 Pod 事件"><summary @click.prevent="toggleEvents">Pod 事件 <span>{{ eventsLoading ? '读取中' : eventsError ? '读取失败' : `${events.length} 条` }}</span><span v-if="warningCount" class="event-warning-count">{{ warningCount }} 条警告</span></summary>
+        <KubeWorkloadEvents :events="events" :error="Boolean(eventsError)" :error-text="eventsError" :loading="eventsLoading" compact empty-text="该 Pod 暂无事件"><template #actions><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">刷新</a-button></template></KubeWorkloadEvents>
+      </details>
+    </template>
     <KubeResourceDiagnostics v-if="readable" :key="context" :cluster="cluster" :object="pod" :type="podType" :auto-refresh="autoRefresh && !disabled" :refresh-token="refreshToken" :can-follow="canFollow" embedded compact trend disclosure @follow="follow" />
 
     <section class="runtime-pod-card">

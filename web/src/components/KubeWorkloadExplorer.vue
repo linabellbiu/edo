@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { Box, ChevronRight, FileCode2, Network, RefreshCw, Server, Trash2 } from 'lucide-vue-next'
 import { message } from 'ant-design-vue'
 import client from '@/api/client'
-import { KubeResourceChanged, kubeErrorMessage, kubeSnapshotPending, readKubeSnapshotMeta, resourceURL, type KubeObject, type KubeSnapshotMeta, type KubeType } from '@/api/kubernetes'
+import { KubeResourceChanged, kubeErrorMessage, kubeSnapshotPending, kubeTypes, readKubeSnapshotMeta, resourceURL, type KubeObject, type KubeSnapshotMeta, type KubeType } from '@/api/kubernetes'
 import { resourceStatus, type KubeReference } from '@/utils/kubernetesPresentation'
 import { podContainerChoices } from '@/utils/kubernetesWorkspace'
 import { initialWorkloadRevisionUID, podExplorerEvents, revisionOwnedPods, selectedWorkloadPod, selectedWorkloadRevision, sortWorkloadRevisions, type WorkloadContainerTarget, type WorkloadExplorerSelection, type WorkloadRevision } from '@/utils/kubernetesWorkloadExplorer'
@@ -45,8 +45,20 @@ const emit = defineEmits<{
 }>()
 const { t } = useI18n()
 const deployment = computed(() => props.object.kind === 'Deployment')
+const directPod = computed(() => props.object.kind === 'Pod')
 const readable = computed(() => props.can('kubernetes.workload.read'))
 const namespace = computed(() => String(props.object.metadata?.namespace ?? ''))
+const podController = computed(() => directPod.value && readable.value
+  ? props.object.metadata?.ownerReferences?.find((owner: KubeObject) => owner.controller === true && owner.kind && owner.name)
+  : undefined)
+const podControllerLink = computed<KubeReference | undefined>(() => {
+  const owner = podController.value
+  if (!owner?.uid) return
+  const type = kubeTypes.find(type => type.kind === owner.kind && type.apiVersion === owner.apiVersion)
+  if (!type) return
+  const reference = { resource: type.resource, name: owner.name, uid: owner.uid, namespace: type.namespaced ? namespace.value : undefined }
+  if (props.canFollow(reference)) return reference
+})
 const revisions = ref<WorkloadRevision[]>([]), historyLoading = ref(false), historyError = ref(''), historyState = ref('')
 const historySnapshot = ref<KubeSnapshotMeta>({})
 const revisionUID = ref(''), podUID = ref(''), containerName = ref(''), podTab = ref('summary')
@@ -60,9 +72,12 @@ let eventRequest: AbortController | undefined
 let manifestRequest: AbortController | undefined
 const context = computed(() => JSON.stringify([props.scopeKey, props.cluster, props.type.resource, namespace.value, props.object.metadata?.uid]))
 const selectedRevision = computed(() => selectedWorkloadRevision(revisions.value, revisionUID.value))
-const visiblePods = computed(() => !readable.value ? [] : deployment.value
-  ? selectedRevision.value ? revisionOwnedPods(props.pods, selectedRevision.value.uid, namespace.value) : []
-  : props.pods.filter(pod => pod.kind === 'Pod' && pod.metadata?.uid && pod.metadata.namespace === namespace.value))
+const visiblePods = computed(() => {
+  if (!readable.value) return []
+  if (directPod.value) return props.object.metadata?.uid ? [props.object] : []
+  if (deployment.value) return selectedRevision.value ? revisionOwnedPods(props.pods, selectedRevision.value.uid, namespace.value) : []
+  return props.pods.filter(pod => pod.kind === 'Pod' && pod.metadata?.uid && pod.metadata.namespace === namespace.value)
+})
 const selectedPod = computed(() => selectedWorkloadPod(visiblePods.value, podUID.value, namespace.value))
 const podMissing = computed(() => podChosen && Boolean(podUID.value) && !selectedPod.value)
 const choices = computed(() => selectedPod.value ? podContainerChoices(selectedPod.value) : [])
@@ -155,7 +170,7 @@ function openRuntimeFiles(target: WorkloadContainerTarget) {
     && choices.value.some(choice => choice.name === target.container && choice.running)) emit('files', pod, target.container)
 }
 function usePodAction(action: 'yaml' | 'remove', pod: KubeObject) {
-  if (podActionsDisabled.value || pod.metadata.uid !== selectedPod.value?.metadata.uid) return
+  if (directPod.value || podActionsDisabled.value || pod.metadata.uid !== selectedPod.value?.metadata.uid) return
   if (action === 'yaml') emit('podYaml', pod)
   else if (props.can('kubernetes.workload.delete') && !pod.metadata.deletionTimestamp) emit('podRemove', pod)
 }
@@ -252,6 +267,9 @@ watch(context, () => {
 watch([revisionUID, podUID, containerName, podTab], () => emit('selection', {
   revisionUID: revisionUID.value, podUID: podUID.value, containerName: containerName.value, podTab: podTab.value,
 }))
+watch(() => props.selection?.containerName, name => {
+  if (directPod.value && name && choices.value.some(container => container.name === name)) containerName.value = name
+})
 watch([visiblePods, () => props.disabled, () => props.podsLoading], ([pods]) => {
   if (!podChosen && !props.disabled && !props.podsLoading && pods.length) choosePod(pods[0]!)
 }, { immediate: true })
@@ -279,7 +297,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); eventRequ
 </script>
 
 <template>
-  <section ref="root" class="workload-explorer" :class="{ 'is-deployment': deployment }" aria-label="工作负载运行状态" @focusin="revealFocused">
+  <section ref="root" class="workload-explorer" :class="{ 'has-context-column': deployment || directPod }" aria-label="工作负载运行状态" @focusin="revealFocused">
     <aside v-if="deployment" class="explorer-column revision-column" tabindex="0" aria-label="历史版本">
       <header><h4>历史版本</h4><span class="history-limit">最大历史版本数 {{ object.spec?.revisionHistoryLimit ?? '—' }}</span><span class="column-header-action"><a-button size="small" type="text" :disabled="disabled || !readable" :aria-busy="historyLoading" :class="{ 'is-busy': historyLoading }" aria-label="刷新历史版本" @click="loadHistory"><RefreshCw :size="13" /></a-button></span></header>
       <a-alert v-if="historyError" class="column-alert" type="error" show-icon :message="historyError"><template #action><a-button size="small" :disabled="disabled" @click="loadHistory">重试</a-button></template></a-alert>
@@ -314,9 +332,18 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); eventRequ
       </a-spin>
       <p v-if="revisionChosen && revisionUID && !selectedRevision && historyState!=='pending'" class="column-note" role="status">所选历史版本已不存在，请重新选择。</p>
     </aside>
+    <aside v-else-if="directPod" class="explorer-column revision-column" tabindex="0" :aria-label="t('k8s.podController')">
+      <header><h4>{{ t('k8s.podController') }}</h4></header>
+      <div v-if="podController" class="pod-controller">
+        <span>{{ podController.kind }}</span>
+        <button v-if="podControllerLink" type="button" :disabled="disabled" @click="emit('follow', podControllerLink)">{{ podController.name }}</button>
+        <strong v-else>{{ podController.name }}</strong>
+      </div>
+      <p v-else class="column-note">{{ t(readable ? 'k8s.podWithoutController' : 'k8s.noPermission') }}</p>
+    </aside>
 
     <section class="explorer-column pod-column" tabindex="0" aria-label="对应容器组">
-      <header><h4>对应容器组 <span class="heading-count">{{ podsError||podsLoading||historyState==='pending'?'—':`${visiblePods.length}${podsPartial?'+':''}` }}</span></h4><span class="column-header-action"><a-button size="small" type="text" :disabled="disabled || !readable" :aria-busy="podsLoading" :class="{ 'is-busy': podsLoading }" aria-label="刷新关联 Pod" @click="emit('retryPods')"><RefreshCw :size="13" /></a-button></span></header>
+      <header><h4>对应容器组 <span class="heading-count">{{ podsError||podsLoading||historyState==='pending'?'—':`${visiblePods.length}${podsPartial?'+':''}` }}</span></h4><span v-if="!directPod" class="column-header-action"><a-button size="small" type="text" :disabled="disabled || !readable" :aria-busy="podsLoading" :class="{ 'is-busy': podsLoading }" aria-label="刷新关联 Pod" @click="emit('retryPods')"><RefreshCw :size="13" /></a-button></span></header>
       <div v-if="selectedRevision" class="revision-pod-context">
         <p class="selected-revision">副本集 <strong :title="selectedRevision.name">{{ selectedRevision.name }}</strong></p>
       </div>
@@ -339,7 +366,8 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); eventRequ
       <a-alert v-if="podMissing" class="column-alert" type="warning" show-icon message="所选 Pod 已删除或不在当前副本组中，请重新选择 Pod。" />
       <KubeWorkloadPodRuntime v-if="selectedPod && readable"
         :key="`${cluster}/${selectedPod.metadata.uid}`" :cluster="cluster" :pod="selectedPod" :container="containerName"
-        :auto-refresh="autoRefresh" :refresh-token="refreshToken" :can="can" :can-follow="canFollow" :disabled="podActionsDisabled" pod-actions
+        :auto-refresh="autoRefresh" :refresh-token="refreshToken" :can="can" :can-follow="canFollow" :disabled="podActionsDisabled"
+        :pod-actions="!directPod" :hide-events="directPod"
         @container="chooseRuntimeContainer" @logs="target=>openRuntimeContainer(target)" @terminal="target=>openRuntimeContainer(target,true)"
         @files="openRuntimeFiles" @yaml="pod=>usePodAction('yaml',pod)" @remove="pod=>usePodAction('remove',pod)" @follow="followRuntimeReference" @pod-changed="emit('retryPods')" />
       <a-empty v-else-if="!podMissing" :description="readable ? '选择 Pod 查看运行状态' : '没有查看工作负载的权限'" :image-style="{ height: '40px' }" />
@@ -360,10 +388,15 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); eventRequ
   background: var(--workload-column);
   color: var(--workload-text);
 }
-.workload-explorer.is-deployment { grid-template-columns: minmax(190px, .9fr) minmax(210px, .9fr) minmax(0, 2.2fr); }
+.workload-explorer.has-context-column { grid-template-columns: minmax(190px, .9fr) minmax(210px, .9fr) minmax(0, 2.2fr); }
 .explorer-column { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding-top: 48px; background: var(--workload-column); }
 .explorer-column>header { display: flex; position: sticky; top: 0; z-index: 1; box-sizing: border-box; align-items: center; justify-content: space-between; gap: 6px; min-height: 36px; padding: 5px 10px; border-bottom: 1px solid var(--workload-border); background: var(--workload-heading); color: var(--workload-title); }
 .explorer-column h4 { margin: 0; font-size: 14px; font-weight: 650; line-height: 22px; }
+.pod-controller { display: grid; justify-items: start; gap: 4px; margin: 8px; padding: 10px 12px; border-radius: 8px; background: var(--workload-idle); overflow-wrap: anywhere; }
+.pod-controller > span { color: var(--workload-muted); font-size: 12px; }
+.pod-controller > :is(button, strong) { max-width: 100%; font-size: 13px; font-weight: 600; text-align: start; }
+.pod-controller > button { min-height: 24px; padding: 0; border: 0; background: transparent; color: var(--workload-link); cursor: pointer; }
+.pod-controller > button:hover:not(:disabled) { text-decoration: underline; }
 .revision-events { margin-top: 6px; }
 .revision-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px; padding: 2px 5px; border-radius: 6px; background: var(--workload-bar); }
 .revision-actions .ant-btn { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: auto; min-height: 26px; white-space: normal; }
@@ -433,15 +466,15 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .pod-detail-column :deep(.diagnostic-charts article) { padding: 8px; border-radius: 8px; }
 .pod-detail-column :deep(.diagnostic-charts h4) { font-size: 12px; }
 @media(max-width:1100px) {
-  .workload-explorer.is-deployment { grid-template-columns: 1fr 1fr; height: auto; }
-  .is-deployment .revision-column,.is-deployment .pod-column { max-height: 320px; }
-  .is-deployment .pod-detail-column { grid-column: 1/-1; max-height: none; overflow: visible; }
+  .workload-explorer.has-context-column { grid-template-columns: 1fr 1fr; height: auto; }
+  .has-context-column .revision-column,.has-context-column .pod-column { max-height: 320px; }
+  .has-context-column .pod-detail-column { grid-column: 1/-1; max-height: none; overflow: visible; }
   .pod-detail-column { scrollbar-gutter: auto; }
 }
 @media(prefers-reduced-motion:reduce) { .replica-meter>i { transition: none; } }
 @media(max-width:680px) {
-  .workload-explorer,.workload-explorer.is-deployment { grid-template-columns: minmax(0,1fr); height: auto; padding: 8px; gap: 12px; }
-  .explorer-column,.is-deployment .revision-column,.is-deployment .pod-column { max-height: none; overflow: visible; }
+  .workload-explorer,.workload-explorer.has-context-column { grid-template-columns: minmax(0,1fr); height: auto; padding: 8px; gap: 12px; }
+  .explorer-column,.has-context-column .revision-column,.has-context-column .pod-column { max-height: none; overflow: visible; }
   .pod-column,.pod-detail-column { padding-top: 0; padding-left: 0; }
   .pod-detail-column { grid-column: auto; max-height: none; overflow: visible; }
   .explorer-column h4 { flex: 1; white-space: nowrap; }

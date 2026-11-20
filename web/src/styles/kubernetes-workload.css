@@ -182,15 +182,14 @@
 .kube-workload-drawer .workload-summary .event-table-scroll { height: 100%; max-height: none; }
 .kube-workload-drawer .workload-overview-pane > .workload-explorer { flex: 1; height: auto; min-height: 0; padding: 10px; gap: 12px; }
 .kube-workload-drawer.resource-detail-drawer .detail-tabs .workload-explorer .explorer-column { min-height: 0; max-height: none; overflow-y: auto; }
-.kube-workload-drawer .workload-overview-pane > .pod-detail-runtime { flex: 1; min-height: 0; overflow: auto; border: 0; }
-.kube-workload-drawer :is(.explorer-column, .workload-identity, .event-table-scroll, .pod-detail-runtime, .ant-tabs-tabpane) { scrollbar-width: thin; scrollbar-color: var(--workload-border) transparent; }
+.kube-workload-drawer :is(.explorer-column, .workload-identity, .event-table-scroll, .ant-tabs-tabpane) { scrollbar-width: thin; scrollbar-color: var(--workload-border) transparent; }
 .kube-workload-drawer :is(.explorer-column, .workload-identity):focus-visible { outline: 2px solid var(--workload-focus); outline-offset: -2px; }
 @media (min-width: 1101px) {
-  .kube-workload-drawer.resource-detail-drawer .workload-explorer.is-deployment { grid-template-columns: minmax(180px, .9fr) minmax(200px, .9fr) minmax(0, 2.2fr); }
+  .kube-workload-drawer.resource-detail-drawer .workload-explorer.has-context-column { grid-template-columns: minmax(180px, .9fr) minmax(200px, .9fr) minmax(0, 2.2fr); }
 }
 @media (max-width: 1100px) {
-  .kube-workload-drawer.resource-detail-drawer .workload-explorer.is-deployment { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(90px, .38fr) minmax(0, 1fr); }
-  .kube-workload-drawer .workload-explorer.is-deployment .pod-detail-column { grid-column: 1 / -1; }
+  .kube-workload-drawer.resource-detail-drawer .workload-explorer.has-context-column { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(90px, .38fr) minmax(0, 1fr); }
+  .kube-workload-drawer .workload-explorer.has-context-column .pod-detail-column { grid-column: 1 / -1; }
 }
 @media (max-width: 680px) {
   .kube-workload-drawer .ant-drawer-header-title { align-items: flex-start; }
@@ -203,6 +202,6 @@
   .kube-workload-drawer .workload-overview-pane .workload-summary { flex-basis: clamp(116px, 17dvh, 145px); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 8px; }
   .kube-workload-drawer .workload-summary > .workload-identity { padding: 8px; }
   .kube-workload-drawer .workload-overview-pane > .workload-explorer { gap: 8px; padding: 8px; }
-  .kube-workload-drawer.resource-detail-drawer .workload-explorer.is-deployment { grid-template-rows: minmax(124px, .55fr) minmax(0, 1fr); }
-  .kube-workload-drawer .workload-explorer:not(.is-deployment) { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(90px, .38fr) minmax(0, 1fr); }
+  .kube-workload-drawer.resource-detail-drawer .workload-explorer.has-context-column { grid-template-rows: minmax(124px, .55fr) minmax(0, 1fr); }
+  .kube-workload-drawer .workload-explorer:not(.has-context-column) { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(90px, .38fr) minmax(0, 1fr); }
 }

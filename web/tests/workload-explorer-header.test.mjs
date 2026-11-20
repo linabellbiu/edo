@@ -28,8 +28,7 @@ test('刷新按钮包在固定高度的居中容器里，不随标题行高下�
   assert.match(action, /display:\s*flex/)
   assert.match(action, /align-self:\s*stretch/)
   assert.match(action, /align-items:\s*center/)
-  const source = readFileSync(new URL('../src/components/KubeWorkloadExplorer.vue', import.meta.url), 'utf8')
-  assert.equal((source.match(/<span class="column-header-action">/g) || []).length, 2, '两个栏目刷新按钮都要包在居中容器里')
+  assert.equal((source.match(/<span\b[^>]*\bclass="column-header-action">/g) || []).length, 2, '两个栏目刷新按钮都要包在居中容器里')
 })
 
 test('头部刷新按钮紧凑透明，不铺白卡片也不撑高标题', () => {
