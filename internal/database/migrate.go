@@ -407,6 +407,9 @@ var migrations = []migration{
 	{version: "202611080078", up: migrateHostGroups},
 	{version: "202611080079", up: func(tx *gorm.DB) error { return addColumns(tx, &model.DeploymentTarget{}, []string{"HostIDs"}) }},
 	{version: "202611180080", up: removeRepositoryWebhookPermission},
+	{version: "202611200081", up: func(tx *gorm.DB) error {
+		return addColumns(tx, &model.DeploymentRecord{}, []string{"ObservedAt", "ObservedScope", "ObservedState", "ObservedRunning"})
+	}},
 }
 
 // 移除入站 Webhook 的专用授权，避免旧权限导致角色列表校验失败。

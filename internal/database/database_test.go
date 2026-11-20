@@ -135,6 +135,7 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 		t.Fatal("代码仓库平台 API 令牌引用字段或索引未创建")
 	}
 	assertStructuredWorkflowSchema(t, db, "SQLite")
+	exerciseDeploymentObservationUpgrade(t, context.Background(), db)
 }
 
 func TestSQLiteUsesPureGoDriver(t *testing.T) {
@@ -1288,7 +1289,43 @@ func TestExternalDatabaseMigration(t *testing.T) {
 			exerciseExternalExecutionConfigUpgrade(t, db, test.driver)
 			exerciseRepositoryObservationEnvironmentUpgrade(t, ctx, db, test.driver)
 			exercisePipelineStatusUpgrade(t, db)
+			exerciseDeploymentObservationUpgrade(t, ctx, db)
 		})
+	}
+}
+
+func exerciseDeploymentObservationUpgrade(t *testing.T, ctx context.Context, db *gorm.DB) {
+	t.Helper()
+	// 模拟已记入旧迁移版本、已有成功部署、尚未采集运行状态的数据库。
+	record := model.DeploymentRecord{ID: "observations-upgrade", TargetID: "old-target", Platform: model.DeploymentSSH,
+		Operation: model.DeploymentRelease, Status: model.DeploymentSucceeded, UpdatedAt: time.Now().UTC().Truncate(time.Second)}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Where("uuid = ?", record.ID).Delete(&model.DeploymentRecord{}).Error; err != nil {
+			t.Errorf("清理部署升级测试记录失败: %v", err)
+		}
+	}()
+	for _, column := range []string{"observed_at", "observed_scope", "observed_state", "observed_running"} {
+		if err := db.Exec("ALTER TABLE deployment_records DROP COLUMN " + column).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version = ?", "202611200081").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var stored model.DeploymentRecord
+	if err := db.Select("uuid, status, updated_at, observed_at, observed_scope, observed_state, observed_running").
+		First(&stored, "uuid = ?", record.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != record.Status || !stored.UpdatedAt.Equal(record.UpdatedAt) ||
+		stored.ObservedAt != nil || stored.ObservedScope != "" || stored.ObservedState != "" || stored.ObservedRunning {
+		t.Fatalf("旧发布记录或未采样状态被修改: %+v", stored)
 	}
 }
 
