@@ -31,3 +31,13 @@ test('空状态使用紧凑尺寸，不再用大面积留白填充', () => {
   assert.match(body, /min-height:\s*(1[0-9][0-9]|2[0-9][0-9])px/)
   assert.ok(!/padding-top:\s*(1[0-9][0-9]|[2-9][0-9][0-9])px/.test(body), '流水线空状态不得保留超大上边距')
 })
+test('集群工作台不再保留重复的集群上下文条，项目页搜索并入操作栏', () => {
+  const kubernetes = source('KubernetesView.vue')
+  assert.ok(!kubernetes.includes('cluster-context-bar'), '集群上下文条已移除')
+  const css = readFileSync(new URL('../src/styles/kubernetes.css', import.meta.url), 'utf8')
+  assert.ok(!css.includes('.cluster-context-bar'), '集群上下文条样式一并删除')
+  const projects = source('ProjectsView.vue')
+  const toolbar = projects.match(/<PageToolbar>[\s\S]*?<\/PageToolbar>/)?.[0] || ''
+  assert.ok(toolbar.includes('workspace-search'), '项目搜索放在操作栏内')
+  assert.ok(!/<div class="workspace-search">/.test(projects), '项目页不再单独占用一行搜索')
+})
