@@ -46,11 +46,11 @@ onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
 </script>
 <template>
  <div class="delivery-controls">
+  <div class="vben-card controls-card">
   <PageToolbar>
    <a-button :loading="loading" @click="load">刷新</a-button><a-button v-if="auth.canAny([`${permission}.${policyMode?'update':'create'}`])" type="primary" @click="policyMode?editPolicy():editDatabase()">{{policyMode?'配置环境保护':'添加数据库'}}</a-button>
   </PageToolbar>
   <a-alert v-if="error" type="error" show-icon :message="error"/>
-  <div class="vben-card">
    <a-table v-if="policyMode" bordered :loading="loading" row-key="id" :data-source="policies" :columns="[{title:'主机组',key:'environment'},{title:'状态',key:'active'},{title:'允许版本',key:'refs'},{title:'审核',key:'review'},{title:'发布时间（上海）',key:'window'},{title:'操作',key:'actions'}]">
     <template #bodyCell="{column,record}"><template v-if="column.key==='environment'">{{label(record.environment_id,environments)}}</template><template v-else-if="column.key==='active'"><a-tag :color="record.is_active?'blue':'default'">{{record.is_active?'已启用':'已关闭'}}</a-tag></template><template v-else-if="column.key==='refs'">{{record.allowed_refs?.join('、')||'不限制'}}</template><template v-else-if="column.key==='review'">{{record.require_approval?`${record.minimum_approvals} 人通过`:'不需要'}}</template><template v-else-if="column.key==='window'">{{record.window_start?`${record.window_start} — ${record.window_end}`:'不限制'}}</template><template v-else-if="column.key==='actions'"><a-button v-if="auth.canAny(['environment_policy.update'])" type="link" @click="editPolicy(record)">编辑</a-button></template></template>
    </a-table>
@@ -87,4 +87,4 @@ onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
   <a-drawer v-model:open="historyOpen" title="数据库变更记录" width="min(800px, 100vw)"><a-table bordered :data-source="history" row-key="id" :columns="[{title:'状态',dataIndex:'status'},{title:'Commit',dataIndex:'commit_sha'},{title:'目录',dataIndex:'directory'},{title:'开始时间',dataIndex:'started_at'},{title:'说明',dataIndex:'message'}]"/></a-drawer>
  </div>
 </template>
-<style scoped>.delivery-controls{display:grid;gap:16px}.vben-card{overflow:auto}</style>
+<style scoped>.delivery-controls{display:grid;gap:16px}.controls-card{overflow:hidden}.controls-card>.ant-alert{margin:10px 14px}</style>

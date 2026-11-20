@@ -51,3 +51,22 @@ test('列表页操作栏并入内容卡片，页面上方不再留出空白带',
   assert.ok(css.includes('.vben-card > .page-toolbar'), '共用卡片内操作栏样式')
   assert.ok(css.includes('.vben-card > .card-filters'), '共用卡片内筛选行样式')
 })
+test('同类列表页统一把操作栏与筛选放进内容卡片', () => {
+  const expectations = [
+    ['DeliveryControlsView.vue', /<div class="vben-card controls-card">\s*<PageToolbar>/],
+    ['TaskCenterView.vue', /<div class="vben-card tasks-card">\s*<PageToolbar>/],
+    ['SQLChangesView.vue', /<section class="vben-card sql-list-panel">\s*<PageToolbar>/],
+    ['LogsView.vue', /<div class="vben-card log-toolbar">\s*<PageToolbar>/],
+    ['PipelinePlanListView.vue', /<div v-if="canRead" class="vben-card pipeline-plan-card">\s*<PageToolbar/],
+  ]
+  for (const [name, pattern] of expectations) {
+    assert.ok(pattern.test(source(name)), name + ' 的操作栏应在内容卡片内')
+  }
+})
+test('应用列表把自动更新、刷新、新建收进筛选行，保持单行', () => {
+  const devops = source('DevOpsView.vue')
+  assert.ok(/<PageToolbar v-if="props.section!=='applications'">/.test(devops), '应用页不再单独占一行操作栏')
+  assert.ok(devops.includes('apps-filter-actions'), '应用筛选行包含操作按钮')
+  const css = readFileSync(new URL('../src/styles/application-workspace.css', import.meta.url), 'utf8')
+  assert.ok(css.includes('.apps-filter-actions'), '筛选行操作区样式存在')
+})

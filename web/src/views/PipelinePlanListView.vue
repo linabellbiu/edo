@@ -428,17 +428,7 @@ async function openCreatedTemplate(
 
 <template>
   <section class="pipeline-plan-page">
-    <PageToolbar :summary="pipelineCountSummary">
-      <a-button :loading="loading" :disabled="!canRead" @click="refresh"
-        ><RefreshCw :size="15" />刷新</a-button
-      >
-      <a-button v-if="canDefaults" @click="openDefaults()">{{
-        t('delivery.defaults')
-      }}</a-button>
-      <a-button v-if="canCreate" type="primary" @click="presetOpen = true">
-        新建流水线
-      </a-button>
-    </PageToolbar>
+
 
     <a-alert
       v-if="!canRead"
@@ -447,26 +437,37 @@ async function openCreatedTemplate(
       message="请先选择有流水线查看权限的项目。"
     />
     <a-alert v-if="error" type="error" show-icon :message="error" />
-    <div v-if="canRead" class="pipeline-filters">
-      <label
-        >搜索<a-input
-          v-model:value="search"
-          aria-label="搜索流水线或应用"
-          allow-clear
-          placeholder="流水线名称、说明或应用"
-      /></label>
-      <label
-        >归属<a-select
-          v-model:value="kind"
-          aria-label="流水线归属"
-          :options="[
-            { value: 'all', label: '全部流水线' },
-            { value: 'application', label: '应用流水线' },
-            { value: 'template', label: '共用方案' },
-          ]"
-      /></label>
-    </div>
     <div v-if="canRead" class="vben-card pipeline-plan-card">
+      <PageToolbar :summary="pipelineCountSummary">
+      <a-button :loading="loading" :disabled="!canRead" @click="refresh"
+      ><RefreshCw :size="15" />刷新</a-button
+      >
+      <a-button v-if="canDefaults" @click="openDefaults()">{{
+      t('delivery.defaults')
+      }}</a-button>
+      <a-button v-if="canCreate" type="primary" @click="presetOpen = true">
+      新建流水线
+      </a-button>
+      </PageToolbar>
+      <div v-if="canRead" class="pipeline-filters card-filters">
+      <label
+      >搜索<a-input
+      v-model:value="search"
+      aria-label="搜索流水线或应用"
+      allow-clear
+      placeholder="流水线名称、说明或应用"
+      /></label>
+      <label
+      >归属<a-select
+      v-model:value="kind"
+      aria-label="流水线归属"
+      :options="[
+      { value: 'all', label: '全部流水线' },
+      { value: 'application', label: '应用流水线' },
+      { value: 'template', label: '共用方案' },
+      ]"
+      /></label>
+      </div>
       <a-table
         :columns="columns"
         :data-source="filteredRows"
@@ -685,7 +686,9 @@ async function openCreatedTemplate(
 .pipeline-filters {
   display: flex;
   gap: 16px;
-  margin-bottom: 16px;
+}
+.pipeline-plan-card > .pipeline-filters {
+  margin: 0;
 }
 .pipeline-filters label {
   display: grid;

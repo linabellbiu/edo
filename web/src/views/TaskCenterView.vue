@@ -65,12 +65,14 @@ onBeforeUnmount(() => { listRevision++; detailRevision++; listController?.abort(
 
 <template>
   <section>
+    <div class="vben-card tasks-card">
     <PageToolbar><a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button></PageToolbar>
-    <div class="task-filters"><span>状态</span><a-select :value="status" :options="statuses" aria-label="任务状态" style="width:160px" @change="changeStatus" /></div>
-    <div class="vben-card"><ResourceTable :rows="rows" :columns="columns" :loading="loading" :details="false" :active-row-key="taskID">
+    <div class="task-filters card-filters"><span>状态</span><a-select :value="status" :options="statuses" aria-label="任务状态" style="width:160px" @change="changeStatus" /></div>
+    <ResourceTable :rows="rows" :columns="columns" :loading="loading" :details="false" :active-row-key="taskID">
       <template #cell-status="{ value }"><a-tag :color="statusColor(value)">{{ statusLabel(value) }}</a-tag></template>
       <template #actions="{ row }"><a-button type="link" @click="openDetail(row)">详情</a-button><template v-if="auth.canAny(['task.execute'])"><a-button v-if="row.status === 'pending'" type="link" danger @click="action(row, 'cancel')">取消</a-button><a-button v-if="row.status === 'failed' && row.is_idempotent === true" type="link" @click="action(row, 'retry')">重试</a-button></template></template>
-    </ResourceTable></div>
+    </ResourceTable>
+    </div>
     <ResourceDetailDrawer :open="Boolean(taskID)" title="任务详情" width="min(780px, 94vw)" @close="closeDetail">
       <a-spin :spinning="detailLoading">
         <a-alert v-if="detailError" type="error" show-icon :message="detailError"><template #action><a-button size="small" @click="loadDetail">重试</a-button></template></a-alert>
@@ -92,5 +94,5 @@ onBeforeUnmount(() => { listRevision++; detailRevision++; listController?.abort(
 </template>
 
 <style scoped>
-.task-filters{display:flex;align-items:center;gap:10px;margin-bottom:14px}.task-error{white-space:pre-wrap;overflow-wrap:anywhere}
+.tasks-card{overflow:hidden}.tasks-card>.task-filters{margin:0}.task-filters{display:flex;align-items:center;gap:10px}.task-error{white-space:pre-wrap;overflow-wrap:anywhere}
 </style>

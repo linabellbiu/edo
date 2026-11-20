@@ -114,16 +114,18 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); contro
 
 <template>
   <section :class="{ 'system-logs-standalone': standalone }">
+    <div class="vben-card log-toolbar">
     <PageToolbar>
       <a-tag color="processing">{{ t('systemLogs.currentProcess') }}</a-tag>
       <a-button :loading="loading" @click="load(false)"><RefreshCw :size="15" />{{ t('common.refresh') }}</a-button>
       <SessionPopoutLink v-if="!standalone" kind="system-log" :query="query" :level="level" :title="t('systemLogs.title')" :disabled="!readable" />
     </PageToolbar>
     <a-alert type="info" show-icon :message="t('systemLogs.scopeHint')" class="scope-alert" />
-    <div class="log-filter vben-card">
+    <div class="log-filter">
       <a-input v-model:value="queryInput" allow-clear :placeholder="t('systemLogs.searchPlaceholder')" @press-enter="search"><template #prefix><Search :size="15" /></template></a-input>
       <a-select v-model:value="level" :options="[{ label: t('systemLogs.level.all'), value: '' }, ...Object.entries(levelLabels).map(([value,label]) => ({ value,label }))]" />
       <a-button type="primary" @click="search">{{ t('common.search') }}</a-button>
+    </div>
     </div>
     <a-alert v-if="error" type="error" show-icon :message="error" class="log-error"><template #action><a-button size="small" :loading="loading || loadingMore" @click="load(false)">重试</a-button></template></a-alert>
     <a-spin :spinning="loading && !items.length">
@@ -148,5 +150,5 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); contro
 
 <style scoped>
 .system-logs-standalone{min-width:0;padding:16px}.log-error{margin-bottom:12px}
-.scope-alert { margin-bottom: 12px; }.log-filter { display: grid; grid-template-columns: minmax(240px,1fr) 160px auto; gap: 10px; margin-bottom: 14px; padding: 12px; }.log-list { overflow: hidden; }.log-list > .ant-empty { padding: 70px 20px; }.log-item { padding: 16px 18px; border-bottom: 1px solid var(--edo-border); }.log-item header { display: flex; align-items: center; gap: 9px; color: var(--edo-muted); }.log-item header strong { color: var(--edo-text); }.log-item time { margin-left: auto; font-size: 12px; }.log-item pre { margin: 12px 0; overflow: auto; color: var(--edo-text); white-space: pre-wrap; word-break: break-word; }.log-item footer { display: flex; flex-wrap: wrap; gap: 7px; color: var(--edo-muted); font-size: 12px; }.log-item footer span { display: inline-flex; align-items: center; overflow: hidden; border: 1px solid var(--edo-border); border-radius: 5px; background: var(--edo-layout); }.log-item footer b { padding: 3px 6px; border-right: 1px solid var(--edo-border); font-weight: 500; }.log-item footer code { max-width: min(520px,70vw); padding: 3px 6px; overflow: hidden; color: var(--edo-text); text-overflow: ellipsis; white-space: nowrap; }.load-more { display: flex; justify-content: center; padding: 16px; } @media (max-width:700px){.log-filter{grid-template-columns:1fr}.log-item header{flex-wrap:wrap}.log-item time{width:100%;margin:0}}
+.log-toolbar { overflow: hidden; margin-bottom: 14px; }.log-toolbar > .ant-alert { margin: 10px 14px; }.scope-alert { margin: 0; }.log-filter { display: grid; grid-template-columns: minmax(240px,1fr) 160px auto; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--edo-border); }.log-list { overflow: hidden; }.log-list > .ant-empty { padding: 70px 20px; }.log-item { padding: 16px 18px; border-bottom: 1px solid var(--edo-border); }.log-item header { display: flex; align-items: center; gap: 9px; color: var(--edo-muted); }.log-item header strong { color: var(--edo-text); }.log-item time { margin-left: auto; font-size: 12px; }.log-item pre { margin: 12px 0; overflow: auto; color: var(--edo-text); white-space: pre-wrap; word-break: break-word; }.log-item footer { display: flex; flex-wrap: wrap; gap: 7px; color: var(--edo-muted); font-size: 12px; }.log-item footer span { display: inline-flex; align-items: center; overflow: hidden; border: 1px solid var(--edo-border); border-radius: 5px; background: var(--edo-layout); }.log-item footer b { padding: 3px 6px; border-right: 1px solid var(--edo-border); font-weight: 500; }.log-item footer code { max-width: min(520px,70vw); padding: 3px 6px; overflow: hidden; color: var(--edo-text); text-overflow: ellipsis; white-space: nowrap; }.load-more { display: flex; justify-content: center; padding: 16px; } @media (max-width:700px){.log-filter{grid-template-columns:1fr}.log-item header{flex-wrap:wrap}.log-item time{width:100%;margin:0}}
 </style>

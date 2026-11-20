@@ -2382,13 +2382,18 @@ onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())contro
 onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();composeContainerController?.abort();resetArtifactRequests();formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
 </script>
 
-<template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
+<template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar v-if="props.section!=='applications'"><a-tag v-if="props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':'新建' }}</a-button></PageToolbar>
 <a-alert v-for="(error,key) in resourceErrors" :key="key" type="error" show-icon :message="`${resourceLabels[key]}：${error}`" class="resource-load-error"><template #action><a-button size="small" :loading="resourcePending[key]" @click="resourceReaders[key]?.()">重试</a-button></template></a-alert>
 <div v-if="props.section==='applications'" class="apps-workspace">
   <div class="apps-filter-bar">
     <a-input v-model:value="applicationSearch" allow-clear :placeholder="t('applicationWorkspace.search')" :aria-label="t('applicationWorkspace.search')" class="apps-search"><template #prefix><Search :size="16"/></template></a-input>
     <div class="edo-segmented-tabs" role="group" :aria-label="t('applicationWorkspace.filterLabel')">
       <button v-for="filter in applicationFilters" :key="filter.key" type="button" class="edo-tab-item" :aria-pressed="applicationFilter===filter.key" @click="applicationFilter=filter.key">{{ filter.label }}<span class="edo-tab-count">{{ filter.count }}</span></button>
+    </div>
+    <div class="apps-filter-actions">
+      <a-tag color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag>
+      <a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button>
+      <a-button v-if="canCreate" type="primary" @click="create"><Plus :size="15"/>{{ t('applicationWorkspace.create') }}</a-button>
     </div>
   </div>
   <a-table v-if="visibleApplicationCards.length" class="apps-table resource-list-table" size="small" table-layout="fixed"

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>应用列表单行工具条</title>
+<link rel="stylesheet" href="/src/styles/vben.css">
+<link rel="stylesheet" href="/src/styles/application-workspace.css"></head>
+<body><div class="vben-content apps-workspace" style="min-height:auto">
+  <div class="apps-filter-bar">
+    <span class="apps-search" style="display:inline-flex;align-items:center;gap:8px;padding:0 10px;height:32px;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface-soft);color:var(--edo-muted)">⌕ <span style="color:var(--edo-muted)">搜索应用、仓库或流水线</span></span>
+    <div class="edo-segmented-tabs" role="group">
+      <button type="button" class="edo-tab-item" aria-pressed="true">全部应用<span class="edo-tab-count">2</span></button>
+      <button type="button" class="edo-tab-item" aria-pressed="false">进行中<span class="edo-tab-count">0</span></button>
+      <button type="button" class="edo-tab-item" aria-pressed="false">需要关注<span class="edo-tab-count">1</span></button>
+      <button type="button" class="edo-tab-item" aria-pressed="false">已停用<span class="edo-tab-count">1</span></button>
+    </div>
+    <div class="apps-filter-actions">
+      <span class="ant-tag" style="border:1px solid #b6e1f8;border-radius:6px;padding:1px 8px;color:#1677ff;background:#e6f4ff;font-size:12px">自动更新</span>
+      <button type="button" style="height:32px;padding:0 12px;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface)">⟳ 刷新</button>
+      <button type="button" style="height:32px;padding:0 12px;border:1px solid var(--edo-primary);border-radius:8px;background:var(--edo-primary);color:#fff">＋ 新建应用</button>
+    </div>
+  </div>
+</div></body></html>

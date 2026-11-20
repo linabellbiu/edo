@@ -4,6 +4,7 @@
 :global([data-theme="dark"] .apps-workspace), :global([data-theme="dark"] .apps-details-content) { --apps-success: #49c89c; --apps-danger: #ff8490; --apps-warning: #edb752; }
 .apps-filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--edo-border); border-radius: 12px; background: var(--edo-surface); }
 .apps-search { width: 320px; max-width: 100%; height: 32px; border-radius: 8px; background: var(--edo-surface-soft); }
+.apps-filter-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-inline-start: auto; }
 .apps-search :deep(.ant-input-prefix) { margin-inline-end: 8px; color: var(--edo-muted); }
 .apps-table { min-width: 0; overflow: hidden; border: 1px solid var(--edo-border); border-radius: 12px; background: var(--edo-surface); box-shadow: 0 1px 2px rgb(15 23 42 / 4%); }
 .apps-table :deep(.ant-table) { color: var(--edo-text); font-size: 13px; }
