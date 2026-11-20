@@ -1,4 +1,4 @@
-import type {KubeObject} from '@/api/kubernetes'
+import type {KubeObject,KubeOverview} from '@/api/kubernetes'
 export interface KubeListState {query:string;label:string;status:string;sort:string;order:'asc'|'desc';page:number;limit:number}
 export const kubeSortableColumns=['name','namespace','created','status','replicas','currentReplicas','restarts','completions','activeJobs','lastSchedule']
 export const kubeListQueryKeys=['q','label','status','sort','order','page','limit'] as const
@@ -12,6 +12,7 @@ export function withoutKubeListQuery(query:Record<string,any>){const result={...
 
 export interface KubeWorkspacePreferences {
  cluster?:string
+ clusters?:string[]
  scopes?:Record<string,string[]>
  autoRefresh?:boolean
  pageSize?:number
@@ -25,6 +26,7 @@ function sanitizeKubeWorkspacePreferences(value:unknown):KubeWorkspacePreference
  if(!value||typeof value!=='object'||Array.isArray(value))return {}
  const input=value as Record<string,unknown>,result:KubeWorkspacePreferences={}
  if(typeof input.cluster==='string'&&input.cluster.length<=128)result.cluster=input.cluster
+ if(Array.isArray(input.clusters)&&input.clusters.length<=100)result.clusters=[...new Set(input.clusters.filter((id):id is string=>typeof id==='string'&&Boolean(id)&&id.length<=128&&!['__proto__','constructor','prototype'].includes(id)))]
  if(typeof input.autoRefresh==='boolean')result.autoRefresh=input.autoRefresh
  if(typeof input.pageSize==='number'&&[10,20,50,100].includes(input.pageSize))result.pageSize=input.pageSize
  if(input.scopes&&typeof input.scopes==='object'&&!Array.isArray(input.scopes)) {
@@ -36,6 +38,52 @@ function sanitizeKubeWorkspacePreferences(value:unknown):KubeWorkspacePreference
   }
  }
  return result
+}
+export interface KubeWorkspaceScope {clusters:string[];scopes:Record<string,string[]>}
+const safeCluster=(id:unknown):id is string=>typeof id==='string'&&Boolean(id)&&id.length<=128&&!['__proto__','constructor','prototype'].includes(id)
+const scopeNames=(value:unknown)=>{
+ const names=Array.isArray(value)?value:[value]
+ return names.includes('*')?['*']:[...new Set(names.filter((name):name is string=>typeof name==='string'&&name.length<=63&&/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)))].sort()
+}
+// 单集群链接沿用 cluster/namespace，多集群逐项编码范围，空选择也有明确表示。
+export function readKubeScopeQuery(query:Record<string,unknown>):KubeWorkspaceScope|undefined {
+ if(query.cluster===undefined)return
+ const clusters=[...new Set((Array.isArray(query.cluster)?query.cluster:[query.cluster]).filter(safeCluster))].slice(0,100)
+ const scopes:Record<string,string[]>={}
+ for(const raw of (Array.isArray(query.scope)?query.scope:[query.scope]).slice(0,100)){
+  if(typeof raw!=='string'||raw.length>65536)continue
+  try{const entry=JSON.parse(raw);if(Array.isArray(entry)&&safeCluster(entry[0])&&clusters.includes(entry[0])&&Array.isArray(entry[1])&&entry[1].length<=1000)scopes[entry[0]]=scopeNames(entry[1])}catch{/* 损坏的浏览范围不扩大查询。 */}
+ }
+ if(clusters.length===1&&query.namespace!==undefined)scopes[clusters[0]!]=scopeNames(query.namespace)
+ return {clusters,scopes}
+}
+export function kubeScopeQuery(scope:KubeWorkspaceScope){
+ if(scope.clusters.length===1){const id=scope.clusters[0]!,names=scope.scopes[id]??[];return {cluster:id,namespace:names.length?names:[''],scope:undefined}}
+ return {cluster:scope.clusters.length?scope.clusters:[''],namespace:undefined,scope:scope.clusters.map(id=>JSON.stringify([id,scope.scopes[id]??[]]))}
+}
+// 来源只存在于界面对象的 Symbol 属性中，不进入 YAML、JSON 或写请求正文。
+const sourceCluster=Symbol('edo.kubernetes.cluster')
+export function withKubeCluster(object:KubeObject,cluster:string):KubeObject {return {...object,[sourceCluster]:cluster}}
+export function kubeObjectCluster(object:KubeObject|undefined):string {return object?(object as Record<symbol,string>)[sourceCluster]??'':''}
+export function mergeClusterOverviews(entries:Array<{cluster:string;data:KubeOverview}>,expected:number):KubeOverview|null {
+ if(!entries.length)return null
+ if(entries.length===1&&expected===1)return entries[0]!.data
+ const results=entries.map(entry=>entry.data),complete=entries.length===expected
+ const counts:KubeOverview['counts']={}
+ for(const key of new Set(results.flatMap(result=>Object.keys(result.counts)))){
+  const values=results.map(result=>result.counts[key])
+  const available=values.filter(value=>value&&value.state!=='unavailable')
+  counts[key]={count:available.reduce((sum,value)=>sum+value!.count,0),state:!available.length?'unavailable':complete&&values.every(value=>value?.state==='ok')?'ok':'partial'}
+ }
+ const nodes=complete&&results.every(result=>Array.isArray(result.nodes))?entries.flatMap(({cluster,data})=>data.nodes!.map(node=>({...node,name:JSON.stringify([cluster,node.name]),uid:JSON.stringify([cluster,node.uid])}))):null
+ const phases=complete&&results.every(result=>result.phases!=null)?results.reduce<Record<string,number>>((sum,result)=>{for(const [key,count] of Object.entries(result.phases!))sum[key]=(sum[key]??0)+count;return sum},{}):null
+ const usage:KubeOverview['usage']={nodes:{},pods:{}}
+ for(const {cluster,data} of entries)for(const [kind,values] of Object.entries(data.usage??{})){
+  usage[kind]??={};for(const [name,value] of Object.entries(values))usage[kind]![JSON.stringify([cluster,name])]=value
+ }
+ const metrics_state=Object.fromEntries(['nodes','pods'].map(kind=>[kind,complete&&results.every(result=>result.metrics_state?.[kind]==='ok')?'ok':'unavailable']))
+ const monitoring=results[0]!.monitoring_state
+ return {counts,nodes,phases,usage,metrics_state,monitoring_state:complete&&results.every(result=>result.monitoring_state===monitoring)?monitoring:'unavailable',collected_at:results.map(result=>result.collected_at).filter(Boolean).sort()[0]??''}
 }
 export function readKubeWorkspacePreferences(userID?:string,projectID?:string):KubeWorkspacePreferences {
  const key=kubeWorkspacePreferenceKey(userID,projectID)

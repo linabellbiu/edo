@@ -82,7 +82,7 @@ async function harness(t) {
   }).default
   const state = scope.run(() => component.setup({}, { expose() {} }))
   state.clusters.value = [{ id: clusterID, name: '单元集群', is_active: true, default_namespace: namespace, hosts: [] }]
-  state.cluster.value = clusterID
+  state.applyScopeQuery();state.selectionReady.value=true
   await settle()
   async function open(object = redacted()) {
     await state.openDetails(structuredClone(object), 'data', secretType)
@@ -139,7 +139,7 @@ test('确认后仅一次准确读取，UTF8/多行/空值正常解码且不修�
   assert.deepEqual(request.options.params, { namespace })
   request.resolve({ data: { object: revealed(original) } }); await pending
   assert.deepEqual(h.state.secretValues.value, publicValues)
-  assert.deepEqual(h.state.detail.value, original)
+  assert.deepEqual(JSON.parse(JSON.stringify(h.state.detail.value)), original)
   assert.equal(Object.hasOwn(h.state.detail.value, 'data'), false)
   assert.equal(h.secretReads.length, 1)
   assert.equal(h.notifications.length, 0)
@@ -326,7 +326,7 @@ test('显式隐藏明文后再次查看仍需确认，详情元数据不变', as
   request.resolve({ data: { object: revealed(redacted()) } }); await pending
   h.state.hideSecret()
   assert.equal(h.state.secretValues.value, undefined)
-  assert.deepEqual(h.state.detail.value, original)
+  assert.deepEqual(JSON.parse(JSON.stringify(h.state.detail.value)), original)
   await h.state.reveal()
   assert.equal(h.confirmations.length, 2)
   assert.equal(h.secretReads.length, 1)

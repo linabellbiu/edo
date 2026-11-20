@@ -22,7 +22,7 @@ async function harness(t){
     modules:{'@/api/kubernetes':api,'@/utils/kubernetesWorkspace':workspace,'@/utils/kubernetesPresentation':presentation,'@/stores/auth':{useAuthStore:()=>auth}},
     globals:{document:{hidden:true}},
   })
-  h.state.clusters.value=[{id:'test',name:'NAS 验收集群',default_namespace:'default',is_active:true}];h.state.cluster.value='test';await settle()
+  h.state.clusters.value=[{id:'test',name:'NAS 验收集群',default_namespace:'default',is_active:true}];h.state.applyScopeQuery();h.state.selectionReady.value=true;await settle()
   t.after(()=>{h.state.cancelListPersist();h.stop()})
   return {...h,pending,writes,fresh,denied,prepare(){h.state.showRemoveNode(object());h.state.agentStopped.value=true;h.state.nodeName.value='nas-test'}}
 }
@@ -60,7 +60,7 @@ const fragment=`<script setup lang="ts">
 import {toRefs} from 'vue'
 const props=defineProps<{nodeRemoval:any;nodeRemovalResult:any;busy:string;nodeName:string;agentStopped:boolean;allowed:boolean}>()
 const {nodeRemoval,nodeRemovalResult,busy,nodeName,agentStopped}=toRefs(props)
-const clusterInfo={name:'NAS 验收集群'},t=(key:string)=>key,can=()=>props.allowed,removeNode=()=>{}
+const clusterName=()=> 'NAS 验收集群',t=(key:string)=>key,can=()=>props.allowed,removeNode=()=>{}
 </script><template>${nodes[0].loc.source}</template>`
 const output=ts.transpileModule(compileScript(parse(fragment).descriptor,{id:'node-removal-render',inlineTemplate:true}).content,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,module={exports:{}}
 new Function('require','module','exports',output)(name=>name==='vue'?vue:{},module,module.exports)

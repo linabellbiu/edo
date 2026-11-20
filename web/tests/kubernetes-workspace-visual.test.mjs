@@ -304,7 +304,7 @@ test('范围树保留选择边界，禁用不发事件，集群级页面不操�
   state.toggleAll(props.clusters[0]);state.toggleNamespace('prod',true);assert.deepEqual(events,[])
   assert.deepEqual(props.selected,['preview']);assert.deepEqual(state.visibleNamespaces.value,[])
   props.namespaced=true;await vue.nextTick();state.toggleNamespace('prod',true)
-  assert.deepEqual(events,[['selection',['preview','prod']]])
+  assert.deepEqual(events,[['selection',['preview','prod'],'a']])
  }finally{scope.stop()}
  const style=components.KubeNamespaceTree.styles
  assert.ok(Number.parseFloat(declarations(style,'.namespace-expander').width)>=24)
@@ -336,7 +336,7 @@ test('集群全选用 Vue 原生属性同步未选、半选和全选，保留 mi
   const before=h.events.length;checkbox.listeners.change({target:checkbox,_vts:Date.now()+1});assert.equal(h.events.length,before)
   props.disabled=false;props.clusters[0].is_active=false;await vue.nextTick();assert.equal(checkbox.disabled,true)
   checkbox.listeners.change({target:checkbox,_vts:Date.now()+1});assert.equal(h.events.length,before)
-  props.namespaced=false;await vue.nextTick();assert.equal(input(),undefined)
+  props.namespaced=false;await vue.nextTick();assert.equal(input().checked,true);assert.equal(input().disabled,true)
  }finally{h.stop()}
  const css=components.KubeNamespaceTree.styles
  assert.equal(declarations(css,'.namespace-cluster-checkbox').width,'24px')

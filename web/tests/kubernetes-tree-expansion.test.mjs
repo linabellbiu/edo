@@ -42,7 +42,7 @@ test('只有点击复选框才选择浏览中的集群与准确命名空间，�
   h.state.toggleNamespace('prod', true)
   assert.deepEqual(h.events, [])
   h.state.toggleAll(h.props.clusters[1])
-  assert.deepEqual(h.events, [['cluster', 'b', true]])
+  assert.deepEqual(h.events, [['selection', ['*'], 'b']])
 })
 
 test('已全选与全部取消在收缩后不改变，后台目录更新不会自动展开', async t => {
@@ -68,5 +68,5 @@ test('禁用和集群级视图保留原权限边界，不允许目录事件改�
   h.state.toggleExpanded('a'); h.state.toggleAll(h.props.clusters[0]); h.state.toggleNamespace('prod', false)
   assert.deepEqual(h.events, [])
   h.state.chooseCluster('b')
-  assert.deepEqual(h.events, [['cluster', 'b']])
+  assert.deepEqual(h.events, [['cluster', 'b', true]])
 })

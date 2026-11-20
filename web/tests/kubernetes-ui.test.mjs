@@ -4,11 +4,12 @@ import {readFileSync} from 'node:fs'
 import {parse,compileScript} from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
+import axios from 'axios'
 import {createRouter,createMemoryHistory} from 'vue-router'
 function load(path,modules={}){
  const raw=readFileSync(new URL(path,import.meta.url),'utf8'),source=path.endsWith('.vue')?compileScript(parse(raw).descriptor,{id:'kube-ui'}).content:raw
  const output=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,module={exports:{}}
- new Function('require','module','exports',output)(key=>modules[key]??{},module,module.exports);return module.exports
+ new Function('require','module','exports',output)(key=>modules[key]??(key==='axios'?axios:{}),module,module.exports);return module.exports
 }
 const api=load('../src/api/kubernetes.ts',{'./resources':{apiErrorMessage:()=> '连接暂不可用'}}),workspace=load('../src/utils/kubernetesWorkspace.ts'),presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api,'@/utils/kubernetesRoles':load('../src/utils/kubernetesRoles.ts')}),workload=load('../src/utils/kubernetesWorkloadForm.ts',{'@/api/kubernetes':api})
 const translate=key=>key,settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
@@ -24,7 +25,7 @@ async function workspaceHarness(path='/kubernetes?view=workloads&resource=pods&c
  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/kubernetes',component:{}}]});await router.push(path)
  const route=new Proxy({},{get:(_,key)=>router.currentRoute.value[key]}),scope=vue.effectScope()
  const component=load('../src/views/KubernetesView.vue',{vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:translate})},'vue-router':{useRoute:()=>route,useRouter:()=>router},'@/api/kubernetes':{...api,listKubeResourceScopes:async()=>({items:[],cursor:{}}),...overrides},'@/utils/kubernetesWorkspace':workspace,'@/utils/kubernetesPresentation':presentation,'@/stores/auth':{useAuthStore:()=>({canAny:()=>true})},'@/api/client':{__esModule:true,default:{get:async url=>({data:url.endsWith('/namespaces')?{namespaces:['team','other']}:{counts:{},nodes:[],usage:{},phases:{}}})}}}).default
- let state;scope.run(()=>{state=component.setup({}, {expose(){}})});state.clusters.value=[{id:'test',name:'test',default_namespace:'team',is_active:true}];state.cluster.value='test';await settle()
+ let state;scope.run(()=>{state=component.setup({}, {expose(){}})});state.clusters.value=[{id:'test',name:'test',default_namespace:'team',is_active:true}];state.applyScopeQuery();state.selectionReady.value=true;await settle()
  return {state,router,route,stop(){state.cancelListPersist();scope.stop()}}
 }
 test('切换资源与浏览器后退恢复筛选、排序和分页，不把 Pod 条件带到 Service 或其他命名空间',async()=>{

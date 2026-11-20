@@ -59,10 +59,10 @@ test('命名空间树筛选不改变选择，父节点支持全选、半选与�
  const component=load('../src/components/KubeNamespaceTree.vue',{vue,'vue-i18n':{useI18n:()=>({t:translate})}}).default
  let state;scope.run(()=>{state=component.setup(props,{expose(){},emit:(...args)=>events.push(args)})})
  state.search.value='test';assert.deepEqual(state.visibleNamespaces.value,['test']);assert.deepEqual(props.selected,['prod'])
- state.toggleNamespace('test',true);assert.deepEqual(events.pop(),['selection',['prod','test']])
- props.selected=['*'];state.toggleNamespace('test',false);assert.deepEqual(events.pop(),['selection',['cicd','prod']])
- state.toggleAll(props.clusters[0]);assert.deepEqual(events.pop(),['selection',[]])
- state.toggleAll({id:'other',name:'other',is_active:true});assert.deepEqual(events.pop(),['cluster','other',true])
+ state.toggleNamespace('test',true);assert.deepEqual(events.pop(),['selection',['prod','test'],'c'])
+ props.selected=['*'];state.toggleNamespace('test',false);assert.deepEqual(events.pop(),['selection',['cicd','prod'],'c'])
+ state.toggleAll(props.clusters[0]);assert.deepEqual(events.pop(),['selection',[],'c'])
+ state.toggleAll({id:'other',name:'other',is_active:true});assert.deepEqual(events.pop(),['selection',['*'],'other'])
  scope.stop()
 })
 
@@ -75,7 +75,7 @@ test('集群级资源只搜索和选择集群，不显示或修改已保留的�
  state.search.value='prod';assert.deepEqual(state.visibleClusters.value,[])
  state.search.value='staging';assert.deepEqual(state.visibleClusters.value.map(item=>item.id),['b'])
  state.toggleNamespace('prod',false);state.toggleAll(props.clusters[0]);assert.equal(events.length,0)
- state.chooseCluster('b');assert.deepEqual(events.pop(),['cluster','b'])
+ state.chooseCluster('b');assert.deepEqual(events.pop(),['cluster','b',true])
  assert.deepEqual(props.selected,['prod','test'])
  props.namespaced=true;await vue.nextTick()
  assert.equal(state.search.value,'');assert.deepEqual(state.visibleNamespaces.value,['prod','test'])
@@ -102,11 +102,11 @@ test('多选范围在分类、浏览历史和集群切换后保留',async()=>{
   '@/api/client':{__esModule:true,default:{get:async path=>({data:path.endsWith('/namespaces')?{namespaces:['prod','test']} : overview('prod',2)})}},
  }).default
  let state;scope.run(()=>{state=component.setup({}, {expose(){}})})
- state.clusters.value=[{id:'a',is_active:true,default_namespace:'default'},{id:'b',is_active:true,default_namespace:'system'}];state.cluster.value='a';await vue.nextTick()
+ state.clusters.value=[{id:'a',is_active:true,default_namespace:'default'},{id:'b',is_active:true,default_namespace:'system'}];state.applyScopeQuery();state.selectionReady.value=true;await vue.nextTick()
  assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
  route.query={...route.query,view:'network'};await vue.nextTick();assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
- state.selectCluster('b',true);await vue.nextTick();assert.deepEqual(state.selectedNamespaces.value,['*'])
- state.selectCluster('a');await vue.nextTick();assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
+ state.selectNamespaces(['*'],'b');await vue.nextTick();assert.deepEqual(state.selectedClusters.value,['a','b']);assert.deepEqual(state.scopeSelections.value.b,['*'])
+ state.selectCluster('b',false);await vue.nextTick();assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
  route.query={...route.query,namespace:'prod'};await vue.nextTick();assert.deepEqual(state.selectedNamespaces.value,['prod'])
  assert.ok(replacements.length>0);scope.stop()
 })
@@ -124,7 +124,7 @@ test('从节点或集群级存储返回总览时重新读取所选命名空间�
  }).default
  let state;scope.run(()=>{state=component.setup({}, {expose(){}})})
  const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve))}
- state.clusters.value=[{id:'a',is_active:true,default_namespace:'default'}];state.cluster.value='a';await settle()
+ state.clusters.value=[{id:'a',is_active:true,default_namespace:'default'}];state.applyScopeQuery();state.selectionReady.value=true;await settle()
  assert.deepEqual(requests.splice(0),['prod','test'])
  route.query={...route.query,view:'nodes',resource:'nodes'};await settle()
  assert.deepEqual(requests.splice(0),['*'])
@@ -152,14 +152,14 @@ test('节点、Namespace、PV、StorageClass 不请求命名空间列表，切�
  }).default
  let state;scope.run(()=>{state=component.setup({}, {expose(){}})})
  const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve))}
- state.clusters.value=[{id:'a',is_active:true,default_namespace:'default'},{id:'b',is_active:true,default_namespace:'system'}];state.cluster.value='a';await settle()
+ state.clusters.value=[{id:'a',is_active:true,default_namespace:'default'},{id:'b',is_active:true,default_namespace:'system'}];state.applyScopeQuery();state.selectionReady.value=true;await settle()
  for(const resource of ['nodes','namespaces','persistentvolumes','storageclasses']){
   route.query={...route.query,view:api.kubeTypes.find(item=>item.resource===resource).group,resource};await settle()
   assert.equal(state.namespaceScoped.value,false)
   assert.equal(namespaceCalls.length,0)
   assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
  }
- state.selectCluster('b');await settle();state.selectCluster('a');await settle()
+ state.selectCluster('b');await settle();state.selectCluster('b',false);await settle()
  assert.equal(namespaceCalls.length,0);assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
  route.query={...route.query,view:'workloads',resource:'pods'};await settle()
  assert.equal(state.namespaceScoped.value,true);assert.equal(namespaceCalls.length,1)

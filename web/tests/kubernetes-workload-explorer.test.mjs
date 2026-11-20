@@ -320,7 +320,7 @@ async function viewHarness({readServices=async()=>({items:[],continue:''})}={}){
   '@/api/client':{__esModule:true,default:client},
  },{document:{hidden:false,removeEventListener(){}},window:{removeEventListener(){}},localStorage:{getItem:()=> 'fixture-project'},Date:FixtureDate}).default
  let state;scope.run(()=>{state=component.setup({}, {expose(){}})})
- state.clusters.value=[{id:'test',name:'test',default_namespace:'team',is_active:true}];state.cluster.value='test';await settleView()
+ state.clusters.value=[{id:'test',name:'test',default_namespace:'team',is_active:true}];state.applyScopeQuery();state.selectionReady.value=true;await settleView()
  return {state,workload,podA,podB,pvc,calls,lists,messages,blocked,advance:milliseconds=>{now+=milliseconds},stop(){unmounts.forEach(fn=>fn());state.cancelListPersist();scope.stop()}}
 }
 
@@ -364,22 +364,22 @@ test('Service 独立读取并处理分页，撤权清除结果并丢弃迟到响
  requests[0].resolve({items:[service('other',{app:'other'})],continue:'page2'});await settleView()
  assert.equal(requests[1].call.continuation,'page2')
  requests[1].resolve({items:[match],continue:''});await settleView()
- assert.deepEqual(h.state.workloadServices.value,[match])
+ assert.deepEqual(JSON.parse(JSON.stringify(h.state.workloadServices.value)),[match])
  void h.state.loadWorkloadServices(true)
  assert.equal(requests[2].call.fresh,undefined,'手动重试也只读取已有快照')
  requests[2].reject({isAxiosError:true,response:{status:403}});await settleView()
  assert.equal(h.state.servicesError.value,true)
- assert.deepEqual(h.state.workloadServices.value,[])
+ assert.deepEqual(JSON.parse(JSON.stringify(h.state.workloadServices.value)),[])
  void h.state.loadWorkloadServices(true)
  requests[3].resolve({items:[match],continue:''});await settleView()
  assert.equal(h.state.servicesError.value,false)
- assert.deepEqual(h.state.workloadServices.value,[match])
+ assert.deepEqual(JSON.parse(JSON.stringify(h.state.workloadServices.value)),[match])
  void h.state.loadWorkloadServices(true)
  h.blocked.add('kubernetes.network.read')
  assert.equal(requests[4].call.signal.aborted,true)
- assert.deepEqual(h.state.workloadServices.value,[])
+ assert.deepEqual(JSON.parse(JSON.stringify(h.state.workloadServices.value)),[])
  requests[4].resolve({items:[match],continue:''});await settleView()
- assert.deepEqual(h.state.workloadServices.value,[])
+ assert.deepEqual(JSON.parse(JSON.stringify(h.state.workloadServices.value)),[])
  assert.equal(requests.length,5)
 })
 

@@ -4,15 +4,21 @@ import { ChevronDown, ChevronRight, RefreshCw, Search } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import type { KubeCluster } from '@/api/kubernetes'
 
-const props = defineProps<{ clusters: KubeCluster[]; cluster: string; namespaces: string[]; selected: string[]; namespaceCatalogs?: Record<string,{names:string[];ready?:boolean;error?:string}>; namespaced?: boolean; ready?: boolean; loading?: boolean; error?: string; disabled?: boolean }>()
-const emit = defineEmits<{ cluster: [id: string, all?: boolean]; selection: [names: string[], clusterID?:string]; expand: [id:string]; retry: [] }>()
+const props = defineProps<{ clusters: KubeCluster[]; cluster: string; namespaces: string[]; selected: string[]; selectedClusters?: string[]; selections?: Record<string,string[]>; namespaceCatalogs?: Record<string,{names:string[];ready?:boolean;error?:string;loading?:boolean}>; namespaced?: boolean; ready?: boolean; loading?: boolean; error?: string; disabled?: boolean }>()
+const emit = defineEmits<{ cluster: [id: string, checked: boolean]; selection: [names: string[], clusterID?:string]; expand: [id:string]; retry: [id:string] }>()
 const { t } = useI18n()
 const search = ref(''), expanded = ref(''),mobileOpen=ref(false)
-const currentCluster=computed(()=>props.clusters.find(item=>item.id===props.cluster))
 const namespaceEnabled = computed(() => props.namespaced !== false)
-watch(() => props.cluster, id => { expanded.value = id }, { immediate: true })
-watch(namespaceEnabled, enabled => { search.value = '';if(enabled)expanded.value=props.cluster })
-const all = computed(() => props.selected.includes('*'))
+const chosen = computed(() => props.selectedClusters ?? (props.cluster ? [props.cluster] : []))
+const currentCluster=computed(()=>props.clusters.find(item=>item.id===props.cluster))
+const selectionOf=(id:string)=>chosen.value.includes(id)?props.selections?.[id]??(id===props.cluster?props.selected:[]):[]
+const allOf=(id:string)=>selectionOf(id).includes('*')
+const partialOf=(id:string)=>!allOf(id)&&selectionOf(id).length>0
+const all = computed(() => allOf(props.cluster))
+const selectionSummary=computed(()=>chosen.value.length>1?t('k8s.clustersSelected',{count:chosen.value.length}):currentCluster.value?.name||t('k8s.selectCluster'))
+let initializedExpanded=false
+watch(() => props.cluster, id => { if(!initializedExpanded&&id){expanded.value=id;initializedExpanded=true} }, { immediate: true })
+watch(namespaceEnabled, () => { search.value = '' })
 const needle = computed(() => search.value.trim().toLowerCase())
 const expandedNamespaces = computed(() => expanded.value===props.cluster?props.namespaces:props.namespaceCatalogs?.[expanded.value]?.names??[])
 const expandedError = computed(() => expanded.value===props.cluster?props.error:props.namespaceCatalogs?.[expanded.value]?.error)
@@ -25,49 +31,44 @@ function toggleExpanded(id:string) {
   emit('expand',expanded.value)
 }
 function chooseCluster(id: string) {
-  if (props.disabled) return
-  expanded.value = id
-  if (props.cluster !== id) emit('cluster', id)
+  if (props.disabled || !props.clusters.some(item=>item.id===id&&item.is_active)) return
+  emit('cluster', id, !chosen.value.includes(id))
 }
 function toggleAll(item: KubeCluster) {
   if (!namespaceEnabled.value || props.disabled || !item.is_active) return
-  expanded.value=item.id
-  if(item.id!==props.cluster) { emit('cluster',item.id,true);return }
-  emit('selection', all.value ? [] : ['*'])
+  emit('selection', allOf(item.id) ? [] : ['*'],item.id)
 }
 function toggleNamespace(name: string, checked: boolean) {
   if (!namespaceEnabled.value || props.disabled) return
   const id=expanded.value||props.cluster
   if(!props.clusters.some(item=>item.id===id&&item.is_active)||!expandedNamespaces.value.includes(name))return
-  const selected = new Set(id===props.cluster?(all.value ? props.namespaces : props.selected):[])
+  const selected = new Set(allOf(id) ? expandedNamespaces.value : selectionOf(id))
   if (checked) selected.add(name)
   else selected.delete(name)
-  if(id===props.cluster)emit('selection', [...selected].sort())
-  else emit('selection', [...selected].sort(),id)
+  emit('selection', [...selected].sort(),id)
 }
-function refreshNamespaces() {
-  if (props.disabled || props.loading || !namespaceEnabled.value || !currentCluster.value?.is_active) return
-  emit('retry')
+function refreshNamespaces(id:string) {
+  if (props.disabled || !namespaceEnabled.value || !props.clusters.some(item=>item.id===id&&item.is_active)) return
+  emit('retry',id)
 }
 </script>
 
 <template>
   <aside class="kube-namespace-tree" :class="{'is-disabled':disabled}" :aria-label="t(namespaceEnabled?'k8s.clusterNamespace':'k8s.cluster')">
-    <div class="scope-heading"><h3>{{ t(namespaceEnabled?'k8s.clusterNamespace':'k8s.cluster') }}</h3><button type="button" class="scope-toggle" :aria-expanded="mobileOpen" aria-controls="kube-scope-options" :disabled="disabled" @click="mobileOpen=!mobileOpen"><span>{{ currentCluster?.name||t('k8s.selectCluster') }}<small v-if="namespaceEnabled"> · {{ t(all?'k8s.allNamespaces':'k8s.namespaceSelected',{count:selected.length}) }}</small></span><ChevronDown aria-hidden="true" :size="14" :class="{expanded:mobileOpen}" /></button></div><div id="kube-scope-options" class="scope-options" :class="{'is-open':mobileOpen}">
+    <div class="scope-heading"><h3>{{ t(namespaceEnabled?'k8s.clusterNamespace':'k8s.cluster') }}</h3><button type="button" class="scope-toggle" :aria-expanded="mobileOpen" aria-controls="kube-scope-options" :disabled="disabled" @click="mobileOpen=!mobileOpen"><span>{{ selectionSummary }}<small v-if="namespaceEnabled&&chosen.length<=1"> · {{ chosen.length>1?t('k8s.clustersSelected',{count:chosen.length}):t(all?'k8s.allNamespaces':'k8s.namespaceSelected',{count:selectionOf(cluster).length}) }}</small></span><ChevronDown aria-hidden="true" :size="14" :class="{expanded:mobileOpen}" /></button></div><div id="kube-scope-options" class="scope-options" :class="{'is-open':mobileOpen}">
     <a-input v-model:value="search" :disabled="disabled" allow-clear :placeholder="t(namespaceEnabled?'k8s.namespaceSearch':'k8s.clusterSearch')" :aria-label="t(namespaceEnabled?'k8s.namespaceSearch':'k8s.clusterSearch')"><template #prefix><Search aria-hidden="true" :size="14" /></template></a-input>
     <div class="namespace-tree-scroll">
-      <section v-for="item in visibleClusters" :key="item.id" class="namespace-tree-branch" :class="{active:item.id===cluster}">
-        <div class="namespace-cluster-row" :class="{'cluster-only':!namespaceEnabled,selected:!namespaceEnabled&&item.id===cluster,'is-disabled':disabled||!item.is_active}">
+      <section v-for="item in visibleClusters" :key="item.id" class="namespace-tree-branch" :class="{active:chosen.includes(item.id)}">
+        <div class="namespace-cluster-row" :class="{'cluster-only':!namespaceEnabled,selected:!namespaceEnabled&&chosen.includes(item.id),'is-disabled':disabled||!item.is_active}">
           <button v-if="namespaceEnabled" type="button" class="namespace-expander" :aria-expanded="expanded===item.id" :aria-label="t(expanded===item.id?'k8s.collapseCluster':'k8s.expandCluster',{name:item.name})" :disabled="disabled||!item.is_active" @click="toggleExpanded(item.id)"><ChevronDown aria-hidden="true" v-if="expanded===item.id" :size="14"/><ChevronRight aria-hidden="true" v-else :size="14"/></button>
-          <label v-if="namespaceEnabled" class="namespace-cluster-checkbox" :class="{'is-disabled':disabled||!item.is_active}"><input type="checkbox" :checked="item.id===cluster&&all" :indeterminate.prop="item.id===cluster&&!all&&selected.length>0" :aria-checked="item.id===cluster&&!all&&selected.length>0?'mixed':undefined" :disabled="disabled||!item.is_active" :aria-label="t('k8s.selectClusterNamespaces',{name:item.name})" @change="toggleAll(item)" /></label>
-          <a-radio v-else name="kube-workspace-cluster" :checked="item.id===cluster" :disabled="disabled||!item.is_active" :aria-label="item.name" @change="chooseCluster(item.id)" />
+          <label class="namespace-cluster-checkbox" :class="{'is-disabled':disabled||!item.is_active}"><input type="checkbox" :checked="namespaceEnabled?allOf(item.id):chosen.includes(item.id)" :indeterminate.prop="namespaceEnabled&&partialOf(item.id)" :aria-checked="namespaceEnabled&&partialOf(item.id)?'mixed':undefined" :disabled="disabled||!item.is_active" :aria-label="namespaceEnabled?t('k8s.selectClusterNamespaces',{name:item.name}):item.name" @change="namespaceEnabled?toggleAll(item):chooseCluster(item.id)" /></label>
           <button v-if="namespaceEnabled" type="button" class="namespace-cluster-name" :class="{inactive:!item.is_active}" :disabled="disabled||!item.is_active" :title="item.name" :aria-expanded="expanded===item.id" @click="toggleExpanded(item.id)">{{ item.name }}</button>
           <span v-else class="namespace-cluster-name" :title="item.name">{{ item.name }}</span>
-          <button v-if="namespaceEnabled&&item.id===cluster" type="button" class="namespace-refresh" :aria-label="t(loading?'k8s.refreshingNamespaces':'k8s.refreshNamespaces',{name:item.name})" :title="t('k8s.refreshNamespaces',{name:item.name})" :aria-busy="Boolean(loading)" :disabled="disabled||!item.is_active||loading" @click="refreshNamespaces"><RefreshCw aria-hidden="true" :size="14" :class="{'is-spinning':loading}" /></button>
+          <button v-if="namespaceEnabled&&expanded===item.id" type="button" class="namespace-refresh" :aria-label="t((namespaceCatalogs?.[item.id]?.loading||item.id===cluster&&loading)?'k8s.refreshingNamespaces':'k8s.refreshNamespaces',{name:item.name})" :title="t('k8s.refreshNamespaces',{name:item.name})" :aria-busy="Boolean(namespaceCatalogs?.[item.id]?.loading||item.id===cluster&&loading)" :disabled="disabled||!item.is_active||namespaceCatalogs?.[item.id]?.loading||item.id===cluster&&loading" @click="refreshNamespaces(item.id)"><RefreshCw aria-hidden="true" :size="14" :class="{'is-spinning':namespaceCatalogs?.[item.id]?.loading||item.id===cluster&&loading}" /></button>
         </div>
         <div v-if="namespaceEnabled&&expanded===item.id" class="namespace-children">
-          <div v-for="name in visibleNamespaces" :key="name" class="namespace-tree-item" :class="{selected:item.id===cluster&&(all||selected.includes(name)),'is-disabled':disabled}">
-            <label class="namespace-child-checkbox"><input type="checkbox" :checked="item.id===cluster&&(all||selected.includes(name))" :disabled="disabled" :aria-label="name" @change="toggleNamespace(name,($event.target as HTMLInputElement).checked)" /></label><span class="namespace-child-name" :title="name">{{ name }}</span>
+          <div v-for="name in visibleNamespaces" :key="name" class="namespace-tree-item" :class="{selected:allOf(item.id)||selectionOf(item.id).includes(name),'is-disabled':disabled}">
+            <label class="namespace-child-checkbox"><input type="checkbox" :checked="allOf(item.id)||selectionOf(item.id).includes(name)" :disabled="disabled" :aria-label="name" @change="toggleNamespace(name,($event.target as HTMLInputElement).checked)" /></label><span class="namespace-child-name" :title="name">{{ name }}</span>
           </div>
           <div v-if="expandedError" class="namespace-error" role="alert">{{ expandedError }}</div>
           <p v-else-if="!visibleNamespaces.length&&expandedReady!==false" class="namespace-empty">{{ t('k8s.noNamespaceMatches') }}</p>
@@ -75,7 +76,7 @@ function refreshNamespaces() {
       </section>
       <p v-if="!visibleClusters.length" class="namespace-empty">{{ t(!clusters.length?'k8s.noCluster':namespaceEnabled?'k8s.noNamespaceMatches':'k8s.noClusterMatches') }}</p>
     </div>
-    <p v-if="namespaceEnabled" class="namespace-selection-hint">{{ t(all?'k8s.allNamespaces':'k8s.namespaceSelected',{count:selected.length}) }}</p>
+    <p v-if="namespaceEnabled" class="namespace-selection-hint">{{ chosen.length>1?t('k8s.clustersSelected',{count:chosen.length}):t(all?'k8s.allNamespaces':'k8s.namespaceSelected',{count:selectionOf(cluster).length}) }}</p>
     </div>
   </aside>
 </template>

@@ -51,7 +51,7 @@ async function harness({denied=[],resource='statefulsets'}={}){
  const scope=vue.effectScope();let state,stopped=false
  scope.run(()=>{state=component.setup({}, {expose(){}})})
  state.clusters.value=[{id:'test',name:'test',default_namespace:'team',is_active:true},{id:'other-cluster',name:'other',default_namespace:'team',is_active:true}]
- state.cluster.value='test';await settle()
+ state.applyScopeQuery();state.selectionReady.value=true;await settle()
  const stop=()=>{if(stopped)return;stopped=true;unmounts.forEach(fn=>fn());state.cancelListPersist();scope.stop()}
  return {state,router,route,gets,writes,messages,blocked,authorization,unmount:stop,stop}
 }

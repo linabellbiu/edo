@@ -4,12 +4,13 @@ import {readFileSync} from 'node:fs'
 import {parse,compileScript} from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
+import axios from 'axios'
 import {createRouter,createMemoryHistory} from 'vue-router'
 
 function load(path,modules={},globals={}){
  const source=readFileSync(new URL(path,import.meta.url),'utf8'),code=path.endsWith('.vue')?compileScript(parse(source).descriptor,{id:'kube-watch'}).content:source
  const output=ts.transpileModule(code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,module={exports:{}}
- new Function('require','module','exports',...Object.keys(globals),output)(name=>modules[name]??(name==='./sse'?load('../src/api/sse.ts'):{}),module,module.exports,...Object.values(globals));return module.exports
+ new Function('require','module','exports',...Object.keys(globals),output)(name=>modules[name]??(name==='axios'?axios:name==='./sse'?load('../src/api/sse.ts'):{}),module,module.exports,...Object.values(globals));return module.exports
 }
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
 const sample={kind:'Pod',metadata:{name:'web',namespace:'team',uid:'p1',resourceVersion:'1'}}
@@ -124,7 +125,7 @@ test('资源初次缺少快照时显示等待，采样时间由后台返回且�
  assert.equal(h.state.error.value,'')
  assert.equal(h.state.lastRefreshed.value,'')
  state='stale';await h.state.refresh(true)
- assert.deepEqual(h.state.rows.value,[sample])
+ assert.deepEqual(JSON.parse(JSON.stringify(h.state.rows.value)),[sample])
  assert.equal(h.state.lastRefreshed.value,'2026-11-19T01:00:00Z')
  assert.equal(h.state.listSnapshotState.value,'stale')
  state='ok';await h.state.refresh(true)
@@ -133,7 +134,7 @@ test('资源初次缺少快照时显示等待，采样时间由后台返回且�
 
 test('集群、权限、项目和窗口可见性切换取消旧流，迟到事件不更新新范围',async t=>{
  const h=await harness();t.after(h.stop);const first=h.sessions.at(-1)
- h.state.cluster.value='other';await settle();assert.equal(first.signal.aborted,true);const before=changes(h);first.onEvent(podEvent);await h.run(500);assert.equal(changes(h),before)
+ h.state.selectCluster('test',false);h.state.selectCluster('other');await settle();assert.equal(first.signal.aborted,true);const before=changes(h);first.onEvent(podEvent);await h.run(500);assert.equal(changes(h),before)
  const current=h.sessions.at(-1);h.auth.user.permissions=[];await settle();assert.equal(current.signal.aborted,true);assert.equal(h.state.watchHealthy.value,false)
  h.auth.user.permissions=['kubernetes.workload.read'];await settle();const active=h.sessions.at(-1)
  h.doc.hidden=true;h.listeners.get('visibilitychange')();assert.equal(active.signal.aborted,true)

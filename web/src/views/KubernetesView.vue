@@ -6,7 +6,7 @@ import { Plus, RefreshCw, Search, ArrowLeft, Filter } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate, type LocationQueryRaw } from 'vue-router'
 import client from '@/api/client'
-import { identityOf, kubeKey, kubeTypes, listKubeResources, listKubeResourceScopes, namespaceSelection, mapNamespaceRequests, mergeNamespaceOverviews, resourceURL, withFreshKubeResource, kubeErrorMessage, kubeSnapshotPending, KubeResourceChanged, streamKubeEvents, KubeWatchError, usageFor, formatKubeCPU, formatKubeMemory, podSpec, type KubeWatchEvent, type KubeOverview as OverviewData, type KubeCluster, type KubeObject, type KubeResourceDetail, type KubeType } from '@/api/kubernetes'
+import { identityOf, kubeKey as resourceKey, kubeTypes, listKubeResources, listKubeResourceScopes, namespaceSelection, mapNamespaceRequests, mergeNamespaceOverviews, resourceURL, withFreshKubeResource, kubeErrorMessage, kubeSnapshotPending, KubeResourceChanged, streamKubeEvents, KubeWatchError, usageFor, formatKubeCPU, formatKubeMemory, podSpec, type KubeWatchEvent, type KubeOverview as OverviewData, type KubeCluster, type KubeObject, type KubeResourceDetail, type KubeType } from '@/api/kubernetes'
 import { readKubeSnapshotMeta, type KubeServicePortSource, type KubeSnapshotMeta } from '@/api/kubernetes'
 import { resourceColumns, resourceCells, resourceStatus, resourceSearchText, matchesLabelFilter, relatedPodMatch, relatedWorkloadServices, type KubeReference } from '@/utils/kubernetesPresentation'
 import KubeNamespaceTree from '@/components/KubeNamespaceTree.vue'
@@ -38,7 +38,7 @@ import SessionAction from '@/components/SessionAction.vue'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import TerminalDrawer from '@/components/TerminalDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
-import {readKubeListState,kubeListQuery,kubeListQueryKeys,withoutKubeListQuery,sortKubeRows,kubeSortableColumns,reloadKubeWindow,podContainerChoices,readKubeWorkspacePreferences,writeKubeWorkspacePreferences,type KubeListState,type KubeWorkspacePreferences} from '@/utils/kubernetesWorkspace'
+import {readKubeListState,kubeListQuery,kubeListQueryKeys,withoutKubeListQuery,sortKubeRows,kubeSortableColumns,reloadKubeWindow,podContainerChoices,readKubeWorkspacePreferences,writeKubeWorkspacePreferences,readKubeScopeQuery,kubeScopeQuery,withKubeCluster,kubeObjectCluster,mergeClusterOverviews,type KubeListPage,type KubeListState,type KubeWorkspacePreferences} from '@/utils/kubernetesWorkspace'
 import { formatDateTime } from '@/utils/time'
 import { revisionOwnedPods, supportsWorkloadImageEdit, type WorkloadExplorerSelection, type WorkloadRevision } from '@/utils/kubernetesWorkloadExplorer'
 
@@ -49,9 +49,9 @@ const KubeYamlDrawer = defineAsyncComponent(() => import('@/components/KubeYamlD
 const KubeWorkloadImages = defineAsyncComponent(() => import('@/components/KubeWorkloadImages.vue'))
 const yamlOpen=ref(false),yamlContext=ref<{cluster:string;type:KubeType;object:KubeObject}>()
 const yamlRef=ref<{confirmLeave:()=>Promise<boolean>}>()
-function editYaml(){if(detail.value&&detailType.value&&detailType.value.update&&detail.value.kind!=='Secret'&&can(`${detailType.value.permission}.update`)){yamlContext.value={cluster:cluster.value,type:detailType.value,object:JSON.parse(JSON.stringify(detail.value))};yamlOpen.value=true}}
+function editYaml(){if(detail.value&&detailType.value&&detailType.value.update&&detail.value.kind!=='Secret'&&can(`${detailType.value.permission}.update`)){yamlContext.value={cluster:detailCluster.value,type:detailType.value,object:JSON.parse(JSON.stringify(detail.value))};yamlOpen.value=true}}
 
-function linkApplication(object:KubeObject){void router.push({path:'/applications',query:{delivery_kind:'kubernetes',cluster:cluster.value,namespace:object.metadata.namespace||'default',workload:object.metadata.name,container:object.spec?.template?.spec?.containers?.[0]?.name||''}})}
+function linkApplication(object:KubeObject){void router.push({path:'/applications',query:{delivery_kind:'kubernetes',cluster:clusterOf(object),namespace:object.metadata.namespace||'default',workload:object.metadata.name,container:object.spec?.template?.spec?.containers?.[0]?.name||''}})}
 const auth = useAuthStore(), route = useRoute(), router=useRouter(), { t } = useI18n()
 const workspacePreferences=ref(readKubeWorkspacePreferences(auth.user?.id,auth.user?.project_id))
 let preferenceOwner=JSON.stringify([auth.user?.id??'',auth.user?.project_id??''])
@@ -74,7 +74,7 @@ const overviewSnapshot=ref<KubeSnapshotMeta>({}),detailSnapshot=ref<KubeSnapshot
 const provisionOpen=ref(false),provisionAction=ref<'create'|'join'>('create')
 function openProvision(action:'create'|'join'){provisionAction.value=action;provisionOpen.value=true}
 function provisionContext(){return JSON.stringify([auth.user?.id??'',auth.user?.project_id??'',typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??'',auth.user?.is_superuser??false,[...(auth.user?.permissions??[])].sort(),cluster.value])}
-async function provisionCompleted(installation:K3sInstallation){const context=provisionContext();const loaded=await loadClusters(true);if(!loaded||!mounted||context!==provisionContext())return;if(installation.action==='create'&&installation.cluster_id)cluster.value=installation.cluster_id;refreshAll()}
+async function provisionCompleted(installation:K3sInstallation){const context=provisionContext();const loaded=await loadClusters(true);if(!loaded||!mounted||context!==provisionContext())return;if(installation.action==='create'&&installation.cluster_id){scopeSelections.value={...scopeSelections.value,[installation.cluster_id]:['*']};selectedClusters.value=[installation.cluster_id];storeScope()}refreshAll()}
 const nodeRemoval=ref<{cluster:string;object:KubeObject}>(),nodeName=ref(''),agentStopped=ref(false)
 const nodeRemovalResult=ref<{status:'submitting'|'succeeded'|'failed';message:string}>()
 let overviewRevision=0,overviewController:AbortController|undefined,lastOverview=0,lastOverviewAttempt=0,overviewPending=false
@@ -82,7 +82,7 @@ function selectResource(value:string){
   const type=kubeTypes.find(item=>item.resource===value)
   if(!type||contextDisabled.value||!can(`${type.permission}.read`))return
   rememberPendingList();rememberList();cancelListPersist()
-  const key=`${cluster.value}:${type.resource}:${type.namespaced?scopeKey.value:'*'}`
+  const key=resourceContextKey(type)
   const query:LocationQueryRaw={...withoutKubeListQuery(route.query),...listContexts.get(key)&&kubeListQuery(listContexts.get(key)!),view:type.group,resource:value}
   if(group.value==='overview')query.from='overview'
   void router.push({query})
@@ -120,10 +120,25 @@ const namespaceScoped = computed(() => group.value==='overview'||Boolean(activeT
 const showResourceToolbar = computed(()=>fromOverview.value
   ||group.value==='nodes'&&can('kubernetes.node.create')
   ||group.value!=='overview'&&Boolean(activeType.value?.create&&can(`${activeType.value.permission}.create`)))
-const clusters = ref<KubeCluster[]>([]), cluster = ref(''), namespaces = ref<string[]>([]), selectedNamespaces = ref<string[]>(namespaceSelection(route.query.namespace)), namespaceLoading=ref(false), namespaceError=ref('')
-const namespaceDirectoryReady=ref(false)
+const clusters = ref<KubeCluster[]>([]), selectedClusters=ref<string[]>([])
+const scopeSelections=ref<Record<string,string[]>>({...workspacePreferences.value.scopes})
+const selectionReady=ref(false), cluster=computed(()=>selectedClusters.value[0]??'')
+const selectedNamespaces=computed(()=>scopeSelections.value[cluster.value]??[])
+const namespaceCatalogs=ref<Record<string,{names:string[];ready?:boolean;error?:string;loading?:boolean}>>({})
+const namespaces=computed(()=>namespaceCatalogs.value[cluster.value]?.names??[])
+const namespaceLoading=computed(()=>Boolean(namespaceCatalogs.value[cluster.value]?.loading))
+const namespaceError=computed(()=>namespaceCatalogs.value[cluster.value]?.error??'')
+const namespaceDirectoryReady=computed(()=>Boolean(namespaceCatalogs.value[cluster.value]?.ready))
+const activeClusters=computed(()=>selectedClusters.value.flatMap(id=>clusters.value.find(item=>item.id===id&&item.is_active)??[]))
+const singleCluster=computed(()=>activeClusters.value.length===1?activeClusters.value[0]:undefined)
+function clusterOf(object?:KubeObject){return kubeObjectCluster(object)||(singleCluster.value?.id??'')}
+function clusterName(id:string){return clusters.value.find(item=>item.id===id)?.name??id}
+function scopeError(id:string,error:string){return selectedClusters.value.length>1?`${clusterName(id)}：${error}`:error}
+function kubeKey(object:KubeObject){return JSON.stringify([clusterOf(object),resourceKey(object)])}
+const detailCluster=ref(''),detailClusterInfo=computed(()=>clusters.value.find(item=>item.id===detailCluster.value))
+
 const initialList=rememberedListState(route.query)
-const rows = ref<KubeObject[]>([]), query = ref(initialList.query), labelFilter=ref(initialList.label), statusFilter=ref(initialList.status), lastRefreshed=ref(''), continuation = ref<Record<string,string>>({}), loading = ref(false), error = ref(''), autoRefresh = ref(workspacePreferences.value.autoRefresh??true), busy = ref('')
+const rows = ref<KubeObject[]>([]), query = ref(initialList.query), labelFilter=ref(initialList.label), statusFilter=ref(initialList.status), lastRefreshed=ref(''), continuation = ref<Record<string,Record<string,string>>>({}), loading = ref(false), error = ref(''), autoRefresh = ref(workspacePreferences.value.autoRefresh??true), busy = ref('')
 const sortKey=ref(initialList.sort),sortOrder=ref<'asc'|'desc'>(initialList.order),currentPage=ref(initialList.page),pageSize=ref(initialList.limit)
 const loadedPages=ref(1)
 const resourcePanel=ref<HTMLElement>(),lastViewedRow=ref(''),editorRef=ref<InstanceType<typeof KubeResourceEditor>>()
@@ -141,13 +156,13 @@ function clearFilters() {
 }
 const clusterInfo = computed(() => clusters.value.find(item=>item.id===cluster.value))
 const hasRowActions=computed(()=>{const type=activeType.value;if(!type)return false;return compactResourceList.value||type.group==='workloads'||type.update&&can(`${type.permission}.update`)||type.delete&&can(`${type.permission}.delete`)||type.resource==='nodes'&&can('kubernetes.node.delete')})
-const columns = computed(() => activeType.value?resourceColumns(activeType.value,t).map(column=>({...column,sortable:kubeSortableColumns.includes(column.key)})):[])
+const columns = computed(() => activeType.value?[...(selectedClusters.value.length>1?[{key:'cluster',label:t('k8s.cluster')}]:[]),...resourceColumns(activeType.value,t)].map(column=>({...column,sortable:kubeSortableColumns.includes(column.key)})):[])
 const hasLabelsColumn = computed(() => columns.value.some(column => column.key === 'labels'))
 const detail = ref<KubeObject>(),detailType=ref<KubeType>(),detailOrigin=ref(''),detailHistory=ref<Array<{object:KubeObject;type:KubeType;tab:string;templateSection?:'containers'|'storage'|'scheduling';templateIdentity?:string;templateContainerKey?:string}>>([]),detailOpen = ref(false), detailLoading = ref(false), detailError = ref(''),detailSyncError=ref(''), detailTab = ref('basic'), events = ref<KubeObject[]>([]), eventsError = ref(false), relatedPods = ref<KubeObject[]>([]),relatedLoading=ref(false),relatedError=ref(''),relatedPartial=ref(false),relatedLoaded=ref(false)
 const workloadSelections=ref<Record<string,WorkloadExplorerSelection>>({})
 const eventsLoading=ref(false)
 const templateContainerSelections=ref<Record<string,string>>({})
-const templateIdentity=computed(()=>detail.value?.metadata?.uid?`${cluster.value}/${detail.value.metadata.uid}`:'')
+const templateIdentity=computed(()=>detail.value?.metadata?.uid?`${detailCluster.value}/${detail.value.metadata.uid}`:'')
 function rememberTemplateContainer(key:string,identity=templateIdentity.value){
   if(!detail.value||detail.value.kind==='Pod'||!detailType.value||!templateIdentity.value||identity!==templateIdentity.value||!can(`${detailType.value.permission}.read`))return
   const spec=podSpec(detail.value),groups={app:'containers',init:'initContainers',ephemeral:'ephemeralContainers'}
@@ -157,7 +172,7 @@ function rememberTemplateContainer(key:string,identity=templateIdentity.value){
 const detailRefresh=ref(0),templateSection=ref<'containers'|'storage'|'scheduling'>('containers')
 const workloadDetail=computed(()=>detailType.value?.group==='workloads')
 const needsRelatedPods=computed(()=>hasRelatedPods.value&&(detailTab.value==='pods'||workloadDetail.value&&detailTab.value==='basic'))
-const workloadSelectionKey=computed(()=>cluster.value+(detail.value?.metadata.uid??''))
+const workloadSelectionKey=computed(()=>detailCluster.value+(detail.value?.metadata.uid??''))
 const workloadSelection=computed(()=>workloadSelections.value[workloadSelectionKey.value])
 const podResourceType=kubeTypes.find(type=>type.resource==='pods')!
 const imageEdit=ref<{cluster:string;type:KubeType;object:KubeObject}>()
@@ -166,13 +181,13 @@ const manifestObject=ref<KubeObject>()
 const workloadActor=()=>JSON.stringify([auth.user?.id,auth.user?.project_id,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??''])
 function servicePortSource(object: KubeObject): KubeServicePortSource | undefined {
   const metadata = object.metadata
-  if (object.kind !== 'Service' || !metadata?.uid || !metadata.name || !metadata.namespace || !cluster.value || !can('kubernetes.network.read')) return
+  if (object.kind !== 'Service' || !metadata?.uid || !metadata.name || !metadata.namespace || !clusterOf(object) || !can('kubernetes.network.read')) return
   return {
-    cluster: cluster.value, scope: JSON.stringify([workloadActor(), auth.user?.is_superuser, auth.user?.permissions]),
+    cluster: clusterOf(object), scope: JSON.stringify([workloadActor(), auth.user?.is_superuser, auth.user?.permissions]),
     name: metadata.name, namespace: metadata.namespace, uid: metadata.uid, resourceVersion: metadata.resourceVersion,
   }
 }
-const workloadScope=computed(()=>JSON.stringify([cluster.value,detail.value?.metadata.uid,workloadActor(),can('kubernetes.workload.read')]))
+const workloadScope=computed(()=>JSON.stringify([detailCluster.value,detail.value?.metadata.uid,workloadActor(),can('kubernetes.workload.read')]))
 watch(workloadScope,()=>{imageEdit.value=undefined;manifestObject.value=undefined},{flush:'sync'})
 const canEditWorkloadImage=computed(()=>Boolean(imageEdit.value&&detailOpen.value&&!detailError.value&&!detailSyncError.value&&can('kubernetes.workload.read')&&can('kubernetes.workload.update')))
 const detailPresented=computed(()=>detailOpen.value&&!editorOpen.value&&!yamlOpen.value&&!stream.value.open)
@@ -185,7 +200,8 @@ const scaleUnavailable = computed(() => scaleStatus.value?.unavailableReplicas ?
   scaleTarget.value?.object.kind === 'Deployment' && scaleStatus.value?.observedGeneration ? 0 : undefined
 ))
 watch([cluster, workloadActor], () => { scaleOpen.value = false; scaleTarget.value = undefined }, { flush:'sync' })
-let clusterRevision=0,clusterController:AbortController|undefined,namespaceController:AbortController|undefined,lastNamespaceRefresh=0
+let clusterRevision=0,clusterController:AbortController|undefined,lastNamespaceRefresh=0
+const namespaceRequests=new Map<string,AbortController>()
 let revision=0, detailRevision=0, controller:AbortController|undefined,detailController:AbortController|undefined, timer:ReturnType<typeof setInterval>|undefined, mounted=true
 let editRevision=0,editController:AbortController|undefined,editBusyKey=''
 let secretController:AbortController|undefined
@@ -193,16 +209,18 @@ let detailSyncing=false,listRefreshing=false,lastRelatedSync=0,lastVisibleSync=0
 const watchHealthy=ref(false),watchDegraded=ref(false)
 let watchMounted=false,watchRevision=0,watchController:AbortController|undefined,watchReconnect:ReturnType<typeof setTimeout>|undefined,watchFlush:ReturnType<typeof setTimeout>|undefined,watchRetry=0,lastWatchEvent=0,lastCalibration=0
 const watchDirty=new Set<'list'|'overview'|'namespaces'|'detail'|'related'|'services'>()
-const scopeKey=computed(()=>selectedNamespaces.value.join(','))
-const overviewNamespaces=computed(()=>group.value!=='overview'&&activeType.value&&!activeType.value.namespaced?['*']:selectedNamespaces.value)
+const queryScopes=computed(()=>activeClusters.value.map(item=>({cluster:item.id,namespaces:namespaceScoped.value?scopeSelections.value[item.id]??[]:['*']})).filter(item=>item.namespaces.length))
+const scopeQuery=computed(()=>kubeScopeQuery({clusters:selectedClusters.value,scopes:scopeSelections.value}))
+function resourceContextKey(type:KubeType|undefined){return JSON.stringify([selectedClusters.value,type?.resource,type?.namespaced?selectedClusters.value.map(id=>scopeSelections.value[id]??[]):'*',namespaceBrowseIdentity()])}
+
 const namespace=computed(()=>selectedNamespaces.value.length===1&&selectedNamespaces.value[0]!=='*'?selectedNamespaces.value[0]!:'')
-const hasContinuation=computed(()=>Object.keys(continuation.value).length>0)
-const contextKey = computed(()=>`${cluster.value}:${activeType.value?.resource}:${namespaceScoped.value?scopeKey.value:'*'}`)
+const hasContinuation=computed(()=>Object.values(continuation.value).some(cursor=>Object.keys(cursor).length>0))
+const contextKey = computed(()=>resourceContextKey(activeType.value))
 const contextDisabled=computed(()=>editorOpen.value||yamlOpen.value||joinOpen.value||provisionOpen.value||Boolean(nodeRemoval.value)||Boolean(busy.value))
 const knownNamespaces=computed(()=>[...new Set([...namespaces.value,...selectedNamespaces.value.filter(name=>name!=='*')])].sort())
 const nodeView = computed(() => route.query.node_view === 'topology' ? 'topology' : 'list')
 const showNodeTopology = computed(() => group.value === 'nodes' && activeType.value?.resource === 'nodes' && nodeView.value === 'topology')
-const topology = ref<NodeTopologyData|null>(null), topologyLoading = ref(false), topologyError = ref('')
+const topologies=ref<Record<string,{data:NodeTopologyData|null;loading:boolean;error:string}>>({}),topologyLoading=ref(false)
 const topologyRefreshing = ref(false)
 function staleSnapshotMessage(collectedAt?:string){return collectedAt?`${t('k8s.snapshotStale')} · ${formatDateTime(collectedAt)}`:t('k8s.snapshotStale')}
 const panelSyncError=computed(()=>{
@@ -212,6 +230,7 @@ const panelSyncError=computed(()=>{
 })
 const panelSyncMessage=computed(()=>{
   if(panelSyncError.value)return panelSyncError.value
+  if(listLoadingClusters.value.length&&!loading.value&&group.value!=='overview')return t('k8s.clustersLoading',{count:listLoadingClusters.value.length})
   if(group.value==='overview')return overview.value&&overviewSnapshot.value.stale?staleSnapshotMessage(overviewSnapshot.value.collectedAt):''
   return !showNodeTopology.value&&listSnapshotState.value==='stale'?staleSnapshotMessage(lastRefreshed.value):''
 })
@@ -222,170 +241,190 @@ function setNodeView(value: string) {
   void router.push({ query: { ...route.query, node_view: value === 'topology' ? 'topology' : undefined } })
 }
 async function loadTopology(silent = false) {
-  const id = cluster.value
-  if (!showNodeTopology.value || !id || !clusterInfo.value?.is_active) return
-  if (topologyLoading.value) {
-    if (!silent) topologyRefreshing.value = true
-    return
-  }
-  const request = new AbortController(), current = ++topologyRevision
+  if (!showNodeTopology.value || !activeClusters.value.length) return
+  if (topologyLoading.value) { if (!silent) topologyRefreshing.value = true;return }
+  const request = new AbortController(), current = ++topologyRevision, ids=activeClusters.value.map(item=>item.id)
   topologyController?.abort(); topologyController = request
-  topologyLoading.value = true
-  topologyRefreshing.value = !silent
-  try {
-    const result = await getClusterNodeTopology(id, request.signal)
-    if (mounted && current === topologyRevision && cluster.value === id && !request.signal.aborted) { topology.value = result; topologyError.value = '' }
-  } catch (reason) {
-    if (mounted && current === topologyRevision && !request.signal.aborted) topologyError.value = kubeErrorMessage(reason)
-  } finally { if (mounted && current === topologyRevision) { topologyLoading.value = false; topologyRefreshing.value = false } }
+  topologyLoading.value = true;topologyRefreshing.value = !silent
+  for(const id of ids)topologies.value[id]={data:topologies.value[id]?.data??null,loading:true,error:topologies.value[id]?.error??''}
+  const isCurrent=()=>mounted&&current===topologyRevision&&!request.signal.aborted
+  try{
+    await mapNamespaceRequests(ids,async id=>{
+      try{const data=await getClusterNodeTopology(id,request.signal);if(isCurrent())topologies.value[id]={data,loading:false,error:''}}
+      catch(reason){if(isCurrent())topologies.value[id]={data:topologies.value[id]?.data??null,loading:false,error:kubeErrorMessage(reason)}}
+    },request.signal)
+  }catch(reason){if(isCurrent())throw reason}finally{if(isCurrent()){topologyLoading.value=false;topologyRefreshing.value=false}}
 }
-watch(() => `${cluster.value}:${showNodeTopology.value}:${clusterInfo.value?.is_active}`, () => {
-  topologyRevision++; topologyController?.abort(); topologyLoading.value = false; topologyRefreshing.value = false; topology.value = null; topologyError.value = ''
-  if (showNodeTopology.value) void loadTopology(true)
+watch(() => JSON.stringify([activeClusters.value.map(item=>item.id),showNodeTopology.value,namespaceBrowseIdentity()]), () => {
+  topologyRevision++;topologyController?.abort();topologyLoading.value=false;topologyRefreshing.value=false;topologies.value={}
+  if(showNodeTopology.value)void loadTopology(true)
 })
 watch(showNodeTopology, (show, previous) => { if (!show && previous) { void refresh(); void refreshOverview() } })
 onMounted(() => { topologyTimer = setInterval(() => { if (!document.hidden && autoRefresh.value && !contextDisabled.value && !detailOpen.value) void loadTopology(true) }, 30_000) })
 onBeforeUnmount(() => { topologyRevision++; topologyController?.abort(); if (topologyTimer) clearInterval(topologyTimer) })
-const clusterScopes=new Map<string,string[]>(Object.entries(workspacePreferences.value.scopes??{}))
-const namespaceCatalogs=ref<Record<string,{names:string[];ready?:boolean;error?:string}>>({})
-let namespaceBrowseController:AbortController|undefined
-const namespaceBrowseIdentity=()=>JSON.stringify([workloadActor(),auth.user?.is_superuser,auth.user?.permissions])
-function cancelNamespaceBrowse(){namespaceBrowseController?.abort();namespaceBrowseController=undefined}
+function namespaceBrowseIdentity(){return JSON.stringify([workloadActor(),auth.user?.is_superuser,auth.user?.permissions])}
+let browsedCluster=''
+function cancelNamespaceBrowse(){if(browsedCluster&&!selectedClusters.value.includes(browsedCluster)){namespaceRequests.get(browsedCluster)?.abort();namespaceRequests.delete(browsedCluster)}browsedCluster=''}
 async function browseNamespaces(id:string){
-  cancelNamespaceBrowse()
-  if(!id||id===cluster.value||!namespaceScoped.value||contextDisabled.value||!clusters.value.some(item=>item.id===id&&item.is_active))return
-  const request=new AbortController(),identity=namespaceBrowseIdentity()
-  namespaceBrowseController=request
-  // 展开只读取已有目录快照，不切换资源范围或写入勾选偏好。
-  namespaceCatalogs.value[id]??={names:[],ready:false}
-  const isCurrent=()=>mounted&&namespaceBrowseController===request&&!request.signal.aborted&&identity===namespaceBrowseIdentity()
-  try{
-    const {data}=await client.get<{namespaces:string[]}>(`/kubernetes/clusters/${encodeURIComponent(id)}/namespaces`,{signal:request.signal})
-    if(isCurrent())namespaceCatalogs.value[id]={names:data.namespaces,ready:true}
-  }catch(err){if(isCurrent()&&!kubeSnapshotPending(err))namespaceCatalogs.value[id]={...namespaceCatalogs.value[id]!,error:kubeErrorMessage(err)}}
-  finally{if(namespaceBrowseController===request)namespaceBrowseController=undefined}
+  cancelNamespaceBrowse();browsedCluster=id
+  if(id&&!contextDisabled.value)await loadNamespaceCatalog(id)
 }
-watch(namespaceBrowseIdentity,()=>{cancelNamespaceBrowse();namespaceCatalogs.value={}},{flush:'sync'})
+watch(namespaceBrowseIdentity,()=>{cancelNamespaceBrowse();resetNamespaceRead();namespaceCatalogs.value={};if(selectionReady.value&&preferenceOwner===JSON.stringify([auth.user?.id??'',auth.user?.project_id??'']))void loadClusters(true)},{flush:'sync'})
 onBeforeUnmount(cancelNamespaceBrowse)
-function selectCluster(id:string,all=false){if(!contextDisabled.value){if(all)clusterScopes.set(id,['*']);if(id===cluster.value&&all)selectedNamespaces.value=['*'];else cluster.value=id}}
+function selectCluster(id:string,checked=true){
+  if(contextDisabled.value||!clusters.value.some(item=>item.id===id&&item.is_active))return
+  if(checked){scopeSelections.value={...scopeSelections.value,[id]:scopeSelections.value[id]??['*']};selectedClusters.value=[...new Set([...selectedClusters.value,id])]}
+  else selectedClusters.value=selectedClusters.value.filter(item=>item!==id)
+  storeScope();void loadNamespaces()
+}
 function selectNamespaces(names:string[],id=cluster.value){
-  if(contextDisabled.value)return
+  if(contextDisabled.value||!clusters.value.some(item=>item.id===id&&item.is_active))return
   const selection=namespaceSelection(names)
-  if(id===cluster.value)selectedNamespaces.value=selection
-  else if(clusters.value.some(item=>item.id===id&&item.is_active)){clusterScopes.set(id,selection);cluster.value=id}
+  scopeSelections.value={...scopeSelections.value,[id]:selection}
+  selectedClusters.value=selection.length?[...new Set([...selectedClusters.value,id])]:selectedClusters.value.filter(item=>item!==id)
+  storeScope();void loadNamespaces()
 }
-function storeScope(){
-  if(!cluster.value||!mounted)return
-  clusterScopes.set(cluster.value,[...selectedNamespaces.value])
-  if(clusterInfo.value?.is_active)rememberWorkspace({cluster:cluster.value,scopes:Object.fromEntries(clusterScopes)})
-  const next=selectedNamespaces.value.length?selectedNamespaces.value:['']
-  if(route.query.cluster!==cluster.value||JSON.stringify(namespaceSelection(route.query.namespace))!==JSON.stringify(selectedNamespaces.value)) void router.replace({query:{...withoutKubeListQuery(route.query),cluster:cluster.value,namespace:next}})
+function storeScope(resetList=true){
+  if(!mounted||!selectionReady.value)return
+  rememberWorkspace({cluster:cluster.value,clusters:[...selectedClusters.value],scopes:{...scopeSelections.value}})
+  const query={...(resetList?withoutKubeListQuery(route.query):route.query),...scopeQuery.value}
+  if(JSON.stringify(readKubeScopeQuery(route.query))!==JSON.stringify(readKubeScopeQuery(query)))void router.replace({query})
 }
-
+function applyScopeQuery(){
+  const explicit=readKubeScopeQuery(route.query)
+  if(!explicit)return
+  const ids=explicit.clusters.filter(id=>clusters.value.some(item=>item.id===id&&item.is_active))
+  scopeSelections.value={...scopeSelections.value,...Object.fromEntries(ids.map(id=>[id,explicit.scopes[id]??scopeSelections.value[id]??[clusters.value.find(item=>item.id===id)!.default_namespace??'default']]))}
+  if(JSON.stringify(ids)!==JSON.stringify(selectedClusters.value))selectedClusters.value=ids
+}
 async function loadClusters(preserveSelection=false) {
   clusterController?.abort();const request=new AbortController(),current=++clusterRevision;clusterController=request
-  const project=typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??'',user=auth.user?.id
-  const isCurrent=()=>mounted&&!request.signal.aborted&&current===clusterRevision&&user===auth.user?.id&&project===(typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??'')
+  const identity=namespaceBrowseIdentity()
+  const isCurrent=()=>mounted&&!request.signal.aborted&&current===clusterRevision&&identity===namespaceBrowseIdentity()
   try {
     const {data}=await client.get<{clusters:KubeCluster[]}>('/kubernetes/clusters',{signal:request.signal})
-    if (!isCurrent()) return false
+    if(!isCurrent())return false
     clusters.value=data.clusters
-    if (!preserveSelection) {
-      if (!clusters.value.some(item=>item.id===cluster.value)) cluster.value=typeof route.query.cluster==='string'?route.query.cluster:clusters.value.find(item=>item.id===workspacePreferences.value.cluster&&item.is_active)?.id??''
-      if (!clusters.value.some(item=>item.id===cluster.value)) cluster.value=clusters.value.find(item=>item.is_active)?.id ?? ''
-    }
+    const visible=(id:string)=>clusters.value.some(item=>item.id===id&&item.is_active)
+    if(!preserveSelection&&!selectionReady.value){
+      const explicit=readKubeScopeQuery(route.query)
+      if(explicit)applyScopeQuery()
+      else{
+        const saved=workspacePreferences.value.clusters
+        const ids=saved!==undefined?saved.filter(visible):visible(workspacePreferences.value.cluster??'')?[workspacePreferences.value.cluster!]:clusters.value.filter(item=>item.is_active).slice(0,1).map(item=>item.id)
+        scopeSelections.value={...scopeSelections.value,...Object.fromEntries(ids.map(id=>[id,scopeSelections.value[id]??[clusters.value.find(item=>item.id===id)!.default_namespace??'default']]))}
+        selectedClusters.value=ids
+      }
+      selectionReady.value=true;storeScope(false)
+    }else{selectedClusters.value=selectedClusters.value.filter(visible);storeScope(false)}
+    void loadNamespaces()
     return true
-  } catch (err) { if(isCurrent()) error.value=kubeErrorMessage(err);return false }
+  }catch(err){if(isCurrent())error.value=kubeErrorMessage(err);return false}
 }
-function resetNamespaceRead() {
-  namespaceController?.abort()
-  namespaceController=undefined
-  namespaceLoading.value=false
-  namespaceError.value=''
-  namespaceDirectoryReady.value=false
+function resetNamespaceRead(){
+  for(const request of namespaceRequests.values())request.abort()
+  namespaceRequests.clear()
+  for(const catalog of Object.values(namespaceCatalogs.value))catalog.loading=false
 }
-async function loadNamespaces(manual=false) {
-  const id=cluster.value
-  if (!id||!namespaceScoped.value||!clusterInfo.value?.is_active||(namespaceController&&(!manual||namespaceLoading.value))) return
-  lastNamespaceRefresh=Date.now()
-  namespaceController?.abort()
-  const request=new AbortController()
-  namespaceController=request
-  namespaceLoading.value=manual
-  const isCurrent=()=>mounted&&cluster.value===id&&namespaceController===request&&!request.signal.aborted
-  try {
+async function loadNamespaceCatalog(id:string,manual=false){
+  if(!id||!namespaceScoped.value||!clusters.value.some(item=>item.id===id&&item.is_active))return
+  if(namespaceRequests.has(id)){if(!manual||namespaceCatalogs.value[id]?.loading)return;namespaceRequests.get(id)!.abort();namespaceRequests.delete(id)}
+  const request=new AbortController(),identity=namespaceBrowseIdentity()
+  namespaceRequests.set(id,request)
+  namespaceCatalogs.value[id]={...namespaceCatalogs.value[id],names:namespaceCatalogs.value[id]?.names??[],loading:manual}
+  const isCurrent=()=>mounted&&namespaceRequests.get(id)===request&&!request.signal.aborted&&identity===namespaceBrowseIdentity()&&clusters.value.some(item=>item.id===id&&item.is_active)
+  try{
     const {data}=await client.get<{namespaces:string[]}>(`/kubernetes/clusters/${encodeURIComponent(id)}/namespaces`,{signal:request.signal})
-    if (isCurrent()) {
-      namespaces.value=data.namespaces
-      namespaceDirectoryReady.value=true
-      namespaceError.value=''
-    }
-  } catch(err) { if(isCurrent()&&!kubeSnapshotPending(err)) namespaceError.value=kubeErrorMessage(err) }
-  finally {
-    if(namespaceController===request){ namespaceController=undefined;namespaceLoading.value=false }
-  }
+    if(isCurrent())namespaceCatalogs.value[id]={names:data.namespaces,ready:true,loading:false}
+  }catch(err){if(isCurrent()&&!kubeSnapshotPending(err))namespaceCatalogs.value[id]={...namespaceCatalogs.value[id]!,loading:false,error:kubeErrorMessage(err)}}
+  finally{if(namespaceRequests.get(id)===request){namespaceRequests.delete(id);if(namespaceCatalogs.value[id])namespaceCatalogs.value[id]!.loading=false}}
 }
-async function refresh(silent=false, more=false) {
-  if (showNodeTopology.value) { if (!silent && !more) await loadTopology(); return }
-  const type=activeType.value, id=cluster.value, selection=[...selectedNamespaces.value]
-  if (group.value==='overview'||!id||!type||!clusterInfo.value?.is_active||type.namespaced&&!selection.length) return
-  if (silent && (listRefreshing||loading.value||editorOpen.value||detailOpen.value||busy.value||joinOpen.value||provisionOpen.value||nodeRemoval.value)) return
-  controller?.abort(); controller=new AbortController()
-  const current=++revision,request=controller,context=contextKey.value
-  listRefreshing=true
-  if (!silent) loading.value=true
-  try {
-    const result=more?await listKubeResourceScopes(id,type,selection,continuation.value,request.signal):await reloadKubeWindow(cursor=>listKubeResourceScopes(id,type,selection,cursor,request.signal),loadedPages.value,request.signal,currentPage.value*pageSize.value)
-    if (!mounted||current!==revision||request.signal.aborted||context!==contextKey.value) return
-    const items=more ? [...rows.value,...result.items] : result.items
-    rows.value=[...new Map(items.map(item=>[kubeKey(item),item])).values()].sort((a,b)=>`${a.metadata.namespace}/${a.metadata.name}`.localeCompare(`${b.metadata.namespace}/${b.metadata.name}`))
-    loadedPages.value=more?loadedPages.value+1:('pages' in result?Number(result.pages):1)
-    listWindows.set(context,loadedPages.value)
-    continuation.value=result.cursor; error.value='';lastRefreshed.value=result.collectedAt??''
-    listSnapshotState.value=result.stale?'stale':''
-  } catch (err) {
-    if (!mounted||current!==revision||context!==contextKey.value||request.signal.aborted) return
-    if (kubeSnapshotPending(err)) { error.value='';listSnapshotState.value=rows.value.length?'stale':'pending' }
-    else error.value=kubeErrorMessage(err)
-  }
-  finally { if(mounted&&current===revision){loading.value=false;listRefreshing=false} }
+async function loadNamespaces(manual=false,id?:string){
+  lastNamespaceRefresh=Date.now()
+  const ids=id?[id]:[...new Set([...selectedClusters.value,...browsedCluster?[browsedCluster]:[]])]
+  await mapNamespaceRequests(ids,clusterID=>loadNamespaceCatalog(clusterID,manual))
+}
+type ClusterListBucket=KubeListPage&{pages:number;error?:string;pending?:boolean}
+const listBuckets=ref<Record<string,ClusterListBucket>>({}),listLoadingClusters=ref<string[]>([])
+const overviewBuckets=ref<Record<string,{data:OverviewData;meta:KubeSnapshotMeta}>>({}),overviewFailures=ref<Record<string,string>>({})
+function rowOverview(object:KubeObject){return overviewBuckets.value[clusterOf(object)]?.data??null}
+function publishList(){
+  const buckets=queryScopes.value.flatMap(scope=>listBuckets.value[scope.cluster]??[])
+  const items=[...new Map(buckets.flatMap(bucket=>bucket.items).map(item=>[kubeKey(item),item])).values()]
+  if(items.length!==rows.value.length||items.some((item,index)=>item!==rows.value[index]))rows.value=items
+  continuation.value=Object.fromEntries(queryScopes.value.map(scope=>[scope.cluster,listBuckets.value[scope.cluster]?.cursor??{}]))
+  error.value=queryScopes.value.flatMap(scope=>listBuckets.value[scope.cluster]?.error?[scopeError(scope.cluster,listBuckets.value[scope.cluster]!.error!)]:[]).join('；')
+  lastRefreshed.value=buckets.map(bucket=>bucket.collectedAt).filter((value):value is string=>Boolean(value)).sort()[0]??''
+  listSnapshotState.value=buckets.some(bucket=>bucket.pending||bucket.stale)?rows.value.length?'stale':'pending':''
+  loadedPages.value=Math.max(1,...buckets.map(bucket=>bucket.pages));listWindows.set(contextKey.value,loadedPages.value)
+}
+async function refresh(silent=false,more=false){
+  if(showNodeTopology.value){if(!silent&&!more)await loadTopology();return}
+  const type=activeType.value,scopes=queryScopes.value.map(scope=>({...scope,namespaces:[...scope.namespaces]}))
+  if(group.value==='overview'||!type||!scopes.length)return
+  if(silent&&(listRefreshing||loading.value||contextDisabled.value||detailOpen.value))return
+  controller?.abort();const request=new AbortController(),current=++revision,context=contextKey.value;controller=request
+  listRefreshing=true;listLoadingClusters.value=scopes.map(scope=>scope.cluster)
+  if(!silent&&!rows.value.length)loading.value=true
+  const isCurrent=()=>mounted&&current===revision&&!request.signal.aborted&&context===contextKey.value
+  const minimum=currentPage.value*pageSize.value
+  try{
+    await mapNamespaceRequests(scopes.map(scope=>scope.cluster),async id=>{
+      const selection=scopes.find(scope=>scope.cluster===id)!.namespaces,previous=listBuckets.value[id]
+      if(more&&!Object.keys(previous?.cursor??{}).length)return
+      try{
+        const result=more?await listKubeResourceScopes(id,type,selection,previous?.cursor,request.signal):await reloadKubeWindow(cursor=>listKubeResourceScopes(id,type,selection,cursor,request.signal),previous?.pages??loadedPages.value,request.signal,minimum)
+        if(!isCurrent())return
+        const items=result.items.map(item=>withKubeCluster(item,id))
+        listBuckets.value[id]={...result,items:more?[...previous?.items??[],...items]:items,pages:more?(previous?.pages??1)+1:'pages' in result?Number(result.pages):1}
+      }catch(err){
+        if(!isCurrent())return
+        const forbidden=axios.isAxiosError(err)&&[401,403].includes(err.response?.status??0)
+        listBuckets.value[id]={items:forbidden?[]:previous?.items??[],cursor:previous?.cursor??{},pages:previous?.pages??1,collectedAt:previous?.collectedAt,stale:Boolean(previous?.items.length),pending:kubeSnapshotPending(err),error:kubeSnapshotPending(err)?'':kubeErrorMessage(err)}
+      }finally{if(isCurrent()){listLoadingClusters.value=listLoadingClusters.value.filter(value=>value!==id);publishList();loading.value=false}}
+    },request.signal)
+  }catch(reason){if(isCurrent())throw reason}finally{if(isCurrent()){listLoadingClusters.value=[];loading.value=false;listRefreshing=false}}
 }
 async function refreshOverview(silent=false,replacePending=false){
-  if (showNodeTopology.value) return
-  const id=cluster.value,selection=[...overviewNamespaces.value]
-  if(!id||!clusterInfo.value?.is_active||overviewPending&&!replacePending||!selection.length)return
-  lastOverviewAttempt=Date.now()
-  const current=++overviewRevision
-  overviewController?.abort();overviewController=new AbortController();const request=overviewController;overviewPending=true
-  if(!silent||!overview.value&&!overviewSnapshotPending.value&&!overviewError.value)overviewLoading.value=true
-  try{
-    const results=await mapNamespaceRequests(selection,async ns=>{
-      const {data,headers}=await client.get<OverviewData>(`/kubernetes/clusters/${encodeURIComponent(id)}/overview`,{params:{namespace:ns},signal:request.signal,timeout:30_000})
-      return {data,meta:readKubeSnapshotMeta(headers)}
-    },request.signal)
-    if(mounted&&current===overviewRevision){
-      const collectedAt=results.flatMap(item=>item.meta.collectedAt?[item.meta.collectedAt]:[]).sort((a,b)=>Date.parse(a)-Date.parse(b))[0]
-      overview.value=mergeNamespaceOverviews(results.map(item=>item.data));overviewError.value='';overviewSnapshotPending.value=false;lastOverview=Date.now()
-      overviewSnapshot.value={collectedAt,stale:results.some(item=>item.meta.stale)}
-    }
+  if(showNodeTopology.value||overviewPending&&!replacePending)return
+  const scopes=queryScopes.value.map(scope=>({...scope,namespaces:[...scope.namespaces]}))
+  if(!scopes.length)return
+  lastOverviewAttempt=Date.now();const current=++overviewRevision
+  overviewController?.abort();const request=new AbortController();overviewController=request;overviewPending=true
+  if(!silent&&!overview.value)overviewLoading.value=true
+  const isCurrent=()=>mounted&&current===overviewRevision&&!request.signal.aborted
+  const publish=()=>{
+    const entries=scopes.flatMap(scope=>{const item=overviewBuckets.value[scope.cluster];return item?[{cluster:scope.cluster,...item}]:[]})
+    overview.value=mergeClusterOverviews(entries,scopes.length)
+    overviewError.value=scopes.flatMap(scope=>overviewFailures.value[scope.cluster]?[scopeError(scope.cluster,overviewFailures.value[scope.cluster]!)]:[]).join('；')
+    overviewSnapshot.value={collectedAt:entries.map(entry=>entry.meta.collectedAt).filter((value):value is string=>Boolean(value)).sort()[0],stale:entries.length<scopes.length||entries.some(entry=>entry.meta.stale)}
+    overviewSnapshotPending.value=!entries.length&&!overviewError.value
   }
-  catch(err){if(mounted&&current===overviewRevision&&!request.signal.aborted){overviewSnapshotPending.value=kubeSnapshotPending(err);overviewError.value=overviewSnapshotPending.value?'':kubeErrorMessage(err);if(overviewSnapshotPending.value&&overview.value)overviewSnapshot.value={...overviewSnapshot.value,stale:true}}}
-  finally{if(current===overviewRevision){overviewLoading.value=false;overviewPending=false}}
+  try{
+    await mapNamespaceRequests(scopes.map(scope=>scope.cluster),async id=>{
+      const selection=scopes.find(scope=>scope.cluster===id)!.namespaces
+      try{
+        const results=await mapNamespaceRequests(selection,async ns=>{
+          const {data,headers}=await client.get<OverviewData>(`/kubernetes/clusters/${encodeURIComponent(id)}/overview`,{params:{namespace:ns},signal:request.signal,timeout:30_000})
+          return {data,meta:readKubeSnapshotMeta(headers)}
+        },request.signal)
+        if(!isCurrent())return
+        overviewBuckets.value[id]={data:mergeNamespaceOverviews(results.map(item=>item.data))!,meta:{collectedAt:results.flatMap(item=>item.meta.collectedAt?[item.meta.collectedAt]:[]).sort()[0],stale:results.some(item=>item.meta.stale)}}
+        delete overviewFailures.value[id];lastOverview=Date.now()
+      }catch(err){
+        if(!isCurrent())return
+        if(axios.isAxiosError(err)&&[401,403].includes(err.response?.status??0))delete overviewBuckets.value[id]
+        if(overviewBuckets.value[id])overviewBuckets.value[id]!.meta.stale=true
+        overviewFailures.value[id]=kubeSnapshotPending(err)?'':kubeErrorMessage(err)
+      }finally{if(isCurrent()){publish();overviewLoading.value=false}}
+    },request.signal)
+  }catch(reason){if(isCurrent())throw reason}finally{if(isCurrent()){overviewLoading.value=false;overviewPending=false}}
 }
 function refreshAll(){void refresh();void refreshOverview(false,true);void loadNamespaces(true)}
-watch(()=>`${cluster.value}:${overviewNamespaces.value.join(',')}`,()=>{overviewRevision++;overviewController?.abort();overviewLoading.value=false;overviewPending=false;overview.value=null;overviewError.value='';overviewSnapshotPending.value=false;overviewSnapshot.value={};lastOverview=0;void refreshOverview()})
-watch(cluster,(id,previous)=>{
-  selectedContainer.value={}
-  resetNamespaceRead()
-  if(!id){selectedNamespaces.value=[];namespaces.value=[];return}
-  if(previous)clusterScopes.set(previous,[...selectedNamespaces.value])
-  selectedNamespaces.value=route.query.namespace!==undefined&&(!route.query.cluster||route.query.cluster===id)?namespaceSelection(route.query.namespace,clusterInfo.value?.default_namespace??'default'):clusterScopes.get(id)??[clusterInfo.value?.default_namespace??'default']
-  namespaces.value=[];void loadNamespaces();storeScope()
-})
-watch(scopeKey,storeScope)
+watch(()=>JSON.stringify([queryScopes.value,namespaceBrowseIdentity()]),()=>{overviewRevision++;overviewController?.abort();overviewLoading.value=false;overviewPending=false;overview.value=null;overviewBuckets.value={};overviewFailures.value={};overviewError.value='';overviewSnapshotPending.value=false;overviewSnapshot.value={};lastOverview=0;void refreshOverview();void loadNamespaces()})
 watch(autoRefresh,value=>rememberWorkspace({autoRefresh:value}),{flush:'sync'})
 watch(pageSize,value=>rememberWorkspace({pageSize:value}),{flush:'sync'})
-watch(namespaceScoped,enabled=>{resetNamespaceRead();if(enabled&&cluster.value)void loadNamespaces()})
+watch(namespaceScoped,enabled=>{resetNamespaceRead();if(enabled)void loadNamespaces()})
 function currentList():KubeListState{return {query:query.value,label:labelFilter.value,status:statusFilter.value,sort:sortKey.value,order:sortOrder.value,page:currentPage.value,limit:pageSize.value}}
 function rememberList(){if(cluster.value&&group.value!=='overview')listContexts.set(contextKey.value,currentList())}
 function rememberPendingList(){if(typeof route.fullPath==='string'&&JSON.stringify(kubeListQuery(currentList()))!==JSON.stringify(kubeListQuery(readKubeListState(route.query))))listSnapshots.set(contextKey.value,{path:route.fullPath,position:router.options?.history?.state?.position})}
@@ -395,7 +434,7 @@ function persistList(){
   cancelListPersist();if(!mounted||restoringList||group.value==='overview'||!cluster.value)return
   rememberList()
   const desired=kubeListQuery(currentList()),actual=kubeListQuery(readKubeListState(route.query))
-  if(JSON.stringify(desired)!==JSON.stringify(actual))void router.replace({query:{...withoutKubeListQuery(route.query),cluster:cluster.value,namespace:selectedNamespaces.value.length?[...selectedNamespaces.value]:[''],...desired}})
+  if(JSON.stringify(desired)!==JSON.stringify(actual))void router.replace({query:{...withoutKubeListQuery(route.query),...scopeQuery.value,...desired}})
 }
 function scheduleListPersist(){if(restoringList)return;cancelListPersist();rememberList();listPersistTimer=setTimeout(persistList,180)}
 function sortList(key:string){if(!kubeSortableColumns.includes(key))return;sortOrder.value=sortKey.value===key&&sortOrder.value==='asc'?'desc':'asc';sortKey.value=key}
@@ -403,8 +442,8 @@ watch([query,labelFilter,statusFilter,sortKey,sortOrder],()=>{if(!restoringList)
 watch([currentPage,pageSize],scheduleListPersist,{flush:'sync'})
 watch(contextKey,(next,previous)=>{
   cancelPendingEdit()
-  if(previous&&!previous.startsWith(':')){listContexts.set(previous,currentList());listWindows.set(previous,loadedPages.value)}
-  cancelListPersist();revision++;controller?.abort();listRefreshing=false;rows.value=[];continuation.value={};loadedPages.value=listWindows.get(next)??1;error.value='';lastRefreshed.value='';listSnapshotState.value='';lastViewedRow.value=''
+  if(previous&&JSON.parse(previous)[0].length){listContexts.set(previous,currentList());listWindows.set(previous,loadedPages.value)}
+  cancelListPersist();revision++;controller?.abort();listRefreshing=false;rows.value=[];listBuckets.value={};listLoadingClusters.value=[];loading.value=false;continuation.value={};loadedPages.value=listWindows.get(next)??1;error.value='';lastRefreshed.value='';listSnapshotState.value='';lastViewedRow.value=''
   const explicit=kubeListQueryKeys.some(key=>route.query[key]!==undefined)
   // 连续输入后立即切换时，URL 防抖可能尚未完成；同一历史记录优先恢复最后的内存状态。
   const snapshot=listSnapshots.get(next),sameEntry=snapshot?.path===route.fullPath&&typeof snapshot?.path==='string'&&(typeof snapshot.position!=='number'||snapshot.position===router.options?.history?.state?.position)
@@ -413,7 +452,7 @@ watch(contextKey,(next,previous)=>{
   closeDetails();editorOpen.value=false;yamlOpen.value=false;scaleOpen.value=false;stream.value.open=false;nodeRemoval.value=undefined
   void refresh();persistList()
 })
-watch(()=>JSON.stringify(kubeListQuery(readKubeListState(route.query))),()=>{if(route.query.cluster===cluster.value){cancelListPersist();restoreList(rememberedListState(route.query))}})
+watch(()=>JSON.stringify(kubeListQuery(readKubeListState(route.query))),()=>{if(selectionReady.value){cancelListPersist();restoreList(rememberedListState(route.query))}})
 async function leaveWorkspace(){
   if(imageEdit.value){if(!await imageEditor.value?.confirmLeave())return false;imageEdit.value=undefined}
   if(yamlOpen.value){const allowed=await yamlRef.value?.confirmLeave();if(!allowed)return false;yamlOpen.value=false}
@@ -422,20 +461,15 @@ async function leaveWorkspace(){
 }
 onBeforeRouteLeave?.(leaveWorkspace);onBeforeRouteUpdate?.(leaveWorkspace)
 
-watch(()=>[route.query.cluster,route.query.namespace],()=>{
-  if(typeof route.query.cluster==='string'&&clusters.value.some(item=>item.id===route.query.cluster)) {
-    if(cluster.value!==route.query.cluster)cluster.value=route.query.cluster
-    else selectedNamespaces.value=route.query.namespace!==undefined?namespaceSelection(route.query.namespace,clusterInfo.value?.default_namespace??'default'):clusterScopes.get(cluster.value)??[clusterInfo.value?.default_namespace??'default']
-  }
-},{deep:true})
+watch(()=>[route.query.cluster,route.query.namespace,route.query.scope],()=>{if(selectionReady.value){applyScopeQuery();storeScope(false)}},{deep:true})
 
 function hideSecret(){secretController?.abort();secretController=undefined;secretValues.value=undefined}
 watch(()=>can('kubernetes.config.read')&&can('kubernetes.secret.read'),allowed=>{if(!allowed)hideSecret()},{flush:'sync'})
 let retryPendingDetail: (() => Promise<void>) | undefined
-function closeDetails() { retryPendingDetail=undefined;detailSnapshotPending.value=false;detailSnapshot.value={};cancelPendingEdit();const origin=lastViewedRow.value;void nextTick(()=>{const row=[...resourcePanel.value?.querySelectorAll<HTMLElement>('[data-resource-key]')??[]].find(item=>item.dataset.resourceKey===origin);row?.querySelector<HTMLButtonElement>('.resource-name')?.focus({preventScroll:true})}); detailRevision++;detailController?.abort(); detailOpen.value=false; detail.value=undefined;detailType.value=undefined;detailOrigin.value='';detailHistory.value=[]; workloadSelections.value={};templateContainerSelections.value={}; hideSecret(); relatedPods.value=[]; events.value=[]; detailError.value='';detailSyncError.value='';relatedLoading.value=false }
+function closeDetails() { retryPendingDetail=undefined;detailSnapshotPending.value=false;detailSnapshot.value={};cancelPendingEdit();const origin=lastViewedRow.value;void nextTick(()=>{const row=[...resourcePanel.value?.querySelectorAll<HTMLElement>('[data-resource-key]')??[]].find(item=>item.dataset.resourceKey===origin);row?.querySelector<HTMLButtonElement>('.resource-name')?.focus({preventScroll:true})}); detailRevision++;detailController?.abort(); detailOpen.value=false; detail.value=undefined;detailCluster.value='';detailType.value=undefined;detailOrigin.value='';detailHistory.value=[]; workloadSelections.value={};templateContainerSelections.value={}; hideSecret(); relatedPods.value=[]; events.value=[]; detailError.value='';detailSyncError.value='';relatedLoading.value=false }
 function nsOf(object:KubeObject) { return object.metadata.namespace ?? '' }
 async function openDetails(object:KubeObject, tab='basic',type=activeType.value,follow=false, preferDeployment=!follow) {
-  if (!type||!can(`${type.permission}.read`)) return
+  if (!type||!can(`${type.permission}.read`)||!selectedClusters.value.includes(clusterOf(object))) return
   detailSnapshotPending.value=Boolean(retryPendingDetail&&detail.value?.metadata.uid===object.metadata.uid)
   retryPendingDetail=undefined
   cancelPendingEdit()
@@ -444,14 +478,15 @@ async function openDetails(object:KubeObject, tab='basic',type=activeType.value,
   const preserve=follow&&detail.value?.metadata.uid===object.metadata.uid&&detailType.value?.resource===type.resource
   const previous=preserve&&detail.value?.apiVersion ? detail.value : undefined
   if(!previous)detailSnapshot.value={}
-  const current=++detailRevision, id=cluster.value, actor=workloadActor()
+  const current=++detailRevision, id=clusterOf(object), actor=workloadActor()
+  detailCluster.value=id
   const overviewTab=type.group==='workloads'&&['pods','diagnostics'].includes(tab)?'basic':tab
   const resolveDeployment=preferDeployment&&type.resource==='pods'&&overviewTab==='basic'
   detailController?.abort();const request=new AbortController();detailController=request
   const isCurrent=()=>mounted&&current===detailRevision&&!request.signal.aborted&&actor===workloadActor()&&can(`${type.permission}.read`)
   detailOpen.value=true; detailLoading.value=true; detailError.value='';detailSyncError.value=''; hideSecret(); detailTab.value=object.kind==='Node'&&tab==='basic'?'monitor':overviewTab; if(!preserve){relatedPods.value=[];events.value=[];templateSection.value='containers'} eventsError.value=false;relatedLoaded.value=false;relatedError.value='';relatedPartial.value=false;relatedLoading.value=false;lastRelatedSync=0
   // 归属核验完成前只显示加载态，避免先渲染 Pod 详情再切换到 Deployment。
-  detail.value=resolveDeployment?{kind:object.kind,metadata:object.metadata}:object;detailType.value=type
+  detail.value=withKubeCluster(resolveDeployment?{kind:object.kind,metadata:object.metadata}:object,id);detailType.value=type
   try {
     const {data,headers}=await client.get<KubeResourceDetail>(resourceURL(id,type,object.metadata.name),{
       params:{namespace:nsOf(object),...(resolveDeployment?{include_deployment:true}:{})},signal:request.signal,
@@ -474,7 +509,7 @@ async function openDetails(object:KubeObject, tab='basic',type=activeType.value,
     }else if(resolveDeployment&&data.deployment===undefined&&data.object.metadata.ownerReferences?.some((owner:KubeObject)=>owner.controller===true&&owner.kind==='ReplicaSet')){
       throw new KubeResourceChanged(t('k8s.podDeploymentUnavailable'))
     }
-    detailType.value=targetType;detail.value=target;detailSnapshot.value=readKubeSnapshotMeta(headers)
+    detailType.value=targetType;detail.value=withKubeCluster(target,id);detailSnapshot.value=readKubeSnapshotMeta(headers)
     if (targetType.resource!=='secrets') void loadEvents(id,targetType,target,current,request.signal)
     if(needsRelatedPods.value)void loadRelatedPods(id,target,current,request.signal)
   } catch (err) {
@@ -508,12 +543,14 @@ async function followReference(reference:KubeReference){
   const type=kubeTypes.find(item=>item.resource===reference.resource)
   if(!type||!canFollow(reference)||detailLoading.value)return
   if(detail.value&&detailType.value)detailHistory.value.push({object:detail.value,type:detailType.value,tab:detailTab.value,templateSection:templateSection.value,templateIdentity:templateIdentity.value,templateContainerKey:templateContainerSelections.value[templateIdentity.value]})
-  await openDetails({kind:type.kind,metadata:{name:reference.name,namespace:reference.namespace,uid:reference.uid}},'basic',type,true,true)
+  await openDetails(withKubeCluster({kind:type.kind,metadata:{name:reference.name,namespace:reference.namespace,uid:reference.uid}},detailCluster.value),'basic',type,true,true)
 }
 async function followFromRow(object:KubeObject,reference:KubeReference){
   if(!activeType.value||!canFollow(reference))return
-  detailOrigin.value=kubeKey(object);detailHistory.value=[{object,type:activeType.value,tab:'basic'}]
-  await followReference(reference)
+  detailOrigin.value=kubeKey(object);lastViewedRow.value=kubeKey(object);detailHistory.value=[{object,type:activeType.value,tab:'basic'}]
+  detailCluster.value=clusterOf(object)
+  const type=kubeTypes.find(item=>item.resource===reference.resource)!
+  await openDetails(withKubeCluster({kind:type.kind,metadata:{name:reference.name,namespace:reference.namespace,uid:reference.uid}},detailCluster.value),'basic',type,true,true)
 }
 async function backDetail(){const previous=detailHistory.value.pop();if(previous){await openDetails(previous.object,previous.tab,previous.type,true);if(!detailError.value&&detail.value?.metadata.uid===previous.object.metadata.uid){templateSection.value=previous.templateSection??'containers';if(previous.templateIdentity===templateIdentity.value&&previous.templateContainerKey)templateContainerSelections.value[templateIdentity.value]=previous.templateContainerKey}}}
 async function loadEvents(id:string,type:KubeType,object:KubeObject,current:number,signal:AbortSignal) {
@@ -529,7 +566,7 @@ async function listRelatedResources(id:string,resource:string,ns:string,signal:A
   for(let page=0;page<20;page++){
     signal.throwIfAborted()
     const result=await listKubeResources(id,type,ns,next,signal)
-    items.push(...result.items)
+    items.push(...result.items.map(item=>withKubeCluster(item,id)))
     next=result.continue
     if(!next)break
   }
@@ -537,7 +574,7 @@ async function listRelatedResources(id:string,resource:string,ns:string,signal:A
 }
 const workloadServiceScope=computed(()=>{
   const metadata=detail.value?.metadata
-  if(!detailOpen.value||!workloadDetail.value||!cluster.value||!metadata?.uid||!metadata.namespace||metadata.namespace==='*'
+  if(!detailOpen.value||!workloadDetail.value||!detailCluster.value||!metadata?.uid||!metadata.namespace||metadata.namespace==='*'
     ||!can('kubernetes.workload.read')||!can('kubernetes.network.read'))return ''
   return JSON.stringify([workloadScope.value,metadata.namespace])
 })
@@ -561,7 +598,7 @@ async function loadWorkloadServices(){
   serviceRequest=request;lastServiceAttempt=Date.now();watchDirty.delete('services')
   const isCurrent=()=>mounted&&serviceRequest===request&&!request.signal.aborted&&scope===workloadServiceScope.value
   try{
-    const result=await listRelatedResources(cluster.value,'services',nsOf(object),request.signal)
+    const result=await listRelatedResources(detailCluster.value,'services',nsOf(object),request.signal)
     if(isCurrent()){serviceCatalog.value=result;servicesError.value=false}
   }catch(error){
     if(!isCurrent())return
@@ -580,8 +617,8 @@ async function loadRelatedPods(id:string,object:KubeObject,current:number,signal
   } catch { if(mounted&&current===detailRevision&&!signal.aborted) relatedError.value=t('k8s.relatedFailed') }
   finally{if(mounted&&current===detailRevision)relatedLoading.value=false}
 }
-watch(detailTab,(tab,previous)=>{if(previous==='data'&&tab!=='data')hideSecret();if(needsRelatedPods.value&&detail.value&&!detailLoading.value&&!relatedLoaded.value&&detailController)void loadRelatedPods(cluster.value,detail.value,detailRevision,detailController.signal)},{flush:'sync'})
-function retryRelatedPods(){if(detail.value&&detailController&&!detailLoading.value)void loadRelatedPods(cluster.value,detail.value,detailRevision,detailController.signal)}
+watch(detailTab,(tab,previous)=>{if(previous==='data'&&tab!=='data')hideSecret();if(needsRelatedPods.value&&detail.value&&!detailLoading.value&&!relatedLoaded.value&&detailController)void loadRelatedPods(detailCluster.value,detail.value,detailRevision,detailController.signal)},{flush:'sync'})
+function retryRelatedPods(){if(detail.value&&detailController&&!detailLoading.value)void loadRelatedPods(detailCluster.value,detail.value,detailRevision,detailController.signal)}
 function refreshWorkloadPods(){
   if(detailLoading.value)return
   if(detail.value?.kind==='Pod')refreshDetail()
@@ -595,13 +632,15 @@ function cancelPendingEdit(){
 async function edit(object?:KubeObject,type=activeType.value) {
   if(!mounted||busy.value||editorLoading.value||editorOpen.value||yamlOpen.value||!type)return
   if(object?!type.update||!can(`${type.permission}.read`)||!can(`${type.permission}.update`):!type.create||!can(`${type.permission}.create`))return
-  const target={cluster:cluster.value,namespace:object?nsOf(object):namespace.value,type:{...type},name:object?.metadata.name,uid:object?.metadata.uid},context=contextKey.value
+  if(!object&&!singleCluster.value)return
+  const target={cluster:object?clusterOf(object):singleCluster.value!.id,namespace:object?nsOf(object):namespace.value,type:{...type},name:object?.metadata.name,uid:object?.metadata.uid},context=contextKey.value
   if(!object){
     editorContext.value={cluster:target.cluster,namespace:namespace.value,type:target.type,object:object?JSON.parse(JSON.stringify(object)):undefined};editorOpen.value=true;return
   }
+  if(!target.cluster||!selectedClusters.value.includes(target.cluster))return
   if(!target.uid||!target.name){message.error(t('k8s.resourceChanged'));return}
   cancelPendingEdit();const request=new AbortController(),current=++editRevision;editController=request;editorLoading.value=true;editBusyKey=target.uid;busy.value=target.uid
-  const isCurrent=()=>mounted&&current===editRevision&&!request.signal.aborted&&context===contextKey.value&&target.cluster===cluster.value&&busy.value===target.uid&&!editorOpen.value&&!yamlOpen.value&&can(`${target.type.permission}.read`)&&can(`${target.type.permission}.update`)
+  const isCurrent=()=>mounted&&current===editRevision&&!request.signal.aborted&&context===contextKey.value&&selectedClusters.value.includes(target.cluster)&&busy.value===target.uid&&!editorOpen.value&&!yamlOpen.value&&can(`${target.type.permission}.read`)&&can(`${target.type.permission}.update`)
   try{
     const {data}=await client.get<{object:KubeObject}>(resourceURL(target.cluster,target.type,target.name),{params:{namespace:target.namespace},signal:request.signal,timeout:30_000})
     if(!isCurrent())return
@@ -616,7 +655,7 @@ function openWorkloadImages(){
   const object=detail.value,type=detailType.value
   if(!detailPresented.value||!object?.metadata.uid||!type||!supportsWorkloadImageEdit(type)||busy.value||detailLoading.value||detailError.value||detailSyncError.value)return
   if(!can('kubernetes.workload.read')||!can('kubernetes.workload.update'))return
-  imageEdit.value={cluster:cluster.value,type,object:JSON.parse(JSON.stringify(object))}
+  imageEdit.value={cluster:detailCluster.value,type,object:JSON.parse(JSON.stringify(object))}
 }
 function openWorkloadManifest(pod?:KubeObject){
   if(!detailPresented.value||detailLoading.value||detailError.value||detailSyncError.value||!can('kubernetes.workload.read'))return
@@ -641,7 +680,7 @@ function removeRelatedPod(pod:KubeObject){
 function deleteRevisionPods(revision:WorkloadRevision,pods:KubeObject[]){
   const object=detail.value
   if(!object||object.kind!=='Deployment'||!pods.length||!can('kubernetes.workload.delete'))return
-  const id=cluster.value, scope=workloadScope.value, namespace=nsOf(object)
+  const id=detailCluster.value, scope=workloadScope.value, namespace=nsOf(object)
   const signal=detailController?.signal
   const valid=()=>mounted&&detailPresented.value&&workloadScope.value===scope&&!signal?.aborted&&can('kubernetes.workload.delete')
     &&workloadSelections.value[id+object.metadata.uid]?.revisionUID===revision.uid
@@ -657,7 +696,7 @@ function deleteRevisionPods(revision:WorkloadRevision,pods:KubeObject[]){
   const action=t('k8s.workloadDeleteReplicaPods')
   Modal.confirm({
     title:action,
-    content:h('div',[h('p',`${clusterInfo.value?.name} / ${namespace} / ${revision.name}`),h('p',t('k8s.workloadDeleteReplicaPodsHint',{count:podIDs.size}))]),
+    content:h('div',[h('p',`${detailClusterInfo.value?.name} / ${namespace} / ${revision.name}`),h('p',t('k8s.workloadDeleteReplicaPodsHint',{count:podIDs.size}))]),
     okText:action,okButtonProps:{danger:true},cancelText:t('k8s.cancel'),
     async onOk(){
       if(!verify()){message.error(t('k8s.resourceChanged'));return}
@@ -685,7 +724,7 @@ function deleteRevisionPods(revision:WorkloadRevision,pods:KubeObject[]){
     },
   })
 }
-function showRemoveNode(object:KubeObject){if(busy.value||!can('kubernetes.node.delete'))return;nodeRemoval.value={cluster:cluster.value,object};nodeName.value='';agentStopped.value=false;nodeRemovalResult.value=undefined}
+function showRemoveNode(object:KubeObject){if(busy.value||!can('kubernetes.node.delete'))return;nodeRemoval.value={cluster:clusterOf(object),object};nodeName.value='';agentStopped.value=false;nodeRemovalResult.value=undefined}
 watch(()=>can('kubernetes.node.delete'),allowed=>{if(!allowed){nodeRemoval.value=undefined;nodeRemovalResult.value=undefined}})
 async function removeNode(){
   const target=nodeRemoval.value,type=kubeTypes[0]!
@@ -695,30 +734,30 @@ async function removeNode(){
   nodeRemovalResult.value={status:'submitting',message:'正在移除节点记录…'}
   try{
     await withFreshKubeResource(target.cluster,type,target.object,t('k8s.resourceChanged'),current=>client.delete(`/kubernetes/clusters/${encodeURIComponent(target.cluster)}/nodes/${encodeURIComponent(target.object.metadata.name)}`,{data:{...identityOf(current),name:nodeName.value,agent_stopped:true}}))
-    if(!mounted||nodeRemoval.value!==target||cluster.value!==target.cluster)return
+    if(!mounted||nodeRemoval.value!==target||!selectedClusters.value.includes(target.cluster))return
     nodeRemovalResult.value={status:'succeeded',message:'节点记录已移除，未卸载主机上的 K3s。'}
     message.success(t('k8s.submitted'));await saved()
   }catch(err){if(mounted&&nodeRemoval.value===target){const detail=kubeErrorMessage(err);nodeRemovalResult.value={status:'failed',message:detail};message.error(detail)}}finally{busy.value=''}
 }
 function confirmAction(object:KubeObject,action:string,type=activeType.value) {
   if(busy.value)return
-  const id=cluster.value
-  if (!type) return
+  const id=clusterOf(object)
+  if (!type||!id) return
   const actionName=t(`k8s.${action}`)
-  Modal.confirm({title:t('k8s.confirmTitle',{action:actionName,name:object.metadata.name}),content:h('div',[h('p',`${clusterInfo.value?.name} / ${nsOf(object)||'—'} / ${type.kind}`),h('p',action==='cordon'?t('k8s.nodeUnschedulable'):t('k8s.confirmHint'))]),okText:actionName,cancelText:t('k8s.cancel'),async onOk(){ await runAction(id,type,object,action) }})
+  Modal.confirm({title:t('k8s.confirmTitle',{action:actionName,name:object.metadata.name}),content:h('div',[h('p',`${clusterName(id)} / ${nsOf(object)||'—'} / ${type.kind}`),h('p',action==='cordon'?t('k8s.nodeUnschedulable'):t('k8s.confirmHint'))]),okText:actionName,cancelText:t('k8s.cancel'),async onOk(){ await runAction(id,type,object,action) }})
 }
 async function runAction(id:string,type:KubeType,object:KubeObject,action:string,replicas?:number) {
   busy.value=kubeKey(object)
-  try { await withFreshKubeResource(id,type,object,t('k8s.resourceChanged'), current=>client.post(`${resourceURL(id,type,object.metadata.name)}/actions`,{...identityOf(current),action,replicas},{params:{namespace:nsOf(object)}})); message.success(t('k8s.submitted')); if(mounted&&id===cluster.value) await saved() }
+  try { await withFreshKubeResource(id,type,object,t('k8s.resourceChanged'), current=>client.post(`${resourceURL(id,type,object.metadata.name)}/actions`,{...identityOf(current),action,replicas},{params:{namespace:nsOf(object)}})); message.success(t('k8s.submitted')); if(mounted&&selectedClusters.value.includes(id)) await saved() }
   catch(err){message.error(kubeErrorMessage(err));throw err} finally {busy.value=''}
 }
 function remove(object:KubeObject,type=activeType.value) {
   if(busy.value)return
-  const id=cluster.value,actor=workloadActor()
-  if(!type||!type.delete||!can(`${type.permission}.delete`)) return
+  const id=clusterOf(object),actor=workloadActor()
+  if(!id||!selectedClusters.value.includes(id)||!type||!type.delete||!can(`${type.permission}.delete`)) return
   const hint=type.permission==='kubernetes.storage'?t('k8s.deleteStorage'):type.resource==='namespaces'?t('k8s.deleteNamespace'):t('k8s.deleteHint')
-  Modal.confirm({title:t('k8s.confirmTitle',{action:t('k8s.remove'),name:object.metadata.name}),content:h('div',[h('p',`${clusterInfo.value?.name} / ${nsOf(object)||'—'} / ${type.kind}`),h('p',hint)]),okText:t('k8s.remove'),okButtonProps:{danger:true},cancelText:t('k8s.cancel'),async onOk(){
-    const valid=()=>mounted&&id===cluster.value&&actor===workloadActor()&&can(`${type.permission}.delete`)
+  Modal.confirm({title:t('k8s.confirmTitle',{action:t('k8s.remove'),name:object.metadata.name}),content:h('div',[h('p',`${clusterName(id)} / ${nsOf(object)||'—'} / ${type.kind}`),h('p',hint)]),okText:t('k8s.remove'),okButtonProps:{danger:true},cancelText:t('k8s.cancel'),async onOk(){
+    const valid=()=>mounted&&selectedClusters.value.includes(id)&&actor===workloadActor()&&can(`${type.permission}.delete`)
     if(busy.value||!valid())return
     busy.value=kubeKey(object)
     try {
@@ -727,7 +766,7 @@ function remove(object:KubeObject,type=activeType.value) {
         return client.delete(resourceURL(id,type,object.metadata.name),{params:{namespace:nsOf(object)},data:identityOf(current)})
       })
       if(valid()){
-        if(detail.value?.metadata.uid===object.metadata.uid)closeDetails()
+        if(detailCluster.value===id&&detail.value?.metadata.uid===object.metadata.uid)closeDetails()
         else if(type.resource==='pods'&&workloadDetail.value)retryRelatedPods()
         void refresh();void refreshOverview(false,true)
         if(type.resource==='namespaces')void loadNamespaces()
@@ -737,14 +776,14 @@ function remove(object:KubeObject,type=activeType.value) {
   }})
 }
 function showScale(object:KubeObject,type=activeType.value) {
-  if(!type||busy.value||!can(`${type.permission}.execute`))return
-  scaleTarget.value={object,type,cluster:cluster.value,actor:workloadActor()}
+  if(!type||busy.value||!selectedClusters.value.includes(clusterOf(object))||!can(`${type.permission}.execute`))return
+  scaleTarget.value={object,type,cluster:clusterOf(object),actor:workloadActor()}
   scaleValue.value=scaleDesired.value??null
   scaleOpen.value=true
 }
 async function scale() {
   const target=scaleTarget.value,value=scaleValue.value
-  if(!scaleOpen.value||!target||busy.value||target.cluster!==cluster.value||target.actor!==workloadActor()||
+  if(!scaleOpen.value||!target||busy.value||!selectedClusters.value.includes(target.cluster)||target.actor!==workloadActor()||
     !can(`${target.type.permission}.execute`)||scaleDesired.value===undefined||value===null||value===scaleDesired.value)return
   if(!Number.isInteger(value)||value<0||value>1000){message.error(t('k8s.invalidReplicas'));return}
   try{await runAction(target.cluster,target.type,target.object,'scale',value);scaleOpen.value=false}catch{}
@@ -752,8 +791,8 @@ async function scale() {
 function podStreamPath(pod:KubeObject, terminal=false, files=false) {
   const choice=selectedPodContainer(pod),container=choice?.name
   const allowed=files?can('terminal.file.read')&&can('kubernetes.workload.execute'):can('terminal.open')
-  if(!container||!pod.metadata.uid||!can('kubernetes.workload.read')||terminal&&(!allowed||!choice.running||pod.metadata.deletionTimestamp))return ''
-  const parts=[cluster.value,nsOf(pod),pod.metadata.name,container].map(value=>encodeURIComponent(value))
+  if(!clusterOf(pod)||!selectedClusters.value.includes(clusterOf(pod))||!container||!pod.metadata.uid||!can('kubernetes.workload.read')||terminal&&(!allowed||!choice.running||pod.metadata.deletionTimestamp))return ''
+  const parts=[clusterOf(pod),nsOf(pod),pod.metadata.name,container].map(value=>encodeURIComponent(value))
   const project=encodeURIComponent(localStorage.getItem('edo.project')??'')
   const path=terminal ? `/api/v1/terminals/kubernetes/${parts[0]}/namespaces/${parts[1]}/pods/${parts[2]}/containers/${parts[3]}/ws` : `/api/v1/kubernetes/clusters/${parts[0]}/namespaces/${parts[1]}/pods/${parts[2]}/containers/${parts[3]}/logs/ws`
   return `${path}?project_id=${project}&pod_uid=${encodeURIComponent(pod.metadata.uid)}`
@@ -796,7 +835,7 @@ function allowedRelatedPodStream(pod:KubeObject,terminal=false){
 }
 function openRelatedPodStream(pod:KubeObject,terminal=false){const current=currentVisiblePod(pod);if(current&&allowedRelatedPodStream(current,terminal))openStream(current,terminal)}
 async function reveal() {
-  const object=detail.value,type=detailType.value,id=cluster.value,current=detailRevision
+  const object=detail.value,type=detailType.value,id=detailCluster.value,current=detailRevision
   const inContext=()=>mounted&&current===detailRevision&&detailOpen.value&&detailTab.value==='data'&&can('kubernetes.config.read')&&can('kubernetes.secret.read')
   if(!object||object.kind!=='Secret'||type?.resource!=='secrets'||!inContext())return
   let request:AbortController|undefined
@@ -817,7 +856,7 @@ async function reveal() {
 const detailPods=computed<KubeObject[]>(()=>(detail.value?.kind==='Pod'?[detail.value]:relatedPods.value).map(object=>({...object,id:kubeKey(object),cells:resourceCells(object,t),state:resourceStatus(object,t)})))
 const podColumns=computed(()=>resourceColumns(kubeTypes.find(type=>type.resource==='pods')!,t).filter(column=>!['namespace','images'].includes(column.key)))
 const detailStatus=computed(()=>detail.value?resourceStatus(detail.value,t):undefined)
-const facts=computed(()=>{const object=detail.value;if(!object)return[];return[{label:t('k8s.cluster'),value:clusterInfo.value?.name},{label:t('k8s.namespace'),value:nsOf(object)||t('k8s.clusterScope')},{label:'Kind / API',value:`${object.kind} / ${object.apiVersion??detailType.value?.apiVersion??'—'}`},{label:'UID',value:object.metadata.uid},{label:t('k8s.resourceVersion'),value:object.metadata.resourceVersion},{label:t('k8s.age'),value:formatDateTime(object.metadata.creationTimestamp)}]})
+const facts=computed(()=>{const object=detail.value;if(!object)return[];return[{label:t('k8s.cluster'),value:detailClusterInfo.value?.name},{label:t('k8s.namespace'),value:nsOf(object)||t('k8s.clusterScope')},{label:'Kind / API',value:`${object.kind} / ${object.apiVersion??detailType.value?.apiVersion??'—'}`},{label:'UID',value:object.metadata.uid},{label:t('k8s.resourceVersion'),value:object.metadata.resourceVersion},{label:t('k8s.age'),value:formatDateTime(object.metadata.creationTimestamp)}]})
 const annotations=computed(()=>Object.entries(detail.value?.metadata.annotations??{}).filter(([key])=>key!=='kubectl.kubernetes.io/last-applied-configuration'))
 async function syncDetails(){
   const object=detail.value,type=detailType.value,signal=detailController?.signal,current=detailRevision
@@ -825,12 +864,12 @@ async function syncDetails(){
   if(!detailOpen.value||!object||!type||!signal||detailLoading.value||detailSyncing||detailError.value||object.kind==='Secret')return
   detailSyncing=true
   try{
-    const {data,headers}=await client.get<{object:KubeObject}>(resourceURL(cluster.value,type,object.metadata.name),{params:{namespace:nsOf(object)},signal})
+    const {data,headers}=await client.get<{object:KubeObject}>(resourceURL(detailCluster.value,type,object.metadata.name),{params:{namespace:nsOf(object)},signal})
     if(!mounted||current!==detailRevision)return
     if(data.object.metadata.uid!==object.metadata.uid){detailSyncError.value=t('k8s.resourceChanged');return}
-    detail.value=data.object;detailSyncError.value='';detailSnapshot.value=readKubeSnapshotMeta(headers)
-    if(detailTab.value==='events'||workloadDetail.value&&detailTab.value==='basic')void loadEvents(cluster.value,type,data.object,current,signal)
-    if(needsRelatedPods.value&&Date.now()-lastRelatedSync>10_000)void loadRelatedPods(cluster.value,data.object,current,signal)
+    detail.value=withKubeCluster(data.object,detailCluster.value);detailSyncError.value='';detailSnapshot.value=readKubeSnapshotMeta(headers)
+    if(detailTab.value==='events'||workloadDetail.value&&detailTab.value==='basic')void loadEvents(detailCluster.value,type,data.object,current,signal)
+    if(needsRelatedPods.value&&Date.now()-lastRelatedSync>10_000)void loadRelatedPods(detailCluster.value,data.object,current,signal)
   }catch(err){if(mounted&&current===detailRevision&&!signal.aborted){if(kubeSnapshotPending(err))detailSnapshot.value={...detailSnapshot.value,stale:true};else detailSyncError.value=kubeErrorMessage(err)}}finally{detailSyncing=false}
 }
 function stopKubeWatch(){
@@ -838,7 +877,7 @@ function stopKubeWatch(){
   if(watchReconnect)clearTimeout(watchReconnect);watchReconnect=undefined
   if(watchFlush)clearTimeout(watchFlush);watchFlush=undefined
 }
-function markWatchDirty(event:KubeWatchEvent){
+function markWatchDirty(event:KubeWatchEvent,id=cluster.value){
   lastWatchEvent=Date.now();watchRetry=0
   // ready/ping 只表示 EDO 的快照通知连接可用。
   if(event.type==='ready'||event.type==='ping')return
@@ -851,13 +890,14 @@ function markWatchDirty(event:KubeWatchEvent){
     if(!watchDegraded.value)watchHealthy.value=true
     const type=kubeTypes.find(item=>item.resource===event.resource)
     if(!type||!can(`${type.permission}.read`))return
-    if(type.namespaced&&!overviewNamespaces.value.includes('*')&&!overviewNamespaces.value.includes(event.namespace))return
+    const selection=namespaceScoped.value?scopeSelections.value[id]??[]:['*']
+    if(type.namespaced&&!selection.includes('*')&&!selection.includes(event.namespace))return
     watchDirty.add('overview')
     if(activeType.value?.resource===event.resource)watchDirty.add('list')
     if(event.resource==='namespaces')watchDirty.add('namespaces')
-    if(detailOpen.value&&detail.value&&detailType.value?.resource===event.resource&&detail.value.metadata.name===event.name&&nsOf(detail.value)===event.namespace)watchDirty.add('detail')
-    if(detailOpen.value&&['pods','jobs'].includes(event.resource))watchDirty.add('related')
-    if(workloadServiceScope.value&&event.resource==='services'&&event.namespace===detail.value?.metadata.namespace)watchDirty.add('services')
+    if(id===detailCluster.value&&detailOpen.value&&detail.value&&detailType.value?.resource===event.resource&&detail.value.metadata.name===event.name&&nsOf(detail.value)===event.namespace)watchDirty.add('detail')
+    if(id===detailCluster.value&&detailOpen.value&&['pods','jobs'].includes(event.resource))watchDirty.add('related')
+    if(id===detailCluster.value&&workloadServiceScope.value&&event.resource==='services'&&event.namespace===detail.value?.metadata.namespace)watchDirty.add('services')
   }
   if(!watchFlush)watchFlush=setTimeout(()=>{watchFlush=undefined;flushWatchChanges()},500)
 }
@@ -867,7 +907,7 @@ function flushWatchChanges(){
   // Lists/details stay responsive; repeated status events must not run all
   // overview resource reads at the event-stream rate. Keep the dirty flag.
   if(watchDirty.has('overview')&&!overviewPending&&Date.now()-lastOverviewAttempt>=5000){watchDirty.delete('overview');void refreshOverview(true)}
-  if(watchDirty.has('namespaces')&&!namespaceController){watchDirty.delete('namespaces');void loadNamespaces()}
+  if(watchDirty.has('namespaces')&&!namespaceRequests.size){watchDirty.delete('namespaces');void loadNamespaces()}
   if(watchDirty.has('services')&&Date.now()-lastServiceAttempt>=5000)void loadWorkloadServices()
   if((watchDirty.has('detail')||watchDirty.has('related'))&&!detailSyncing&&!detailLoading.value){
     if(watchDirty.has('related'))lastRelatedSync=0
@@ -876,19 +916,32 @@ function flushWatchChanges(){
 }
 function startKubeWatch(resetRetry=true){
   stopKubeWatch();if(resetRetry){watchRetry=0;watchDegraded.value=false}
-  if(!watchMounted||!mounted||document.hidden||!autoRefresh.value||!cluster.value||!clusterInfo.value?.is_active||!overviewNamespaces.value.length||auth.user===null||!kubeTypes.some(type=>can(`${type.permission}.read`)))return
-  const id=cluster.value,project=typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??'',current=watchRevision,request=new AbortController()
+  if(!watchMounted||!mounted||document.hidden||!autoRefresh.value||!queryScopes.value.length||auth.user===null||!kubeTypes.some(type=>can(`${type.permission}.read`)))return
+  const project=typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??'',current=watchRevision,request=new AbortController()
   watchController=request;lastWatchEvent=Date.now()
-  const selection=overviewNamespaces.value.length>32?['*']:[...overviewNamespaces.value]
-  void streamKubeEvents(id,selection,project,request.signal,event=>{if(mounted&&current===watchRevision&&!request.signal.aborted)markWatchDirty(event)}).catch(err=>{
-    if(current!==watchRevision||request.signal.aborted)return
-    watchHealthy.value=false
-    if(err instanceof KubeWatchError&&(err.status===401||err.status===403)){request.abort();watchController=undefined;return}
+  // 每个集群独立接收快照通知；失败时仍由既有轮询校准当前范围。
+  const healthy=new Set<string>(),scopes=[...queryScopes.value]
+  const reconnect=()=>{
+    if(watchReconnect||current!==watchRevision||request.signal.aborted)return
     const delay=Math.min(30_000,1000*2**Math.min(watchRetry++,5))
     watchReconnect=setTimeout(()=>{watchReconnect=undefined;if(current===watchRevision)startKubeWatch(false)},delay)
-  })
+  }
+  for(const scope of scopes){
+    const selection=scope.namespaces.length>32?['*']:scope.namespaces
+    void streamKubeEvents(scope.cluster,selection,project,request.signal,event=>{
+      if(!mounted||current!==watchRevision||request.signal.aborted)return
+      markWatchDirty(event,scope.cluster)
+      if(event.type==='synced')healthy.add(scope.cluster)
+      if(event.type==='degraded')healthy.delete(scope.cluster)
+      watchHealthy.value=healthy.size===scopes.length
+    }).then(reconnect).catch(err=>{
+      if(current!==watchRevision||request.signal.aborted)return
+      healthy.delete(scope.cluster);watchHealthy.value=false
+      if(!(err instanceof KubeWatchError&&[401,403].includes(err.status)))reconnect()
+    })
+  }
 }
-watch(()=>`${cluster.value}:${clusterInfo.value?.is_active}:${overviewNamespaces.value.join(',')}:${autoRefresh.value}:${auth.user?.id??''}:${auth.user?.is_superuser??false}:${kubeTypes.filter(type=>can(`${type.permission}.read`)).map(type=>type.resource).join(',')}`,()=>{watchDirty.clear();startKubeWatch()})
+watch(()=>JSON.stringify([queryScopes.value,autoRefresh.value,namespaceBrowseIdentity(),kubeTypes.filter(type=>can(`${type.permission}.read`)).map(type=>type.resource)]),()=>{watchDirty.clear();startKubeWatch()})
 watch([contextDisabled,detailOpen,()=>stream.value.open],()=>{if(watchDirty.size&&!watchFlush)watchFlush=setTimeout(()=>{watchFlush=undefined;flushWatchChanges()},500)})
 function syncVisible(){
   if(watchController&&!watchController.signal.aborted&&Date.now()-lastWatchEvent>45_000)startKubeWatch(false)
@@ -896,7 +949,7 @@ function syncVisible(){
   lastVisibleSync=Date.now();flushWatchChanges()
   // Namespace selectors are readable without config.read, so their changes may
   // not arrive on this user's Watch. Calibrate separately from 5s fallback.
-  if(!contextDisabled.value&&namespaceScoped.value&&!namespaceController&&Date.now()-lastNamespaceRefresh>=30_000)void loadNamespaces()
+  if(!contextDisabled.value&&namespaceScoped.value&&!namespaceRequests.size&&Date.now()-lastNamespaceRefresh>=30_000)void loadNamespaces()
   const calibrate=!watchHealthy.value||Date.now()-lastCalibration>=30_000
   if(!calibrate)return
   lastCalibration=Date.now();void refresh(true)
@@ -912,17 +965,17 @@ async function resetWorkspacePreferences(){
   stopKubeWatch();watchDirty.clear();cancelListPersist()
   clusterRevision++;clusterController?.abort();resetNamespaceRead()
   revision++;controller?.abort();overviewRevision++;overviewController?.abort();overviewPending=false;overviewLoading.value=false
-  rows.value=[];overview.value=null;namespaces.value=[];clusters.value=[];cluster.value=''
-  clusterScopes.clear();listContexts.clear();listWindows.clear();listSnapshots.clear()
+  rows.value=[];listBuckets.value={};overviewBuckets.value={};overviewFailures.value={};overview.value=null;namespaceCatalogs.value={};clusters.value=[];selectedClusters.value=[];selectionReady.value=false
+  scopeSelections.value={};listContexts.clear();listWindows.clear();listSnapshots.clear()
   closeDetails();stream.value.open=false
   workspacePreferences.value=readKubeWorkspacePreferences(auth.user?.id,auth.user?.project_id)
-  for(const [id,names] of Object.entries(workspacePreferences.value.scopes??{}))clusterScopes.set(id,names)
+  scopeSelections.value={...workspacePreferences.value.scopes}
   autoRefresh.value=workspacePreferences.value.autoRefresh??true
   restoreList(rememberedListState({}))
   preferenceOwner=JSON.stringify([auth.user?.id??'',auth.user?.project_id??''])
   const owner=preferenceOwner
   // 切换身份后清除旧 URL 的范围，再用新身份的目录核对本地选择。
-  await router.replace({query:{...withoutKubeListQuery(route.query),cluster:undefined,namespace:undefined}})
+  await router.replace({query:{...withoutKubeListQuery(route.query),cluster:undefined,namespace:undefined,scope:undefined}})
   if(mounted&&owner===preferenceOwner&&auth.user?.id&&auth.user.project_id)void loadClusters()
 }
 watch(()=>[auth.user?.id,auth.user?.project_id],()=>{void resetWorkspacePreferences()},{flush:'sync'})
@@ -934,7 +987,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 <template>
   <div class="kube-workspace">
     <div class="kube-workspace-grid">
-    <KubeNamespaceTree :clusters="clusters" :cluster="cluster" :namespaces="knownNamespaces" :selected="selectedNamespaces" :namespace-catalogs="namespaceCatalogs" :namespaced="namespaceScoped" :ready="namespaceDirectoryReady" :loading="namespaceLoading" :error="namespaceError" :disabled="contextDisabled" @cluster="selectCluster" @selection="selectNamespaces" @expand="browseNamespaces" @retry="loadNamespaces(true)"/>
+    <KubeNamespaceTree :clusters="clusters" :cluster="cluster" :namespaces="knownNamespaces" :selected="selectedNamespaces" :selected-clusters="selectedClusters" :selections="scopeSelections" :namespace-catalogs="namespaceCatalogs" :namespaced="namespaceScoped" :ready="namespaceDirectoryReady" :loading="namespaceLoading" :error="namespaceError" :disabled="contextDisabled" @cluster="selectCluster" @selection="selectNamespaces" @expand="browseNamespaces" @retry="id=>loadNamespaces(true,id)"/>
     <section ref="resourcePanel" class="resource-panel" :aria-label="t(group==='overview'?'k8s.overview':activeType?`k8s.type_${activeType.resource}`:'k8s.resources')">
       <div v-if="fromOverview" class="overview-return"><a-button type="link" :disabled="contextDisabled" @click="backToOverview"><ArrowLeft :size="14" />{{ t('k8s.backOverview') }}</a-button></div>
       <div class="resource-panel-heading">
@@ -950,16 +1003,16 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         <h3 v-else-if="activeType && group!=='nodes' && group!=='overview'">{{ t(`k8s.type_${activeType.resource}`) }}</h3>
       <a-radio-group v-if="group==='nodes'&&activeType?.resource==='nodes'" class="node-view-toggle" :value="nodeView" :disabled="contextDisabled" :aria-label="t('k8sTopology.nodeView')" size="small" button-style="solid" @change="setNodeView($event.target.value)"><a-radio-button value="list">{{ t('k8sTopology.list') }}</a-radio-button><a-radio-button value="topology">{{ t('k8sTopology.mapView') }}</a-radio-button></a-radio-group>
       <div class="resource-heading-refresh"><KubeSyncStatus v-if="!showNodeTopology" :message="panelSyncMessage" :failed="Boolean(panelSyncError)" /><a-checkbox v-model:checked="autoRefresh">{{ t('k8s.autoRefresh') }}</a-checkbox><a-button :loading="loading||overviewLoading||topologyRefreshing" :title="compactResourceList&&lastRefreshed?`${t('k8s.lastRefreshed')} ${formatDateTime(lastRefreshed)}`:undefined" @click="refreshAll"><RefreshCw :size="14" />{{ t('k8s.refresh') }}</a-button></div>
-        <template v-if="group==='nodes'&&can('kubernetes.node.create')"><a-button :disabled="!cluster||!clusterInfo?.is_active" @click="joinOpen=true">生成加入命令</a-button><a-button v-if="can('cluster.execute')&&can('cluster.update')&&auth.canAny(['cluster.read','deployment.read'])" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="openProvision('join')"><Plus :size="14" />{{ t('k8s.addNode') }}</a-button></template>
-        <a-button v-else-if="group!=='overview'&&activeType?.create&&can(`${activeType.permission}.create`)" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="edit()"><Plus :size="14" />{{ t('k8s.create') }}{{ t(`k8s.type_${activeType.resource}`) }}</a-button>
+        <template v-if="group==='nodes'&&can('kubernetes.node.create')"><a-button :disabled="!singleCluster" :title="!singleCluster?t('k8s.selectSingleCluster'):undefined" @click="joinOpen=true">生成加入命令</a-button><a-button v-if="can('cluster.execute')&&can('cluster.update')&&auth.canAny(['cluster.read','deployment.read'])" type="primary" :disabled="!singleCluster" :title="!singleCluster?t('k8s.selectSingleCluster'):undefined" @click="openProvision('join')"><Plus :size="14" />{{ t('k8s.addNode') }}</a-button></template>
+        <a-button v-else-if="group!=='overview'&&activeType?.create&&can(`${activeType.permission}.create`)" type="primary" :disabled="!singleCluster" :title="!singleCluster?t('k8s.selectSingleCluster'):undefined" @click="edit()"><Plus :size="14" />{{ t('k8s.create') }}{{ t(`k8s.type_${activeType.resource}`) }}</a-button>
       </div>
       <template v-if="group==='overview'">
-        <a-empty v-if="cluster&&!selectedNamespaces.length" :description="t('k8s.selectNamespaces')" class="workspace-empty" />
-        <a-empty v-if="overviewSnapshotPending&&!overview" :description="t('k8s.snapshotPending')" class="workspace-empty" />
+        <a-empty v-if="selectedClusters.length&&!queryScopes.length" :description="t('k8s.selectNamespaces')" class="workspace-empty" />
+        <a-empty v-else-if="!selectedClusters.length" :description="t('k8s.selectCluster')" class="workspace-empty" />
+        <a-empty v-else-if="overviewSnapshotPending&&!overview" :description="t('k8s.snapshotPending')" class="workspace-empty" />
         <KubeOverview v-else :data="overview" :loading="overviewLoading" :error="overviewError" @select="selectResource" />
-        <a-empty v-if="!cluster&&!overviewLoading" :description="t('k8s.noCluster')" class="workspace-empty" />
       </template>
-      <template v-else-if="showNodeTopology"><KubeNodeTopology :data="topology ?? null" :loading="topologyLoading" :refreshing="topologyRefreshing" :error="topologyError" :cluster-name="clusterInfo?.name" :endpoint="clusterInfo?.api_server" :disabled="contextDisabled" @select="node=>openDetails(node)" @refresh="loadTopology()" /></template>
+      <template v-else-if="showNodeTopology"><div class="multi-cluster-topologies"><KubeNodeTopology v-for="item in activeClusters" :key="item.id" :data="topologies[item.id]?.data??null" :loading="topologies[item.id]?.loading??false" :refreshing="topologyRefreshing&&Boolean(topologies[item.id]?.loading)" :error="topologies[item.id]?.error??''" :cluster-name="item.name" :endpoint="item.api_server" :disabled="contextDisabled" @select="node=>openDetails(withKubeCluster(node,item.id))" @refresh="loadTopology()" /><a-empty v-if="!activeClusters.length" :description="t('k8s.selectCluster')" class="workspace-empty" /></div></template>
       <template v-else>
       <div class="resource-list-controls" :class="{'compact-list-controls':compactResourceList}">
         <div v-if="activeType||!compactResourceList" class="list-filters" :class="{'workload-list-filters':group==='workloads'}">
@@ -982,21 +1035,22 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
       <a-empty v-else-if="!clusters.length&&!loading&&!error" :description="t('k8s.noCluster')" class="workspace-empty" />
       <ResourceTable v-else :key="contextKey" :id="`kube-list-${activeType.resource}`" keep-header v-model:current-page="currentPage" v-model:rows-per-page="pageSize" :sort-key="sortKey" :sort-order="sortOrder" @sort="sortList"
         class="kube-resource-table" :class="{ 'kube-workload-table': group === 'workloads', 'kube-compact-table':compactResourceList }"
-        :rows="displayRows" :columns="columns" :loading="loading" :details="false" :empty-text="t(activeType?.namespaced&&!selectedNamespaces.length?'k8s.selectNamespaces':filtersActive?'k8s.noFilterResults':'k8s.empty')" :active-row-key="detailOpen?detailOrigin:lastViewedRow">
-        <template #empty><div v-if="loading" class="list-loading" role="status">{{ t('k8s.loading') }}</div><a-empty v-else :description="(cluster&&error)||t(listSnapshotState==='pending'?'k8s.snapshotPending':activeType?.namespaced&&!selectedNamespaces.length?'k8s.selectNamespaces':filtersActive?'k8s.noFilterResults':'k8s.empty')"><template v-if="!compactResourceList"><a-button v-if="filtersActive" @click="clearFilters">{{ t('k8s.clearFilters') }}</a-button><a-button v-else-if="error" @click="refresh()">{{ t('k8s.refresh') }}</a-button></template></a-empty></template>
+        :rows="displayRows" :columns="columns" :loading="loading" :details="false" :empty-text="t(!selectedClusters.length?'k8s.selectCluster':activeType?.namespaced&&!queryScopes.length?'k8s.selectNamespaces':filtersActive?'k8s.noFilterResults':'k8s.empty')" :active-row-key="detailOpen?detailOrigin:lastViewedRow">
+        <template #empty><div v-if="loading" class="list-loading" role="status">{{ t('k8s.loading') }}</div><a-empty v-else :description="(cluster&&error)||t(listSnapshotState==='pending'?'k8s.snapshotPending':!selectedClusters.length?'k8s.selectCluster':activeType?.namespaced&&!queryScopes.length?'k8s.selectNamespaces':filtersActive?'k8s.noFilterResults':'k8s.empty')"><template v-if="!compactResourceList"><a-button v-if="filtersActive" @click="clearFilters">{{ t('k8s.clearFilters') }}</a-button><a-button v-else-if="error" @click="refresh()">{{ t('k8s.refresh') }}</a-button></template></a-empty></template>
         <template v-for="column in columns" :key="column.key" #[`cell-${column.key}`]="{row}">
           <div v-if="column.key==='name'" class="resource-identity">
             <button class="resource-name" :title="row.metadata.name" :class="{deleting:row.metadata.deletionTimestamp}" @click="openDetails(row)">{{ row.metadata.name }}</button>
             <KubeResourceCell v-if="compactResourceList&&!hasLabelsColumn&&row.cells.labels?.text!=='—'" class="resource-label-summary" :cell="row.cells.labels" />
             <a-tooltip v-if="!compactResourceList" :mouse-enter-delay="0.1" :title="Object.entries(row.metadata.labels??{}).map(([key,value])=>`${key}=${value}`).join(', ')"><span class="secondary">{{ Object.entries(row.metadata.labels??{}).slice(0,2).map(([key,value])=>`${key}=${value}`).join(' · ') || row.kind }}</span></a-tooltip>
           </div>
+          <span v-else-if="column.key==='cluster'" v-copy-full-text class="cluster-value" :title="clusterName(clusterOf(row))">{{ clusterName(clusterOf(row)) }}</span>
           <div v-else-if="column.key==='status'" class="status-cell"><a-tag :color="row.state.tone">{{ row.state.text }}</a-tag><span v-if="row.state.reason" class="secondary status-reason">{{ row.state.reason }}</span><span v-if="row.spec?.unschedulable" class="secondary">{{ t('k8s.schedulingDisabled') }}</span></div>
           <span v-else-if="column.key==='namespace'" v-copy-full-text class="namespace-value kube-namespace-badge" :title="row.metadata.namespace">{{ row.metadata.namespace }}</span>
           <span v-else-if="column.key==='created'" class="created-at" :title="formatDateTime(row.metadata.creationTimestamp)">{{ formatDateTime(row.metadata.creationTimestamp) }}</span>
-          <template v-else-if="column.key==='usage'"><KubeNodeUsage v-if="row.kind==='Node'" :node="row" :overview="overview" :failed="Boolean(overviewError)" /><div v-else class="usage-cell"><span>{{ formatKubeCPU(overviewError?undefined:usageFor(overview,row)?.cpu) }}</span><span class="secondary">{{ formatKubeMemory(overviewError?undefined:usageFor(overview,row)?.memory) }}</span></div></template>
+          <template v-else-if="column.key==='usage'"><KubeNodeUsage v-if="row.kind==='Node'" :node="row" :overview="rowOverview(row)" :failed="Boolean(overviewFailures[clusterOf(row)])" /><div v-else class="usage-cell"><span>{{ formatKubeCPU(overviewFailures[clusterOf(row)]?undefined:usageFor(rowOverview(row),row)?.cpu) }}</span><span class="secondary">{{ formatKubeMemory(overviewFailures[clusterOf(row)]?undefined:usageFor(rowOverview(row),row)?.memory) }}</span></div></template>
           <KubeResourceCell v-else :cell="row.cells[column.key]" :date="['jobTiming','lastSchedule'].includes(column.key)" :can-follow="canFollow(row.cells[column.key]?.reference)" :service-port-source="column.key==='servicePorts'?servicePortSource(row):undefined" @follow="followFromRow(row,$event)" />
         </template>
-        <template v-if="hasRowActions" #actions="{row}"><KubeResourceActions v-if="activeType" :object="row" :type="activeType" :can="can" :terminal-ready="selectedPodContainer(row)?.running === true" :logs-path="podStreamPath(row)" :terminal-path="podStreamPath(row,true)" :loading="busy===row.metadata.uid" :disabled="Boolean(busy)" @details="openDetails(row)" @link="linkApplication(row)" @yaml="openDetails(row,'manifest')" @edit="edit(row)" @pods="openDetails(row,'pods')" @logs="openStream(row)" @terminal="openStream(row,true)" @action="confirmAction(row,$event)" @scale="showScale(row)" @remove="remove(row)" @remove-node="showRemoveNode(row)" /></template>
+        <template v-if="hasRowActions" #actions="{row}"><KubeResourceActions v-if="activeType" :object="row" :type="activeType" :can="can" :terminal-ready="selectedPodContainer(row)?.running === true" :logs-path="podStreamPath(row)" :terminal-path="podStreamPath(row,true)" :loading="busy===row.metadata.uid||busy===kubeKey(row)" :disabled="Boolean(busy)" @details="openDetails(row)" @link="linkApplication(row)" @yaml="openDetails(row,'manifest')" @edit="edit(row)" @pods="openDetails(row,'pods')" @logs="openStream(row)" @terminal="openStream(row,true)" @action="confirmAction(row,$event)" @scale="showScale(row)" @remove="remove(row)" @remove-node="showRemoveNode(row)" /></template>
         <template #pagination="{page,limit,total,changePage,changeLimit}"><div class="kube-pagination"><a-pagination :current="page" :page-size="limit" :total="total" :show-size-changer="false" :show-total="(count:number)=>t('planList.total',{count})" @change="changePage" /><label>{{ t('k8s.rowsPerPage') }}<KubeSelect :value="limit" :aria-label="t('k8s.rowsPerPage')" :options="[10,20,50,100].map(value=>({value,label:String(value)}))" @update:value="(value:unknown)=>changeLimit(Number(value))" /></label></div></template>
       </ResourceTable>
       <div v-if="hasContinuation" class="load-more"><span>{{ t('k8s.loaded',{count:rows.length}) }}</span><a-button :loading="loading" @click="refresh(false,true)">{{ t('k8s.loadMore') }}</a-button></div>
@@ -1007,7 +1061,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
     <ResourceDetailDrawer class="kube-detail-drawer" :class="{'kube-workload-drawer':workloadDetail}" :compact-header="workloadDetail" :width="workloadDetail?'min(1640px, 96vw)':undefined" :open="detailPresented" :title="detail?.metadata.name??''" @update:open="value=>{if(!value)closeDetails()}" @close="closeDetails">
       <template #actions>
         <a-button v-if="detailHistory.length" size="small" :disabled="detailLoading" @click="backDetail"><ArrowLeft :size="13" />{{ t('k8s.backResource') }}</a-button>
-        <span class="detail-context"><a-tag>{{ detail?.kind }}</a-tag>{{ clusterInfo?.name }} <span>/</span> {{ detail?.metadata.namespace||t('k8s.clusterScope') }}</span>
+        <span class="detail-context"><a-tag>{{ detail?.kind }}</a-tag>{{ detailClusterInfo?.name }} <span>/</span> {{ detail?.metadata.namespace||t('k8s.clusterScope') }}</span>
         <a-tag v-if="detailStatus&&detail?.apiVersion" :color="detailStatus.tone">{{ detailStatus.text }}</a-tag>
         <KubeSyncStatus v-if="detail" :message="detailSyncMessage" :failed="Boolean(detailSyncError)" />
         <a-button v-if="detail&&workloadDetail" class="workload-detail-refresh" :class="{'is-busy':detailLoading}" size="small" type="text" :aria-label="t('k8s.refresh')" :title="t('k8s.refresh')" :aria-busy="detailLoading" :disabled="detailLoading" @click="refreshDetail"><RefreshCw :size="15" aria-hidden="true" /></a-button>
@@ -1021,14 +1075,14 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
       <a-alert v-if="detailError" type="error" :message="detailError" />
       <a-empty v-if="detailSnapshotPending" :description="t('k8s.snapshotPending')" />
       <a-skeleton v-if="detailLoading&&!detailSnapshotPending&&!detail?.apiVersion" active :paragraph="{rows:6}" class="detail-skeleton" /><a-spin :spinning="detailLoading&&!detailSnapshotPending"><KubeDetailTabs v-if="detail&&detail.apiVersion&&detailType&&!detailError&&!detailSnapshotPending" v-model:active-key="detailTab" class="detail-tabs">
-        <a-tab-pane v-if="detail.kind==='Node'" key="monitor" :tab="t('k8s.nodeMonitoring')"><KubeNodeMonitor v-if="detailTab==='monitor'" :key="cluster+detail.metadata.uid" :cluster="cluster" :node="detail" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :workloads="can('kubernetes.workload.read')" /></a-tab-pane>
+        <a-tab-pane v-if="detail.kind==='Node'" key="monitor" :tab="t('k8s.nodeMonitoring')"><KubeNodeMonitor v-if="detailTab==='monitor'" :key="detailCluster+detail.metadata.uid" :cluster="detailCluster" :node="detail" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :workloads="can('kubernetes.workload.read')" /></a-tab-pane>
 
         <a-tab-pane key="basic" :class="{'workload-overview-pane':workloadDetail}" :tab="t(workloadDetail?'k8s.workloadOverview':'k8s.resourceSettings')">
           <KubeWorkloadSummary v-if="workloadDetail" :object="detail" :type="detailType" :events="events" :events-error="eventsError" :events-loading="detailLoading||eventsLoading"
             :services="workloadServices" :services-error="servicesError" :services-partial="serviceCatalog?.partial" :service-port-source="servicePortSource"
             @events="detailTab='events'" @follow="followReference" @retry-services="loadWorkloadServices()" />
           <KubeWorkloadExplorer v-if="workloadDetail" v-show="detailTab==='basic'"
-            :visible="detailPresented&&detailTab==='basic'" :key="cluster+detail.metadata.uid" :scope-key="workloadScope" :cluster="cluster" :object="detail" :type="detailType"
+            :visible="detailPresented&&detailTab==='basic'" :key="detailCluster+detail.metadata.uid" :scope-key="workloadScope" :cluster="detailCluster" :object="detail" :type="detailType"
             :selection="workloadSelection" @selection="value=>workloadSelections[workloadSelectionKey]=value"
             :pods="relatedPods" :pods-loading="relatedLoading" :pods-error="relatedError" :pods-partial="relatedPartial"
             :events="events" :events-error="eventsError" :auto-refresh="autoRefresh&&detailPresented&&detailTab==='basic'"
@@ -1039,7 +1093,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
           <KubeResourceDetails v-else :object="detail" :type="detailType" :can-follow="canFollow" :service-port-source="servicePortSource(detail)" @follow="followReference" />
           <KubeNodeInfo v-if="detail.kind==='Node'" :node="detail" />
         </a-tab-pane>
-        <a-tab-pane v-if="detail.kind==='Service'" key="diagnostics" :tab="t(detail.kind==='Service'?'k8s.serviceEndpoints':detail.kind==='Deployment'?'k8s.deploymentHistory':'k8s.podDiagnostics')"><KubeResourceDiagnostics v-if="detailTab==='diagnostics'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :can-follow="canFollow" @follow="followReference" /></a-tab-pane>
+        <a-tab-pane v-if="detail.kind==='Service'" key="diagnostics" :tab="t(detail.kind==='Service'?'k8s.serviceEndpoints':detail.kind==='Deployment'?'k8s.deploymentHistory':'k8s.podDiagnostics')"><KubeResourceDiagnostics v-if="detailTab==='diagnostics'" :key="detailCluster+detail.metadata.uid" :cluster="detailCluster" :object="detail" :type="detailType" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :can-follow="canFollow" @follow="followReference" /></a-tab-pane>
         <a-tab-pane v-if="workloadDetail" key="template" :tab="t('k8s.workloadPodTemplate')">
           <a-radio-group v-model:value="templateSection" class="workload-template-nav" :aria-label="t('k8s.workloadSelectSection')" button-style="solid"><a-radio-button value="containers">{{ t('k8s.containers') }}</a-radio-button><a-radio-button value="storage">{{ t('k8s.volumes') }}</a-radio-button><a-radio-button value="scheduling">{{ t('k8s.scheduling') }}</a-radio-button></a-radio-group>
           <KubeResourceDetails :key="templateIdentity" :object="detail" :type="detailType" :section="templateSection" :selection-identity="templateIdentity" :container-key="templateContainerSelections[templateIdentity]" :container="detail.kind==='Pod'?workloadSelection?.containerName:undefined" :can-follow="canFollow" @container="rememberTemplatePodContainer" @container-key="rememberTemplateContainer" @follow="followReference" />
@@ -1054,7 +1108,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
             <template #cell-status="{row}"><div class="status-cell"><a-tag :color="row.state.tone">{{ row.state.text }}</a-tag><span class="secondary">{{ row.state.reason }}</span></div></template>
             <template #cell-placement="{row}"><KubeResourceCell :cell="row.cells.placement" :can-follow="canFollow(row.cells.placement.reference)" @follow="followReference" /></template>
             <template #cell-created="{row}">{{ formatDateTime(row.metadata.creationTimestamp) }}</template>
-            <template #cell-usage="{row}"><div class="usage-cell"><span>{{ formatKubeCPU(overviewError?undefined:usageFor(overview,row)?.cpu) }}</span><span class="secondary">{{ formatKubeMemory(overviewError?undefined:usageFor(overview,row)?.memory) }}</span></div></template>
+            <template #cell-usage="{row}"><div class="usage-cell"><span>{{ formatKubeCPU(overviewFailures[clusterOf(row)]?undefined:usageFor(rowOverview(row),row)?.cpu) }}</span><span class="secondary">{{ formatKubeMemory(overviewFailures[clusterOf(row)]?undefined:usageFor(rowOverview(row),row)?.memory) }}</span></div></template>
             <template #cell-replicas="{row}"><KubeResourceCell :cell="row.cells.replicas" /></template><template #cell-restarts="{row}">{{ row.cells.restarts.text }}</template>
             <template #actions="{row}">
               <div class="related-pod-container-actions">
@@ -1078,14 +1132,14 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
       </KubeDetailTabs></a-spin>
     </ResourceDetailDrawer>
     <KubeResourceEditor v-if="editorContext" ref="editorRef" :return-to-details="detailOpen" v-model:open="editorOpen" :cluster="editorContext.cluster" :namespace="editorContext.namespace" :type="editorContext.type" :object="editorContext.object" @saved="saved" />
-    <KubeWorkloadImages v-if="imageEdit" ref="imageEditor" v-bind="imageEdit" :cluster-name="clusterInfo?.name" :allowed="canEditWorkloadImage" @saved="saved" @close="imageEdit=undefined" />
+    <KubeWorkloadImages v-if="imageEdit" ref="imageEditor" v-bind="imageEdit" :cluster-name="detailClusterInfo?.name" :allowed="canEditWorkloadImage" @saved="saved" @close="imageEdit=undefined" />
     <a-modal v-if="manifestObject" open :title="'YAML · '+manifestObject.metadata.name" width="min(1000px, 94vw)" :footer="null" @cancel="manifestObject=undefined">
       <KubeYamlManifest :object="manifestObject" compact :editable="Boolean(manifestObject.metadata.uid===detail?.metadata.uid&&detailType?.update&&can('kubernetes.workload.update'))" @edit="editWorkloadManifest" />
     </a-modal>
     <KubeYamlDrawer v-if="yamlContext" ref="yamlRef" v-model:open="yamlOpen" :cluster="yamlContext.cluster" :type="yamlContext.type" :object="yamlContext.object" :allowed="can(`${yamlContext.type.permission}.update`)" @saved="saved" />
     <KubeNodeJoinDrawer v-model:open="joinOpen" :cluster="cluster" :endpoint="clusterInfo?.api_server??''" />
     <K3sProvisionDrawer v-model:open="provisionOpen" :action="provisionAction" :cluster="provisionAction==='join'?cluster:''" :endpoint="provisionAction==='join'?clusterInfo?.api_server??'':''" @completed="provisionCompleted" />
-    <a-modal :open="Boolean(nodeRemoval)" :title="t('k8s.removeNode')" :confirm-loading="Boolean(busy)" :ok-text="nodeRemovalResult?.status==='succeeded'?'关闭':t('k8s.removeNode')" :cancel-text="t('k8s.cancel')" :cancel-button-props="{style:nodeRemovalResult?.status==='succeeded'?{display:'none'}:undefined}" :ok-button-props="{danger:nodeRemovalResult?.status!=='succeeded',disabled:nodeRemovalResult?.status!=='succeeded'&&(!can('kubernetes.node.delete')||!agentStopped||nodeName!==nodeRemoval?.object.metadata.name)}" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" @cancel="!busy&&(nodeRemoval=undefined)" @ok="removeNode"><a-alert type="warning" show-icon :message="t('k8s.removeNodeHint')" /><p class="node-removal-context">{{ clusterInfo?.name }} / {{ nodeRemoval?.object.metadata.name }}</p><a-alert v-if="nodeRemovalResult" class="node-removal-result" :type="nodeRemovalResult.status==='succeeded'?'success':nodeRemovalResult.status==='failed'?'error':'info'" show-icon :message="nodeRemovalResult.message" role="status" /><template v-if="nodeRemovalResult?.status!=='succeeded'"><p>{{ t('k8s.removeBlocked') }}</p><a-checkbox v-model:checked="agentStopped" :disabled="Boolean(busy)">{{ t('k8s.agentStopped') }}</a-checkbox><a-form-item :label="t('k8s.typeNodeName')" class="node-removal-name"><a-input v-model:value="nodeName" :placeholder="nodeRemoval?.object.metadata.name" :disabled="Boolean(busy)" /></a-form-item></template></a-modal>
+    <a-modal :open="Boolean(nodeRemoval)" :title="t('k8s.removeNode')" :confirm-loading="Boolean(busy)" :ok-text="nodeRemovalResult?.status==='succeeded'?'关闭':t('k8s.removeNode')" :cancel-text="t('k8s.cancel')" :cancel-button-props="{style:nodeRemovalResult?.status==='succeeded'?{display:'none'}:undefined}" :ok-button-props="{danger:nodeRemovalResult?.status!=='succeeded',disabled:nodeRemovalResult?.status!=='succeeded'&&(!can('kubernetes.node.delete')||!agentStopped||nodeName!==nodeRemoval?.object.metadata.name)}" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" @cancel="!busy&&(nodeRemoval=undefined)" @ok="removeNode"><a-alert type="warning" show-icon :message="t('k8s.removeNodeHint')" /><p class="node-removal-context">{{ clusterName(nodeRemoval?.cluster??'') }} / {{ nodeRemoval?.object.metadata.name }}</p><a-alert v-if="nodeRemovalResult" class="node-removal-result" :type="nodeRemovalResult.status==='succeeded'?'success':nodeRemovalResult.status==='failed'?'error':'info'" show-icon :message="nodeRemovalResult.message" role="status" /><template v-if="nodeRemovalResult?.status!=='succeeded'"><p>{{ t('k8s.removeBlocked') }}</p><a-checkbox v-model:checked="agentStopped" :disabled="Boolean(busy)">{{ t('k8s.agentStopped') }}</a-checkbox><a-form-item :label="t('k8s.typeNodeName')" class="node-removal-name"><a-input v-model:value="nodeName" :placeholder="nodeRemoval?.object.metadata.name" :disabled="Boolean(busy)" /></a-form-item></template></a-modal>
     <a-modal v-model:open="scaleOpen" :title="t('k8s.scaleTitle',{name:scaleTarget?.object.metadata.name??''})" centered :width="440" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" :footer="null">
       <WorkloadScalePanel v-model="scaleValue" :desired="scaleDesired" :ready="scaleReady" :unavailable="scaleUnavailable"
         :submitting="Boolean(busy)" :disabled="!scaleTarget || !can(`${scaleTarget.type.permission}.execute`)" @submit="scale" />
@@ -1108,6 +1162,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 .related-container-missing{margin:0;color:var(--workload-warning-text);font-size:12px;white-space:normal}
 .related-pod-stream-actions{display:flex;align-items:center;flex-wrap:wrap;gap:4px}
 
+.multi-cluster-topologies{display:grid;gap:12px}.cluster-value{display:block;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--kube-resource-primary-size,12px);font-weight:600}
 .kube-workspace{min-width:0}
 .kube-pagination{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:12px;padding:10px 14px;border-top:1px solid var(--edo-border)}.kube-pagination>label{display:flex;align-items:center;gap:8px;white-space:nowrap;font-size:12px;color:var(--edo-muted)}.kube-pagination :deep(.kube-select){width:74px}
 .kube-workspace-grid{display:grid;grid-template-columns:210px minmax(0,1fr);gap:14px;align-items:start}

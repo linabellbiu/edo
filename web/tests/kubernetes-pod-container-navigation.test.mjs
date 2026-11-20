@@ -39,9 +39,9 @@ async function harness(getResource) {
   const scope = vue.effectScope(); let state
   scope.run(() => { state = component.setup({}, { expose() {} }) })
   state.clusters.value = [{ id: 'cluster-a', name: 'Cluster A', is_active: true, default_namespace: 'team' }]
-  state.cluster.value = 'cluster-a'; await settle()
+  state.applyScopeQuery();state.selectionReady.value=true; await settle()
   const current = pod()
-  state.detail.value = current; state.detailType.value = podType; state.detailOpen.value = true; state.detailLoading.value = false
+  state.detailCluster.value='cluster-a';state.detail.value = workspace.withKubeCluster(current,'cluster-a'); state.detailType.value = podType; state.detailOpen.value = true; state.detailLoading.value = false
   return { state, blocked, messages, requests, target: container => ({ cluster: 'cluster-a', namespace: 'team', podUID: 'pod-a', container }), attachExplorer() {
     const explorer = loadFrontend('../src/components/KubeWorkloadExplorer.vue', {
       vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
@@ -78,7 +78,7 @@ test('从 Pod 列表直接进入 Deployment 三栏并选中原 Pod，不先渲�
   assert.equal(h.state.detail.value.kind, 'Deployment')
   assert.equal(h.state.detailType.value.resource, 'deployments')
   assert.equal(h.state.detailTab.value, 'basic')
-  assert.equal(h.state.lastViewedRow.value, 'pod-a')
+  assert.equal(h.state.lastViewedRow.value, JSON.stringify(['cluster-a','pod-a']))
   assert.deepEqual(h.state.workloadSelections.value['cluster-adeployment-a'], { revisionUID: 'rs-a', podUID: 'pod-a', containerName: '', podTab: 'summary' })
   assert.equal(h.state.canFollowWorkloadRuntime({ resource: 'pods', name: 'web', namespace: 'team', uid: 'pod-a' }), false)
   assert.equal(h.state.canFollowWorkloadRuntime({ resource: 'nodes', name: 'worker' }), true)
