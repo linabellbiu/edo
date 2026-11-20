@@ -40,7 +40,7 @@ client.defaults.adapter = async config => {
   }
   else if (/^\/kubernetes\/clusters\/[^/]+\/namespaces$/.test(path)) {
     const delay = Math.min(5000, Math.max(0, Number(new URLSearchParams(location.search).get('namespace_refresh_ms')) || 0))
-    if (params.fresh && delay) await new Promise(resolve => setTimeout(resolve, delay))
+    if (delay) await new Promise(resolve => setTimeout(resolve, delay))
     config.signal?.throwIfAborted()
     response = { namespaces: ['preview', 'staging'] }
   }
@@ -91,7 +91,9 @@ client.defaults.adapter = async config => {
     } else if (/\/nodes\/[^/]+\/metrics$/.test(path)) response = data.nodeHistory(decodeURIComponent(path.split('/').at(-2)))
     else throw new Error('本地预览未登记此接口')
   }
-  return { data: structuredClone(response), status: 200, statusText: 'OK', headers: {}, config }
+  const snapshotState = new URLSearchParams(location.search).get('snapshot_state')
+  const headers = snapshotState ? { 'x-edo-snapshot-state': snapshotState } : {}
+  return { data: structuredClone(response), status: 200, statusText: 'OK', headers, config }
 }
 const originalFetch = window.fetch.bind(window)
 window.fetch = async (input, options = {}) => {

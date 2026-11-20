@@ -10,6 +10,7 @@ import { identityOf, kubeKey, kubeTypes, listKubeResources, listKubeResourceScop
 import { readKubeSnapshotMeta, type KubeServicePortSource, type KubeSnapshotMeta } from '@/api/kubernetes'
 import { resourceColumns, resourceCells, resourceStatus, resourceSearchText, matchesLabelFilter, relatedPodMatch, relatedWorkloadServices, type KubeReference } from '@/utils/kubernetesPresentation'
 import KubeNamespaceTree from '@/components/KubeNamespaceTree.vue'
+import KubeSyncStatus from '@/components/KubeSyncStatus.vue'
 import '@/styles/kubernetes.css'
 import ResourceTable from '@/components/ResourceTable.vue'
 import KubeSelect from '@/components/KubeSelect.vue'
@@ -121,6 +122,7 @@ const showResourceToolbar = computed(()=>fromOverview.value
   ||group.value==='nodes'&&can('kubernetes.node.create')
   ||group.value!=='overview'&&Boolean(activeType.value?.create&&can(`${activeType.value.permission}.create`)))
 const clusters = ref<KubeCluster[]>([]), cluster = ref(''), namespaces = ref<string[]>([]), selectedNamespaces = ref<string[]>(namespaceSelection(route.query.namespace)), namespaceLoading=ref(false), namespaceError=ref('')
+const namespaceDirectoryReady=ref(false)
 const initialList=rememberedListState(route.query)
 const rows = ref<KubeObject[]>([]), query = ref(initialList.query), labelFilter=ref(initialList.label), statusFilter=ref(initialList.status), lastRefreshed=ref(''), continuation = ref<Record<string,string>>({}), loading = ref(false), error = ref(''), autoRefresh = ref(workspacePreferences.value.autoRefresh??true), busy = ref('')
 const sortKey=ref(initialList.sort),sortOrder=ref<'asc'|'desc'>(initialList.order),currentPage=ref(initialList.page),pageSize=ref(initialList.limit)
@@ -183,7 +185,7 @@ const scaleUnavailable = computed(() => scaleStatus.value?.unavailableReplicas ?
   scaleTarget.value?.object.kind === 'Deployment' && scaleStatus.value?.observedGeneration ? 0 : undefined
 ))
 watch([cluster, workloadActor], () => { scaleOpen.value = false; scaleTarget.value = undefined }, { flush:'sync' })
-let clusterRevision=0,clusterController:AbortController|undefined,namespaceRevision=0,namespaceController:AbortController|undefined,lastNamespaceRefresh=0
+let clusterRevision=0,clusterController:AbortController|undefined,namespaceController:AbortController|undefined,lastNamespaceRefresh=0
 let revision=0, detailRevision=0, controller:AbortController|undefined,detailController:AbortController|undefined, timer:ReturnType<typeof setInterval>|undefined, mounted=true
 let editRevision=0,editController:AbortController|undefined,editBusyKey=''
 let secretController:AbortController|undefined
@@ -201,6 +203,19 @@ const knownNamespaces=computed(()=>[...new Set([...namespaces.value,...selectedN
 const nodeView = computed(() => route.query.node_view === 'topology' ? 'topology' : 'list')
 const showNodeTopology = computed(() => group.value === 'nodes' && activeType.value?.resource === 'nodes' && nodeView.value === 'topology')
 const topology = ref<NodeTopologyData|null>(null), topologyLoading = ref(false), topologyError = ref('')
+const topologyRefreshing = ref(false)
+function staleSnapshotMessage(collectedAt?:string){return collectedAt?`${t('k8s.snapshotStale')} · ${formatDateTime(collectedAt)}`:t('k8s.snapshotStale')}
+const panelSyncError=computed(()=>{
+  if(showNodeTopology.value)return ''
+  if(group.value==='overview')return overview.value?overviewError.value:''
+  return (rows.value.length?error.value:'')||(activeType.value?.resource==='nodes'?overviewError.value:'')
+})
+const panelSyncMessage=computed(()=>{
+  if(panelSyncError.value)return panelSyncError.value
+  if(group.value==='overview')return overview.value&&overviewSnapshot.value.stale?staleSnapshotMessage(overviewSnapshot.value.collectedAt):''
+  return !showNodeTopology.value&&listSnapshotState.value==='stale'?staleSnapshotMessage(lastRefreshed.value):''
+})
+const detailSyncMessage=computed(()=>detailSyncError.value||(detailSnapshot.value.stale?staleSnapshotMessage(detailSnapshot.value.collectedAt):''))
 let topologyRevision = 0, topologyController: AbortController | undefined, topologyTimer: ReturnType<typeof setInterval> | undefined
 function setNodeView(value: string) {
   if (contextDisabled.value || !['list','topology'].includes(value)) return
@@ -208,21 +223,25 @@ function setNodeView(value: string) {
 }
 async function loadTopology(silent = false) {
   const id = cluster.value
-  if (!showNodeTopology.value || !id || !clusterInfo.value?.is_active || topologyLoading.value) return
+  if (!showNodeTopology.value || !id || !clusterInfo.value?.is_active) return
+  if (topologyLoading.value) {
+    if (!silent) topologyRefreshing.value = true
+    return
+  }
   const request = new AbortController(), current = ++topologyRevision
   topologyController?.abort(); topologyController = request
   topologyLoading.value = true
-  if (!silent) topologyError.value = ''
+  topologyRefreshing.value = !silent
   try {
     const result = await getClusterNodeTopology(id, request.signal)
     if (mounted && current === topologyRevision && cluster.value === id && !request.signal.aborted) { topology.value = result; topologyError.value = '' }
   } catch (reason) {
     if (mounted && current === topologyRevision && !request.signal.aborted) topologyError.value = kubeErrorMessage(reason)
-  } finally { if (mounted && current === topologyRevision) topologyLoading.value = false }
+  } finally { if (mounted && current === topologyRevision) { topologyLoading.value = false; topologyRefreshing.value = false } }
 }
 watch(() => `${cluster.value}:${showNodeTopology.value}:${clusterInfo.value?.is_active}`, () => {
-  topologyRevision++; topologyController?.abort(); topologyLoading.value = false; topology.value = null; topologyError.value = ''
-  if (showNodeTopology.value) void loadTopology()
+  topologyRevision++; topologyController?.abort(); topologyLoading.value = false; topologyRefreshing.value = false; topology.value = null; topologyError.value = ''
+  if (showNodeTopology.value) void loadTopology(true)
 })
 watch(showNodeTopology, (show, previous) => { if (!show && previous) { void refresh(); void refreshOverview() } })
 onMounted(() => { topologyTimer = setInterval(() => { if (!document.hidden && autoRefresh.value && !contextDisabled.value && !detailOpen.value) void loadTopology(true) }, 30_000) })
@@ -253,17 +272,33 @@ async function loadClusters(preserveSelection=false) {
     return true
   } catch (err) { if(isCurrent()) error.value=kubeErrorMessage(err);return false }
 }
-async function loadNamespaces() {
+function resetNamespaceRead() {
+  namespaceController?.abort()
+  namespaceController=undefined
+  namespaceLoading.value=false
+  namespaceError.value=''
+  namespaceDirectoryReady.value=false
+}
+async function loadNamespaces(manual=false) {
   const id=cluster.value
-  if (!id||!namespaceScoped.value) return
+  if (!id||!namespaceScoped.value||!clusterInfo.value?.is_active||(namespaceController&&(!manual||namespaceLoading.value))) return
   lastNamespaceRefresh=Date.now()
-  namespaceController?.abort();namespaceController=new AbortController();const request=namespaceController,current=++namespaceRevision
-  namespaceLoading.value=true;namespaceError.value=''
+  namespaceController?.abort()
+  const request=new AbortController()
+  namespaceController=request
+  namespaceLoading.value=manual
+  const isCurrent=()=>mounted&&cluster.value===id&&namespaceController===request&&!request.signal.aborted
   try {
     const {data}=await client.get<{namespaces:string[]}>(`/kubernetes/clusters/${encodeURIComponent(id)}/namespaces`,{signal:request.signal})
-    if (mounted&&cluster.value===id&&current===namespaceRevision) namespaces.value=data.namespaces
-  } catch(err) { if(mounted&&cluster.value===id&&current===namespaceRevision&&!request.signal.aborted&&!kubeSnapshotPending(err)) namespaceError.value=kubeErrorMessage(err) }
-  finally {if(mounted&&cluster.value===id&&current===namespaceRevision)namespaceLoading.value=false}
+    if (isCurrent()) {
+      namespaces.value=data.namespaces
+      namespaceDirectoryReady.value=true
+      namespaceError.value=''
+    }
+  } catch(err) { if(isCurrent()&&!kubeSnapshotPending(err)) namespaceError.value=kubeErrorMessage(err) }
+  finally {
+    if(namespaceController===request){ namespaceController=undefined;namespaceLoading.value=false }
+  }
 }
 async function refresh(silent=false, more=false) {
   if (showNodeTopology.value) { if (!silent && !more) await loadTopology(); return }
@@ -296,7 +331,8 @@ async function refreshOverview(silent=false,replacePending=false){
   if(!id||!clusterInfo.value?.is_active||overviewPending&&!replacePending||!selection.length)return
   lastOverviewAttempt=Date.now()
   const current=++overviewRevision
-  overviewController?.abort();overviewController=new AbortController();const request=overviewController;overviewPending=true;if(!silent||!overview.value)overviewLoading.value=true
+  overviewController?.abort();overviewController=new AbortController();const request=overviewController;overviewPending=true
+  if(!silent||!overview.value&&!overviewSnapshotPending.value&&!overviewError.value)overviewLoading.value=true
   try{
     const results=await mapNamespaceRequests(selection,async ns=>{
       const {data,headers}=await client.get<OverviewData>(`/kubernetes/clusters/${encodeURIComponent(id)}/overview`,{params:{namespace:ns},signal:request.signal,timeout:30_000})
@@ -311,10 +347,11 @@ async function refreshOverview(silent=false,replacePending=false){
   catch(err){if(mounted&&current===overviewRevision&&!request.signal.aborted){overviewSnapshotPending.value=kubeSnapshotPending(err);overviewError.value=overviewSnapshotPending.value?'':kubeErrorMessage(err);if(overviewSnapshotPending.value&&overview.value)overviewSnapshot.value={...overviewSnapshot.value,stale:true}}}
   finally{if(current===overviewRevision){overviewLoading.value=false;overviewPending=false}}
 }
-function refreshAll(){void refresh();void refreshOverview(false,true);void loadNamespaces()}
+function refreshAll(){void refresh();void refreshOverview(false,true);void loadNamespaces(true)}
 watch(()=>`${cluster.value}:${overviewNamespaces.value.join(',')}`,()=>{overviewRevision++;overviewController?.abort();overviewLoading.value=false;overviewPending=false;overview.value=null;overviewError.value='';overviewSnapshotPending.value=false;overviewSnapshot.value={};lastOverview=0;void refreshOverview()})
 watch(cluster,(id,previous)=>{
   selectedContainer.value={}
+  resetNamespaceRead()
   if(!id){selectedNamespaces.value=[];namespaces.value=[];return}
   if(previous)clusterScopes.set(previous,[...selectedNamespaces.value])
   selectedNamespaces.value=route.query.namespace!==undefined&&(!route.query.cluster||route.query.cluster===id)?namespaceSelection(route.query.namespace,clusterInfo.value?.default_namespace??'default'):clusterScopes.get(id)??[clusterInfo.value?.default_namespace??'default']
@@ -323,7 +360,7 @@ watch(cluster,(id,previous)=>{
 watch(scopeKey,storeScope)
 watch(autoRefresh,value=>rememberWorkspace({autoRefresh:value}),{flush:'sync'})
 watch(pageSize,value=>rememberWorkspace({pageSize:value}),{flush:'sync'})
-watch(namespaceScoped,enabled=>{namespaceRevision++;namespaceController?.abort();namespaceLoading.value=false;namespaceError.value='';if(enabled&&cluster.value)void loadNamespaces()})
+watch(namespaceScoped,enabled=>{resetNamespaceRead();if(enabled&&cluster.value)void loadNamespaces()})
 function currentList():KubeListState{return {query:query.value,label:labelFilter.value,status:statusFilter.value,sort:sortKey.value,order:sortOrder.value,page:currentPage.value,limit:pageSize.value}}
 function rememberList(){if(cluster.value&&group.value!=='overview')listContexts.set(contextKey.value,currentList())}
 function rememberPendingList(){if(typeof route.fullPath==='string'&&JSON.stringify(kubeListQuery(currentList()))!==JSON.stringify(kubeListQuery(readKubeListState(route.query))))listSnapshots.set(contextKey.value,{path:route.fullPath,position:router.options?.history?.state?.position})}
@@ -809,7 +846,7 @@ function flushWatchChanges(){
   // Lists/details stay responsive; repeated status events must not run all
   // overview resource reads at the event-stream rate. Keep the dirty flag.
   if(watchDirty.has('overview')&&!overviewPending&&Date.now()-lastOverviewAttempt>=5000){watchDirty.delete('overview');void refreshOverview(true)}
-  if(watchDirty.has('namespaces')&&!namespaceLoading.value){watchDirty.delete('namespaces');void loadNamespaces()}
+  if(watchDirty.has('namespaces')&&!namespaceController){watchDirty.delete('namespaces');void loadNamespaces()}
   if(watchDirty.has('services')&&Date.now()-lastServiceAttempt>=5000)void loadWorkloadServices()
   if((watchDirty.has('detail')||watchDirty.has('related'))&&!detailSyncing&&!detailLoading.value){
     if(watchDirty.has('related'))lastRelatedSync=0
@@ -838,7 +875,7 @@ function syncVisible(){
   lastVisibleSync=Date.now();flushWatchChanges()
   // Namespace selectors are readable without config.read, so their changes may
   // not arrive on this user's Watch. Calibrate separately from 5s fallback.
-  if(!contextDisabled.value&&namespaceScoped.value&&!namespaceLoading.value&&Date.now()-lastNamespaceRefresh>=30_000)void loadNamespaces()
+  if(!contextDisabled.value&&namespaceScoped.value&&!namespaceController&&Date.now()-lastNamespaceRefresh>=30_000)void loadNamespaces()
   const calibrate=!watchHealthy.value||Date.now()-lastCalibration>=30_000
   if(!calibrate)return
   lastCalibration=Date.now();void refresh(true)
@@ -852,7 +889,7 @@ function workspaceVisibility(){if(document.hidden)stopKubeWatch();else{startKube
 async function resetWorkspacePreferences(){
   preferenceOwner=''
   stopKubeWatch();watchDirty.clear();cancelListPersist()
-  clusterRevision++;clusterController?.abort();namespaceRevision++;namespaceController?.abort();namespaceLoading.value=false
+  clusterRevision++;clusterController?.abort();resetNamespaceRead()
   revision++;controller?.abort();overviewRevision++;overviewController?.abort();overviewPending=false;overviewLoading.value=false
   rows.value=[];overview.value=null;namespaces.value=[];clusters.value=[];cluster.value=''
   clusterScopes.clear();listContexts.clear();listWindows.clear();listSnapshots.clear()
@@ -870,13 +907,13 @@ async function resetWorkspacePreferences(){
 watch(()=>[auth.user?.id,auth.user?.project_id],()=>{void resetWorkspacePreferences()},{flush:'sync'})
 function watchProjectChanged(event:StorageEvent){if(event.key==='edo.project')void resetWorkspacePreferences()}
 onMounted(()=>{watchMounted=true;void loadClusters();startKubeWatch();timer=setInterval(syncVisible,5000);document.addEventListener('visibilitychange',workspaceVisibility);window.addEventListener('focus',syncVisible);window.addEventListener('storage',watchProjectChanged)})
-onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty.clear();cancelPendingEdit();cancelListPersist();clusterRevision++;clusterController?.abort();namespaceRevision++;namespaceController?.abort();revision++;detailRevision++;overviewRevision++;controller?.abort();detailController?.abort();overviewController?.abort();document.removeEventListener('visibilitychange',workspaceVisibility);window.removeEventListener('focus',syncVisible);window.removeEventListener('storage',watchProjectChanged);if(timer)clearInterval(timer);hideSecret();stream.value.open=false})
+onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty.clear();cancelPendingEdit();cancelListPersist();clusterRevision++;clusterController?.abort();resetNamespaceRead();revision++;detailRevision++;overviewRevision++;controller?.abort();detailController?.abort();overviewController?.abort();document.removeEventListener('visibilitychange',workspaceVisibility);window.removeEventListener('focus',syncVisible);window.removeEventListener('storage',watchProjectChanged);if(timer)clearInterval(timer);hideSecret();stream.value.open=false})
 </script>
 
 <template>
   <div class="kube-workspace">
     <div class="kube-workspace-grid">
-    <KubeNamespaceTree :clusters="clusters" :cluster="cluster" :namespaces="knownNamespaces" :selected="selectedNamespaces" :namespaced="namespaceScoped" :loading="namespaceLoading" :error="namespaceError" :disabled="contextDisabled" @cluster="selectCluster" @selection="selectNamespaces" @retry="loadNamespaces()"/>
+    <KubeNamespaceTree :clusters="clusters" :cluster="cluster" :namespaces="knownNamespaces" :selected="selectedNamespaces" :namespaced="namespaceScoped" :ready="namespaceDirectoryReady" :loading="namespaceLoading" :error="namespaceError" :disabled="contextDisabled" @cluster="selectCluster" @selection="selectNamespaces" @retry="loadNamespaces(true)"/>
     <section ref="resourcePanel" class="resource-panel" :aria-label="t(group==='overview'?'k8s.overview':activeType?`k8s.type_${activeType.resource}`:'k8s.resources')">
       <div v-if="fromOverview" class="overview-return"><a-button type="link" :disabled="contextDisabled" @click="backToOverview"><ArrowLeft :size="14" />{{ t('k8s.backOverview') }}</a-button></div>
       <div class="resource-panel-heading">
@@ -891,18 +928,17 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         </div>
         <h3 v-else-if="activeType && group!=='nodes' && group!=='overview'">{{ t(`k8s.type_${activeType.resource}`) }}</h3>
       <a-radio-group v-if="group==='nodes'&&activeType?.resource==='nodes'" class="node-view-toggle" :value="nodeView" :disabled="contextDisabled" :aria-label="t('k8sTopology.nodeView')" size="small" button-style="solid" @change="setNodeView($event.target.value)"><a-radio-button value="list">{{ t('k8sTopology.list') }}</a-radio-button><a-radio-button value="topology">{{ t('k8sTopology.mapView') }}</a-radio-button></a-radio-group>
-      <div class="resource-heading-refresh"><a-checkbox v-model:checked="autoRefresh">{{ t('k8s.autoRefresh') }}</a-checkbox><a-button :loading="loading||overviewLoading||topologyLoading" :title="compactResourceList&&lastRefreshed?`${t('k8s.lastRefreshed')} ${formatDateTime(lastRefreshed)}`:undefined" @click="refreshAll"><RefreshCw :size="14" />{{ t('k8s.refresh') }}</a-button></div>
+      <div class="resource-heading-refresh"><KubeSyncStatus v-if="!showNodeTopology" :message="panelSyncMessage" :failed="Boolean(panelSyncError)" /><a-checkbox v-model:checked="autoRefresh">{{ t('k8s.autoRefresh') }}</a-checkbox><a-button :loading="loading||overviewLoading||topologyRefreshing" :title="compactResourceList&&lastRefreshed?`${t('k8s.lastRefreshed')} ${formatDateTime(lastRefreshed)}`:undefined" @click="refreshAll"><RefreshCw :size="14" />{{ t('k8s.refresh') }}</a-button></div>
         <template v-if="group==='nodes'&&can('kubernetes.node.create')"><a-button :disabled="!cluster||!clusterInfo?.is_active" @click="joinOpen=true">生成加入命令</a-button><a-button v-if="can('cluster.execute')&&can('cluster.update')&&auth.canAny(['cluster.read','deployment.read'])" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="openProvision('join')"><Plus :size="14" />{{ t('k8s.addNode') }}</a-button></template>
         <a-button v-else-if="group!=='overview'&&activeType?.create&&can(`${activeType.permission}.create`)" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="edit()"><Plus :size="14" />{{ t('k8s.create') }}{{ t(`k8s.type_${activeType.resource}`) }}</a-button>
       </div>
       <template v-if="group==='overview'">
         <a-empty v-if="cluster&&!selectedNamespaces.length" :description="t('k8s.selectNamespaces')" class="workspace-empty" />
-        <p v-if="overview&&overviewSnapshot.stale" class="list-alert secondary" role="status">{{ t('k8s.snapshotStale') }}<template v-if="overviewSnapshot.collectedAt"> · {{ formatDateTime(overviewSnapshot.collectedAt) }}</template></p>
         <a-empty v-if="overviewSnapshotPending&&!overview" :description="t('k8s.snapshotPending')" class="workspace-empty" />
         <KubeOverview v-else :data="overview" :loading="overviewLoading" :error="overviewError" @select="selectResource" />
         <a-empty v-if="!cluster&&!overviewLoading" :description="t('k8s.noCluster')" class="workspace-empty" />
       </template>
-      <template v-else-if="showNodeTopology"><KubeNodeTopology :data="topology ?? null" :loading="topologyLoading" :error="topologyError" :cluster-name="clusterInfo?.name" :endpoint="clusterInfo?.api_server" :disabled="contextDisabled" @select="node=>openDetails(node)" @refresh="loadTopology()" /></template>
+      <template v-else-if="showNodeTopology"><KubeNodeTopology :data="topology ?? null" :loading="topologyLoading" :refreshing="topologyRefreshing" :error="topologyError" :cluster-name="clusterInfo?.name" :endpoint="clusterInfo?.api_server" :disabled="contextDisabled" @select="node=>openDetails(node)" @refresh="loadTopology()" /></template>
       <template v-else>
       <div class="resource-list-controls" :class="{'compact-list-controls':compactResourceList}">
         <div v-if="activeType||!compactResourceList" class="list-filters" :class="{'workload-list-filters':group==='workloads'}">
@@ -920,15 +956,13 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
           <span v-if="!compactResourceList">{{ t('k8s.lastRefreshed') }} {{ lastRefreshed?formatDateTime(lastRefreshed):'—' }}</span>
         </div>
       </div>
-      <p v-if="listSnapshotState==='stale'" class="list-alert secondary" role="status">{{ t('k8s.snapshotStale') }}</p>
-      <a-alert v-if="error" type="error" show-icon :message="error" class="list-alert"><template #action><a-button size="small" @click="refresh()">{{ t('k8s.refresh') }}</a-button></template></a-alert>
-      <a-alert v-if="overviewError&&activeType?.resource==='nodes'" type="warning" show-icon :message="overviewError" class="list-alert" />
+      <a-alert v-if="error&&!cluster" type="error" show-icon :message="error" class="list-alert"><template #action><a-button size="small" @click="refresh()">{{ t('k8s.refresh') }}</a-button></template></a-alert>
       <a-empty v-if="!activeType" :description="t('k8s.noPermission')" class="workspace-empty" />
       <a-empty v-else-if="!clusters.length&&!loading&&!error" :description="t('k8s.noCluster')" class="workspace-empty" />
       <ResourceTable v-else :key="contextKey" :id="`kube-list-${activeType.resource}`" keep-header v-model:current-page="currentPage" v-model:rows-per-page="pageSize" :sort-key="sortKey" :sort-order="sortOrder" @sort="sortList"
         class="kube-resource-table" :class="{ 'kube-workload-table': group === 'workloads', 'kube-compact-table':compactResourceList }"
         :rows="displayRows" :columns="columns" :loading="loading" :details="false" :empty-text="t(activeType?.namespaced&&!selectedNamespaces.length?'k8s.selectNamespaces':filtersActive?'k8s.noFilterResults':'k8s.empty')" :active-row-key="detailOpen?detailOrigin:lastViewedRow">
-        <template #empty><div v-if="loading" class="list-loading" role="status">{{ t('k8s.loading') }}</div><a-empty v-else :description="t(error?'k8s.unavailable':listSnapshotState==='pending'?'k8s.snapshotPending':activeType?.namespaced&&!selectedNamespaces.length?'k8s.selectNamespaces':filtersActive?'k8s.noFilterResults':'k8s.empty')"><template v-if="!compactResourceList"><a-button v-if="filtersActive" @click="clearFilters">{{ t('k8s.clearFilters') }}</a-button><a-button v-else-if="error" @click="refresh()">{{ t('k8s.refresh') }}</a-button></template></a-empty></template>
+        <template #empty><div v-if="loading" class="list-loading" role="status">{{ t('k8s.loading') }}</div><a-empty v-else :description="(cluster&&error)||t(listSnapshotState==='pending'?'k8s.snapshotPending':activeType?.namespaced&&!selectedNamespaces.length?'k8s.selectNamespaces':filtersActive?'k8s.noFilterResults':'k8s.empty')"><template v-if="!compactResourceList"><a-button v-if="filtersActive" @click="clearFilters">{{ t('k8s.clearFilters') }}</a-button><a-button v-else-if="error" @click="refresh()">{{ t('k8s.refresh') }}</a-button></template></a-empty></template>
         <template v-for="column in columns" :key="column.key" #[`cell-${column.key}`]="{row}">
           <div v-if="column.key==='name'" class="resource-identity">
             <button class="resource-name" :title="row.metadata.name" :class="{deleting:row.metadata.deletionTimestamp}" @click="openDetails(row)">{{ row.metadata.name }}</button>
@@ -954,6 +988,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         <a-button v-if="detailHistory.length" size="small" :disabled="detailLoading" @click="backDetail"><ArrowLeft :size="13" />{{ t('k8s.backResource') }}</a-button>
         <span class="detail-context"><a-tag>{{ detail?.kind }}</a-tag>{{ clusterInfo?.name }} <span>/</span> {{ detail?.metadata.namespace||t('k8s.clusterScope') }}</span>
         <a-tag v-if="detailStatus&&detail?.apiVersion" :color="detailStatus.tone">{{ detailStatus.text }}</a-tag>
+        <KubeSyncStatus v-if="detail" :message="detailSyncMessage" :failed="Boolean(detailSyncError)" />
         <a-button v-if="detail&&workloadDetail" class="workload-detail-refresh" :class="{'is-busy':detailLoading}" size="small" type="text" :aria-label="t('k8s.refresh')" :title="t('k8s.refresh')" :aria-busy="detailLoading" :disabled="detailLoading" @click="refreshDetail"><RefreshCw :size="15" aria-hidden="true" /></a-button>
         <a-button v-else-if="detail" size="small" :loading="detailLoading" @click="refreshDetail"><RefreshCw :size="13" />{{ t('k8s.refresh') }}</a-button>
         <KubeResourceActions v-if="detail&&detailType"
@@ -963,9 +998,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
           @action="confirmAction(detail,$event,detailType)" @scale="showScale(detail,detailType)" @remove="remove(detail,detailType)" @remove-node="showRemoveNode(detail)" />
       </template>
       <a-alert v-if="detailError" type="error" :message="detailError" />
-      <a-alert v-if="detailSyncError" type="warning" show-icon :message="detailSyncError" />
       <a-empty v-if="detailSnapshotPending" :description="t('k8s.snapshotPending')" />
-      <p v-else-if="detailSnapshot.stale" class="secondary" role="status">{{ t('k8s.snapshotStale') }}<template v-if="detailSnapshot.collectedAt"> · {{ formatDateTime(detailSnapshot.collectedAt) }}</template></p>
       <a-skeleton v-if="detailLoading&&!detailSnapshotPending&&!detail?.apiVersion" active :paragraph="{rows:6}" class="detail-skeleton" /><a-spin :spinning="detailLoading&&!detailSnapshotPending"><KubeDetailTabs v-if="detail&&detail.apiVersion&&detailType&&!detailError&&!detailSnapshotPending" v-model:active-key="detailTab" class="detail-tabs">
         <a-tab-pane v-if="detail.kind==='Node'" key="monitor" :tab="t('k8s.nodeMonitoring')"><KubeNodeMonitor v-if="detailTab==='monitor'" :key="cluster+detail.metadata.uid" :cluster="cluster" :node="detail" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :workloads="can('kubernetes.workload.read')" /></a-tab-pane>
 

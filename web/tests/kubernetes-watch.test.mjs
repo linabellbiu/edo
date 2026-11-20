@@ -39,13 +39,13 @@ test('K8s SSE认证失败保留HTTP状态，异常类型与断流进入降级',a
  }
 })
 
-async function harness({holdOverview=false,holdClusters=false,readPods}={}){
+async function harness({holdOverview=false,holdClusters=false,readPods,readNamespaces}={}){
  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/kubernetes',component:{}}]});await router.push('/kubernetes?view=workloads&resource=pods&cluster=test&namespace=team')
  const route=new Proxy({},{get:(_,key)=>router.currentRoute.value[key]}),calls=[],sessions=[],pendingClusters=[],pendingOverviews=[],timers=new Map(),mounts=[],unmounts=[],listeners=new Map(),clock={now:100_000},storage={project:'project-1'},scope=vue.effectScope()
  let timerID=0
  const doc={hidden:false,addEventListener:(name,callback)=>listeners.set(name,callback),removeEventListener:name=>listeners.delete(name)}
  const win={addEventListener:(name,callback)=>listeners.set(name,callback),removeEventListener:name=>listeners.delete(name)}
- const client={get:async(url,options={})=>{calls.push({url,options});if(url==='/kubernetes/clusters'){if(holdClusters)return new Promise(resolve=>pendingClusters.push({options,resolve}));return {data:{clusters:[{id:'test',name:'test',default_namespace:'team',is_active:true},{id:'other',name:'other',default_namespace:'team',is_active:true}]}}}if(url.endsWith('/namespaces'))return {data:{namespaces:['team','prod']}};if(url.endsWith('/overview')){if(holdOverview)return new Promise(resolve=>pendingOverviews.push({options,resolve}));return {data:{counts:{},nodes:[],usage:{},phases:{},collected_at:new Date().toISOString()}}}if(url.endsWith('/events'))return {data:{items:[]}};if(url.endsWith('/resources/pods/web'))return {data:{object:sample}};if(readPods&&url.endsWith('/resources/pods'))return await readPods();return {data:{items:[sample],continue:''}}}}
+ const client={get:async(url,options={})=>{calls.push({url,options});if(url==='/kubernetes/clusters'){if(holdClusters)return new Promise(resolve=>pendingClusters.push({options,resolve}));return {data:{clusters:[{id:'test',name:'test',default_namespace:'team',is_active:true},{id:'other',name:'other',default_namespace:'team',is_active:true}]}}}if(url.endsWith('/namespaces'))return readNamespaces?.(options)??{data:{namespaces:['team','prod']}};if(url.endsWith('/overview')){if(holdOverview)return new Promise(resolve=>pendingOverviews.push({options,resolve}));return {data:{counts:{},nodes:[],usage:{},phases:{},collected_at:new Date().toISOString()}}}if(url.endsWith('/events'))return {data:{items:[]}};if(url.endsWith('/resources/pods/web'))return {data:{object:sample}};if(readPods&&url.endsWith('/resources/pods'))return await readPods();return {data:{items:[sample],continue:''}}}}
  const api=load('../src/api/kubernetes.ts',{'./client':{__esModule:true,default:client}}),workspace=load('../src/utils/kubernetesWorkspace.ts'),auth=vue.reactive({user:{id:'reader',project_id:'project-1',permissions:['kubernetes.workload.read','kubernetes.config.read'],is_superuser:false},canAny(permissions){return !!this.user&&permissions.some(value=>this.user.permissions.includes(value))}})
  const component=load('../src/views/KubernetesView.vue',{
   vue:{...vue,onMounted:fn=>mounts.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},'vue-i18n':{useI18n:()=>({t:key=>key})},'vue-router':{useRoute:()=>route,useRouter:()=>router,onBeforeRouteLeave(){},onBeforeRouteUpdate(){}},
@@ -165,4 +165,38 @@ test('只有workload.read且无Namespace事件时，健康与降级状态均每3
  assert.equal(namespaceReads(),degraded)
  h.clock.now+=5000;h.state.syncVisible();await settle();assert.equal(namespaceReads(),degraded+1)
  assert.equal(h.state.watchHealthy.value,false)
+})
+
+test('命名空间后台校准保留列表和错误，手动刷新反馈忙碌并忽略迟到响应',async t=>{
+ let hold=false
+ const requests=[]
+ const h=await harness({readNamespaces:({signal})=>hold?new Promise((resolve,reject)=>requests.push({signal,resolve,reject})):undefined})
+ t.after(h.stop)
+ hold=true
+ h.clock.now+=30_000
+ h.state.syncVisible()
+ assert.equal(h.state.namespaceLoading.value,false)
+ assert.deepEqual(h.state.namespaces.value,['team','prod'])
+ requests[0].reject(new h.api.KubeResourceChanged('读取失败'))
+ await settle()
+ assert.equal(h.state.namespaceError.value,'读取失败')
+
+ h.clock.now+=30_000
+ h.state.syncVisible()
+ assert.equal(h.state.namespaceLoading.value,false)
+ assert.equal(h.state.namespaceError.value,'读取失败')
+ const refresh=h.state.loadNamespaces(true)
+ assert.equal(requests[1].signal.aborted,true)
+ assert.equal(h.state.namespaceLoading.value,true)
+ requests[1].resolve({data:{namespaces:['迟到数据']}})
+ await settle()
+ assert.deepEqual(h.state.namespaces.value,['team','prod'])
+ assert.equal(h.state.namespaceError.value,'读取失败')
+
+ requests[2].resolve({data:{namespaces:['team','next']}})
+ await refresh
+ assert.equal(h.state.namespaceLoading.value,false)
+ assert.equal(h.state.namespaceError.value,'')
+ assert.deepEqual(h.state.namespaces.value,['team','next'])
+ assert.deepEqual(h.state.selectedNamespaces.value,['team'])
 })

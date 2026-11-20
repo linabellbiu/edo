@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, RefreshCw, Search } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import type { KubeCluster } from '@/api/kubernetes'
 
-const props = defineProps<{ clusters: KubeCluster[]; cluster: string; namespaces: string[]; selected: string[]; namespaced?: boolean; loading?: boolean; error?: string; disabled?: boolean }>()
+const props = defineProps<{ clusters: KubeCluster[]; cluster: string; namespaces: string[]; selected: string[]; namespaced?: boolean; ready?: boolean; loading?: boolean; error?: string; disabled?: boolean }>()
 const emit = defineEmits<{ cluster: [id: string, all?: boolean]; selection: [names: string[]]; retry: [] }>()
 const { t } = useI18n()
 const search = ref(''), expanded = ref(''),mobileOpen=ref(false)
@@ -54,11 +54,11 @@ function refreshNamespaces() {
           <button v-if="namespaceEnabled&&item.id===cluster" type="button" class="namespace-refresh" :aria-label="t(loading?'k8s.refreshingNamespaces':'k8s.refreshNamespaces',{name:item.name})" :title="t('k8s.refreshNamespaces',{name:item.name})" :aria-busy="Boolean(loading)" :disabled="disabled||!item.is_active||loading" @click="refreshNamespaces"><RefreshCw aria-hidden="true" :size="14" :class="{'is-spinning':loading}" /></button>
         </div>
         <div v-if="namespaceEnabled&&expanded===item.id&&item.id===cluster" class="namespace-children">
-          <div v-if="error" class="namespace-error" role="alert">{{ error }}</div>
           <div v-for="name in visibleNamespaces" :key="name" class="namespace-tree-item" :class="{selected:all||selected.includes(name),'is-disabled':disabled}">
             <a-checkbox :checked="all||selected.includes(name)" :disabled="disabled" :aria-label="name" @change="toggleNamespace(name,$event.target.checked)"><span :title="name">{{ name }}</span></a-checkbox>
           </div>
-          <p v-if="!loading&&!error&&!visibleNamespaces.length" class="namespace-empty">{{ t('k8s.noNamespaceMatches') }}</p>
+          <div v-if="error" class="namespace-error" role="alert">{{ error }}</div>
+          <p v-else-if="!visibleNamespaces.length&&ready!==false" class="namespace-empty">{{ t('k8s.noNamespaceMatches') }}</p>
         </div>
       </section>
       <p v-if="!visibleClusters.length" class="namespace-empty">{{ t(!clusters.length?'k8s.noCluster':namespaceEnabled?'k8s.noNamespaceMatches':'k8s.noClusterMatches') }}</p>

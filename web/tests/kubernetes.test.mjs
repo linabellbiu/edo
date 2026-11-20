@@ -194,6 +194,9 @@ test('后台总览同步不闪加载，不重复请求；首屏仍有加载反�
  pending.shift()({data:{counts:{pods:{count:2,state:'ok'}}}});await sync;assert.equal(state.overview.value.counts.pods.count,2)
  state.overview.value=null;const initial=state.refreshOverview(true);assert.equal(state.overviewLoading.value,true)
  pending.shift()({data:{counts:{}}});await initial;assert.equal(state.overviewLoading.value,false)
+ state.overview.value=null;state.overviewSnapshotPending.value=true
+ const waiting=state.refreshOverview(true);assert.equal(state.overviewLoading.value,false)
+ pending.shift()({data:{counts:{}}});await waiting;assert.equal(state.overviewSnapshotPending.value,false)
 })
 test('所有资源使用各自的关键列，不再用通用配置列代替',()=>{
  for(const type of api.kubeTypes){

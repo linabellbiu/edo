@@ -68,7 +68,7 @@ onBeforeUnmount(()=>{disposed=true;resize?.disconnect();charts.forEach(chart=>ch
 
 <template>
   <section ref="root" class="cluster-overview" :aria-busy="loading">
-    <a-alert v-if="error" type="warning" show-icon :message="error" />
+    <a-alert v-if="error&&!data" type="warning" show-icon :message="error" />
     <a-alert v-if="monitoringNotice" :type="monitoringNotice.type" show-icon :message="monitoringNotice.message" role="status" aria-live="polite" />
     <a-skeleton v-if="!data&&loading" active :paragraph="{rows:4}" />
     <template v-else-if="data">

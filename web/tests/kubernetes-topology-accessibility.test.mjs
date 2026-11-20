@@ -22,12 +22,13 @@ test('节点角色标签关联真实 Ant combobox，多个实例和中英文均�
     const modules = {
       vue, 'vue-i18n': { useI18n: () => ({ t }) }, 'lucide-vue-next': new Proxy({}, { get: () => icon }),
       '@/utils/kubernetesTopology': {}, '@/utils/time': { formatDateTime: value => value },
+      './KubeSyncStatus.vue': { render: () => null },
     }
     new Function('require', 'module', 'exports', code)(name => {
       assert.ok(Object.hasOwn(modules, name), `未登记的组件依赖 ${name}`)
       return modules[name]
     }, module, module.exports)
-    const props = { data: null, loading: false, error: '' }
+    const props = { data: null, loading: false, refreshing: false, error: '' }
     const app = vue.createSSRApp({ render: () => vue.h('div', [vue.h(module.exports.default, props), vue.h(module.exports.default, props)]) })
     app.component('a-input', Input); app.component('a-select', Select)
     for (const name of ['a-button', 'a-empty', 'a-alert', 'a-spin']) app.component(name, { render: () => null })

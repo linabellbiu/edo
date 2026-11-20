@@ -10,10 +10,12 @@ import {
 } from '@/utils/kubernetesTopology'
 import type { NodeRole } from '@/utils/kubernetesRoles'
 import { formatDateTime } from '@/utils/time'
+import KubeSyncStatus from './KubeSyncStatus.vue'
 
 const props = withDefaults(defineProps<{
   data: NodeTopologyData | null
   loading: boolean
+  refreshing: boolean
   error: string
   clusterName?: string
   endpoint?: string
@@ -64,7 +66,7 @@ const roleOptions = computed(() => [
 
 function clearFilters() { query.value = ''; role.value = 'all' }
 function select(entry: NodeTopologyEntry) { if (!props.disabled) emit('select', entry.node) }
-function refresh() { if (!props.loading && !props.disabled) emit('refresh') }
+function refresh() { if (!props.refreshing && !props.disabled) emit('refresh') }
 function meters(entry: NodeTopologyEntry) { return topologyMeters(entry, props.data?.collected_at ?? '', Boolean(props.error), now.value) }
 function metricName(key: string) { return key === 'cpu' ? 'CPU' : key === 'memory' ? t('k8sTopology.memory') : 'Pod' }
 function metricHint(meter: TopologyMeter) {
@@ -85,11 +87,12 @@ function nodeDescription(entry: NodeTopologyEntry) {
     <header class="topology-toolbar">
       <div class="topology-title"><Network :size="17" /><strong>{{ t('k8sTopology.title') }}</strong><span>{{ t('k8sTopology.nodeCount', { count: nodes.length }) }}</span></div>
       <div class="topology-filters"><a-input v-model:value="query" allow-clear :placeholder="t('k8sTopology.search')" :aria-label="t('k8sTopology.search')"><template #prefix><Search :size="14" /></template></a-input><label :for="roleSelectID" class="topology-role-label">{{ t('k8sTopology.roles') }}</label><a-select :id="roleSelectID" v-model:value="role" :options="roleOptions" :aria-label="t('k8sTopology.roles')" /></div>
-      <a-button :loading="loading" :disabled="disabled" @click="refresh"><RefreshCw :size="14" />{{ t('k8sTopology.refresh') }}</a-button>
+      <KubeSyncStatus :message="data ? error : ''" :failed="Boolean(error)" />
+      <a-button :loading="refreshing" :disabled="disabled" @click="refresh"><RefreshCw :size="14" />{{ t('k8sTopology.refresh') }}</a-button>
     </header>
-    <a-alert v-if="error" class="topology-alert" type="error" show-icon :message="t('k8sTopology.loadFailed')" :description="error"><template #action><a-button size="small" :disabled="disabled" @click="refresh">{{ t('k8sTopology.refresh') }}</a-button></template></a-alert>
+    <a-alert v-if="error&&!data" class="topology-alert" type="error" show-icon :message="t('k8sTopology.loadFailed')" :description="error"><template #action><a-button size="small" :disabled="disabled" @click="refresh">{{ t('k8sTopology.refresh') }}</a-button></template></a-alert>
     <div class="topology-meta"><span>{{ t('k8sTopology.visibleCount', { visible: visibleNodes.length, total: nodes.length }) }}</span><span v-if="data"><Clock3 :size="12" />{{ t('k8sTopology.updatedAt', { time: formatDateTime(data.collected_at) }) }}</span></div>
-    <div v-if="!data && loading" class="topology-loading" role="status"><a-spin /><span>{{ t('k8sTopology.loading') }}</span></div>
+    <div v-if="!data && loading && !error" class="topology-loading" role="status"><a-spin /><span>{{ t('k8sTopology.loading') }}</span></div>
     <a-empty v-else-if="!data" class="topology-empty" :description="t(error ? 'k8sTopology.loadFailed' : 'k8sTopology.noCluster')" />
     <template v-else>
       <div v-if="hasMissingMetrics || unknownHosts" class="topology-notices"><span v-if="hasMissingMetrics"><CircleAlert :size="13" />{{ t(metricsStale ? 'k8sTopology.staleMetrics' : 'k8sTopology.missingMetrics') }}</span><span v-if="unknownHosts"><Server :size="13" />{{ t('k8sTopology.hostsUnverified', { count: unknownHosts }) }}</span></div>

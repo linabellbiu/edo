@@ -134,9 +134,10 @@ test('点击只传递真实节点详情对象，页面禁用或刷新中不触�
   assert.equal(fixture.events.length, 1)
   fixture.props.disabled = false
   fixture.props.loading = true
+  fixture.props.refreshing = true
   fixture.state.refresh()
   assert.equal(fixture.events.length, 1)
-  fixture.props.loading = false
+  fixture.props.refreshing = false
   fixture.state.refresh()
   assert.equal(fixture.events[1].name, 'refresh')
   fixture.stop()
