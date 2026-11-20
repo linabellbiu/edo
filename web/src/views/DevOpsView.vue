@@ -43,7 +43,8 @@ import { useAuthStore } from '@/stores/auth'
 import type { GitCredential as Credential } from '@/types/credential'
 import type { PipelineExecutionGraph, Workflow as PipelineWorkflow } from '@/types/pipeline'
 import { formatGitReference } from '@/utils/gitReference'
-import { deploymentHostNodeID, kubernetesInstancePlan, retainCurrentDeploymentState, selectCurrentDeploymentInstances, selectLatestFailedDeploymentAttempts, workflowDeploymentIDs, type InstancePlan } from '@/utils/deploymentInstances'
+import { applicationDeploymentLocations, deploymentHostNodeID, kubernetesInstancePlan, retainCurrentDeploymentState, selectCurrentDeploymentInstances, selectLatestFailedDeploymentAttempts, workflowDeploymentIDs, type InstancePlan } from '@/utils/deploymentInstances'
+import DeploymentLocationHistory from '@/components/DeploymentLocationHistory.vue'
 import type { RollbackRecord } from '@/types/deploymentRollback'
 import type { PipelineRunApproval } from '@/types/pipelineApproval'
 import { deploymentRollbackEn, deploymentRollbackZh } from '@/locales/deploymentRollback'
@@ -75,7 +76,7 @@ interface Application extends ResourceRecord{id:string;name:string;description:s
 interface Run extends ResourceRecord,PipelineRunProgressRecord{retry_allowed?:boolean;approval?:PipelineRunApproval;row_id?:number;id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};selected_artifacts?:Array<{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string}>;trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
 interface DeploymentTarget extends ResourceRecord{id:string;platform:string;environment_id:string;host_ids?:string[]|null;host_id:string;runtime_id:string;namespace?:string;workload_name?:string;container_name?:string}
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
-interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
+interface DeploymentRecord extends ResourceRecord{id:string;row_id?:number;pipeline_run_id?:string;application_id?:string;workflow_id?:string;workflow_name?:string;task_name?:string;host_name?:string;compose_project?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
 interface DockerContainerRecord extends ResourceRecord{id:string;names:string[];state:string;status:string}
 interface ShellControlConfiguration{deployment_id:string;restart_script:string;stop_script:string;timeout_seconds:number}
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
@@ -146,20 +147,26 @@ let deliveryRefreshTimer: ReturnType<typeof setTimeout>|undefined
 let applicationSyncOnly=false
 const relativeTimeNow=ref(Date.now())
 let planExecutionController:AbortController|null=null
-const planExecutionSelectedProject=ref(typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||'')
+function selectedResourceProject(){return typeof localStorage==='undefined'?'':localStorage.getItem?.('edo.project')||''}
+const planExecutionSelectedProject=ref(selectedResourceProject())
 const planExecutionScopeIdentity=computed(()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,[...(auth.user?.permissions||[])].sort(),planExecutionSelectedProject.value,props.section]))
 const planExecutionRequests=new Set<AbortController>()
 let planExecutionOpenedScope:PlanExecutionScope|undefined
 let planExecutionEpoch=0,planExecutionDisposed=false
 let resourceLoadedScope='',resourceLoadingScope='',resourceRefreshRevision=0
 const resourceErrors=ref<Record<string,string>>({}),resourcePending=ref<Record<string,boolean>>({})
+const locationHosts=ref<{id:string;name:string}[]>([]),locationClusters=ref<{id:string;name:string}[]>([])
+const hostsByID=computed(()=>new Map(locationHosts.value.map(item=>[item.id,item.name])))
+const clustersByID=computed(()=>new Map(locationClusters.value.map(item=>[item.id,item.name])))
+const locationCatalogPermissions=['cluster.read','kubernetes.workload.read','kubernetes.node.read','kubernetes.network.read','kubernetes.storage.read','kubernetes.config.read','kubernetes.rbac.read','kubernetes.rbac.manage']
+const resourceReady=ref<Record<string,boolean>>({})
 const resourceRequests=new Map<string,{scope:string;controller:AbortController;promise:Promise<void>;again:boolean}>()
-const resourceLabels:Record<string,string>={applications:'应用',repositories:'代码仓库','git-credentials':'仓库凭据','build-plans':'构建方案','image-registries':'镜像仓库','pipeline-runs':'流水线运行','release-plans':'发布计划',deployments:'部署记录','deployment-plans':'部署方案','workflow-templates':'流水线模板'}
+const resourceLabels:Record<string,string>={applications:'应用',repositories:'代码仓库','git-credentials':'仓库凭据','build-plans':'构建方案','image-registries':'镜像仓库','pipeline-runs':'流水线运行','release-plans':'发布计划',deployments:'部署记录','deployment-plans':'部署方案','workflow-templates':'流水线模板',hosts:'主机名称','kubernetes/clusters':'集群名称'}
 function cancelResourceReads(){for(const request of resourceRequests.values())request.controller.abort();resourceRequests.clear();resourcePending.value={};resourceErrors.value={}}
 let resourceStatusDialog:ReturnType<typeof Modal.confirm>|undefined
-function resourceScopeKey(){return JSON.stringify([planExecutionScopeIdentity.value,planExecutionEpoch,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||''])}
+function resourceScopeKey(){return JSON.stringify([planExecutionScopeIdentity.value,planExecutionEpoch,selectedResourceProject()])}
 function resourceReadOptions(){return {headers:{'X-EDO-Project-ID':planExecutionSelectedProject.value}}}
-function resetResourceStatus(){cancelResourceReads();if(resourceStatusDialog)resourceMutationID.value='';resourceStatusDialog?.destroy();resourceStatusDialog=undefined;resourceLoadedScope='';resourceLoadingScope='';resourceRefreshRevision++;loading.value=false;if(['applications','repositories'].includes(props.section)){applications.value=[];repositories.value=[];closeApplicationDetails()}}
+function resetResourceStatus(){cancelResourceReads();if(resourceStatusDialog)resourceMutationID.value='';resourceStatusDialog?.destroy();resourceStatusDialog=undefined;resourceLoadedScope='';resourceLoadingScope='';resourceRefreshRevision++;loading.value=false;resourceReady.value={};locationHosts.value=[];locationClusters.value=[];if(['applications','repositories'].includes(props.section)){applications.value=[];repositories.value=[];deployments.value=[];deploymentPlans.value=[];runs.value=[];closeApplicationDetails()}}
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const workflowPickerOpen=ref(false)
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
@@ -197,7 +204,7 @@ let resourceFormRevision=0,resourceFormRequest:AbortController|undefined
 function resourceFormIdentityReady(){
  const projectID=planExecutionSelectedProject.value
  return !planExecutionDisposed&&Boolean(auth.user?.id&&projectID)&&auth.user?.project_id===projectID
-  &&typeof localStorage!=='undefined'&&localStorage.getItem('edo.project')===projectID
+  &&selectedResourceProject()===projectID
   &&auth.canAny([resourceFormReadPermission.value])
 }
 function canOpenResourceForm(editing:boolean){return resourceFormIdentityReady()&&(editing?canUpdate.value:canCreate.value)}
@@ -344,6 +351,18 @@ function visibleDeploymentRunIDs(){
  return runEntryRecords(runDrawerEntry.value).filter(run=>expandedRunIDs.value.includes(run.id)).map(run=>run.id)
 }
 function runHasDeployments(runID:string){return canReadDeployments.value&&Boolean(runDeploymentRecords.value[runID]?.length)}
+function mergeDeploymentRecords(records:DeploymentRecord[]){
+ const incoming=new Map(records.map(record=>[record.id,record]))
+ const retained:DeploymentRecord[]=[]
+ for(const previous of deployments.value){
+  const next=incoming.get(previous.id)
+  if(next)incoming.set(next.id,{...previous,...next,application_id:next.application_id||previous.application_id})
+  else retained.push(previous)
+ }
+ const merged=[...incoming.values()]
+ deployments.value=[...merged,...retained]
+ return merged
+}
 async function loadRunDeploymentRecords(runID:string){
  if(!visibleDeploymentRunIDs().includes(runID))return
  if(runDeploymentRequests.has(runID))return
@@ -356,9 +375,7 @@ async function loadRunDeploymentRecords(runID:string){
   const response=await client.get<{deployments:DeploymentRecord[]}>(`/deployments?pipeline_run_id=${encodeURIComponent(runID)}&limit=200`,{signal:controller.signal,timeout:35_000})
   if(!current())return
   const records=(response.data.deployments||[]).filter(record=>record.pipeline_run_id===runID)
-  runDeploymentRecords.value[runID]=records
-  const ids=new Set(records.map(record=>record.id))
-  deployments.value=[...records,...deployments.value.filter(record=>!ids.has(record.id))]
+  runDeploymentRecords.value[runID]=mergeDeploymentRecords(records)
  }catch(error){
   if(!current())return
   runDeploymentRecords.value[runID]=[]
@@ -401,49 +418,68 @@ const activeApplicationID=computed(()=>props.section==='applications'&&typeof ro
 const activeReleasePlanID=computed(()=>props.section==='release-plans'&&typeof route.query.plan==='string'?route.query.plan:'')
 const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'is_active',label:'状态'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
 
-function applicationInstanceScope(application:Application){
+function applicationInstanceScope(application:Application,records:DeploymentRecord[]){
  const plans:InstancePlan[]=[]
- const ids=new Set<string>()
- const latest=(planID:string,targetID:string,hostID?:string)=>deployments.value.filter(record=>record.application_id===application.id&&record.deployment_plan_id===planID&&record.target_id===targetID&&record.status==='succeeded'&&(!hostID||record.host_id===hostID)).sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at))[0]
+ const ids=new Set<string>(),unresolved=new Set<string>()
+ const recordsByTarget=new Map<string,DeploymentRecord[]>()
+ for(const record of [...records].sort((a,b)=>(b.row_id||0)-(a.row_id||0)||Date.parse(b.created_at)-Date.parse(a.created_at))){
+  if(record.application_id&&record.application_id!==application.id)continue
+  const key=JSON.stringify([record.deployment_plan_id,record.target_id])
+  const group=recordsByTarget.get(key)
+  if(group)group.push(record)
+  else recordsByTarget.set(key,[record])
+ }
+ const latest=(planID:string,targetID:string,hostID?:string,successOnly=true)=>recordsByTarget.get(JSON.stringify([planID,targetID]))?.find(record=>(!successOnly||record.status==='succeeded')&&(!hostID||record.host_id===hostID))
  for(const workflow of application.workflows||[])for(const stage of workflow.stages)for(const task of stage.tasks){
   if(task.type!=='deploy')continue
-  if(task.config.inline_deployment_plan){
-   const hostIDs=task.config.inline_deployment_plan.deployment_target?.host_ids
+  const add=(plan:InstancePlan)=>plans.push({...plan,workflowName:workflow.name,taskName:task.name})
+  const inline=task.config.inline_deployment_plan
+  if(inline){
+   const target=inline.deployment_target
+   const hostIDs=target?.host_ids
    const targets=hostIDs==null?[{nodeID:task.id,hostID:undefined}]:[...new Set(hostIDs)].map(hostID=>({nodeID:deploymentHostNodeID(task.id,hostID),hostID}))
    for(const {nodeID,hostID} of targets){
     const {planID,targetID}=workflowDeploymentIDs(workflow.id,nodeID)
     ids.add(planID)
-    const current=latest(planID,targetID,hostID)
-    if(current)plans.push({id:planID,kind:task.config.inline_deployment_plan.kind,deployment_target:{id:targetID,platform:current.platform,environment_id:current.environment_id,host_id:current.host_id,runtime_id:current.runtime_id,namespace:current.namespace,workload_name:current.workload_name,container_name:current.container_name}})
+    if(!target)continue
+    if(inline.kind==='kubernetes'){
+     if(target.runtime_id&&target.namespace&&target.workload_name&&target.container_name)
+      add({id:planID,kind:inline.kind,deployment_target:{...target,id:targetID,platform:'kubernetes'}})
+     continue
+    }
+    const current=latest(planID,targetID,hostID||target.host_id,!hostID&&!target.host_id)
+    if(hostID||target.host_id||target.runtime_id){
+     add({id:planID,kind:inline.kind,service_name:inline.service_name,deployment_target:{...target,id:targetID,platform:target.platform,host_id:hostID||target.host_id,environment_id:target.environment_id??current?.environment_id,runtime_id:target.runtime_id||current?.runtime_id}})
+    }else if(current){
+     // 旧任务只保存了主机组，实际执行位置只能由成功发布记录确定。
+     add({id:planID,kind:inline.kind,deployment_target:{...current,id:targetID}})
+    }
    }
   }else if(task.config.deployment_plan_id){
    ids.add(task.config.deployment_plan_id)
    const plan=deploymentPlans.value.find(plan=>plan.id===task.config.deployment_plan_id)
-   if(!plan)continue
+   if(!plan){unresolved.add(task.config.deployment_plan_id);unresolved.add(workflowDeploymentIDs(workflow.id,task.id).planID);continue}
    if(plan.kind==='kubernetes'||task.config.deployment_override?.plan_snapshot?.kind==='kubernetes'){
     const effective=kubernetesInstancePlan(workflow.id,task.id,plan,task.config.deployment_override)
     if(effective){
      ids.add(effective.id)
-     plans.push(effective)
+     add(effective)
     }
     continue
    }
    const target=plan.deployment_target
-   if(target?.host_ids==null){plans.push(plan);continue}
+   if(target?.host_ids==null){if(target)add(plan);continue}
    for(const hostID of new Set(target.host_ids)){
     const targetID=deploymentHostNodeID(target.id,hostID)
     const current=latest(plan.id,targetID,hostID)
-    if(current)plans.push({...plan,deployment_target:{...target,id:targetID,host_id:hostID,runtime_id:current.runtime_id}})
+    add({...plan,deployment_target:{...target,id:targetID,host_id:hostID,runtime_id:current?.runtime_id||''}})
    }
   }
  }
- return {plans,ids}
+ return {plans,ids,unresolved}
 }
-function currentApplicationDeployments(application:Application,relatedRuns:Run[]){const {plans,ids}=applicationInstanceScope(application);return selectCurrentDeploymentInstances(application.id,deployments.value,new Set(relatedRuns.map(v=>v.id)),ids,plans)}
-function failedApplicationDeployments(application:Application){const {plans,ids}=applicationInstanceScope(application);return selectLatestFailedDeploymentAttempts(application.id,deployments.value,new Set(runs.value.filter(v=>v.application_id===application.id).map(v=>v.id)),ids,plans)}
-
 const applicationCards=computed(()=>applications.value.map(application=>{
- const related=runs.value.filter(run=>run.application_id===application.id).sort((left,right)=>Date.parse(right.created_at)-Date.parse(left.created_at))
+ const related=runs.value.filter(run=>run.application_id===application.id).sort((left,right)=>(right.row_id||0)-(left.row_id||0)||Date.parse(right.created_at)-Date.parse(left.created_at))
  const run=related[0]
  const repository=application.repository?.id?application.repository:repositories.value.find(item=>item.id===application.repository_id)
  const workflowSummaries=(application.workflows||[]).map(workflow=>{
@@ -459,9 +495,16 @@ const applicationCards=computed(()=>applications.value.map(application=>{
    source:workflowSourceLabel(workflow),
   }
  })
- const deploymentInstances=currentApplicationDeployments(application,related)
+ const runIDs=new Set(related.map(item=>item.id))
+ const records=deployments.value.filter(record=>record.application_id?record.application_id===application.id:runIDs.has(record.pipeline_run_id||''))
+ const {plans,ids,unresolved}=applicationInstanceScope(application,records)
+ const deploymentInstances=selectCurrentDeploymentInstances(application.id,records,runIDs,ids,plans)
+ const locations=applicationDeploymentLocations(application.id,records,runIDs,plans,deploymentInstances,unresolved)
+ const failed=selectLatestFailedDeploymentAttempts(application.id,records,runIDs,ids,plans)
+ const pendingAttempts=new Set(locations.waiting.map(item=>item.attempt?.id))
+ const countReady=resourceReady.value.deployments&&(!application.workflows?.some(workflow=>workflow.stages.some(stage=>stage.tasks.some(task=>task.config?.deployment_plan_id)))||resourceReady.value['deployment-plans'])
  return {
-  application,run,repository,workflowSummaries,deploymentInstances,
+  application,run,repository,workflowSummaries,deploymentInstances,locations,failed:failed.filter(record=>!pendingAttempts.has(record.id)),countReady,
   enabledWorkflowCount:workflowSummaries.filter(item=>item.workflow.is_active).length,
   state:applicationRunStatus(run),sync:applicationSyncStatus(application.sync_status),
  }
@@ -498,7 +541,7 @@ const applicationColumns=computed(()=>[
  {key:'sync',title:t('applicationCard.codeStatus'),width:125},
  {key:'resources',title:t('applicationWorkspace.columns.resources'),width:285},
  {key:'actions',title:t('applicationWorkspace.columns.actions'),width:165,fixed:'right' as const,align:'right' as const},
-])
+].filter(column=>column.key!=='actions'||canExecute.value||canUpdate.value))
 const applicationWorkflowColumns=computed(()=>[
  {key:'name',title:t('applicationCard.workflow'),width:300},
  {key:'enabled',title:t('applicationWorkspace.columns.status'),width:75},
@@ -506,7 +549,17 @@ const applicationWorkflowColumns=computed(()=>[
  {key:'template',title:t('applicationWorkspace.columns.template'),width:160},
  {key:'tasks',title:t('applicationWorkspace.columns.tasks'),width:175},
  {key:'actions',title:t('applicationWorkspace.columns.actions'),width:166,fixed:'right' as const,align:'right' as const},
-])
+].filter(column=>!compactWorkflows.value||['name','actions'].includes(column.key)).map(column=>compactWorkflows.value
+ ? {...column,width:column.key==='actions'?112:undefined,fixed:undefined} : column))
+const compactWorkflows=ref(false)
+let workflowMedia:MediaQueryList|undefined
+function syncWorkflowWidth(){compactWorkflows.value=Boolean(workflowMedia?.matches)}
+onMounted(()=>{
+ workflowMedia=window.matchMedia?.('(max-width: 760px)')
+ syncWorkflowWidth()
+ workflowMedia?.addEventListener('change',syncWorkflowWidth)
+})
+onBeforeUnmount(()=>workflowMedia?.removeEventListener('change',syncWorkflowWidth))
 const workflowRunPanels=new Map<string,InstanceType<typeof ApplicationWorkflowRuns>>()
 function setWorkflowRunPanel(workflowID:string,panel:unknown){
  if(panel)workflowRunPanels.set(workflowID,panel as InstanceType<typeof ApplicationWorkflowRuns>)
@@ -574,6 +627,25 @@ function deploymentKind(record:DeploymentRecord){
 }
 function deploymentKindLabel(record:DeploymentRecord){return record.deployment_plan_kind==='compose_stack'?'Docker Compose':t(`applicationCard.deploymentKind.${deploymentKind(record)}`)}
 function deploymentInstanceName(record:DeploymentRecord){return record.container_name||record.compose_service||record.workload_name||record.target_name||t('applicationCard.unknownInstance')}
+function locationTitle(target:NonNullable<InstancePlan['deployment_target']>,resource?:string,hostName?:string){
+ if(target.platform==='kubernetes')return [clustersByID.value.get(target.runtime_id||'')||target.runtime_id,target.namespace,target.workload_name].filter(Boolean).join(' / ')
+ const host=hostsByID.value.get(target.host_id||'')||hostName||target.host_id||target.runtime_id
+ return [host,resource].filter(Boolean).join(' · ')
+}
+function recordLocation(record:DeploymentRecord){
+ const name=record.compose_project||(record.deployment_plan_kind==='compose_stack'?deploymentRuntimeStates.value[record.id]?.name:record.compose_service||record.workload_name)
+ return locationTitle(record,name,record.host_name)||deploymentInstanceName(record)
+}
+function recordSource(card:ApplicationCard,record:DeploymentRecord){
+ const workflow=record.workflow_name||card.workflowSummaries.find(item=>item.workflow.id===record.workflow_id)?.workflow.name||record.workflow_id
+ return [workflow,record.task_name].filter(Boolean).join(' / ')||'来源未记录'
+}
+function waitingStatus(record?:DeploymentRecord):StatusMeta{
+ if(!record||record.status==='succeeded')return {tone:'neutral',label:'待部署',live:false}
+ if(record.status==='awaiting_approval')return {tone:'warning',label:'待审核',live:false}
+ if(record.status==='canceled')return {tone:'neutral',label:'已取消',live:false}
+ return deploymentStatus(record)
+}
 function deploymentImageLabel(record:DeploymentRecord){return record.image_display||record.image||t('applicationCard.noImage')}
 function deploymentStatus(record:DeploymentRecord):StatusMeta{
  const states:Record<string,StatusMeta>={
@@ -670,9 +742,10 @@ function completeRollbackRecord(record:RollbackRecord){
 async function refreshRollbackRecords(){
  const pipelineRunID=rollbackDialog.open?rollbackDialog.pipelineRunID:releasePlanResources.open?releasePlanResources.pipelineRunID:''
  if(!canReadDeployments.value||!pipelineRunID)return
- const response=await client.get<{deployments:DeploymentRecord[]}>(`/deployments?pipeline_run_id=${encodeURIComponent(pipelineRunID)}&limit=200`)
- const records=response.data.deployments||[],ids=new Set(records.map(record=>record.id))
- deployments.value=[...records,...deployments.value.filter(record=>!ids.has(record.id))]
+ const scope=resourceScopeKey()
+ const response=await client.get<{deployments:DeploymentRecord[]}>(`/deployments?pipeline_run_id=${encodeURIComponent(pipelineRunID)}&limit=200`,resourceReadOptions())
+ if(scope!==resourceScopeKey()||!canReadDeployments.value||!(rollbackDialog.open&&rollbackDialog.pipelineRunID===pipelineRunID||releasePlanResources.open&&releasePlanResources.pipelineRunID===pipelineRunID))return
+ const records=mergeDeploymentRecords((response.data.deployments||[]).filter(record=>record.pipeline_run_id===pipelineRunID))
  if(releasePlanResources.open&&pipelineRunID===releasePlanResources.pipelineRunID)releasePlanResources.records=records
 }
 async function loadDeploymentRuntime(record:DeploymentRecord,force=false){
@@ -1196,20 +1269,21 @@ function changeRunPage(pagination:{current?:number;pageSize?:number}){
  void router.push({query:pipelineRunRouteQuery(route.query,filters)})
 }
 
-function readResourceList<T>(key:string,field:string,target:Ref<T[]>,permission:string):Promise<void>{
- if(!auth.canAny([permission])){target.value=[];return Promise.resolve()}
+function readResourceList<T>(key:string,field:string,target:Ref<T[]>,permission:string|string[],path='/'+key):Promise<void>{
+ const permissions=Array.isArray(permission)?permission:[permission]
+ if(!auth.canAny(permissions)){target.value=[];delete resourceReady.value[key];return Promise.resolve()}
  const scope=JSON.stringify([resourceScopeKey(),props.section,releaseView.value]),existing=resourceRequests.get(key)
  if(existing?.scope===scope){existing.again=true;return existing.promise}
  existing?.controller.abort()
  const controller=new AbortController()
- const current=()=>!planExecutionDisposed&&!controller.signal.aborted&&resourceRequests.get(key)?.controller===controller&&scope===JSON.stringify([resourceScopeKey(),props.section,releaseView.value])&&auth.canAny([permission])
+ const current=()=>!planExecutionDisposed&&!controller.signal.aborted&&resourceRequests.get(key)?.controller===controller&&scope===JSON.stringify([resourceScopeKey(),props.section,releaseView.value])&&auth.canAny(permissions)
  resourcePending.value[key]=true;delete resourceErrors.value[key]
  const promise=(async()=>{
   try{
-   const {data}=await client.get<Record<string,T[]>>(`/${key}${key==='pipeline-runs'||key==='deployments'?'?limit=200':''}`,{...resourceReadOptions(),signal:controller.signal})
-   if(current()){target.value=data[field]||[];if(key===props.section)resourceLoadedScope=resourceScopeKey()}
+   const {data}=await client.get<Record<string,T[]>>(path,{...resourceReadOptions(),signal:controller.signal})
+   if(current()){target.value=data[field]||[];resourceReady.value[key]=true;if(key===props.section)resourceLoadedScope=resourceScopeKey()}
   }catch(error){if(current()){resourceErrors.value[key]=apiErrorMessage(error);if(key===props.section)resourceLoadedScope=''}}
-  finally{const request=resourceRequests.get(key);if(request?.controller===controller){const again=current()&&request.again;resourceRequests.delete(key);delete resourcePending.value[key];if(again)void readResourceList(key,field,target,permission)}}
+  finally{const request=resourceRequests.get(key);if(request?.controller===controller){const again=current()&&request.again;resourceRequests.delete(key);delete resourcePending.value[key];if(again)void readResourceList(key,field,target,permission,path)}}
  })()
  resourceRequests.set(key,{scope,controller,promise,again:false})
  return promise
@@ -1220,9 +1294,11 @@ const resourceReaders:Record<string,()=>Promise<void>>={
  'git-credentials':()=>readResourceList('git-credentials','credentials',credentials,'credential.read'),
  'build-plans':()=>readResourceList('build-plans','build_plans',buildPlans,'build_plan.read'),
  'image-registries':()=>readResourceList('image-registries','image_registries',registries,'image_registry.read'),
- 'pipeline-runs':()=>readResourceList('pipeline-runs','pipeline_runs',runs,'pipeline_run.read'),
+ 'pipeline-runs':()=>readResourceList('pipeline-runs','pipeline_runs',runs,'pipeline_run.read',props.section==='applications'?'/pipeline-runs/latest-by-workflow':'/pipeline-runs?limit=200'),
  'release-plans':()=>readResourceList('release-plans','release_plans',releasePlans,'release_plan.read'),
- deployments:()=>readResourceList('deployments','deployments',deployments,'deployment.read'),
+ deployments:()=>readResourceList('deployments','deployments',deployments,'deployment.read',props.section==='applications'?'/deployments/locations':'/deployments?limit=200'),
+ hosts:()=>props.section==='applications'&&canReadDeployments.value?readResourceList('hosts','hosts',locationHosts,'deployment.read'):Promise.resolve(),
+ 'kubernetes/clusters':()=>props.section==='applications'&&canReadDeployments.value?readResourceList('kubernetes/clusters','clusters',locationClusters,locationCatalogPermissions):Promise.resolve(),
  'deployment-plans':()=>readResourceList('deployment-plans','deployment_plans',deploymentPlans,'deployment_plan.read'),
  'workflow-templates':()=>readResourceList('workflow-templates','workflow_templates',workflowTemplates,'workflow.read'),
 }
@@ -1497,7 +1573,7 @@ function registryRequestPayload(){return {...registryForm,endpoint:dockerHubRegi
 type ArtifactRequestKind='list'|'upload'|'download'
 const artifactRequests=new Map<ArtifactRequestKind,AbortController>()
 const artifactIdentity=computed(()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,planExecutionSelectedProject.value,props.section]))
-function artifactScopeKey(){return JSON.stringify([artifactIdentity.value,selectedBuildPlanID.value,artifactApplicationID.value,buildPlanView.value,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')])}
+function artifactScopeKey(){return JSON.stringify([artifactIdentity.value,selectedBuildPlanID.value,artifactApplicationID.value,buildPlanView.value,selectedResourceProject()])}
 function canUseArtifacts(upload=false){
  if(props.section!=='build-plans'||buildPlanView.value!=='artifacts'||!resourceFormIdentityReady()||!auth.canAny(['artifact.read']))return false
  const plan=buildPlans.value.find(item=>item.id===selectedBuildPlanID.value)
@@ -1952,7 +2028,7 @@ function resetPlanExecution(){
 }
 function capturePlanExecutionScope():PlanExecutionScope|undefined{
  const projectID=planExecutionSelectedProject.value
- if(planExecutionDisposed||props.section!=='release-plans'||!auth.user||!projectID||auth.user.project_id!==projectID||typeof localStorage==='undefined'||localStorage.getItem('edo.project')!==projectID||!auth.canAny(['release_plan.execute'])||!auth.canAny(['application.read']))return
+ if(planExecutionDisposed||props.section!=='release-plans'||!auth.user||!projectID||auth.user.project_id!==projectID||selectedResourceProject()!==projectID||!auth.canAny(['release_plan.execute'])||!auth.canAny(['application.read']))return
  return {identity:planExecutionScopeIdentity.value,projectID,epoch:planExecutionEpoch}
 }
 function currentPlanExecutionScope(scope:PlanExecutionScope){
@@ -1966,7 +2042,7 @@ function resetPlanExecutionScope(){
  planExecutionRequests.clear()
  executingReleasePlanIDs.value=[]
 }
-function syncPlanExecutionProject(){planExecutionSelectedProject.value=typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||''}
+function syncPlanExecutionProject(){planExecutionSelectedProject.value=selectedResourceProject()}
 function releasePlanSubmissionBlocked(plan:ReleasePlan){return plan.is_active===false||plan.status==='canceled'||executingReleasePlanIDs.value.includes(plan.id)||['pending','running'].includes(plan.latest_execution?.status||'')}
 function planExecutionItems(){return planExecutionGroups.value.flatMap(group=>group.items)}
 function planApplicationBlockReason(application?:Application){
@@ -2319,7 +2395,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
   </div>
   <a-table v-if="visibleApplicationCards.length" class="apps-table resource-list-table" size="small" table-layout="fixed"
     :columns="applicationColumns" :data-source="visibleApplicationCards" :row-key="(card:ApplicationCard)=>card.application.id"
-    :pagination="applicationPagination" :scroll="{x:1515}" @change="changeApplicationPage"
+    :pagination="applicationPagination" :scroll="{x:applicationColumns.reduce((width,column)=>width+column.width,0)}" @change="changeApplicationPage"
     :row-class-name="applicationTableRowClass" :custom-row="applicationTableRow">
     <template #bodyCell="{column,record:card}">
       <div v-if="column.key==='application'" class="apps-identity">
@@ -2348,7 +2424,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
       </div>
       <div v-else-if="column.key==='resources'" class="apps-resource-switch">
         <button type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='workflows'}" :aria-label="t('applicationCard.linkedWorkflows')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='workflows'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'workflows')"><Workflow :size="14"/>{{ t('applicationCard.pipeline') }}<span class="apps-count">{{ card.workflowSummaries.length }}</span></button>
-        <button type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'}" :aria-label="t('applicationCard.deploymentInstances')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'deployments')"><Boxes :size="14"/>{{ t('applicationWorkspace.instances') }}<span v-if="canReadDeployments" class="apps-count">{{ card.deploymentInstances.length }}</span></button>
+        <button type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'}" :aria-label="t('applicationCard.deploymentInstances')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'deployments')"><Boxes :size="14"/>{{ t('applicationWorkspace.instances') }}<span v-if="canReadDeployments" class="apps-count">{{ card.countReady?card.deploymentInstances.length:'—' }}</span></button>
         <button v-if="auth.canAny(['delivery_variable.read'])" type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='environment'}" :aria-label="t('applicationWorkspace.environmentConfiguration')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='environment'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'environment')"><Settings2 :size="14" aria-hidden="true"/>{{ t('applicationWorkspace.environmentVariables') }}</button>
       </div>
       <ResourceRowActions v-else-if="column.key==='actions'" :more="canUpdate">
@@ -2361,7 +2437,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
     <template #actions>
       <template v-if="applicationDrawerCard">
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='workflows'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'workflows')">{{ t('resourceList.workflows') }} ({{ applicationDrawerCard.workflowSummaries.length }})</a-button>
-        <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='deployments'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'deployments')">{{ t('resourceList.instances') }} ({{ applicationDrawerCard.deploymentInstances.length }})</a-button>
+        <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='deployments'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'deployments')">{{ t('resourceList.instances') }} <template v-if="canReadDeployments">({{ applicationDrawerCard.countReady?applicationDrawerCard.deploymentInstances.length:'—' }})</template></a-button>
       </template>
     </template>
     <template v-for="card in applicationDrawerCard ? [applicationDrawerCard] : []" :key="card.application.id">
@@ -2369,23 +2445,26 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
       <section v-if="applicationDetailsOpen(card.application.id)" :id="`application-details-${card.application.id}`" class="apps-details-content resource-detail-section" :class="{'apps-instance-section':applicationDetailTab(card.application.id)==='deployments'}" :aria-label="card.application.name+' · '+(applicationDetailTab(card.application.id)==='environment'?'环境配置':applicationDetailTab(card.application.id)==='workflows'?t('applicationCard.linkedWorkflows'):t('applicationCard.deploymentInstances'))">
         <template v-if="applicationDetailTab(card.application.id)==='workflows'">
           <a-table v-if="card.workflowSummaries.length" class="apps-workflow-table" size="small" table-layout="fixed"
-            :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:1080}" :expanded-row-keys="card.workflowSummaries.map(item=>item.workflow.id)" :show-expand-column="false">
+            :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:compactWorkflows?'100%':1080}" :expanded-row-keys="card.workflowSummaries.map(item=>item.workflow.id)" :show-expand-column="false">
             <template #expandedRowRender="{record:item}">
               <ApplicationWorkflowRuns :ref="panel=>setWorkflowRunPanel(item.workflow.id,panel)" :application-id="card.application.id" :workflow-id="item.workflow.id"
                 :workflow-name="workflowDisplayName(item.workflow)" :scope-key="resourceScopeKey()" @logs="openLogs" @task-logs="openTaskLogs"/>
             </template>
             <template #bodyCell="{column:workflowColumn,record:item}">
-              <template v-if="workflowColumn.key==='name'"><a-tooltip :title="workflowDisplayName(item.workflow)" :mouse-enter-delay="0.1"><button type="button" class="apps-workflow-name" @click="openApplicationWorkflow(card.application.id,item.workflow.id)"><Workflow :size="15"/><span>{{ workflowDisplayName(item.workflow) }}</span></button></a-tooltip><span v-if="auth.canAny(['pipeline_run.read'])" class="apps-workflow-latest"><span class="apps-status" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/>{{ item.state.label }}</span><time>{{ formatApplicationTime(item.latestRun?.created_at) }}</time></span><span v-else class="apps-workflow-latest">无权查看运行记录</span></template>
+              <template v-if="workflowColumn.key==='name'"><a-tooltip :title="workflowDisplayName(item.workflow)" :mouse-enter-delay="0.1"><button type="button" class="apps-workflow-name" @click="openApplicationWorkflow(card.application.id,item.workflow.id)"><Workflow :size="15"/><span>{{ workflowDisplayName(item.workflow) }}</span></button></a-tooltip><span v-if="auth.canAny(['pipeline_run.read'])" class="apps-workflow-latest"><span class="apps-status" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/>{{ item.state.label }}</span><time>{{ formatApplicationTime(item.latestRun?.created_at) }}</time></span><span v-else class="apps-workflow-latest">无权查看运行记录</span>
+                <details v-if="compactWorkflows" class="apps-workflow-facts-mobile"><summary>流水线信息</summary><p>{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }} · {{ item.workflow.workflow_template?.name||t('applicationCard.customWorkflow') }}</p><p>{{ item.source }}</p><p>{{ t('applicationCard.taskCount',{count:item.taskCount}) }} · {{ t('applicationCard.buildCount',{count:item.buildCount}) }} · {{ t('applicationCard.deployCount',{count:item.deployCount}) }}</p></details>
+              </template>
               <span v-else-if="workflowColumn.key==='enabled'" class="apps-enabled" :class="{'is-inactive':!item.workflow.is_active}">{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</span>
               <a-tooltip v-else-if="workflowColumn.key==='source'" :title="item.source" :mouse-enter-delay="0.1"><span class="apps-cell-ellipsis">{{ item.source }}</span></a-tooltip>
               <a-tooltip v-else-if="workflowColumn.key==='template'" :title="item.workflow.workflow_template?.name||t('applicationCard.customWorkflow')" :mouse-enter-delay="0.1"><span class="apps-cell-ellipsis">{{ item.workflow.workflow_template?.name||t('applicationCard.customWorkflow') }}</span></a-tooltip>
               <span v-else-if="workflowColumn.key==='tasks'" class="apps-workflow-facts"><span>{{ t('applicationCard.taskCount',{count:item.taskCount}) }}</span><span>{{ t('applicationCard.buildCount',{count:item.buildCount}) }}</span><span>{{ t('applicationCard.deployCount',{count:item.deployCount}) }}</span></span>
               <span v-else-if="workflowColumn.key==='status'" class="apps-status" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/>{{ item.state.label }}</span>
               <time v-else-if="workflowColumn.key==='time'" class="apps-time">{{ formatApplicationTime(item.latestRun?.created_at) }}</time>
-              <ResourceRowActions v-else-if="workflowColumn.key==='actions'" :more="false">
+              <ResourceRowActions v-else-if="workflowColumn.key==='actions'" :more="compactWorkflows&&Boolean(item.latestRun&&canRetryRun(item.latestRun))">
                 <a-button v-if="auth.authorizationState==='ready'&&auth.canAny(['pipeline_run.read'])" size="small" aria-haspopup="dialog"
                   @click="workflowRunPanels.get(item.workflow.id)?.openHistory($event)">历史记录</a-button>
-                <a-button v-if="item.latestRun&&canRetryRun(item.latestRun)" size="small" type="primary" :loading="retryRunID===item.latestRun.id&&(retryLoading||retrySubmitting)" :disabled="retryLoading||retrySubmitting" @click="openRetry(item.latestRun)">重新执行</a-button>
+                <a-button v-if="!compactWorkflows&&item.latestRun&&canRetryRun(item.latestRun)" size="small" type="primary" :loading="retryRunID===item.latestRun.id&&(retryLoading||retrySubmitting)" :disabled="retryLoading||retrySubmitting" @click="openRetry(item.latestRun)">重新执行</a-button>
+                <template #more><a-menu-item v-if="item.latestRun&&canRetryRun(item.latestRun)" :disabled="retryLoading||retrySubmitting" @click="openRetry(item.latestRun)">重新执行</a-menu-item></template>
               </ResourceRowActions>
             </template>
           </a-table>
@@ -2404,8 +2483,8 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
               <span class="application-deployment-identity">
                 <span class="application-instance-icon" aria-hidden="true"><Box v-if="deploymentKind(record)==='docker'||deploymentKind(record)==='compose'"/><Layers3 v-else-if="deploymentKind(record)==='kubernetes'"/><Server v-else/></span>
                 <span class="application-instance-name">
-                  <strong>{{ deploymentInstanceName(record) }}</strong>
-                  <span v-if="record.target_name&&record.target_name!==deploymentInstanceName(record)">{{ record.target_name }}</span>
+                  <strong>{{ recordLocation(record) }}</strong>
+                  <span v-if="recordSource(card,record)">{{ recordSource(card,record) }}</span>
                 </span>
               </span>
               <span class="application-instance-kind">{{ deploymentKindLabel(record) }}</span>
@@ -2452,14 +2531,30 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
             </Transition>
           </div>
         </div>
-        <p v-else class="apps-empty-inline">{{ t('applicationCard.noDeployments') }}</p>
-        <section v-if="canReadDeployments&&failedApplicationDeployments(card.application).length" class="application-failed-deployments" :aria-label="rollbackT('rollback.recentFailure')">
+        <p v-else-if="!card.locations.waiting.length&&!card.locations.history.length" class="apps-empty-inline">{{ card.countReady?t('applicationCard.noDeployments'):resourceErrors.deployments||resourceErrors['deployment-plans']?'部署位置暂不可用':resourcePending.deployments||resourcePending['deployment-plans']?'正在读取部署位置…':'暂无可查看的部署位置' }}</p>
+        <template v-if="canReadDeployments&&resourceReady.deployments">
+          <article v-for="item in card.locations.waiting" :key="item.key" class="application-pending-target">
+            <header><strong>{{ locationTitle(item.plan.deployment_target!,item.plan.service_name||item.plan.deployment_target?.workload_name)||item.plan.taskName }}</strong>
+             <span class="apps-status" :class="`tone-${waitingStatus(item.attempt).tone}`"><i aria-hidden="true"/>{{ waitingStatus(item.attempt).label }}</span></header>
+            <small>{{ item.attempt&&item.attempt.status!=='succeeded'?recordSource(card,item.attempt):item.sources.join('、') }}</small>
+            <template v-if="item.attempt?.status==='failed'">
+              <span class="target-error">{{ item.attempt.error_message||rollbackT('rollback.failureFallback') }}</span>
+              <div class="resource-row-actions">
+                <a-button v-if="canControlDeployments&&deploymentKind(item.attempt)==='kubernetes'" size="small" @click="openDeploymentRollback(item.attempt)">{{ rollbackT('rollback.title') }}</a-button>
+                <a-button v-if="item.attempt.pipeline_run_id" size="small" @click="openReleasePlanApplicationResources('',card.application.id,item.attempt.pipeline_run_id)">{{ rollbackT('rollback.viewRecords') }}</a-button>
+              </div>
+            </template>
+          </article>
+          <DeploymentLocationHistory v-if="card.locations.history.length" :key="resourceScopeKey()+card.application.id" :scope-key="resourceScopeKey()"
+            :rows="card.locations.history.map(record=>({id:record.id,location:recordLocation(record),source:recordSource(card,record),deployedAt:record.finished_at||record.created_at,removedAt:record.runtime_deleted_at}))"/>
+        </template>
+        <section v-if="canReadDeployments&&card.failed.length" class="application-failed-deployments" :aria-label="rollbackT('rollback.recentFailure')">
           <h4>{{ rollbackT('rollback.recentFailure') }}</h4>
-          <article v-for="record in failedApplicationDeployments(card.application)" :key="record.id">
-            <strong>{{ deploymentInstanceName(record) }}</strong>
-            <p>{{ record.target_name }} · {{ record.namespace }} / {{ record.workload_name }} / {{ record.container_name }}</p>
+          <article v-for="record in card.failed" :key="record.id">
+            <strong>{{ recordLocation(record) }}</strong>
+            <p>{{ recordSource(card,record) }}</p>
             <p class="resource-secondary">{{ record.error_message || rollbackT('rollback.failureFallback') }}</p>
-            <a-button v-if="canControlDeployments" size="small" @click="openDeploymentRollback(record)"><RotateCw :size="13"/>{{ rollbackT('rollback.title') }}</a-button>
+            <a-button v-if="canControlDeployments&&['docker','kubernetes'].includes(deploymentKind(record))" size="small" @click="openDeploymentRollback(record)"><RotateCw :size="13"/>{{ rollbackT('rollback.title') }}</a-button>
             <a-button v-if="record.pipeline_run_id" size="small" @click="openReleasePlanApplicationResources('',card.application.id,record.pipeline_run_id)">{{ rollbackT('rollback.viewRecords') }}</a-button>
           </article>
         </section>

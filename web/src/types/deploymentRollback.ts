@@ -15,6 +15,7 @@ export interface RollbackPreview {
   namespace: string
   workload_name: string
   container_name: string
+  history?: { id: string; image: string; created_at: string }[]
 }
 
 export interface RollbackRecord {

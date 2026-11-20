@@ -531,7 +531,7 @@ test('失败部署与当前成功实例分开展示，回退保留来源运行�
   state.applicationSearch.value = 'web'
   state.applicationPageState.current = 2
   assert.deepEqual(card.deploymentInstances.map(item => item.id), ['good'])
-  assert.deepEqual(state.failedApplicationDeployments(app).map(item => item.id), ['failed'])
+  assert.deepEqual(card.failed.map(item => item.id), ['failed'])
   state.openDeploymentRollback(failed)
   assert.equal(state.rollbackDialog.sourceID, 'failed')
   assert.equal(state.rollbackDialog.pipelineRunID, 'failed-run')

@@ -67,6 +67,16 @@ func (h deploymentHandler) list(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deployments": records})
 }
 
+func (h deploymentHandler) locations(c *gin.Context) {
+	records, err := h.service.ListApplicationLocations(c.Request.Context())
+	if err != nil {
+		h.logger.ErrorContext(c.Request.Context(), "读取应用部署位置失败", "operation", "deployment_locations", "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deployments": records})
+}
+
 func (h deploymentHandler) rollback(c *gin.Context) {
 	actor, _ := currentUser(c)
 	var request deployment.RollbackConfirmation
@@ -91,6 +101,15 @@ func (h deploymentHandler) rollbackPreview(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"rollback": preview})
+}
+
+func (h deploymentHandler) locationObservation(c *gin.Context) {
+	observation, err := h.service.LocationObservation(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeRuntimeError(c, "deployment_location_observation", err)
+		return
+	}
+	c.JSON(http.StatusOK, observation)
 }
 
 func (h deploymentHandler) runtimeState(c *gin.Context) {
@@ -205,7 +224,7 @@ func (h deploymentHandler) controlRuntime(c *gin.Context, input deployment.Runti
 
 func (h deploymentHandler) writeRuntimeError(c *gin.Context, operation string, err error) {
 	message := "部署实例运行操作失败"
-	if operation == "deployment_runtime_state" {
+	if operation == "deployment_runtime_state" || operation == "deployment_location_observation" {
 		message = "读取部署实例运行状态失败"
 	}
 	h.logger.Warn(message, "operation", operation, "request_id", requestIDFrom(c),

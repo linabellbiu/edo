@@ -40,6 +40,13 @@ type RollbackPreview struct {
 	Namespace          string                   `json:"namespace"`
 	WorkloadName       string                   `json:"workload_name"`
 	ContainerName      string                   `json:"container_name"`
+	History            []RollbackImage          `json:"history"`
+}
+
+type RollbackImage struct {
+	DeploymentID string    `json:"id"`
+	Image        string    `json:"image"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 func (s *Service) RollbackPreview(ctx context.Context, sourceID string) (*RollbackPreview, error) {
@@ -48,28 +55,46 @@ func (s *Service) RollbackPreview(ctx context.Context, sourceID string) (*Rollba
 		return nil, err
 	}
 	preview := rollbackPreviewFor(source)
-	if source.Platform == model.DeploymentDocker {
+	switch source.Platform {
+	case model.DeploymentDocker:
 		preview.Reason, err = s.validateDockerRollback(ctx, source)
-		preview.CanRollback = err == nil && preview.Reason == ""
-		return preview, err
-	}
-	if source.Platform != model.DeploymentKubernetes {
+	case model.DeploymentKubernetes:
+		preview.Reason, err = s.validateKubernetesRollback(ctx, source)
+		if s.kube != nil {
+			if cluster, findErr := s.kube.Find(ctx, source.RuntimeID); findErr == nil {
+				preview.ClusterName = cluster.Name
+			}
+		}
+	default:
 		preview.Reason = "当前部署方式不支持此镜像回退入口"
 		return preview, nil
 	}
-	preview.Reason, err = s.validateKubernetesRollback(ctx, source)
 	preview.CanRollback = err == nil && preview.Reason == ""
-	if s.kube != nil {
-		if cluster, findErr := s.kube.Find(ctx, source.RuntimeID); findErr == nil {
-			preview.ClusterName = cluster.Name
+	if err != nil || source.ApplicationID == "" || source.TargetID == "" {
+		return preview, err
+	}
+	// 回退历史属于打开的部署位置，不依赖应用列表已加载哪些记录。
+	db := s.db.WithContext(ctx)
+	runs := db.Model(&model.PipelineRun{}).Select("uuid").Where("project_id = ? AND department_id = ? AND application_id = ?", source.ProjectID, source.DepartmentID, source.ApplicationID)
+	query := db.Model(&model.DeploymentRecord{}).Where("project_id = ? AND department_id = ? AND target_id = ? AND platform = ? AND runtime_id = ? AND host_id = ? AND container_name = ?",
+		source.ProjectID, source.DepartmentID, source.TargetID, source.Platform, source.RuntimeID, source.HostID, source.ContainerName).
+		Where("application_id = ? OR (application_id = '' AND pipeline_run_id IN (?))", source.ApplicationID, runs).
+		Where("id < ? AND status = ? AND image <> ''", source.RowID, model.DeploymentSucceeded)
+	if source.Platform == model.DeploymentKubernetes {
+		query = query.Where("namespace = ? AND workload_name = ?", source.Namespace, source.WorkloadName)
+		if source.KubernetesUID != "" {
+			query = query.Where("kubernetes_uid = ?", source.KubernetesUID)
 		}
 	}
-	return preview, err
+	if err = query.Select("uuid AS deployment_id, image, created_at").Order("id DESC").Limit(200).Scan(&preview.History).Error; err != nil {
+		return nil, s.rollbackValidationError(source, "deployment_rollback_history", err)
+	}
+	return preview, nil
 }
 
 func rollbackPreviewFor(source *model.DeploymentRecord) *RollbackPreview {
 	return &RollbackPreview{
-		Platform: source.Platform, RuntimeName: source.TargetName,
+		Platform: source.Platform, RuntimeName: source.TargetName, History: []RollbackImage{},
 		CurrentImageID: source.ExpectedImageID, TargetImageID: source.PreviousImageID,
 		SourceDeploymentID: source.ID, SourceUpdatedAt: source.UpdatedAt.Format(time.RFC3339Nano),
 		CurrentImage: source.Image, TargetImage: rollbackTargetImage(source), KubernetesUID: source.KubernetesUID,
@@ -168,6 +193,14 @@ func (s *Service) validateKubernetesRollback(ctx context.Context, source *model.
 			return "发布记录的应用流水线归属已变化", nil
 		}
 		return "", s.rollbackValidationError(source, "deployment_rollback_run", err)
+	}
+	if run.WorkflowID != "" {
+		if err := s.checkApplicationBindings(ctx, source); err != nil {
+			if errors.Is(err, ErrDeploymentNotCurrent) {
+				return "部署位置已变更，无法回退历史目标", nil
+			}
+			return "", s.rollbackValidationError(source, "deployment_rollback_location", err)
+		}
 	}
 	plan, target, err := s.rollbackPlanTarget(ctx, source, run)
 	if err != nil {

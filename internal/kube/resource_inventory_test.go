@@ -181,7 +181,9 @@ func TestBackgroundInventoryEnforcesCurrentNativeAndLocalAuthorization(t *testin
 		if r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" {
 			review := decodeIdentityReview(t, r)
 			a := review.Spec.ResourceAttributes
-			if a == nil || a.Namespace != "alpha" || a.Resource != "configmaps" || (a.Verb != "list" && (a.Verb != "get" || a.Name != "demo")) ||
+			configAccess := a != nil && a.Resource == "configmaps" && (a.Verb == "list" || a.Verb == "get" && a.Name == "demo")
+			observationAccess := a != nil && a.Group == "apps" && a.Resource == "deployments" && a.Verb == "get" && a.Name == "web"
+			if (!configAccess && !observationAccess) || a.Namespace != "alpha" ||
 				!strings.Contains(r.Header.Get("Impersonate-User"), ":alice:") {
 				t.Errorf("快照读取的原生授权目标不正确: %+v", a)
 			}
@@ -202,7 +204,7 @@ func TestBackgroundInventoryEnforcesCurrentNativeAndLocalAuthorization(t *testin
 	}
 	service.ConfigureInventoryMonitoring()
 	policies := newIdentityTestPolicies()
-	policies.grant("alice", map[string][]string{"alpha": {"kubernetes.config.read"}})
+	policies.grant("alice", map[string][]string{"alpha": {"kubernetes.config.read", "kubernetes.workload.read"}})
 	service.authorizationResolver = policies.resolve
 	def, _ := ResourceType("configmaps")
 	target := inventoryTarget{cluster: cluster, def: def, key: inventoryKey(id, clusterQueryVersion(cluster), def, "")}
@@ -215,9 +217,15 @@ func TestBackgroundInventoryEnforcesCurrentNativeAndLocalAuthorization(t *testin
 	if _, err := service.GetResource(ctx, id, "configmaps", "alpha", "demo", false); err != nil {
 		t.Fatal(err)
 	}
+	if scope, err := service.DeploymentObservationScope(ctx, id, "alpha", "web"); err != nil || scope == "" {
+		t.Fatalf("已授权成员应可读取历史部署状态的范围: %v", err)
+	}
 	nativeDenied.Store(true)
 	if _, err := service.GetResource(ctx, id, "configmaps", "alpha", "demo", false); !errors.Is(err, ErrRBACForbidden) {
 		t.Fatalf("缓存绕过了原生 get 权限: %v", err)
+	}
+	if _, err := service.DeploymentObservationScope(ctx, id, "alpha", "web"); !errors.Is(err, ErrRBACForbidden) {
+		t.Fatalf("历史部署状态绕过了具名工作负载读取权限: %v", err)
 	}
 	nativeDenied.Store(false)
 	policies.mu.Lock()
@@ -225,6 +233,9 @@ func TestBackgroundInventoryEnforcesCurrentNativeAndLocalAuthorization(t *testin
 	policies.mu.Unlock()
 	if _, err := service.ListResources(ctx, id, "configmaps", "*", ""); !errors.Is(err, ErrRBACForbidden) {
 		t.Fatalf("缓存绕过了 EDO 撤权: %v", err)
+	}
+	if _, err := service.DeploymentObservationScope(ctx, id, "alpha", "web"); !errors.Is(err, ErrRBACForbidden) {
+		t.Fatalf("历史部署状态绕过了 EDO 撤权: %v", err)
 	}
 	if resourceRequests.Load() != 1 {
 		t.Fatalf("读取缓存命中了上游资源 API: %d", resourceRequests.Load())

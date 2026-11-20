@@ -2,9 +2,11 @@ package deployment
 
 import (
 	"context"
+	"errors"
+	"testing"
+
 	"edo/internal/database"
 	"edo/internal/model"
-	"testing"
 )
 
 func TestInlineDeploymentRollbackChecksCurrentWorkflowWithoutLibraryRecord(t *testing.T) {
@@ -27,6 +29,9 @@ func TestInlineDeploymentRollbackChecksCurrentWorkflowWithoutLibraryRecord(t *te
 	if err := f.db.WithContext(ctx).Model(&model.PipelineRun{}).Where("uuid = ?", f.source.PipelineRunID).Update("workflow_id", workflow.ID).Error; err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.service.currentDeployment(ctx, f.source.ID); err != nil {
+		t.Fatalf("流水线内 Kubernetes 实例应可读取: %v", err)
+	}
 	preview, err := f.service.RollbackPreview(ctx, f.source.ID)
 	if err != nil || !preview.CanRollback {
 		t.Fatalf("没有方案库记录的流水线自定义部署应可按原归属回退: %+v %v", preview, err)
@@ -34,6 +39,9 @@ func TestInlineDeploymentRollbackChecksCurrentWorkflowWithoutLibraryRecord(t *te
 	definition.DeploymentTarget.Namespace = "changed"
 	if err := f.db.WithContext(ctx).Save(&workflow).Error; err != nil {
 		t.Fatal(err)
+	}
+	if _, err := f.service.currentDeployment(ctx, f.source.ID); !errors.Is(err, ErrDeploymentNotCurrent) {
+		t.Fatalf("已替换的流水线内目标仍可使用实例操作: %v", err)
 	}
 	preview, err = f.service.RollbackPreview(ctx, f.source.ID)
 	if err != nil || preview.CanRollback {

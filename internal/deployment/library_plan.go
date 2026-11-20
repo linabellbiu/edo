@@ -94,7 +94,7 @@ func (s *Service) ResolveWorkflowLibraryPlan(ctx context.Context, base model.Dep
 	if err != nil {
 		return fail(err)
 	}
-	if baseTarget != nil && resolved.RuntimeID == baseTarget.RuntimeID && resolved.Namespace == baseTarget.Namespace && resolved.WorkloadName == baseTarget.WorkloadName && resolved.ContainerName == baseTarget.ContainerName {
+	if baseTarget != nil && sameKubernetesLocation(resolved, baseTarget) {
 		resolved.ID = baseTarget.ID
 		plan.DeploymentTargetID = baseTarget.ID
 	}

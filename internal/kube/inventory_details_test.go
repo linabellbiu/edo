@@ -133,6 +133,10 @@ func TestInventoryDetailsNeverFetchResourcesOnOpen(t *testing.T) {
 	if err != nil || state == nil || !state.Running || snapshot.CollectedAt == nil {
 		t.Fatalf("应用部署实例没有从同一快照读取: %+v %+v %v", state, snapshot, err)
 	}
+	scope, err := service.DeploymentObservationScope(read(), id, "demo", "web")
+	if err != nil || scope == "" || scope != state.ObservationScope {
+		t.Fatalf("采样和历史读取应使用同一集群连接身份: %v", err)
+	}
 	if _, err := service.NodeHistory(read(), id, "worker", "node-1", 15*time.Minute, true); !errors.Is(err, ErrNodeHistoryUnavailable) {
 		t.Fatalf("未配置指标存储应准确报不可用: %v", err)
 	}

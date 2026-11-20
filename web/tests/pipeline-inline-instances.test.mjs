@@ -3,12 +3,12 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import ts from 'typescript'
 import {v5 as uuidv5} from 'uuid'
-import {deploymentHostNodeID,kubernetesInstancePlan,selectCurrentDeploymentInstances,selectLatestFailedDeploymentAttempts,workflowDeploymentIDs} from '../src/utils/deploymentInstances.ts'
+import {applicationDeploymentLocations,deploymentHostNodeID,kubernetesInstancePlan,selectCurrentDeploymentInstances,selectLatestFailedDeploymentAttempts,workflowDeploymentIDs} from '../src/utils/deploymentInstances.ts'
 const source=readFileSync(new URL('../src/views/DevOpsView.vue',import.meta.url),'utf8')
-const code=source.slice(source.indexOf('function applicationInstanceScope('),source.indexOf('\nfunction currentApplicationDeployments('))
+const code=source.slice(source.indexOf('function applicationInstanceScope('),source.indexOf('\nconst applicationCards='))
 const transpiled=ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText
-const getScope=new Function('deploymentHostNodeID','workflowDeploymentIDs','kubernetesInstancePlan','deploymentPlans','deployments','app',transpiled+';return applicationInstanceScope(app)')
-const scope=(app,records,plans=[])=>getScope(deploymentHostNodeID,workflowDeploymentIDs,kubernetesInstancePlan,{value:plans},{value:records},app)
+const getScope=new Function('deploymentHostNodeID','workflowDeploymentIDs','kubernetesInstancePlan','deploymentPlans','records','app',transpiled+';return applicationInstanceScope(app,records)')
+const scope=(app,records,plans=[])=>getScope(deploymentHostNodeID,workflowDeploymentIDs,kubernetesInstancePlan,{value:plans},records,app)
 const workflowID='workflow-a',nodeID='deploy-a',base=`edo.workflow.deployment:${workflowID}:${nodeID}`
 const plan=uuidv5(base+':plan','6ba7b812-9dad-11d1-80b4-00c04fd430c8'),target=uuidv5(base+':target','6ba7b812-9dad-11d1-80b4-00c04fd430c8')
 const app={id:'app-a',workflows:[{id:workflowID,stages:[{tasks:[{id:nodeID,type:'deploy',config:{inline_deployment_plan:{kind:'script',deployment_target:{environment_id:'edited-but-not-deployed'}}}}]}]}]}
@@ -73,6 +73,37 @@ const kubeTarget={platform:'kubernetes',runtime_id:'cluster-a',namespace:'test',
 const kubePlan={id:'kube-template',kind:'kubernetes'}
 const kubeApp=(override,taskID=nodeID)=>({...app,workflows:[{id:workflowID,stages:[{tasks:[{id:taskID,type:'deploy',config:{deployment_plan_id:kubePlan.id,deployment_override:override}}]}]}]})
 const kubeRecord={...record,...kubeTarget,host_id:'',environment_id:'',pipeline_run_id:'run',deployment_plan_kind:'kubernetes'}
+
+test('多条流水线共用一个待部署位置时，保留每个来源且只展示一个位置',()=>{
+ const plan={...kubePlan,deployment_target:{...kubeTarget,id:'fixed'}}
+ const bindings=['主线发布','备用发布'].map(workflowName=>({...plan,workflowName,taskName:'部署'}))
+ const view=applicationDeploymentLocations(app.id,[],new Set(),[...bindings,bindings[0]],[],new Set())
+ assert.equal(view.waiting.length,1)
+ assert.deepEqual(view.waiting[0].sources,['主线发布 / 部署','备用发布 / 部署'])
+})
+
+test('更换主机、库方案集群或任务内集群时，待部署、失败与成功使用同一规则，旧位置仅进历史',()=>{
+ const targetB={...kubeTarget,runtime_id:'cluster-b'}
+ const inline={...app,workflows:[{id:workflowID,stages:[{tasks:[{id:nodeID,type:'deploy',config:{inline_deployment_plan:{kind:'kubernetes',deployment_target:targetB}}}]}]}]}
+ for(const [configured,library,a,b] of [
+  [inline,[],kubeRecord,{...kubeRecord,...targetB}],
+  [kubeApp({deployment_target:targetB}),[kubePlan],kubeRecord,{...kubeRecord,...targetB}],
+  [hostApp(['host-b']),[],hostRecord('host-a'),hostRecord('host-b')],
+ ]){
+  const old={...a,id:'old',row_id:1}
+  const failed={...b,id:'failed',row_id:2,status:'failed'}
+  const good={...b,id:'succeeded',row_id:3}
+  for(const [records,waitingStatus,currentID] of [[[old],'pending',null],[[old,failed],'failed',null],[[old,failed,good],null,good.id]]){
+   const {plans,ids,unresolved}=scope(configured,records,library)
+   const current=selectCurrentDeploymentInstances(app.id,records,new Set(),ids,plans)
+   const view=applicationDeploymentLocations(app.id,records,new Set(),plans,current,unresolved)
+   assert.deepEqual(current.map(row=>row.id),currentID?[currentID]:[])
+   assert.deepEqual(view.history.map(row=>row.id),['old'])
+   assert.deepEqual(view.waiting.map(row=>row.attempt?.status||'pending'),waitingStatus?[waitingStatus]:[])
+   assert.deepEqual(selectLatestFailedDeploymentAttempts(app.id,records,new Set(),ids,plans).map(row=>row.id),waitingStatus==='failed'?['failed']:[])
+  }
+ }
+})
 
 test('通用 Kubernetes 方案按流水线任务解析部署实例和失败记录',()=>{
  const configured=kubeApp({plan_snapshot:{kind:'kubernetes'},deployment_target:kubeTarget})

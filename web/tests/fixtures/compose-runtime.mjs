@@ -43,7 +43,7 @@ client.defaults.adapter=async config=>{
  if(config.method==='get'&&path.endsWith('/tasks'))data={tasks:[]}
  else if(config.method==='get'&&path.endsWith('/check-reports'))data={reports:[]}
  else if(config.method==='get'&&path.endsWith('/check-deliveries'))data={deliveries:[]}
- else if(config.method==='get')data=({'/pipeline-runs':{pipeline_runs:[run],total:1},'/pipeline-runs/run':{pipeline_run:run},'/deployments?pipeline_run_id=run&limit=200':{deployments:[record]},'/applications':{applications:[app]},'/deployment-plans':{deployment_plans:[plan]},'/deployments?limit=200':{deployments:[record]},'/workflow-templates':{workflow_templates:[]},[`/deployments/${recordID}/runtime`]:{runtime:runtime()}})[path]
+ else if(config.method==='get')data=({'/pipeline-runs':{pipeline_runs:[run],total:1},'/pipeline-runs/latest-by-workflow':{pipeline_runs:[run]},'/deployments?limit=200':{deployments:[record]},'/pipeline-runs/run':{pipeline_run:run},'/deployments?pipeline_run_id=run&limit=200':{deployments:[record]},'/applications':{applications:[app]},'/deployment-plans':{deployment_plans:[plan]},'/hosts':{hosts:[]},'/kubernetes/clusters':{clusters:[]},'/deployments/locations':{deployments:[record]},'/workflow-templates':{workflow_templates:[]},[`/deployments/${recordID}/runtime`]:{runtime:runtime()}})[path]
  else if(config.method==='post'&&(path.endsWith('/runtime/stop')||path.endsWith('/runtime/restart'))){mode.value=path.endsWith('/stop')?'exited':'running';data={runtime:runtime()}}
  if(!data)throw new Error(`未登记合成接口：${config.method} ${path}`)
  return {data,status:200,statusText:'OK',headers:{},config}

@@ -1,7 +1,7 @@
 .applications-page { container: application-page / inline-size; width: 100%; min-width: 0; }
-.apps-workspace, .apps-instance-section { --apps-success: #16845b; --apps-danger: #d74354; --apps-warning: #a76809; }
+.apps-workspace, .apps-details-content { --apps-success: #16845b; --apps-danger: #bf3346; --apps-warning: #a76809; }
 .apps-workspace { container: applications / inline-size; }
-:global([data-theme="dark"] .apps-workspace), :global([data-theme="dark"] .apps-instance-section) { --apps-success: #49c89c; --apps-danger: #ff8490; --apps-warning: #edb752; }
+:global([data-theme="dark"] .apps-workspace), :global([data-theme="dark"] .apps-details-content) { --apps-success: #49c89c; --apps-danger: #ff8490; --apps-warning: #edb752; }
 .apps-filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--edo-border); border-radius: 12px; background: var(--edo-surface); }
 .apps-search { width: 320px; max-width: 100%; height: 32px; border-radius: 8px; background: var(--edo-surface-soft); }
 .apps-search :deep(.ant-input-prefix) { margin-inline-end: 8px; color: var(--edo-muted); }
@@ -77,6 +77,19 @@
 .apps-cell-ellipsis { display: block; overflow: hidden; color: var(--edo-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .apps-workflow-facts { display: flex; align-items: center; gap: 10px; color: var(--edo-muted); font-size: 12px; white-space: nowrap; }
 .apps-instance-section { container: application-instances / inline-size; padding: 0; }
+.apps-workflow-facts-mobile { color:var(--edo-muted); font-size:12px; }
+.apps-workflow-facts-mobile summary { cursor:pointer; }
+.apps-workflow-facts-mobile p { margin:2px 0; white-space:normal; overflow-wrap:anywhere; }
+.application-pending-target { display:grid; gap:3px; padding:9px 14px; border-bottom:1px solid var(--edo-border); font-size:13px; }
+.application-pending-target header { display:flex; flex-wrap:wrap; justify-content:space-between; gap:4px 12px; }
+.application-pending-target strong { overflow-wrap:anywhere; }
+.application-pending-target small { color:var(--edo-muted); font-size:12px; }
+.application-pending-target .target-error { color:var(--apps-danger); }
+@media (max-width:760px) {
+  .apps-workflow-table :deep(.ant-table-content table) { min-width:0 !important; }
+  .apps-workflow-table :deep(.ant-table-cell) { padding-inline:8px; }
+  .apps-workflow-table :deep(.apps-workflow-name) { max-width:100%; }
+}
 .application-deployment-list { --deployment-columns: minmax(0, 1fr) minmax(115px, .28fr) minmax(106px, .23fr) 150px 16px; }
 .application-deployment-columns, .application-deployment-summary {
   display: grid;

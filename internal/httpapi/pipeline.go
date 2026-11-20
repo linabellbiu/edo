@@ -713,6 +713,15 @@ func (h pipelineHandler) deleteDeploymentPlan(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+func (h pipelineHandler) latestWorkflowRuns(c *gin.Context) {
+	runs, err := h.service.LatestWorkflowRuns(c.Request.Context())
+	if err != nil {
+		h.writeError(c, "latest_workflow_runs", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"pipeline_runs": runs})
+}
+
 func (h pipelineHandler) listRuns(c *gin.Context) {
 	options := pipeline.RunQueryOptions{Status: model.PipelineRunStatus(c.Query("status")), Order: c.Query("order"), Page: 1, PageSize: 50}
 	options.ReleasePlanExecutionID = c.Query("release_plan_execution_id")

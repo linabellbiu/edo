@@ -2,6 +2,7 @@ package deployment
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -46,6 +47,9 @@ func TestKubernetesLibraryStageOverrideRollbackUsesSourceAndStableTarget(t *test
 				t.Fatal(err)
 			}
 			f.source.DeploymentPlanID, f.source.TargetID = planID, targetID
+			if _, err := f.service.currentDeployment(ctx, f.source.ID); err != nil {
+				t.Fatalf("引用库方案的当前实例应可读取: %v", err)
+			}
 			preview, err := f.service.RollbackPreview(ctx, f.source.ID)
 			if err != nil || !preview.CanRollback {
 				t.Fatalf("通用方案覆盖的真实目标无法预检回退: %+v %v", preview, err)
@@ -53,6 +57,9 @@ func TestKubernetesLibraryStageOverrideRollbackUsesSourceAndStableTarget(t *test
 			binding.DeploymentTarget.WorkloadName = "changed-target"
 			if err = f.db.Save(&workflow).Error; err != nil {
 				t.Fatal(err)
+			}
+			if _, err := f.service.currentDeployment(ctx, f.source.ID); !errors.Is(err, ErrDeploymentNotCurrent) {
+				t.Fatalf("已替换的库方案目标仍可使用实例操作: %v", err)
 			}
 			preview, err = f.service.RollbackPreview(ctx, f.source.ID)
 			if err != nil || preview.CanRollback {
@@ -63,6 +70,24 @@ func TestKubernetesLibraryStageOverrideRollbackUsesSourceAndStableTarget(t *test
 			}
 
 		})
+	}
+}
+
+func TestDetachedKubernetesLibraryLocationIsReadOnly(t *testing.T) {
+	f := newKubernetesRollbackFixture(t, model.DeploymentSucceeded)
+	ctx := deploymentExecutionTestContext("project-a")
+	workflow := model.ReleaseWorkflow{ID: "detached-workflow", ApplicationID: f.source.ApplicationID,
+		ProjectID: f.source.ProjectID, DepartmentID: f.source.DepartmentID, Name: "已切换方案"}
+	if err := f.db.Create(&workflow).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&model.PipelineRun{}).Where("uuid = ?", f.source.PipelineRunID).Update("workflow_id", workflow.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 原库方案和集群仍存在，但应用已经解除绑定。
+	preview, err := f.service.RollbackPreview(ctx, f.source.ID)
+	if err != nil || preview.CanRollback || f.writes != 0 {
+		t.Fatalf("已解绑库方案的历史位置仍然允许回退: %+v %v", preview, err)
 	}
 }
 

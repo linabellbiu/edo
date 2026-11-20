@@ -569,6 +569,9 @@ func (s *Service) currentDeployment(ctx context.Context, deploymentID string) (*
 	if latest.ID != record.ID {
 		return nil, ErrDeploymentNotCurrent
 	}
+	if err := s.checkConfiguredLocation(ctx, &record); err != nil {
+		return nil, err
+	}
 	return &record, nil
 }
 

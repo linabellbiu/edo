@@ -25,7 +25,7 @@ client.defaults.adapter=async config=>{
    '/applications':{applications:[{id:application,project_id:project,name:'示例应用',description:'应用环境配置验收',repository_id:'preview-repository',is_active:true,workflows:[],sync_status:'idle',poll_interval_seconds:60}]},
    '/projects':{projects:[{id:project,name:'示例项目'}]},
    '/environments':{environments:[{id:'test',name:'测试环境'},{id:'prod',name:'生产环境'}]},
-   '/deployments?limit=200':{deployments:[]},'/workflow-templates':{workflow_templates:[]},
+   '/hosts':{hosts:[]},'/kubernetes/clusters':{clusters:[]},'/deployments/locations':{deployments:[]},'/workflow-templates':{workflow_templates:[]},
    '/deployment-plans':{deployment_plans:[{id:'compose-plan',kind:'compose_stack',compose_yaml:'services:\n  api:\n    image: alpine:3.22\n  worker:\n    image: alpine:3.22\n'}]},
    '/delivery-variables':{variables:[...rows]},
   }

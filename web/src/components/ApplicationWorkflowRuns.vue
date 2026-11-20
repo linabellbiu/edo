@@ -59,6 +59,9 @@ async function backToHistory() {
 
 type RunGroup = 'active' | 'finished'
 const active = ref<Run[]>([]), history = ref<Run[]>([])
+const activeExpanded = ref(false)
+const inlineLimit = 2
+const visibleRuns = computed(() => activeExpanded.value ? active.value : active.value.slice(0, inlineLimit))
 const loading = ref(false), historyLoading = ref(false), historyLoaded = ref(false)
 const error = ref(''), historyError = ref('')
 const finished = new Set(['succeeded', 'failed', 'canceled', 'skipped'])
@@ -151,6 +154,7 @@ watch([identity, allowed], () => {
   historyExpanded.value = false
   completedIDs.clear()
   active.value = []
+  activeExpanded.value = false
   error.value = ''
   connect()
   void load('active')
@@ -187,8 +191,9 @@ onBeforeUnmount(() => {
       <template #action><a-button size="small" :loading="loading" @click="load('active')">重试</a-button></template>
     </a-alert>
     <div v-if="active.length" class="workflow-current-runs" role="region" aria-label="正在执行的流水线" tabindex="0">
-      <ApplicationWorkflowRunRow v-for="run in active" :key="run.id" :run="run" compact @logs="emit('logs', $event)"/>
+      <ApplicationWorkflowRunRow v-for="run in visibleRuns" :key="run.id" :run="run" compact @logs="emit('logs', $event)"/>
     </div>
+    <button v-if="active.length > inlineLimit" type="button" class="workflow-run-toggle" :aria-expanded="activeExpanded" @click="activeExpanded=!activeExpanded">{{ activeExpanded ? '收起' : `还有 ${active.length-inlineLimit} 次执行` }}</button>
   </section>
 
   <a-drawer v-model:open="historyExpanded" :title="`${workflowName || '流水线'} · ${selectedRun ? '执行详情' : '历史记录'}`"
@@ -229,7 +234,9 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .workflow-runs { min-width: 0; background: var(--edo-surface); }
-.workflow-current-runs { max-height: 180px; overflow: auto; }
+.workflow-current-runs { max-height: min(52vh, 420px); overflow: auto; }
+.workflow-run-toggle { display:block; width:100%; padding:6px 14px; border:0; border-top:1px solid var(--edo-border); background:var(--edo-surface-soft); color:var(--edo-primary); font:inherit; text-align:start; cursor:pointer; }
+.workflow-run-toggle:focus-visible { outline:2px solid var(--edo-primary); outline-offset:-2px; }
 .workflow-history-content { height: 100%; overflow: auto; }
 .workflow-history-caption { margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--edo-border); color: var(--edo-muted); font-size: 12px; }
 .workflow-history-empty { margin: 0; padding: 20px 14px; color: var(--edo-muted); font-size: 13px; }

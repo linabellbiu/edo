@@ -2,6 +2,7 @@ package deployment
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,7 +10,9 @@ import (
 
 	"edo/internal/cache"
 	"edo/internal/database"
+	"edo/internal/kube"
 	"edo/internal/model"
+	"gorm.io/gorm"
 )
 
 // CachedRuntimeState 只读取后台展示快照，运行操作的预检仍核对实际实例。
@@ -44,7 +47,7 @@ func (s *Service) RunRuntimeSnapshotSync(ctx context.Context) error {
 			Group("d.department_id, d.project_id, d.deployment_plan_id, d.target_id, COALESCE(NULLIF(d.application_id, ''), r.application_id, '')")
 		for cursor := uint64(0); ctx.Err() == nil; {
 			var records []model.DeploymentRecord
-			err := s.db.WithContext(ctx).Where("id IN (?) AND id > ? AND platform <> ? AND runtime_deleted_at IS NULL", current, cursor, model.DeploymentKubernetes).
+			err := s.db.WithContext(ctx).Where("id IN (?) AND id > ? AND runtime_deleted_at IS NULL", current, cursor).
 				Order("id").Limit(100).Find(&records).Error
 			if err != nil {
 				return err
@@ -72,6 +75,16 @@ func (s *Service) RunRuntimeSnapshotSync(ctx context.Context) error {
 			}
 			record.ApplicationID = run.ApplicationID
 		}
+		if err := s.checkConfiguredLocation(request, &record); err != nil {
+			if !errors.Is(err, ErrDeploymentNotCurrent) && request.Err() == nil {
+				s.logger.WarnContext(request, "无法确认实例的当前部署位置", "operation", "deployment_snapshot_location", "deployment_id", record.ID, "err", err)
+			}
+			return
+		}
+		if record.Platform == model.DeploymentKubernetes {
+			s.saveKubernetesObservation(request, &record)
+			return
+		}
 		key, err := s.runtimeSnapshotKey(request, &record)
 		if err != nil || !s.runtimeSnapshots.Due(key, time.Now(), 30*time.Second, 15*time.Second) {
 			return
@@ -87,8 +100,75 @@ func (s *Service) RunRuntimeSnapshotSync(ctx context.Context) error {
 		}
 		if ctx.Err() == nil {
 			s.runtimeSnapshots.Put(key, state, now)
+			s.saveObservation(request, &record, key, state, now)
 		}
 	})
+}
+
+// 只从已有集群后台缓存留存状态，并以发布时的 UID 识别工作负载。
+func (s *Service) saveKubernetesObservation(ctx context.Context, record *model.DeploymentRecord) {
+	if s.kube == nil || record.KubernetesUID == "" {
+		return
+	}
+	ctx = kube.WithInternalClusterAccess(ctx, "resource-inventory")
+	state, status, err := s.kube.CachedDeploymentState(ctx, record.RuntimeID, record.Namespace, record.WorkloadName, record.KubernetesUID)
+	if err != nil {
+		s.logger.DebugContext(ctx, "工作负载历史状态暂不可用", "operation", "deployment_observation_collect", "deployment_id", record.ID, "err", err)
+		return
+	}
+	if state != nil && status.CollectedAt != nil {
+		s.saveObservation(ctx, record, state.ObservationScope, kubernetesRuntimeState(record.ID, *state), *status.CollectedAt)
+	}
+}
+
+func (s *Service) saveObservation(ctx context.Context, record *model.DeploymentRecord, key string, state *RuntimeState, at time.Time) {
+	if record.ObservedAt != nil && !record.ObservedAt.Before(at) {
+		return
+	}
+	// 更新观察记录不能改变发布的 updated_at，也不能让迟到的采样覆盖较新结果。
+	err := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).
+		Where("uuid = ? AND updated_at = ? AND runtime_deleted_at IS NULL AND (observed_at IS NULL OR observed_at < ?)", record.ID, record.UpdatedAt, at).
+		UpdateColumns(map[string]any{"observed_at": at, "observed_scope": fmt.Sprintf("%x", sha256.Sum256([]byte(key))), "observed_state": state.State, "observed_running": state.Running}).Error
+	if err != nil {
+		s.logger.WarnContext(ctx, "留存部署运行状态失败", "operation", "deployment_observation_save", "deployment_id", record.ID, "err", err)
+	}
+}
+
+type LocationObservation struct {
+	CollectedAt *time.Time `json:"collected_at"`
+	State       string     `json:"state,omitempty"`
+	Running     bool       `json:"running"`
+}
+
+// LocationObservation 只返回成功采集并持久化的最小历史摘要，不启动运行检查。
+func (s *Service) LocationObservation(ctx context.Context, id string) (LocationObservation, error) {
+	var record model.DeploymentRecord
+	if err := s.db.WithContext(ctx).Where("uuid = ? AND status = ? AND pipeline_run_id <> '' AND deployment_plan_id <> ''", id, model.DeploymentSucceeded).First(&record).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return LocationObservation{}, ErrDeploymentNotFound
+		}
+		return LocationObservation{}, err
+	}
+	if record.ObservedAt == nil {
+		return LocationObservation{}, nil
+	}
+	var key string
+	var err error
+	if record.Platform == model.DeploymentKubernetes {
+		if s.kube == nil || record.KubernetesUID == "" {
+			return LocationObservation{}, nil
+		}
+		key, err = s.kube.DeploymentObservationScope(ctx, record.RuntimeID, record.Namespace, record.WorkloadName)
+	} else {
+		key, err = s.runtimeSnapshotKey(ctx, &record)
+	}
+	if err != nil {
+		return LocationObservation{}, err
+	}
+	if record.ObservedScope != fmt.Sprintf("%x", sha256.Sum256([]byte(key))) {
+		return LocationObservation{}, nil
+	}
+	return LocationObservation{CollectedAt: record.ObservedAt, State: record.ObservedState, Running: record.ObservedRunning}, nil
 }
 
 func (s *Service) runtimeSnapshotKey(ctx context.Context, record *model.DeploymentRecord) (string, error) {

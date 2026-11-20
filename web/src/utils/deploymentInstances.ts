@@ -14,6 +14,7 @@ export function deploymentHostNodeID(nodeID: string, hostID: string) {
 
 export interface InstanceRecord {
   id: string
+  row_id?: number
   application_id?: string
   pipeline_run_id?: string
   deployment_plan_id?: string
@@ -35,6 +36,8 @@ export interface InstancePlan {
   id: string
   kind?: string
   service_name?: string
+  workflowName?: string
+  taskName?: string
   deployment_target?: {
     id: string
     platform: string
@@ -92,12 +95,28 @@ export function kubernetesInstancePlan(
 }
 
 function compareNewestFirst(left: InstanceRecord, right: InstanceRecord) {
+  if (left.row_id && right.row_id) return right.row_id - left.row_id
   const milliseconds = Date.parse(right.created_at) - Date.parse(left.created_at)
   if (milliseconds) return milliseconds
   // Go 返回纳秒时间；Date.parse 只保留毫秒，不能让同毫秒的不同发布顺序颠倒。
   const fraction = (value: string) => Number((value.match(/\.(\d+)/)?.[1] || '').padEnd(9, '0').slice(3, 9))
   const nanoseconds = fraction(right.created_at) - fraction(left.created_at)
   return nanoseconds || (left.id < right.id ? 1 : left.id > right.id ? -1 : 0)
+}
+
+function targetKey(planID?: string, targetID?: string) { return JSON.stringify([planID, targetID]) }
+
+function matchesTarget(record: InstanceRecord, plan?: InstancePlan) {
+  const target = plan?.deployment_target
+  if (!target || record.target_id !== target.id || record.platform !== target.platform ||
+    (record.host_id || '') !== (target.host_id || '') || (record.environment_id || '') !== (target.environment_id || '')) return false
+  if (record.platform !== 'ssh' && record.runtime_id !== target.runtime_id &&
+    !(record.platform === 'docker' && target.host_id && !target.runtime_id)) return false
+  if (plan.kind === 'compose' && plan.service_name && record.compose_service !== plan.service_name) return false
+  if (plan.kind === 'kubernetes' && ((target.namespace && record.namespace !== target.namespace) ||
+    (target.workload_name && record.workload_name !== target.workload_name) ||
+    (target.container_name && record.container_name !== target.container_name))) return false
+  return !(plan.kind === 'docker' && target.workload_name && record.workload_name !== target.workload_name)
 }
 
 export function selectCurrentDeploymentInstances<T extends InstanceRecord>(
@@ -121,16 +140,7 @@ export function selectCurrentDeploymentInstances<T extends InstanceRecord>(
     seen.add(key)
     if (record.runtime_deleted_at) return false
     const plan = plansByTarget.get(JSON.stringify([planID, record.target_id]))
-    const target = plan?.deployment_target
-    if (!target || record.target_id !== target.id || record.platform !== target.platform ||
-      (record.host_id || '') !== (target.host_id || '') || (record.environment_id || '') !== (target.environment_id || '')) return false
-    if (record.platform !== 'ssh' && record.runtime_id !== target.runtime_id) return false
-    if (plan.kind === 'compose' && plan.service_name && record.compose_service !== plan.service_name) return false
-    if (plan.kind === 'kubernetes' && ((target.namespace && record.namespace !== target.namespace) ||
-      (target.workload_name && record.workload_name !== target.workload_name) ||
-      (target.container_name && record.container_name !== target.container_name))) return false
-    if (plan.kind === 'docker' && target.workload_name && record.workload_name !== target.workload_name) return false
-    return true
+    return matchesTarget(record, plan)
   })
 }
 
@@ -148,15 +158,40 @@ export function selectLatestFailedDeploymentAttempts<T extends InstanceRecord>(
     const planID = record.deployment_plan_id || ''
     if (!related || !record.pipeline_run_id || !currentPlanIDs.has(planID)) return false
     const key = JSON.stringify([applicationID, planID, record.target_id])
-    if (seen.has(key)) return false
+    if (seen.has(key) || !matchesTarget(record, plansByTarget.get(JSON.stringify([planID, record.target_id])))) return false
     seen.add(key)
-    const target = plansByTarget.get(JSON.stringify([planID, record.target_id]))?.deployment_target
-    return record.platform === 'kubernetes' && record.status === 'failed' && !record.runtime_deleted_at && Boolean(target) &&
-      record.target_id === target?.id && record.platform === target.platform && record.runtime_id === target.runtime_id &&
-      (record.host_id || '') === (target.host_id || '') && (record.environment_id || '') === (target.environment_id || '') &&
-      (!target.namespace || record.namespace === target.namespace) && (!target.workload_name || record.workload_name === target.workload_name) &&
-      (!target.container_name || record.container_name === target.container_name)
+    return record.status === 'failed' && !record.runtime_deleted_at
   })
+}
+
+export function applicationDeploymentLocations<T extends InstanceRecord>(applicationID: string, records: T[], runIDs: Set<string>,
+  plans: InstancePlan[], current: T[], unresolvedPlans: Set<string>) {
+  const configured = new Map<string, { plan: InstancePlan; sources: Set<string> }>()
+  for (const plan of plans) {
+    if (!plan.deployment_target) continue
+    const key = targetKey(plan.id, plan.deployment_target.id)
+    const entry = configured.get(key) ?? { plan, sources: new Set<string>() }
+    const name = [plan.workflowName, plan.taskName].filter(Boolean).join(' / ')
+    if (name) entry.sources.add(name)
+    configured.set(key, entry)
+  }
+  const currentTargets = new Set(current.map(record => targetKey(record.deployment_plan_id, record.target_id)))
+  const currentIDs = new Set(current.map(record => record.id))
+  const attempts = new Map<string, T>(), seenLocations = new Set<string>(), history: T[] = []
+  for (const record of [...records].sort(compareNewestFirst)) {
+    if (!record.pipeline_run_id || !record.deployment_plan_id ||
+      !(record.application_id ? record.application_id === applicationID : runIDs.has(record.pipeline_run_id))) continue
+    const key = targetKey(record.deployment_plan_id, record.target_id)
+    if (!attempts.has(key) && matchesTarget(record, configured.get(key)?.plan)) attempts.set(key, record)
+    if (record.status !== 'succeeded' || unresolvedPlans.has(record.deployment_plan_id)) continue
+    const place = JSON.stringify([key, record.platform, record.host_id, record.environment_id, record.runtime_id,
+      record.namespace, record.workload_name, record.container_name, record.compose_service])
+    if (seenLocations.has(place)) continue
+    seenLocations.add(place)
+    if (!currentIDs.has(record.id)) history.push(record)
+  }
+  const waiting = [...configured].filter(([key]) => !currentTargets.has(key)).map(([key, {plan, sources}]) => ({ key, plan, sources: [...sources], attempt: attempts.get(key) }))
+  return { waiting, history }
 }
 
 export function retainCurrentDeploymentState<T>(state: Record<string, T>, currentIDs: Set<string>): Record<string, T> {

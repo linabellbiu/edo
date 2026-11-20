@@ -12,9 +12,11 @@ import (
 	"edo/internal/cache"
 
 	appsv1 "k8s.io/api/apps/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 )
@@ -39,6 +41,7 @@ type RuntimeState struct {
 	ReadyReplicas       int32  `json:"ready_replicas"`
 	AvailableReplicas   int32  `json:"available_replicas"`
 	UnavailableReplicas int32  `json:"unavailable_replicas"`
+	ObservationScope    string `json:"-"`
 }
 
 func (s *Service) DeploymentRuntimeState(ctx context.Context, clusterID, namespace, name string) (RuntimeState, error) {
@@ -57,20 +60,44 @@ func (s *Service) DeploymentRuntimeState(ctx context.Context, clusterID, namespa
 	return deploymentRuntimeState(current), nil
 }
 
+// DeploymentObservationScope 在读取历史状态前重新核对具名工作负载的读取授权以及集群连接身份。
+func (s *Service) DeploymentObservationScope(ctx context.Context, clusterID, namespace, name string) (string, error) {
+	if len(validation.IsDNS1123Subdomain(name)) != 0 {
+		return "", ErrInvalidResource
+	}
+	ctx, q, err := s.authorizeResourceOperation(WithInventoryRead(ctx), clusterID, "deployments", namespace, "read", false)
+	if err != nil {
+		return "", err
+	}
+	def, _ := ResourceType("deployments")
+	if err := s.reviewCachedAuthorization(ctx, q, []authorizationv1.ResourceAttributes{inventoryAttributes(def, namespace, name, "get")}); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", q.connectionVersion), nil
+}
+
 func (s *Service) CachedDeploymentState(ctx context.Context, clusterID, namespace, name, expectedUID string) (*RuntimeState, cache.SnapshotStatus, error) {
 	ctx = WithInventoryRead(ctx)
 	if !s.inventoryRead(ctx) {
 		return nil, cache.SnapshotStatus{State: cache.SnapshotPending}, nil
 	}
-	object, err := s.GetResource(ctx, clusterID, "deployments", namespace, name, false)
+	if len(validation.IsDNS1123Subdomain(name)) != 0 {
+		return nil, cache.SnapshotStatus{}, ErrInvalidResource
+	}
+	ctx, q, err := s.authorizeResourceOperation(ctx, clusterID, "deployments", namespace, "read", false)
+	if err != nil {
+		return nil, cache.SnapshotStatus{}, err
+	}
+	def, _ := ResourceType("deployments")
+	object, err := s.inventoryGet(ctx, q, def, namespace, name)
 	if errors.Is(err, ErrInventoryPending) {
 		return nil, cache.SnapshotStatus{State: cache.SnapshotPending}, nil
 	}
 	if err != nil {
-		return nil, cache.SnapshotStatus{}, err
+		return nil, cache.SnapshotStatus{}, resourceError("deployments", err)
 	}
 	var deployment appsv1.Deployment
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object, &deployment); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &deployment); err != nil {
 		return nil, cache.SnapshotStatus{}, fmt.Errorf("解析 Kubernetes 部署缓存失败: %w", err)
 	}
 	if expectedUID != "" && string(deployment.UID) != expectedUID {
@@ -82,6 +109,7 @@ func (s *Service) CachedDeploymentState(ctx context.Context, clusterID, namespac
 		status.CollectedAt = &at
 	}
 	state := deploymentRuntimeState(&deployment)
+	state.ObservationScope = fmt.Sprintf("%x", q.connectionVersion)
 	if stale {
 		status.State = cache.SnapshotStale
 	}

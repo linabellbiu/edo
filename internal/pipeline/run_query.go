@@ -38,6 +38,22 @@ type RunQueryResult struct {
 	PageSize int                 `json:"page_size"`
 }
 
+// LatestWorkflowRuns 给应用列表返回各流水线最近一次执行，其他流水线的运行数量不影响结果。
+func (s *Service) LatestWorkflowRuns(ctx context.Context) ([]model.PipelineRun, error) {
+	db := s.db.WithContext(ctx)
+	latest := db.Model(&model.PipelineRun{}).Select("MAX(id)").Group("project_id, department_id, application_id, workflow_id")
+	var runs []model.PipelineRun
+	err := pipelineRunQuery(db).Where("id IN (?)", latest).Order("id DESC").Find(&runs).Error
+	if err == nil {
+		err = s.enrichPipelineRuns(ctx, runs)
+	}
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "读取各流水线最近运行失败", "operation", "latest_workflow_runs", "err", err)
+		return nil, ErrRunQueryFailed
+	}
+	return runs, nil
+}
+
 // QueryRuns 先按状态和创建时间筛选，再按自增行号排序、分页。
 func (s *Service) QueryRuns(ctx context.Context, options RunQueryOptions) (RunQueryResult, error) {
 	logger := s.logger

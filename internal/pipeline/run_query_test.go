@@ -215,6 +215,39 @@ func TestQueryWorkflowRunsKeepsCurrentAndFiftyFinishedRecords(t *testing.T) {
 	}
 }
 
+func TestLatestWorkflowRunsIncludesQuietWorkflowOutsideProjectPage(t *testing.T) {
+	db := testutil.NewDatabase(t)
+	service := NewService(db, nil, nil)
+	now := time.Now().UTC()
+	repo := model.GitRepository{ID: "latest-repo", Name: "latest-repo"}
+	app := model.Application{ID: "query-application", Name: "latest_app", RepositoryID: repo.ID}
+	for _, value := range []any{&repo, &app} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := queryRunFixture("quiet-run", now, model.PipelineRunFailed)
+	old.WorkflowID = "quiet"
+	runs := []model.PipelineRun{old}
+	for i := 0; i < 205; i++ {
+		row := queryRunFixture(fmt.Sprintf("busy-%d", i), now, model.PipelineRunSucceeded)
+		row.WorkflowID = "busy"
+		runs = append(runs, row)
+	}
+	if err := db.CreateInBatches(runs, 20).Error; err != nil {
+		t.Fatal(err)
+	}
+	ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{ProjectID: app.ProjectID, DepartmentID: app.DepartmentID})
+	got, err := service.LatestWorkflowRuns(ctx)
+	if err != nil || len(got) != 2 || got[0].ID != "busy-204" || got[1].ID != old.ID {
+		t.Fatalf("每条流水线应保留最新运行: %d %v", len(got), err)
+	}
+	ctx = database.WithDepartmentScope(ctx, database.DepartmentScope{ProjectID: "other-project", DepartmentID: app.DepartmentID})
+	if rows, err := service.LatestWorkflowRuns(ctx); err != nil || len(rows) != 0 {
+		t.Fatalf("项目范围错误: %d %v", len(rows), err)
+	}
+}
+
 func queryRunFixture(id string, created time.Time, status model.PipelineRunStatus) model.PipelineRun {
 	return model.PipelineRun{
 		ID: id, ApplicationID: "query-application", Trigger: "manual", Ref: "refs/heads/main",

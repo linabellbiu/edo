@@ -114,6 +114,10 @@ type DeploymentRecord struct {
 	ErrorMessage          string                `gorm:"type:varchar(255);not null;default:''" json:"error_message"`
 	WarningMessage        string                `gorm:"type:varchar(255);not null;default:''" json:"warning_message"`
 	RuntimeDeletedAt      *time.Time            `json:"runtime_deleted_at,omitempty"`
+	ObservedAt            *time.Time            `json:"-"`
+	ObservedScope         string                `gorm:"size:64" json:"-"`
+	ObservedState         string                `gorm:"size:64" json:"-"`
+	ObservedRunning       bool                  `json:"-"`
 	CreatedAt             time.Time             `gorm:"not null;index" json:"created_at"`
 	UpdatedAt             time.Time             `gorm:"not null" json:"updated_at"`
 	StartedAt             *time.Time            `json:"started_at,omitempty"`

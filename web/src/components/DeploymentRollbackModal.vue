@@ -37,7 +37,7 @@ const history = computed<HistoryEntry[]>(() => {
   const source = preview.value
   if (!source) return []
   const seen = new Set<string>()
-  const matches = props.records.filter(record => {
+  const matches = source.history ?? props.records.filter(record => {
     if (!record.image || record.status !== 'succeeded' || record.id === source.source_deployment_id ||
       record.runtime_id !== source.runtime_id || record.platform && record.platform !== source.platform ||
       record.target_id && sourceRecord.value?.target_id && record.target_id !== sourceRecord.value.target_id ||
