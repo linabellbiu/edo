@@ -5,7 +5,6 @@ import { Cpu, Database, Gauge, MemoryStick, RadioTower, RefreshCw, TimerReset, T
 import { useI18n } from 'vue-i18n'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
-import PageToolbar from '@/components/PageToolbar.vue'
 import MetricTrend from '@/components/MetricTrend.vue'
 import { useAuthStore } from '@/stores/auth'
 import type { MetricsHistory, SystemMetrics } from '@/types/systemMetrics'
@@ -125,13 +124,15 @@ onBeforeUnmount(() => {
 
 <template>
   <section>
-    <PageToolbar>
-      <span v-if="metrics" class="metrics-time">{{ new Date(metrics.collected_at).toLocaleTimeString(locale, { hour12: false }) }}</span>
-      <a-button :loading="manualLoading" @click="refresh(true)"><RefreshCw :size="15" />{{ t('systemMonitor.history.refresh') }}</a-button>
-    </PageToolbar>
-    <div class="monitor-history-toolbar">
-      <a-segmented v-model:value="windowSeconds" :options="ranges" :aria-label="t('systemMonitor.history.range')" />
-      <span v-if="history" class="sampling-label">{{ t('systemMonitor.history.sampling', { seconds: history.interval_seconds }) }}</span>
+    <div class="page-toolbar monitor-toolbar">
+      <div class="monitor-toolbar-range">
+        <a-segmented v-model:value="windowSeconds" :options="ranges" :aria-label="t('systemMonitor.history.range')" />
+        <span v-if="history" class="sampling-label">{{ t('systemMonitor.history.sampling', { seconds: history.interval_seconds }) }}</span>
+      </div>
+      <div class="monitor-toolbar-actions">
+        <span v-if="metrics" class="metrics-time">{{ new Date(metrics.collected_at).toLocaleTimeString(locale, { hour12: false }) }}</span>
+        <a-button :loading="manualLoading" @click="refresh(true)"><RefreshCw :size="15" />{{ t('systemMonitor.history.refresh') }}</a-button>
+      </div>
     </div>
     <a-alert v-if="historyError" type="warning" show-icon :message="historyError" class="metric-alert"><template #action><a-button size="small" @click="refresh(true, true)">{{ t('systemMonitor.history.retry') }}</a-button></template></a-alert>
     <a-alert v-if="metrics?.unavailable?.length" type="warning" show-icon :message="t('systemMonitor.history.unavailable', { items: metrics.unavailable.join('、') })" class="metric-alert" />
@@ -167,5 +168,5 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.metrics-time{color:var(--edo-muted);font-size:12px}.metric-alert{margin-bottom:14px}.monitor-history-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px}.sampling-label{color:var(--edo-muted);font-size:12px;white-space:nowrap}.metric-cards{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.metric-card{min-width:0;padding:16px 18px 12px}.metric-card>header{display:flex;align-items:center;gap:8px;color:var(--edo-muted);font-size:13px}.metric-card header svg{width:18px;height:18px;color:var(--edo-primary)}.metric-card strong{display:block;margin:14px 0 4px;font-size:25px;line-height:32px}.metric-card p{min-height:18px;margin:0 0 4px;color:var(--edo-muted);font-size:12px}.monitor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}.monitor-panel{min-width:0;padding:16px 18px}.monitor-panel>header{display:flex;align-items:center;justify-content:space-between;gap:10px}.monitor-panel header span{color:var(--edo-muted);font-size:12px}.monitor-panel h3{margin:2px 0 0;font-size:15px}.monitor-panel header>svg{width:20px;color:var(--edo-primary)}.queue-actions{display:flex;align-items:center;gap:8px}.queue-actions .ant-tag{margin-inline-end:0}dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:14px 0 0}dl>div{min-width:0;padding:10px 12px 4px;border-top:1px solid var(--edo-border);border-right:1px solid var(--edo-border)}dl>div:nth-child(3n){border-right:0}dt{color:var(--edo-muted);font-size:12px}dd{margin:4px 0 2px;font-weight:650;font-size:15px;line-height:21px}.danger{color:var(--edo-danger,#e94f5f)}@media(max-width:1150px){.metric-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){.metric-cards,.monitor-grid{grid-template-columns:1fr}}@media(max-width:460px){dl{grid-template-columns:repeat(2,minmax(0,1fr))}dl>div:nth-child(3n){border-right:1px solid var(--edo-border)}dl>div:nth-child(2n){border-right:0}.metric-card{padding:14px}}
+.metrics-time{color:var(--edo-muted);font-size:12px}.metric-alert{margin-bottom:14px}.monitor-toolbar{justify-content:space-between;margin-bottom:14px}.monitor-toolbar-range,.monitor-toolbar-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px}.monitor-toolbar-actions{gap:10px}.sampling-label{color:var(--edo-muted);font-size:12px;white-space:nowrap}.metric-cards{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.metric-card{min-width:0;padding:16px 18px 12px}.metric-card>header{display:flex;align-items:center;gap:8px;color:var(--edo-muted);font-size:13px}.metric-card header svg{width:18px;height:18px;color:var(--edo-primary)}.metric-card strong{display:block;margin:14px 0 4px;font-size:25px;line-height:32px}.metric-card p{min-height:18px;margin:0 0 4px;color:var(--edo-muted);font-size:12px}.monitor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}.monitor-panel{min-width:0;padding:16px 18px}.monitor-panel>header{display:flex;align-items:center;justify-content:space-between;gap:10px}.monitor-panel header span{color:var(--edo-muted);font-size:12px}.monitor-panel h3{margin:2px 0 0;font-size:15px}.monitor-panel header>svg{width:20px;color:var(--edo-primary)}.queue-actions{display:flex;align-items:center;gap:8px}.queue-actions .ant-tag{margin-inline-end:0}dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:14px 0 0}dl>div{min-width:0;padding:10px 12px 4px;border-top:1px solid var(--edo-border);border-right:1px solid var(--edo-border)}dl>div:nth-child(3n){border-right:0}dt{color:var(--edo-muted);font-size:12px}dd{margin:4px 0 2px;font-weight:650;font-size:15px;line-height:21px}.danger{color:var(--edo-danger,#e94f5f)}@media(max-width:1150px){.metric-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){.metric-cards,.monitor-grid{grid-template-columns:1fr}}@media(max-width:460px){dl{grid-template-columns:repeat(2,minmax(0,1fr))}dl>div:nth-child(3n){border-right:1px solid var(--edo-border)}dl>div:nth-child(2n){border-right:0}.metric-card{padding:14px}}
 </style>
