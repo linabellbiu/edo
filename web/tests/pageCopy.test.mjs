@@ -65,7 +65,7 @@ test('同类列表页统一把操作栏与筛选放进内容卡片', () => {
 })
 test('应用列表把自动更新、刷新、新建收进筛选行，保持单行', () => {
   const devops = source('DevOpsView.vue')
-  assert.ok(/<PageToolbar v-if="props.section!=='applications'">/.test(devops), '应用页不再单独占一行操作栏')
+  assert.ok(/<PageToolbar v-if="props.section==='build-plans'\\|\\|\(props.section==='release-plans'&&releaseView==='plans'\)">/.test(devops), '应用页与通用列表不再单独占一行操作栏')
   assert.ok(devops.includes('apps-filter-actions'), '应用筛选行包含操作按钮')
   const css = readFileSync(new URL('../src/styles/application-workspace.css', import.meta.url), 'utf8')
   assert.ok(css.includes('.apps-filter-actions'), '筛选行操作区样式存在')
@@ -78,4 +78,10 @@ test('凭据、环境、登录方式、部署方案列表同样把操作栏放�
     ['DeploymentPlanView.vue', /class="expandable-plan-list deployment-plan-list vben-card">\s*<PageToolbar>/],
   ]
   for (const [name, pattern] of expectations) assert.ok(pattern.test(source(name)), name + ' 的操作栏应在卡片顶部')
+})
+test('代码仓库、镜像仓库、运行记录列表的操作栏也在卡片顶部', () => {
+  const devops = source('DevOpsView.vue')
+  assert.ok(/<PageToolbar v-if="props.section==='build-plans'\|\|\(props.section==='release-plans'&&releaseView==='plans'\)">/.test(devops), '通用列表不再使用卡片外操作栏')
+  assert.ok(/<div class="vben-card resources-list-card">\s*<PageToolbar>/.test(devops), '代码仓库与镜像仓库操作栏应在卡片顶部')
+  assert.ok(/class="run-workspace vben-card">\s*<PageToolbar>/.test(devops), '运行记录操作栏应在卡片顶部')
 })
