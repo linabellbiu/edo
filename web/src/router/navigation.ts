@@ -76,7 +76,7 @@ export const navigation: NavSection[] = [
           { label: 'k8s.network', path: '/kubernetes?view=network', permissions: ['kubernetes.network.read'], icon: Network },
         ] },
       ] },
-      { key: 'organization', label:'workspace.organization', icon:Building2, items:[
+      { key: 'organization', label:'workspace.organizationGroup', icon:Building2, items:[
  {label:'workspace.projects',path:'/projects',permissions:[],icon:Boxes},
  {label:'workspace.organization',path:'/organization',permissions:['organization.read','organization.update','department.read','department.create','department.update','department.delete'],icon:Building2},
 ] },

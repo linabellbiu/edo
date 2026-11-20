@@ -6,7 +6,6 @@ import { useI18n } from 'vue-i18n'
 import client from '@/api/client'
 import { apiErrorMessage, isMutationAcknowledged, type ResourceRecord } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
-import PageToolbar from '@/components/PageToolbar.vue'
 
 interface Department extends ResourceRecord { id:string; parent_id:string; name:string; description:string; member_count:number; is_default:boolean }
 interface DepartmentMember { id:string; username:string; nickname:string; department_id:string; is_active:boolean }
@@ -152,11 +151,13 @@ watch([()=>auth.authorizationState,scopeIdentity],([state,scope],[previous,oldSc
 onBeforeUnmount(()=>{disposed=true;loadRevision++})
 onMounted(load)
 </script>
-<template><section class="organization-directory">
-<PageToolbar :title="t('workspace.organization')"><a-button :loading="loading" @click="load"><RefreshCw :size="15"/>{{t('workspace.refresh')}}</a-button></PageToolbar>
+<template><section class="organization-directory" :aria-label="t('workspace.organization')">
 <div class="directory-workspace vben-card">
  <aside class="directory-nav" :aria-label="t('workspace.departments')">
-  <div class="directory-nav-heading"><h2>{{t('workspace.organizationStructure')}}</h2><span v-if="canReadDepartments">{{rows.length}}</span></div>
+  <div class="directory-nav-heading">
+   <h2>{{t('workspace.organizationStructure')}}</h2><span v-if="canReadDepartments">{{rows.length}}</span>
+   <a-button class="directory-refresh" size="small" :loading="loading" @click="load"><RefreshCw :size="15" aria-hidden="true"/>{{t('workspace.refresh')}}</a-button>
+  </div>
   <a-input-search v-model:value="query" class="directory-tree-search" :placeholder="t('workspace.departmentSearch')" :aria-label="t('workspace.departmentSearch')" allow-clear/>
   <a-spin :spinning="loading" class="directory-tree-area">
    <a-tree class="directory-tree" block-node :show-line="false" :tree-data="treeData" :selected-keys="[selected?.id||'company']" :expanded-keys="visibleExpandedKeys" :auto-expand-parent="false" @expand="expandNodes" @select="selectOrganizationNode">
@@ -208,9 +209,10 @@ onMounted(load)
 <style scoped>
 .directory-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);min-height:460px;overflow:hidden}
 .directory-nav{min-width:0;border-right:1px solid var(--edo-border);background:color-mix(in srgb,var(--edo-surface-soft) 60%,var(--edo-surface))}
-.directory-nav-heading{display:flex;align-items:center;gap:8px;padding:20px 18px 14px}
+.directory-nav-heading{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:20px 18px 14px}
 .directory-nav-heading h2{margin:0;font-size:14px;font-weight:600}
 .directory-nav-heading>span{padding:0 7px;border-radius:9px;color:var(--edo-muted);background:var(--edo-surface);font-size:12px;font-variant-numeric:tabular-nums}
+.directory-refresh{margin-inline-start:auto}
 .directory-tree-search{display:block;width:calc(100% - 32px);margin:0 16px 14px}
 .directory-tree-area{display:block;padding:0 10px 20px}
 .directory-nav :deep(.directory-tree){background:transparent;color:var(--edo-text)}

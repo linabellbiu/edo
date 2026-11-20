@@ -6,6 +6,7 @@ import { Plus, RefreshCw } from 'lucide-vue-next'
 
 import client, { type LoginProvider } from '@/api/client'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import { useAuthStore } from '@/stores/auth'
 const providerFormID=useId()
@@ -95,11 +96,11 @@ onMounted(refresh)
 </script>
 
 <template>
-  <div class="identity-settings">
-    <div class="identity-heading">
-      <h3>{{ t('loginAuth.title') }}</h3>
-      <a-space><a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />{{ t('loginAuth.refresh') }}</a-button><a-button v-if="auth.canAny(['identity.create'])" type="primary" @click="create"><Plus :size="15" />{{ t('loginAuth.add') }}</a-button></a-space>
-    </div>
+  <div class="identity-settings" role="region" :aria-label="t('loginAuth.title')">
+    <PageToolbar>
+      <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />{{ t('loginAuth.refresh') }}</a-button>
+      <a-button v-if="auth.canAny(['identity.create'])" type="primary" @click="create"><Plus :size="15" />{{ t('loginAuth.add') }}</a-button>
+    </PageToolbar>
     <div class="vben-card">
       <ResourceTable :rows="items" :columns="columns" :loading="loading">
         <template #cell-type="{ value }"><a-tag>{{ types.includes(value as ProviderType) ? t(`loginAuth.${value}`) : value }}</a-tag></template>
@@ -164,8 +165,6 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.identity-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:14px; flex-wrap:wrap; }
-.identity-heading h3 { margin:0; }
 .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 14px; }
 .span-2 { grid-column:1/-1; }
 .provider-hint { margin-bottom:16px; }

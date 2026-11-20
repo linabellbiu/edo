@@ -148,7 +148,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
   <div class="variables-workspace" :class="{'is-embedded':embedded}">
     <a-alert v-if="!can('read')" type="warning" show-icon :message="scopeMessage"/>
     <template v-else>
-    <PageToolbar :title="configurationFiles?'配置':embedded?'环境配置（变量 / .env）':projectName?`${projectName} · 变量与密钥`:'当前项目 · 变量与密钥'">
+    <PageToolbar>
       <a-button :loading="loading" @click="load"><RefreshCw :size="15"/>刷新</a-button>
       <a-button v-if="can('create')" type="primary" @click="edit()"><Plus :size="15"/>{{configurationFiles||embedded?'添加配置':'添加变量'}}</a-button>
     </PageToolbar>

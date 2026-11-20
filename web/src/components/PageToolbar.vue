@@ -1,13 +1,10 @@
 <script setup lang="ts">
-defineProps<{ title?: string; description?: string }>()
+defineProps<{ summary?: string }>()
 </script>
 
 <template>
   <div class="page-toolbar">
-    <div v-if="title || description" class="page-toolbar-copy">
-      <strong v-if="title">{{ title }}</strong>
-      <span v-if="description">{{ description }}</span>
-    </div>
+    <span v-if="summary" class="page-toolbar-summary">{{ summary }}</span>
     <div class="page-toolbar-actions"><slot /></div>
   </div>
 </template>

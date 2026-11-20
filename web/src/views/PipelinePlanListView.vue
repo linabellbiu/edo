@@ -106,7 +106,7 @@ const {
   openDetails: revealDetails,
   changePage,
 } = useResourceList(() => filteredRows.value)
-const description = computed(
+const pipelineCountSummary = computed(
   () =>
     `${entries.value.length} 条流水线：${templates.value.length} 条共用方案，${entries.value.length - templates.value.length} 条应用流水线。`,
 )
@@ -428,7 +428,7 @@ async function openCreatedTemplate(
 
 <template>
   <section class="pipeline-plan-page">
-    <PageToolbar :description="description">
+    <PageToolbar :summary="pipelineCountSummary">
       <a-button :loading="loading" :disabled="!canRead" @click="refresh"
         ><RefreshCw :size="15" />刷新</a-button
       >

@@ -207,9 +207,7 @@ button { color: inherit; }
 .command-results kbd { color: var(--edo-muted); }
 
 .page-toolbar { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
-.page-toolbar-copy { min-width: 0; color: var(--edo-muted); }
-.page-toolbar-copy strong { display: block; color: var(--edo-text); font-size: 15px; font-weight: 600; }
-.page-toolbar-copy span { display: block; margin-top: 1px; font-size: 13px; }
+.page-toolbar-summary { min-width: 0; color: var(--edo-muted); font-size: 13px; }
 .page-toolbar-actions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-inline-start: auto; }
 /* 分段控件（页面页签、筛选与范围）统一为浅色实底：选中用浅靛蓝 + 靛蓝文字，
    不使用渐变、外发光或内阴影；选中块与相邻条目同高，不允许溢出容器。 */
