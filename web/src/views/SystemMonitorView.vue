@@ -5,6 +5,7 @@ import { Cpu, Database, Gauge, MemoryStick, RadioTower, RefreshCw, TimerReset, T
 import { useI18n } from 'vue-i18n'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
+import DeliveryFailureTrend from '@/components/DeliveryFailureTrend.vue'
 import MetricTrend from '@/components/MetricTrend.vue'
 import { useAuthStore } from '@/stores/auth'
 import type { MetricsHistory, SystemMetrics } from '@/types/systemMetrics'
@@ -36,7 +37,7 @@ const summaries = computed(() => [
   { ...definition('pending'), icon: RadioTower, definitions: [definition('pending')] },
 ])
 const panels = computed(() => [
-  { name: 'Worker 与任务', subtitle: '任务执行', icon: Gauge, keys: ['active', 'jobsPending', 'succeeded', 'failed', 'retried', 'outbox'] },
+  { name: 'Worker 与任务', subtitle: '任务执行', icon: Gauge, keys: ['active', 'jobsPending', 'succeeded', 'retried', 'outbox'] },
   { name: '消息队列', subtitle: 'JetStream', icon: RadioTower, keys: ['stored', 'storedBytes', 'consumers', 'redelivered', 'dead', 'deadBytes'] },
   { name: 'EDO 进程与 GC', subtitle: 'Go Runtime', icon: TimerReset, keys: ['rss', 'goroutines', 'heap', 'sys', 'gc', 'uptime'] },
   { name: '节点与数据库', subtitle: '基础资源', icon: Database, keys: ['load1', 'load5', 'connections', 'inUse', 'idle', 'wait'] },
@@ -136,6 +137,7 @@ onBeforeUnmount(() => {
     </div>
     <a-alert v-if="historyError" type="warning" show-icon :message="historyError" class="metric-alert"><template #action><a-button size="small" @click="refresh(true, true)">{{ t('systemMonitor.history.retry') }}</a-button></template></a-alert>
     <a-alert v-if="metrics?.unavailable?.length" type="warning" show-icon :message="t('systemMonitor.history.unavailable', { items: metrics.unavailable.join('、') })" class="metric-alert" />
+    <DeliveryFailureTrend :window-seconds="windowSeconds" />
     <a-spin :spinning="manualLoading && !metrics">
       <template v-if="metrics">
         <div class="metric-cards">
