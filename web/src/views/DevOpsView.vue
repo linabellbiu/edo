@@ -188,7 +188,6 @@ const buildImagePathPreview=computed(()=>{
  const namespace=(registry?.namespace||'[命名空间]').replace(/^\/+|\/+$/g,'')
  return `${endpoint}/${namespace}/[应用名]:[版本标签]`
 })
-const copy:Record<Section,{description:string}>={applications:{description:'创建应用，关联仓库并配置流水线。'},repositories:{description:'管理代码仓库和 Git 凭据。'},'build-plans':{description:'保存可复用的 Dockerfile 或脚本构建配置。'},'image-registries':{description:'管理镜像仓库，保存前请先测试连接。'},'release-plans':{description:'选择多个应用一起发布，或查看流水线运行记录。'}}
 const releaseView=computed(()=>route.query.view==='runs'?'runs':'plans')
 const requestedRunID=computed(()=>typeof route.query.run==='string'?route.query.run:'')
 const sectionPermission=computed(()=>props.section==='build-plans'?'build_plan':props.section==='image-registries'?'image_registry':props.section==='release-plans'?(route.query.view==='runs'?'pipeline_run':'release_plan'):'application')
@@ -243,7 +242,6 @@ const releasePlanAddApplicationOptions=computed(()=>{
  const usedIDs=new Set((target.plan.groups||[]).flatMap(group=>group.applications.map(item=>item.application_id)))
  return applications.value.filter(item=>item.is_active&&!usedIDs.has(item.id)).map(item=>({value:item.id,label:item.name}))
 })
-const currentDescription=computed(()=>props.section==='release-plans'?(releaseView.value==='runs'?'查看代码事件或手动操作触发的执行、当前任务和实时日志。':copy[props.section].description):copy[props.section].description)
 interface RunExecutionGroup{id:string;executionGroup:true;release_plan_id:string;release_plan_execution_id:string;created_at:string;runs:Run[]}
 type RunListEntry=Run|RunExecutionGroup
 const runListEntries=computed<RunListEntry[]>(()=>{
@@ -2384,7 +2382,7 @@ onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())contro
 onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();composeContainerController?.abort();resetArtifactRequests();formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
 </script>
 
-<template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
+<template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
 <a-alert v-for="(error,key) in resourceErrors" :key="key" type="error" show-icon :message="`${resourceLabels[key]}：${error}`" class="resource-load-error"><template #action><a-button size="small" :loading="resourcePending[key]" @click="resourceReaders[key]?.()">重试</a-button></template></a-alert>
 <div v-if="props.section==='applications'" class="apps-workspace">
   <div class="apps-filter-bar">
@@ -2567,7 +2565,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
   <div v-else-if="!visibleApplicationCards.length" class="apps-empty">
     <Search v-if="applicationCards.length" :size="28"/><Boxes v-else :size="28"/>
     <strong>{{ applicationCards.length?t('applicationWorkspace.noResults'):t('applicationCard.empty') }}</strong>
-    <p>{{ applicationCards.length?t('applicationWorkspace.noResultsHint'):t('applicationWorkspace.emptyHint') }}</p>
+    <p v-if="!applicationCards.length">{{ t('applicationWorkspace.emptyHint') }}</p>
     <a-button v-if="applicationCards.length" @click="resetApplicationFilters">{{ t('applicationWorkspace.clearFilters') }}</a-button>
   </div>
 </div>
@@ -2768,7 +2766,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
 <a-drawer :open="formOpen" :title="creatingApplicationRepository?t('applicationForm.createRepository'):props.section==='applications'?(editingID?'编辑应用':'创建应用'):(editingID?'编辑配置':'新建配置')" width="min(700px, 100vw)" :closable="!saving&&!testing" :mask-closable="!saving&&!testing" :keyboard="!saving&&!testing" @close="closeForm"><a-form layout="vertical">
 <template v-if="formSection==='applications'">
  <section class="application-form-section">
-  <header><strong>应用信息</strong><small>配置应用名称、说明和唯一绑定的代码仓库。</small></header>
+  <header><strong>应用信息</strong></header>
   <div class="form-grid">
    <a-form-item label="应用名称" required><a-input v-model:value="appForm.name" :maxlength="128" placeholder="例如 order_service"/><small class="field-hint">应用名同时作为镜像仓库名；以小写英文字母开头，仅使用小写英文字母和单个下划线。</small></a-form-item>
    <a-form-item label="说明"><a-input v-model:value="appForm.description"/></a-form-item>
@@ -2784,7 +2782,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
  </section>
  <section class="application-form-section application-workflow-association" :aria-label="editingID?'已关联流水线':'关联流水线'">
   <header>
-   <div><strong class="workflow-association-heading">{{ editingID?'已关联流水线':'关联流水线' }}<span v-if="editingID&&editingApplication?.workflows" class="workflow-association-count">{{editingApplication.workflows.length}} 条</span></strong><small v-if="!editingID">可选择本项目已启用的共用流水线；不选择则在保存应用后配置发布流程。</small></div>
+   <div><strong class="workflow-association-heading">{{ editingID?'已关联流水线':'关联流水线' }}<span v-if="editingID&&editingApplication?.workflows" class="workflow-association-count">{{editingApplication.workflows.length}} 条</span></strong></div>
    <a-button v-if="editingID&&!workflowPickerOpen&&!selectedWorkflowTemplateID" type="link" size="small" :disabled="saving||testing" @click="openWorkflowPicker"><Plus :size="15"/>添加流水线</a-button>
   </header>
   <template v-if="editingID">
@@ -2810,7 +2808,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
    </div>
   </template>
   <a-form-item v-else label="选择流水线">
-   <a-select v-model:value="appForm.workflow_template_id" allow-clear show-search option-filter-prop="label" placeholder="可选；不选择则下一步配置发布流程" :options="workflowTemplates.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/>
+   <a-select v-model:value="appForm.workflow_template_id" allow-clear show-search option-filter-prop="label" placeholder="不选择则在保存应用后配置发布流程。" :options="workflowTemplates.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/>
   </a-form-item>
  </section>
  <section class="application-form-section">

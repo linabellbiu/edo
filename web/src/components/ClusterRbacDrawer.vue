@@ -143,7 +143,6 @@ onBeforeUnmount(()=>{alive=false;cancel();listRevision++;listRequest?.abort();wi
 <template>
   <a-drawer :open="open" title="集群授权" width="min(1040px,96vw)" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" @close="close">
     <div class="cluster-rbac">
-      <p class="rbac-intro">按项目角色配置集群和命名空间的访问范围。</p>
       <a-alert v-if="!canRead" type="warning" show-icon message="需要集群授权查看或管理权限" />
       <template v-else>
         <div v-if="!cluster" class="cluster-choice"><label for="rbac-cluster">选择集群</label><a-select id="rbac-cluster" v-model:value="chosenCluster" aria-label="授权集群" show-search option-filter-prop="label" :loading="clustersLoading" :disabled="busy" placeholder="选择当前项目的集群" :options="clusters.map(item=>({value:item.id,label:item.name,disabled:!item.is_active}))" /></div>
@@ -190,6 +189,6 @@ onBeforeUnmount(()=>{alive=false;cancel();listRevision++;listRequest?.abort();wi
 
 <style scoped>
 .rbac-mode-warning{margin:0;line-height:1.7}
-.rbac-intro,.rbac-note{margin:0;color:var(--edo-muted);font-size:13px;line-height:1.7}
+.rbac-note{margin:0;color:var(--edo-muted);font-size:13px;line-height:1.7}
 .cluster-rbac{display:grid;gap:16px}.cluster-choice{display:grid;gap:8px}.cluster-choice .ant-select{width:100%}.rbac-heading,.rbac-heading>div,.rbac-actions,.section-heading,.grant-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.rbac-heading{justify-content:space-between;margin-bottom:16px}.rbac-heading strong{display:flex;align-items:center;gap:8px}.rbac-heading span,.field-help{font-size:12px;color:var(--edo-muted)}.rbac-actions{justify-content:flex-end}.rbac-heading .ant-tag{margin:0}.section-heading{justify-content:space-between;margin-top:20px}.section-heading h3,.grant-editor h3{font-size:14px;margin:0}.grant-card,.grant-editor,.review-box{padding:16px;border:1px solid var(--edo-border);border-radius:8px;margin-top:12px}.grant-title>.rbac-actions{margin-left:auto}.grant-permissions{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}.grant-permissions .ant-tag{margin:0}.grant-error{color:var(--edo-danger);font-size:12px;overflow-wrap:anywhere}.review-box{display:grid;gap:12px}.review-box p{margin:0}.grant-editor{display:grid;gap:14px}.field-help{margin-top:7px;line-height:1.6}.permission-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;width:100%}.permission-options>label{display:flex;align-items:center;gap:8px;min-width:0;line-height:1.5}.permission-options .ant-tag{margin-left:auto;font-size:10px}.preview-panel{display:grid;gap:12px;border-top:1px solid var(--edo-border);padding-top:16px}.preview-panel h4,.preview-panel p{margin:0}.preview-panel p{font-size:12px;color:var(--edo-muted);line-height:1.7}.preview-panel details{font-size:12px}.preview-panel summary{cursor:pointer;margin-bottom:8px}.preview-panel pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:var(--edo-bg);border:1px solid var(--edo-border);padding:12px;border-radius:6px;font-size:11px;line-height:1.65}@media(max-width:650px){.permission-options{grid-template-columns:1fr}.rbac-heading{align-items:flex-start}.grant-title>.rbac-actions{margin-left:0}}
 </style>

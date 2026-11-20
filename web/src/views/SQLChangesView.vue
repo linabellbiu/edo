@@ -222,7 +222,7 @@ onBeforeUnmount(() => { disposed = true; generation++; abortAll(); if (poll) cle
   <div class="sql-changes">
     <a-alert v-if="!can('read')" type="warning" show-icon :message="t('sqlChanges.noPermission')" />
     <template v-else>
-      <PageToolbar :description="t('sqlChanges.description')"><a-button :loading="loading" @click="loadList(); loadOptions()">{{ t('sqlChanges.refresh') }}</a-button><a-button v-if="can('create')" type="primary" :loading="editorLoading" @click="edit()">{{ t('sqlChanges.create') }}</a-button></PageToolbar>
+      <PageToolbar><a-button :loading="loading" @click="loadList(); loadOptions()">{{ t('sqlChanges.refresh') }}</a-button><a-button v-if="can('create')" type="primary" :loading="editorLoading" @click="edit()">{{ t('sqlChanges.create') }}</a-button></PageToolbar>
       <a-alert v-if="error" type="error" show-icon :message="error" />
       <section class="vben-card sql-list-panel">
         <div class="resource-filter-bar">

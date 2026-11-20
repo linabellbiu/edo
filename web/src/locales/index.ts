@@ -27,7 +27,7 @@ export const messages = {
 	workspace: workspaceZh,
     resourceList: { sort:'排序', details: '详情', more: '更多操作', basic: '基本信息', configuration: '配置信息', name: '名称', description: '说明', hosts: '所属主机', hostCount: '主机数量', capabilities: '主机能力', environmentEmpty: '还没有主机组', status: '状态', resources: '运行资源', created: '创建时间', updated: '最近更新', close: '关闭', artifacts: '构建制品', workflows: '关联流水线', instances: '部署实例' },
     buildPlanWorkspace: { entry: '构建入口', directory: '执行目录', artifact: '构建产物', storage: '存储位置', architecture: '目标架构', followHost: '自动跟随部署主机', timeout: '构建超时', updated: '最近修改', artifacts: '构建制品', empty: '还没有构建方案' },
-    deploymentList: { description: '配置执行主机组和执行参数，流水线部署任务直接选择方案。', environment: '执行主机组', configuration: '部署配置', noEnvironment: '未配置主机组', environmentUnavailable: '主机组信息不可用', noLocation: '尚未配置运行位置', locationUnavailable: '连接信息不可用', localExecution: '本地执行', directory: '目录：{value}', homeDirectory: '执行用户主目录', savedScript: '执行已保存的部署脚本', service: '服务：{value}', notConfigured: '未配置', composeFile: '内联 Docker Compose YAML', workload: 'Deployment：{value}', kubernetesScope: '命名空间：{namespace}；容器：{container}', customCommand: '自定义部署命令', customCommandHint: '通过已保存的命令配置容器', ports: '端口：{value}', noPorts: '未配置端口映射', configCounts: '环境变量：{variables} 个；命名卷：{volumes} 个' },
+    deploymentList: { environment: '执行主机组', configuration: '部署配置', noEnvironment: '未配置主机组', environmentUnavailable: '主机组信息不可用', noLocation: '尚未配置运行位置', locationUnavailable: '连接信息不可用', localExecution: '本地执行', directory: '目录：{value}', homeDirectory: '执行用户主目录', savedScript: '执行已保存的部署脚本', service: '服务：{value}', notConfigured: '未配置', composeFile: '内联 Docker Compose YAML', workload: 'Deployment：{value}', kubernetesScope: '命名空间：{namespace}；容器：{container}', customCommand: '自定义部署命令', customCommandHint: '通过已保存的命令配置容器', ports: '端口：{value}', noPorts: '未配置端口映射', configCounts: '环境变量：{variables} 个；命名卷：{volumes} 个' },
     planList: { hint: '点击记录展开详情，可同时查看多条', total: '共 {count} 条', expand: '展开详情', collapse: '收起详情', status: '状态', actions: '操作', updated: '最近更新', details: '方案详情', deploymentName: '部署方案', releaseName: '发布计划', mode: '执行方式', destination: '运行位置', object: '更新对象', directory: '执行目录', timeout: '最长执行时间', seconds: '{count} 秒', timeoutHint: '超过时间后停止本次部署并标记失败。', descriptionEmpty: '尚未填写说明', deploymentEmpty: '还没有部署方案', enabled: '已启用', disabled: '已停用', incomplete: '待补全', enable: '启用', disable: '停用', edit: '编辑', remove: '删除', applications: '发布应用', applicationOverflow: '另 {count} 个', manualCount: '{count} 个可手动执行' },
     applicationForm: { createRepository: '创建代码仓库', backToApplication: '返回应用', repositoryCreated: '代码仓库已创建并选中' },
     repositoryForm: {
@@ -107,7 +107,7 @@ export const messages = {
     dashboard: { title: '分析页', healthy: '运行正常', checking: '正在检查', updated: '最近更新', noData: '暂无数据', degraded: '构建服务不可用', failed: '依赖服务异常' },
     systemMonitor: {
       memory: { hostCPU: '服务器 CPU', hostUsed: '服务器已用内存', processRSS: 'EDO 进程内存（RSS）', processHeap: 'Go 堆 {heap}', hostTotal: '服务器总内存 {total}' },
-      history: { description: '每 5 秒更新，历史记录保留 3 天。', range: '历史范围', minutes15: '15 分钟', hour1: '1 小时', hours6: '6 小时', hours24: '24 小时', days3: '3 天', empty: '暂无历史数据', chartLabel: '{name}历史折线图，可用左右方向键查看', unitHint: '单位：{unit}', count: '个', sampling: '间隔：{seconds} 秒', error: '历史数据加载失败，当前显示上次结果。', refresh: '立即刷新', noData: '等待后台采集系统监控数据', retry: '重试', updating: '正在同步', unavailable: '部分指标暂不可用：{items}' },
+      history: { range: '历史范围', minutes15: '15 分钟', hour1: '1 小时', hours6: '6 小时', hours24: '24 小时', days3: '3 天', empty: '暂无历史数据', chartLabel: '{name}历史折线图，可用左右方向键查看', unitHint: '单位：{unit}', count: '个', sampling: '间隔：{seconds} 秒', error: '历史数据加载失败，当前显示上次结果。', refresh: '立即刷新', noData: '等待后台采集系统监控数据', retry: '重试', updating: '正在同步', unavailable: '部分指标暂不可用：{items}' },
       deadLetters: {
         clear: '清空死信', confirmTitle: '清空全部死信？',
         confirmDescription: '将删除 {count} 条死信，不影响正常任务。此操作无法撤销。',
@@ -115,7 +115,7 @@ export const messages = {
       },
     },
     systemLogs: {
-      description: '查看 EDO 服务日志。', currentProcess: '当前进程',
+      title: '系统日志', currentProcess: '当前进程',
       scopeHint: '服务重启后日志清空。流水线和容器日志请到对应详情中查看。',
       searchPlaceholder: '操作名称、日志内容或上下文字段', empty: '当前没有符合条件的系统日志', defaultOperation: 'system', loadEarlier: '加载更早日志',
       level: { all: '全部级别', debug: '调试', info: '信息', warn: '警告', error: '错误' },
@@ -162,10 +162,10 @@ export const messages = {
       invalidEvent: '收到无法识别的日志事件', disconnected: '日志连接已断开',
     },
     applicationWorkspace: {
-      description: '查看应用的代码更新、流水线运行和部署实例。', create: '新建应用', search: '搜索应用、仓库或流水线', filterLabel: '筛选应用', instances: '实例', environmentVariables: '配置', environmentConfiguration: '配置',
+      create: '新建应用', search: '搜索应用、仓库或流水线', filterLabel: '筛选应用', instances: '实例', environmentVariables: '配置', environmentConfiguration: '配置',
       filters: { all: '全部应用', running: '进行中', attention: '需要关注', inactive: '已停用' },
       columns: { application: '应用', resources: '关联资源', actions: '操作', status: '启用状态', source: '触发规则', template: '绑定方案', tasks: '任务构成', runTime: '运行时间' },
-      noResults: '没有符合条件的应用', noResultsHint: '试试其他关键词，或清除筛选条件。', clearFilters: '清除筛选',
+      noResults: '没有符合条件的应用', clearFilters: '清除筛选',
       emptyHint: '先创建应用并连接代码仓库，再配置流水线。', noRunHint: '运行后将在这里显示提交与执行进度。', template: '绑定方案：{name}',
     },
     applicationCard: {
@@ -269,7 +269,7 @@ export const messages = {
 	workspace: workspaceEn,
     resourceList: { sort:'Sort', details: 'Details', more: 'More actions', basic: 'Basic information', configuration: 'Configuration', name: 'Name', description: 'Description', hosts: 'Hosts', hostCount: 'Host count', capabilities: 'Capabilities', environmentEmpty: 'No environments yet', status: 'Status', resources: 'Resources', created: 'Created', updated: 'Last updated', close: 'Close', artifacts: 'Build artifacts', workflows: 'Workflows', instances: 'Deployment instances' },
     buildPlanWorkspace: { entry: 'Build entry', directory: 'Directory', artifact: 'Build output', storage: 'Storage', architecture: 'Architecture', followHost: 'Follow deployment host', timeout: 'Build timeout', updated: 'Last modified', artifacts: 'Artifacts', empty: 'No build plans yet' },
-    deploymentList: { description: 'Configure the deployment method, environment and parameters, then select this plan in a pipeline deployment task.', environment: 'Execution host group', configuration: 'Deployment configuration', noEnvironment: 'No environment configured', environmentUnavailable: 'Environment unavailable', noLocation: 'No location configured', locationUnavailable: 'Connection details unavailable', localExecution: 'Local execution', directory: 'Directory: {value}', homeDirectory: 'Execution user home', savedScript: 'Run the saved deployment script', service: 'Service: {value}', notConfigured: 'Not configured', composeFile: 'Inline Docker Compose YAML', workload: 'Deployment: {value}', kubernetesScope: 'Namespace: {namespace}; container: {container}', customCommand: 'Custom deployment command', customCommandHint: 'Container configured by the saved command', ports: 'Ports: {value}', noPorts: 'No port mappings', configCounts: 'Environment variables: {variables}; named volumes: {volumes}' },
+    deploymentList: { environment: 'Execution host group', configuration: 'Deployment configuration', noEnvironment: 'No environment configured', environmentUnavailable: 'Environment unavailable', noLocation: 'No location configured', locationUnavailable: 'Connection details unavailable', localExecution: 'Local execution', directory: 'Directory: {value}', homeDirectory: 'Execution user home', savedScript: 'Run the saved deployment script', service: 'Service: {value}', notConfigured: 'Not configured', composeFile: 'Inline Docker Compose YAML', workload: 'Deployment: {value}', kubernetesScope: 'Namespace: {namespace}; container: {container}', customCommand: 'Custom deployment command', customCommandHint: 'Container configured by the saved command', ports: 'Ports: {value}', noPorts: 'No port mappings', configCounts: 'Environment variables: {variables}; named volumes: {volumes}' },
     planList: { hint: 'Click a row to expand details; multiple rows can stay open', total: '{count} items', expand: 'Expand details', collapse: 'Collapse details', status: 'Status', actions: 'Actions', updated: 'Last updated', details: 'Plan details', deploymentName: 'Deployment plan', releaseName: 'Release plan', mode: 'Execution mode', destination: 'Location', object: 'Target', directory: 'Working directory', timeout: 'Timeout', seconds: '{count} seconds', timeoutHint: 'The deployment stops and is marked failed after the timeout.', descriptionEmpty: 'No description', deploymentEmpty: 'No deployment plans yet', enabled: 'Enabled', disabled: 'Disabled', incomplete: 'Incomplete', enable: 'Enable', disable: 'Disable', edit: 'Edit', remove: 'Delete', applications: 'Applications', applicationOverflow: '{count} more', manualCount: '{count} ready for manual execution' },
     applicationForm: { createRepository: 'Create repository', backToApplication: 'Back to application', repositoryCreated: 'Repository created and selected' },
     repositoryForm: {
@@ -349,7 +349,7 @@ export const messages = {
     dashboard: { title: 'Analytics', healthy: 'Healthy', checking: 'Checking', updated: 'Updated', noData: 'No data', degraded: 'Builder unavailable', failed: 'Dependency unavailable' },
     systemMonitor: {
       memory: { hostCPU: 'Server CPU', hostUsed: 'Server memory used', processRSS: 'EDO process memory (RSS)', processHeap: 'Go heap {heap}', hostTotal: 'Server total memory {total}' },
-      history: { description: 'Updated every 5 seconds. History is kept for 3 days.', range: 'History range', minutes15: '15 min', hour1: '1 hour', hours6: '6 hours', hours24: '24 hours', days3: '3 days', empty: 'Waiting for samples', chartLabel: '{name} history chart; use arrow keys to inspect', unitHint: 'Unit: {unit}', count: 'count', sampling: 'Sample: {seconds}s', error: 'History could not be loaded. The last result is retained.', refresh: 'Refresh now', noData: 'Waiting for the background metrics sample', retry: 'Retry', updating: 'Syncing', unavailable: 'Some metrics are unavailable: {items}' },
+      history: { range: 'History range', minutes15: '15 min', hour1: '1 hour', hours6: '6 hours', hours24: '24 hours', days3: '3 days', empty: 'Waiting for samples', chartLabel: '{name} history chart; use arrow keys to inspect', unitHint: 'Unit: {unit}', count: 'count', sampling: 'Sample: {seconds}s', error: 'History could not be loaded. The last result is retained.', refresh: 'Refresh now', noData: 'Waiting for the background metrics sample', retry: 'Retry', updating: 'Syncing', unavailable: 'Some metrics are unavailable: {items}' },
       deadLetters: {
         clear: 'Clear dead letters', confirmTitle: 'Clear all dead letters?',
         confirmDescription: 'This permanently deletes the current {count} dead letters. Normal, pending, and running tasks are not affected.',
@@ -357,7 +357,7 @@ export const messages = {
       },
     },
     systemLogs: {
-      description: 'View structured runtime logs from the current EDO process and its internal modules.', currentProcess: 'Current process',
+      title: 'System logs', currentProcess: 'Current process',
       scopeHint: 'Only recent logs from the current process are retained and they are cleared on restart. Pipeline logs remain in each run; deployed container logs are not collected here.',
       searchPlaceholder: 'Operation, message, or context field', empty: 'No matching system logs', defaultOperation: 'system', loadEarlier: 'Load earlier logs',
       level: { all: 'All levels', debug: 'Debug', info: 'Info', warn: 'Warning', error: 'Error' },
@@ -404,10 +404,10 @@ export const messages = {
       invalidEvent: 'Received an invalid log event', disconnected: 'Log connection closed',
     },
     applicationWorkspace: {
-      description: 'Track code updates, pipeline runs, and deployed instances.', create: 'New application', search: 'Search apps, repositories, or pipelines', filterLabel: 'Filter applications', instances: 'Instances', environmentVariables: 'Configuration', environmentConfiguration: 'Configuration',
+      create: 'New application', search: 'Search apps, repositories, or pipelines', filterLabel: 'Filter applications', instances: 'Instances', environmentVariables: 'Configuration', environmentConfiguration: 'Configuration',
       filters: { all: 'All applications', running: 'In progress', attention: 'Needs attention', inactive: 'Disabled' },
       columns: { application: 'Application', resources: 'Resources', actions: 'Actions', status: 'Enabled', source: 'Trigger rules', template: 'Linked template', tasks: 'Tasks', runTime: 'Run time' },
-      noResults: 'No matching applications', noResultsHint: 'Try another keyword or clear your filters.', clearFilters: 'Clear filters',
+      noResults: 'No matching applications', clearFilters: 'Clear filters',
       emptyHint: 'Create an application, connect its repository, and configure a pipeline.', noRunHint: 'Commits and progress will appear after the first run.', template: 'Linked template: {name}',
     },
     applicationCard: {

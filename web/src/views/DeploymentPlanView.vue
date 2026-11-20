@@ -1078,7 +1078,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
 
 <template>
   <section>
-    <PageToolbar v-if="!inline" :description="t('deploymentList.description')">
+    <PageToolbar v-if="!inline">
       <a-button v-if="canDefaults" @click="openDefaults()">{{ t('delivery.defaults') }}</a-button>
       <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
       <a-button v-if="canCreate" type="primary" @click="create"><Plus :size="15" />新建部署方案</a-button>

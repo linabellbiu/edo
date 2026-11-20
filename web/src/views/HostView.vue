@@ -811,7 +811,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="host-page">
-    <PageToolbar :title="activeWorkspace === 'clusters' ? '集群' : '主机'" description="">
+    <PageToolbar :title="activeWorkspace === 'clusters' ? '集群' : '主机'">
       <a-button v-if="activeWorkspace === 'hosts' && canReadResources" class="host-toolbar-action" @click="openAllResources"><Container :size="15" />运行资源</a-button>
     </PageToolbar>
 

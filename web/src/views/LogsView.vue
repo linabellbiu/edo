@@ -114,10 +114,10 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); contro
 
 <template>
   <section :class="{ 'system-logs-standalone': standalone }">
-    <PageToolbar :description="t('systemLogs.description')">
+    <PageToolbar>
       <a-tag color="processing">{{ t('systemLogs.currentProcess') }}</a-tag>
       <a-button :loading="loading" @click="load(false)"><RefreshCw :size="15" />{{ t('common.refresh') }}</a-button>
-      <SessionPopoutLink v-if="!standalone" kind="system-log" :query="query" :level="level" :title="t('systemLogs.description')" :disabled="!readable" />
+      <SessionPopoutLink v-if="!standalone" kind="system-log" :query="query" :level="level" :title="t('systemLogs.title')" :disabled="!readable" />
     </PageToolbar>
     <a-alert type="info" show-icon :message="t('systemLogs.scopeHint')" class="scope-alert" />
     <div class="log-filter vben-card">

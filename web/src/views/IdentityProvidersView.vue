@@ -97,7 +97,7 @@ onMounted(refresh)
 <template>
   <div class="identity-settings">
     <div class="identity-heading">
-      <div><h3>{{ t('loginAuth.title') }}</h3><p>{{ t('loginAuth.description') }}</p></div>
+      <h3>{{ t('loginAuth.title') }}</h3>
       <a-space><a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />{{ t('loginAuth.refresh') }}</a-button><a-button v-if="auth.canAny(['identity.create'])" type="primary" @click="create"><Plus :size="15" />{{ t('loginAuth.add') }}</a-button></a-space>
     </div>
     <div class="vben-card">
@@ -165,8 +165,7 @@ onMounted(refresh)
 
 <style scoped>
 .identity-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:14px; flex-wrap:wrap; }
-.identity-heading h3, .identity-heading p { margin:0; }
-.identity-heading p { margin-top:4px; color:var(--edo-muted); }
+.identity-heading h3 { margin:0; }
 .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 14px; }
 .span-2 { grid-column:1/-1; }
 .provider-hint { margin-bottom:16px; }

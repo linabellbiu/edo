@@ -63,7 +63,7 @@ onBeforeUnmount(() => { disposed = true; window.clearInterval(timer) })
 
 <template>
   <div class="analytics-page">
-    <PageToolbar description="查看基础服务的连接状态。">
+    <PageToolbar>
       <a-button :loading="system.loading" @click="refresh"><RefreshCw :size="15" />{{ t('common.refresh') }}</a-button>
     </PageToolbar>
     <a-alert v-if="system.error" type="error" show-icon :message="system.error" class="dashboard-alert" />
@@ -92,8 +92,8 @@ onBeforeUnmount(() => { disposed = true; window.clearInterval(timer) })
     </section>
 
     <div class="dashboard-bottom">
-      <section class="vben-card quick-status"><div class="card-heading"><div><strong>发布功能</strong><span>仓库检查、失败重试和操作记录</span></div><Users /></div><ul><li><span>仓库变更监听</span><a-tag>主动检查</a-tag></li><li><span>任务失败处理</span><a-tag>有限重试</a-tag></li><li><span>发布操作</span><a-tag>记录审计日志</a-tag></li></ul></section>
-      <section class="vben-card update-card"><div class="card-heading"><div><strong>状态同步</strong><span>最后一次成功请求</span></div></div><div class="update-time">{{ system.updatedAt?.toLocaleTimeString('zh-CN', { hour12: false }) || '—' }}</div><p>每 15 秒自动刷新。</p></section>
+      <section class="vben-card quick-status"><div class="card-heading"><div><strong>发布功能</strong></div><Users /></div><ul><li><span>仓库变更监听</span><a-tag>主动检查</a-tag></li><li><span>任务失败处理</span><a-tag>有限重试</a-tag></li><li><span>发布操作</span><a-tag>记录审计日志</a-tag></li></ul></section>
+      <section class="vben-card update-card"><div class="card-heading"><div><strong>状态同步</strong><span>最后一次成功请求</span></div></div><div class="update-time">{{ system.updatedAt?.toLocaleTimeString('zh-CN', { hour12: false }) || '—' }}</div></section>
     </div>
   </div>
 </template>
@@ -104,7 +104,7 @@ onBeforeUnmount(() => { disposed = true; window.clearInterval(timer) })
 .analytics-card-value { margin: 25px 0 20px; font-size: 26px; font-weight: 650; letter-spacing: -.02em; }.analytics-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--edo-muted); font-size: 12px; }
 .trend-card { margin-top: 16px; padding: 20px 22px 14px; }.card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.card-heading strong,.card-heading span { display: block; }.card-heading strong { font-size: 16px; }.card-heading span { margin-top: 3px; color: var(--edo-muted); font-size: 12px; }.card-heading > svg { width: 22px; color: var(--edo-primary); }
 .trend-chart { position: relative; height: 320px; margin: 20px 0 0 48px; }.trend-chart svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }.grid-line { position: absolute; right: 0; left: 0; border-top: 1px dashed var(--edo-border); }.grid-line span { position: absolute; top: -9px; left: -44px; color: var(--edo-muted); font-size: 11px; }
-.dashboard-bottom { display: grid; grid-template-columns: 1.35fr .65fr; gap: 16px; margin-top: 16px; }.quick-status,.update-card { padding: 20px 22px; }.quick-status ul { margin: 16px 0 0; padding: 0; list-style: none; }.quick-status li { display: flex; min-height: 43px; align-items: center; justify-content: space-between; border-top: 1px solid var(--edo-border); }.update-time { margin: 24px 0 8px; color: var(--edo-primary); font-size: 34px; font-weight: 650; }.update-card p { margin: 0; color: var(--edo-muted); }
+.dashboard-bottom { display: grid; grid-template-columns: 1.35fr .65fr; gap: 16px; margin-top: 16px; }.quick-status,.update-card { padding: 20px 22px; }.quick-status ul { margin: 16px 0 0; padding: 0; list-style: none; }.quick-status li { display: flex; min-height: 43px; align-items: center; justify-content: space-between; border-top: 1px solid var(--edo-border); }.update-time { margin: 24px 0 8px; color: var(--edo-primary); font-size: 34px; font-weight: 650; }
 @media (max-width: 1180px) { .analytics-cards { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 700px) { .analytics-cards,.dashboard-bottom { grid-template-columns: 1fr; }.trend-chart { height: 220px; }.analytics-card { min-height: 145px; } }
 </style>

@@ -382,10 +382,10 @@ onMounted(() => {
 
 <template>
   <section>
-    <PageToolbar description="管理账户、界面、环境变量、存储目录、日志和登录方式。"
-      ><a-button v-if="active === 'general' || active === 'variables' || active === 'logs' || active === 'storage'" :loading="active === 'variables' ? variableLoading : loading" @click="refreshActiveSection"><RefreshCw :size="15" />刷新</a-button></PageToolbar
-    >
     <a-segmented :value="active" :options="sections.map((item) => ({ value: item.key, label: item.label }))" class="edo-page-tabs" aria-label="系统设置页面" @change="(value: string) => select(value)" />
+    <PageToolbar v-if="active === 'general' || active === 'variables' || active === 'logs' || active === 'storage'">
+      <a-button :loading="active === 'variables' ? variableLoading : loading" @click="refreshActiveSection"><RefreshCw :size="15" />刷新</a-button>
+    </PageToolbar>
     <article v-if="active === 'account'" class="setting-card vben-card">
       <header>
         <span><KeyRound /></span>
@@ -429,7 +429,6 @@ onMounted(() => {
         <span><Braces /></span>
         <div>
           <h3>EDO 内置变量目录</h3>
-          <p>查看通知、脚本、构建和部署可用的变量。</p>
         </div>
         <a-tag>只读目录</a-tag>
       </header>
@@ -471,7 +470,7 @@ onMounted(() => {
           <span><FolderCog /></span>
           <div>
             <h3>运行目录</h3>
-            <p>分别设置工作区、构建、缓存和产物目录。保存后对新任务生效。</p>
+            <p>保存后对新任务生效。</p>
           </div>
         </header>
         <div class="settings-form storage-form">
@@ -487,7 +486,6 @@ onMounted(() => {
           <span><Trash2 /></span>
           <div>
             <h3>目录占用与清理</h3>
-            <p>显示当前实际生效路径、文件数和占用空间；清理不会删除目录配置。</p>
           </div>
         </header>
         <div class="cleanup-actions">
@@ -528,7 +526,6 @@ onMounted(() => {
           <span><ScrollText /></span>
           <div>
             <h3>运行日志输出</h3>
-            <p>控制结构化日志级别、文件切分和压缩策略，保存后立即生效，不需要重启服务。</p>
           </div>
         </header>
         <div class="settings-form two">
@@ -562,7 +559,6 @@ onMounted(() => {
           <span><Trash2 /></span>
           <div>
             <h3>日志保留与自动清理</h3>
-            <p>分别控制流水线执行日志和审计日志的保留时间，新安装默认不自动清理。</p>
           </div>
           <a-switch v-model:checked="retention.enabled" :disabled="!canUpdate" />
         </header>

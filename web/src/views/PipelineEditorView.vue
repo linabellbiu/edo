@@ -2010,7 +2010,6 @@ onBeforeRouteLeave(async () => {
             :message="issue.message"
             show-icon
           />
-          <p class="panel-note">阶段从左到右推进；当前阶段中的任务以纵向分支排列。</p>
         </template>
 
         <template v-else-if="panelMode === 'properties' && selectedNode">

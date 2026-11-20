@@ -1,5 +1,5 @@
 export const sqlChangesZh = {
-  title: 'SQL 变更', description: '先静态检查，再由指定审核员审核；执行或跳过都由人工操作，不会自动推进流水线。',
+  title: 'SQL 变更',
   create: '申请变更', refresh: '刷新', search: '搜索工单', statusFilter: '工单状态', all: '全部状态', applicationFilter: '应用',
   name: '工单名称', application: '应用', repository: '代码仓库', branch: '执行分支', run: '本次发布', database: '应用数据库', environment: '环境', phase: '执行时机', before: '发布前', after: '发布后', reviewer: '指定审核员', sql: 'SQL 内容', createdAt: '创建时间', status: '状态', actions: '操作',
   empty: '暂无 SQL 变更工单', noResults: '没有符合筛选条件的工单', details: '详情', edit: '编辑', remove: '删除', more: '更多', cancel: '取消', close: '关闭', save: '保存并检查', saving: '正在保存…', total: '共 {count} 条',
@@ -12,7 +12,7 @@ export const sqlChangesZh = {
   statuses: { checking: '检查中', check_failed: '检查未通过', pending_review: '待审核', approved: '已批准', rejected: '已驳回', queued: '已排队', running: '执行中', succeeded: '执行成功', failed: '执行失败', uncertain: '待核实', skipped: '已跳过' },
 }
 export const sqlChangesEn = {
-  title: 'SQL changes', description: 'Static checks, designated human review, then manual execution or skip. Pipelines never advance automatically.',
+  title: 'SQL changes',
   create: 'Request change', refresh: 'Refresh', search: 'Search requests', statusFilter: 'Request status', all: 'All statuses', applicationFilter: 'Application',
   name: 'Request name', application: 'Application', repository: 'Repository', branch: 'Branch', run: 'This release', database: 'Application database', environment: 'Environment', phase: 'Timing', before: 'Before release', after: 'After release', reviewer: 'Designated reviewer', sql: 'SQL', createdAt: 'Created at', status: 'Status', actions: 'Actions',
   empty: 'No SQL change requests', noResults: 'No requests match these filters', details: 'Details', edit: 'Edit', remove: 'Delete', more: 'More', cancel: 'Cancel', close: 'Close', save: 'Save and check', saving: 'Saving…', total: '{count} requests',

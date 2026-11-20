@@ -65,7 +65,7 @@ onBeforeUnmount(() => { listRevision++; detailRevision++; listController?.abort(
 
 <template>
   <section>
-    <PageToolbar description="查看任务状态、重试记录和失败原因。"><a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button></PageToolbar>
+    <PageToolbar><a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button></PageToolbar>
     <div class="task-filters"><span>状态</span><a-select :value="status" :options="statuses" aria-label="任务状态" style="width:160px" @change="changeStatus" /></div>
     <div class="vben-card"><ResourceTable :rows="rows" :columns="columns" :loading="loading" :details="false" :active-row-key="taskID">
       <template #cell-status="{ value }"><a-tag :color="statusColor(value)">{{ statusLabel(value) }}</a-tag></template>

@@ -126,7 +126,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section>
-    <PageToolbar :description="t('systemMonitor.history.description')">
+    <PageToolbar>
       <span v-if="metrics" class="metrics-time">{{ new Date(metrics.collected_at).toLocaleTimeString(locale, { hour12: false }) }}</span>
       <a-button :loading="manualLoading" @click="refresh(true)"><RefreshCw :size="15" />{{ t('systemMonitor.history.refresh') }}</a-button>
     </PageToolbar>

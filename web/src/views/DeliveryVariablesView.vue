@@ -148,7 +148,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
   <div class="variables-workspace" :class="{'is-embedded':embedded}">
     <a-alert v-if="!can('read')" type="warning" show-icon :message="scopeMessage"/>
     <template v-else>
-    <PageToolbar :title="configurationFiles?'配置':embedded?'环境配置（变量 / .env）':projectName?`${projectName} · 变量与密钥`:'当前项目 · 变量与密钥'" :description="configurationFiles?'配置按应用和主机组管理；部署阶段明确选择后生成文件，保存不会执行部署。':embedded?'保存后自动用于当前应用对应主机组的后续部署；保存不会立即发布。密钥不回显。':'共享变量在流水线任务中明确选择引用；应用运行配置可在应用详情中管理。'">
+    <PageToolbar :title="configurationFiles?'配置':embedded?'环境配置（变量 / .env）':projectName?`${projectName} · 变量与密钥`:'当前项目 · 变量与密钥'">
       <a-button :loading="loading" @click="load"><RefreshCw :size="15"/>刷新</a-button>
       <a-button v-if="can('create')" type="primary" @click="edit()"><Plus :size="15"/>{{configurationFiles||embedded?'添加配置':'添加变量'}}</a-button>
     </PageToolbar>

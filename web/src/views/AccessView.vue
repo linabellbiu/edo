@@ -470,13 +470,6 @@ const auditColumns = [
   { key: 'created_at', label: '时间' },
 ]
 
-const toolbarDescription = computed(() => {
-  if (active.value === 'audit') return '查看身份、资源、操作结果和请求来源，不展示任何密钥内容。'
-  if (active.value === 'roles') return '按查看、创建、修改、删除和执行等动作组合可复用的角色权限。'
-  if (active.value === 'departments') return t('workspace.departmentHint')
-  return '维护账户所属部门、状态、角色和用户级允许或拒绝例外。'
-})
-
 function canAny(required: string[]) {
   return authorizationReady.value && auth.canAny(required)
 }
@@ -1083,7 +1076,7 @@ onMounted(() => {
 
 <template>
   <section>
-    <PageToolbar :description="toolbarDescription">
+    <PageToolbar>
       <a-button :loading="loading || auditLoading" :disabled="!authorizationReady" @click="refresh">
         <RefreshCw :size="15" />刷新
       </a-button>

@@ -46,7 +46,7 @@ onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
 </script>
 <template>
  <div class="delivery-controls">
-  <PageToolbar :description="policyMode?'按环境设置允许发布的版本、审核人和时间窗口，默认关闭。':'保存应用数据库连接，在流水线任务中执行经过审核的 SQL 迁移。'">
+  <PageToolbar>
    <a-button :loading="loading" @click="load">刷新</a-button><a-button v-if="auth.canAny([`${permission}.${policyMode?'update':'create'}`])" type="primary" @click="policyMode?editPolicy():editDatabase()">{{policyMode?'配置环境保护':'添加数据库'}}</a-button>
   </PageToolbar>
   <a-alert v-if="error" type="error" show-icon :message="error"/>

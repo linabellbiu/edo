@@ -1,5 +1,5 @@
 export const loginZh = {
-  title: '登录方式', description: '管理员可配置并启用企业账号与邮箱验证码登录，密钥加密保存。',
+  title: '登录方式',
   add: '添加登录方式', edit: '编辑登录方式', save: '保存登录方式', saved: '登录方式已保存', refresh: '刷新',
   name: '名称', type: '类型', identifier: '内部标识', status: '状态', autoCreate: '自动创建用户', enable: '启用', disable: '停用',
   displayName: '显示名称', role: '首次登录后的角色', policy: '用户策略', active: '立即启用',
@@ -22,7 +22,7 @@ export const loginZh = {
 }
 
 export const loginEn: Record<keyof typeof loginZh, string> = {
-  title: 'Login methods', description: 'Administrators can enable enterprise and email code login. Secrets are stored encrypted.',
+  title: 'Login methods',
   add: 'Add login method', edit: 'Edit login method', save: 'Save login method', saved: 'Login method saved', refresh: 'Refresh',
   name: 'Name', type: 'Type', identifier: 'Identifier', status: 'Status', autoCreate: 'Create users automatically', enable: 'Enable', disable: 'Disable',
   displayName: 'Display name', role: 'Role for new users', policy: 'User policy', active: 'Enable immediately',
