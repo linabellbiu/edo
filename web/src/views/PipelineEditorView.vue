@@ -2496,7 +2496,7 @@ onBeforeRouteLeave(async () => {
 .panel-empty { display: grid; min-height: 360px; place-items: center; align-content: center; color: var(--edo-muted); text-align: center; }
 .panel-empty strong { margin-top: 12px; color: var(--edo-text); }
 .panel-empty p { margin: 5px 8px 16px; }
-.pipeline-empty { min-height: 500px; padding-top: 120px; }
+.pipeline-empty { min-height: 260px; padding: 24px; }
 .pipeline-studio.immersive { position: fixed; inset: 0; z-index: 1000; height: 100vh; min-height: 0; margin: 0; background: var(--edo-bg); }
 .pipeline-studio.immersive .pipeline-board-shell, .pipeline-studio.immersive .pipeline-side-panel { border-radius: 0; }
 @keyframes save-pulse { 50% { opacity: .35; transform: scale(.7); } }
