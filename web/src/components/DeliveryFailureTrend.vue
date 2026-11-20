@@ -8,13 +8,16 @@ import { CanvasRenderer } from 'echarts/renderers'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
-import { buildFailureBuckets, type FailureRun, type FailureSummary } from '@/utils/deliveryFailures'
+import { buildDailyFailureBuckets, type FailureRun, type FailureSummary } from '@/utils/deliveryFailures'
 
-const props = withDefaults(defineProps<{ windowSeconds: number; height?: number }>(), { height: 120 })
+const props = withDefaults(defineProps<{ height?: number }>(), { height: 132 })
 const router = useRouter()
 const auth = useAuthStore()
 const canReadRuns = computed(() => auth.canAny(['pipeline_run.read']))
+const days = ref(7)
+const ranges = [7, 30, 90].map(value => ({ value, label: value + ' 天' }))
 const summary = ref<FailureSummary | null>(null)
+const recent = ref<FailureRun | null>(null)
 const error = ref('')
 const loading = ref(false)
 const canvas = ref<HTMLElement>()
@@ -23,16 +26,30 @@ let controller: AbortController | undefined, revision = 0
 
 use([BarChart, GridComponent, TooltipComponent, CanvasRenderer])
 
+const hasFailures = computed(() => Boolean(summary.value && (summary.value.pipelineTotal + summary.value.releasePlanTotal) > 0))
 const runsTarget = { path: '/release-plans', query: { view: 'runs', status: 'failed' } }
+const failureWindow = () => {
+  const todayStart = new Date()
+  todayStart.setHours(0, 0, 0, 0)
+  return { from: new Date(todayStart.getTime() - (days.value - 1) * 86_400_000), to: new Date() }
+}
 const openPipelineFailures = () => void router.push(runsTarget)
 const openReleasePlanFailures = () => void router.push({ path: '/release-plans', query: { view: 'plans' } })
+const openDay = (index: number) => {
+  const bucket = summary.value?.buckets[index]
+  if (!bucket) return
+  void router.push({ path: '/release-plans', query: { view: 'runs', status: 'failed', from: new Date(bucket.start).toISOString(), to: new Date(bucket.end).toISOString() } })
+}
+const recentLabel = computed(() => {
+  if (!recent.value) return ''
+  const time = new Date(recent.value.created_at).toLocaleString('zh-CN', { hour12: false })
+  const application = recent.value.application?.name
+  return application ? time + ' · ' + application : time
+})
 
-function seriesColors() {
+function seriesColor(name: string, fallback: string) {
   const style = canvas.value ? getComputedStyle(canvas.value) : null
-  return {
-    pipeline: style?.getPropertyValue('--edo-primary').trim() || '#4f6ef7',
-    releasePlan: style?.getPropertyValue('--edo-warning').trim() || '#a76809',
-  }
+  return style?.getPropertyValue(name).trim() || fallback
 }
 
 function render() {
@@ -43,22 +60,26 @@ function render() {
   if (!plot) {
     plot = init(canvas.value, undefined, { renderer: 'canvas', width, height: props.height })
     plot.on('click', (event: unknown) => {
-      const name = (event as { seriesName?: string }).seriesName || ''
-      if (name.includes('发布计划')) openReleasePlanFailures()
-      else if (name) openPipelineFailures()
+      const detail = event as { seriesName?: string; dataIndex?: number }
+      if (detail.seriesName && detail.dataIndex != null) openDay(detail.dataIndex)
     })
   }
   plot.resize({ width, height: props.height, silent: true })
-  const colors = seriesColors()
   plot.setOption({
     animation: false,
     grid: { left: 30, right: 8, top: 12, bottom: 22 },
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    xAxis: { type: 'category', data: data.buckets.map(item => item.label), axisTick: { show: false }, axisLine: { lineStyle: { color: '#cbd5e1' } }, axisLabel: { color: '#64748b', fontSize: 11, hideOverlap: true } },
+    xAxis: {
+      type: 'category',
+      data: data.buckets.map(item => item.label),
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: '#cbd5e1' } },
+      axisLabel: { color: '#64748b', fontSize: 11, hideOverlap: true },
+    },
     yAxis: { type: 'value', minInterval: 1, axisLabel: { color: '#64748b', fontSize: 11 }, splitLine: { lineStyle: { color: '#eef2f7' } } },
     series: [
-      { name: '流水线失败', type: 'bar', stack: 'failure', barMaxWidth: 18, itemStyle: { color: colors.pipeline }, data: data.buckets.map(item => item.pipeline) },
-      { name: '发布计划失败', type: 'bar', stack: 'failure', barMaxWidth: 18, itemStyle: { color: colors.releasePlan }, data: data.buckets.map(item => item.releasePlan) },
+      { name: '流水线失败', type: 'bar', stack: 'failure', barMaxWidth: 20, itemStyle: { color: seriesColor('--edo-primary', '#4f6ef7') }, data: data.buckets.map(item => item.pipeline) },
+      { name: '发布计划失败', type: 'bar', stack: 'failure', barMaxWidth: 20, itemStyle: { color: seriesColor('--edo-warning', '#a76809') }, data: data.buckets.map(item => item.releasePlan) },
     ],
   }, { notMerge: true, silent: true })
 }
@@ -70,20 +91,16 @@ async function load() {
   controller = current
   const request = ++revision
   loading.value = true
-  const now = Date.now()
+  const { from, to } = failureWindow()
   try {
     const { data } = await client.get<{ pipeline_runs: FailureRun[] }>('/pipeline-runs', {
-      params: {
-        status: 'failed',
-        from: new Date(now - props.windowSeconds * 1000).toISOString(),
-        to: new Date(now).toISOString(),
-        order: 'desc',
-        page_size: 200,
-      },
+      params: { status: 'failed', from: from.toISOString(), to: to.toISOString(), order: 'desc', page_size: 200 },
       signal: current.signal,
     })
     if (request !== revision || current.signal.aborted) return
-    summary.value = buildFailureBuckets(data.pipeline_runs || [], props.windowSeconds, Date.now())
+    const runs = data.pipeline_runs || []
+    summary.value = buildDailyFailureBuckets(runs, days.value, Date.now())
+    recent.value = runs.find(run => Number.isFinite(Date.parse(run.created_at))) ?? null
     error.value = ''
     await nextTick()
     render()
@@ -99,9 +116,7 @@ onMounted(() => {
   if (canvas.value) observer.observe(canvas.value)
   void load()
 })
-
-watch(() => props.windowSeconds, () => void load())
-
+watch(days, () => void load())
 onBeforeUnmount(() => {
   revision += 1
   controller?.abort()
@@ -112,10 +127,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <article class="failure-panel vben-card" aria-label="失败情况">
+  <article class="failure-panel vben-card" aria-label="交付失败">
     <header>
       <div><span>交付失败</span><h3>流水线失败与发布计划失败</h3></div>
-      <div class="failure-actions">
+      <div class="failure-tools">
+        <a-segmented v-model:value="days" :options="ranges" aria-label="失败统计范围" />
         <button type="button" class="failure-chip pipeline" :disabled="!summary" @click="openPipelineFailures">
           流水线失败 <strong>{{ summary ? summary.pipelineTotal : '—' }}</strong>
         </button>
@@ -127,8 +143,11 @@ onBeforeUnmount(() => {
     <a-alert v-if="!canReadRuns" type="info" show-icon message="缺少流水线读取权限，无法统计交付失败" />
     <a-alert v-else-if="error" type="warning" show-icon :message="error"><template #action><a-button size="small" @click="load">重试</a-button></template></a-alert>
     <a-spin v-else :spinning="loading && !summary">
-      <div ref="canvas" class="failure-chart" :style="{ height: props.height + 'px' }" />
-      <p class="failure-note">按所选时间范围统计最近 200 条失败记录，点击图例或柱子进入对应列表。</p>
+      <p v-if="summary && !hasFailures" class="failure-empty">最近 {{ days }} 天没有失败记录</p>
+      <div v-else ref="canvas" class="failure-chart" :style="{ height: props.height + 'px' }" />
+      <p class="failure-note">
+        按自然日统计，最多取最近 200 条失败记录；点击柱子查看当天失败运行{{ recentLabel ? '，最近一次 ' + recentLabel : '' }}。
+      </p>
     </a-spin>
   </article>
 </template>
@@ -138,7 +157,7 @@ onBeforeUnmount(() => {
 .failure-panel > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 .failure-panel header span { color: var(--edo-muted); font-size: 12px; }
 .failure-panel h3 { margin: 2px 0 0; font-size: 15px; }
-.failure-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.failure-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .failure-chip { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border: 1px solid var(--edo-border); border-radius: 999px; background: var(--edo-surface); color: var(--edo-text); font-size: 12px; cursor: pointer; }
 .failure-chip strong { font-size: 13px; }
 .failure-chip.pipeline strong { color: var(--edo-primary); }
@@ -146,5 +165,6 @@ onBeforeUnmount(() => {
 .failure-chip:hover:not(:disabled), .failure-chip:focus-visible { border-color: var(--edo-primary); }
 .failure-chip:disabled { cursor: not-allowed; opacity: .6; }
 .failure-chart { width: 100%; }
+.failure-empty { margin: 0; padding: 34px 0; color: var(--edo-muted); font-size: 13px; text-align: center; }
 .failure-note { margin: 2px 0 0; color: var(--edo-muted); font-size: 12px; }
 </style>

@@ -3,6 +3,7 @@ export interface FailureRun {
   created_at: string
   release_plan_id?: string
   release_plan_execution_id?: string
+  application?: { name?: string }
 }
 
 export interface FailureBucket {
@@ -60,6 +61,36 @@ export function buildFailureBuckets(runs: FailureRun[], windowSeconds: number, n
       const key = run.release_plan_execution_id
       if (seenExecutions.has(key)) continue
       seenExecutions.add(key)
+      bucket.releasePlan += 1
+      releasePlanTotal += 1
+      continue
+    }
+    bucket.pipeline += 1
+    pipelineTotal += 1
+  }
+  return { buckets, pipelineTotal, releasePlanTotal }
+}
+/** 交付失败按自然日分桶（本卡独立范围，避免系统监控的分钟级窗口掩盖稀疏失败）。 */
+export function buildDailyFailureBuckets(runs: FailureRun[], days: number, now = Date.now()): FailureSummary {
+  const size = DAY
+  const todayStart = new Date(now)
+  todayStart.setHours(0, 0, 0, 0)
+  const from = todayStart.getTime() - (days - 1) * DAY
+  const buckets: FailureBucket[] = Array.from({ length: days }, (_, index) => {
+    const start = from + index * DAY
+    return { label: bucketLabel(start, DAY), start, end: start + DAY, pipeline: 0, releasePlan: 0 }
+  })
+  const seenExecutions = new Set<string>()
+  let pipelineTotal = 0, releasePlanTotal = 0
+  for (const run of runs) {
+    const created = Date.parse(run.created_at)
+    if (!Number.isFinite(created) || created < from) continue
+    const index = Math.floor((created - from) / DAY)
+    if (index < 0 || index >= buckets.length) continue
+    const bucket = buckets[index]
+    if (run.release_plan_execution_id) {
+      if (seenExecutions.has(run.release_plan_execution_id)) continue
+      seenExecutions.add(run.release_plan_execution_id)
       bucket.releasePlan += 1
       releasePlanTotal += 1
       continue

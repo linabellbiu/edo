@@ -137,7 +137,7 @@ onBeforeUnmount(() => {
     </div>
     <a-alert v-if="historyError" type="warning" show-icon :message="historyError" class="metric-alert"><template #action><a-button size="small" @click="refresh(true, true)">{{ t('systemMonitor.history.retry') }}</a-button></template></a-alert>
     <a-alert v-if="metrics?.unavailable?.length" type="warning" show-icon :message="t('systemMonitor.history.unavailable', { items: metrics.unavailable.join('、') })" class="metric-alert" />
-    <DeliveryFailureTrend :window-seconds="windowSeconds" />
+    <DeliveryFailureTrend />
     <a-spin :spinning="manualLoading && !metrics">
       <template v-if="metrics">
         <div class="metric-cards">

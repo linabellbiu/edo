@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { buildFailureBuckets, failureBucketSize } from '../src/utils/deliveryFailures.ts'
+import { buildDailyFailureBuckets, buildFailureBuckets, failureBucketSize } from '../src/utils/deliveryFailures.ts'
 
 const DAY = 24 * 3600_000
 
@@ -36,9 +36,29 @@ test('流水线失败按条数、发布计划失败按执行去重，窗口外�
 
 test('系统监控用失败趋势卡替换任务失败数字，并可跳到对应列表', () => {
   const monitor = readFileSync(new URL('../src/views/SystemMonitorView.vue', import.meta.url), 'utf8')
-  assert.match(monitor, /<DeliveryFailureTrend :window-seconds="windowSeconds" \/>/)
+  assert.match(monitor, /<DeliveryFailureTrend \/>/)
   assert.ok(!/keys: \[[^\]]*'failed'/.test(monitor), '任务失败不再作为监控数字展示')
   const card = readFileSync(new URL('../src/components/DeliveryFailureTrend.vue', import.meta.url), 'utf8')
   assert.match(card, /path: '\/release-plans', query: \{ view: 'runs', status: 'failed' \}/)
   assert.match(card, /openReleasePlanFailures/)
+})
+test('交付失败按自然日分桶，今天为最后一桶，超出范围的记录不统计', () => {
+  const now = Date.parse('2026-11-20T09:30:00+08:00')
+  const runs = [
+    { id: 'today', created_at: '2026-11-20T08:00:00+08:00' },
+    { id: 'yesterday', created_at: '2026-11-19T23:00:00+08:00' },
+    { id: 'plan', created_at: '2026-11-18T12:00:00+08:00', release_plan_execution_id: 'exec-1' },
+    { id: 'plan-dup', created_at: '2026-11-18T12:30:00+08:00', release_plan_execution_id: 'exec-1' },
+    { id: 'edge', created_at: '2026-11-14T00:00:00+08:00' },
+    { id: 'old', created_at: '2026-11-10T12:00:00+08:00' },
+  ]
+  const summary = buildDailyFailureBuckets(runs, 7, now)
+  assert.equal(summary.buckets.length, 7)
+  assert.equal(summary.buckets.at(0).label.length > 0, true)
+  assert.equal(summary.pipelineTotal, 3)
+  assert.equal(summary.releasePlanTotal, 1)
+  assert.equal(summary.buckets[6].pipeline, 1)
+  assert.equal(summary.buckets[5].pipeline, 1)
+  assert.equal(summary.buckets[4].releasePlan, 1)
+  assert.equal(summary.buckets[0].pipeline, 1)
 })
