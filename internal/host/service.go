@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os/exec"
+	"path"
 	"regexp"
 	"runtime"
 	"slices"
@@ -174,6 +175,7 @@ type Service struct {
 	runtimeProbeSlots   chan struct{}
 	localRuntimeProbe   bool
 	resources           *cache.SnapshotStore[ResourceInfo]
+	protectedPaths      []string
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, docker dockerProbe, kubernetes kubernetesProbe) *Service {
@@ -183,6 +185,23 @@ func NewService(db *gorm.DB, secrets *secret.Manager, docker dockerProbe, kubern
 		runtimeProbeSlots: make(chan struct{}, runtimeProbeConcurrency),
 		resources:         cache.NewSnapshotStore[ResourceInfo](resourceCacheLimit, 90*time.Second, 10*time.Minute),
 	}
+}
+
+// ConfigureProtectedPaths 注册"本地主机"终端文件接口禁止访问的绝对路径前缀。
+// 用于拦截对 EDO 自身加密密钥、数据库连接配置等运行时机密的读取，与远程主机的 SSH/SFTP 访问无关。
+// 传入的路径会被当作目录前缀匹配：命中前缀本身或其任意子路径都会被拒绝。
+func (s *Service) ConfigureProtectedPaths(paths []string) {
+	normalized := make([]string, 0, len(paths))
+	for _, item := range paths {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if cleaned := path.Clean(item); cleaned != "" && cleaned != "." {
+			normalized = append(normalized, cleaned)
+		}
+	}
+	s.protectedPaths = normalized
 }
 
 func (s *Service) List(ctx context.Context) ([]Detail, error) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -18,6 +19,7 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/model"
+	"edo/internal/netguard"
 	"edo/internal/secret"
 	"edo/internal/task"
 )
@@ -97,8 +99,12 @@ type Service struct {
 
 func NewService(db *gorm.DB, secrets *secret.Manager, httpClient HTTPDoer, maxAttempts int) *Service {
 	if httpClient == nil {
+		// 不使用环境代理：DialContext 校验的必须是最终连接目标，经代理转发会让校验对象变成代理地址。
 		httpClient = &http.Client{
 			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				DialContext: netguard.DialContext(&net.Dialer{Timeout: 10 * time.Second}),
+			},
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return errors.New("通知 Webhook 不允许重定向")
 			},
@@ -373,6 +379,9 @@ func (s *Service) normalizeChannel(
 		parsed, err := url.Parse(endpoint)
 		if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" ||
 			(parsed.Scheme != "https" && !(input.AllowHTTP && parsed.Scheme == "http")) {
+			return "", "", "", "", ErrInvalidChannel
+		}
+		if netguard.ValidateHost(parsed.Hostname()) != nil {
 			return "", "", "", "", ErrInvalidChannel
 		}
 		if existing != nil && existing.TokenCiphertext != "" && input.Token == nil {

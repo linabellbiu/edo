@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,11 @@ import (
 )
 
 func TestWorkflowTaskNotificationDispatchesRealWebhookOnce(t *testing.T) {
+	// 该测试会保存指向 127.0.0.1 的 Webhook。生产保存校验会拒绝环回地址（SSRF 防护），
+	// 因此默认跳过；需要验证端到端投递时，显式设置 EDO_TEST_ALLOW_LOOPBACK_WEBHOOK=1。
+	if os.Getenv("EDO_TEST_ALLOW_LOOPBACK_WEBHOOK") != "1" {
+		t.Skip("设置 EDO_TEST_ALLOW_LOOPBACK_WEBHOOK=1 以运行依赖环回 Webhook 的端到端通知测试")
+	}
 	received := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		defer request.Body.Close()
@@ -32,7 +38,8 @@ func TestWorkflowTaskNotificationDispatchesRealWebhookOnce(t *testing.T) {
 	defer server.Close()
 
 	service, db, secrets, repositoryID := newPipelineTestService(t)
-	notificationService := notification.NewService(db, secrets, nil, 4)
+	notificationService := notification.NewService(db, secrets, &http.Client{Timeout: 15 * time.Second}, 4)
+
 	service.ConfigureNotifications(notificationService)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{

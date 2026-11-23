@@ -410,6 +410,9 @@ var migrations = []migration{
 	{version: "202611200081", up: func(tx *gorm.DB) error {
 		return addColumns(tx, &model.DeploymentRecord{}, []string{"ObservedAt", "ObservedScope", "ObservedState", "ObservedRunning"})
 	}},
+	{version: "202611230082", up: func(tx *gorm.DB) error {
+		return addColumns(tx, &model.User{}, []string{"MustChangePassword"})
+	}},
 }
 
 // 移除入站 Webhook 的专用授权，避免旧权限导致角色列表校验失败。

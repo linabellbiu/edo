@@ -49,7 +49,7 @@ func (s *Service) SetInvalidations(invalidations *auth.Invalidations) {
 }
 
 // EnsureInitialAdmin 仅在账户表为空时创建产品约定的默认管理员。
-// 初始口令按产品约定设置，不设置强制改密状态。
+// 默认口令保持不变，但账户带有强制改密标记：改密成功前，只能访问改密、身份信息和登出接口。
 func (s *Service) EnsureInitialAdmin(ctx context.Context) (*model.User, bool, error) {
 	var count int64
 	if err := s.db.WithContext(ctx).Model(&model.User{}).Count(&count).Error; err != nil {
@@ -75,7 +75,8 @@ func (s *Service) EnsureInitialAdmin(ctx context.Context) (*model.User, bool, er
 		created = &model.User{
 			ID: uuid.NewString(), Username: initialAdminUsername, Nickname: "管理员", PasswordHash: passwordHash,
 			DepartmentID: database.DefaultDepartmentID, IsActive: true, IsSuperuser: true,
-			AuthVersion: 1, CreatedAt: now, UpdatedAt: now,
+			MustChangePassword: true,
+			AuthVersion:        1, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := tx.Create(created).Error; err != nil {
 			return fmt.Errorf("创建初始化账户失败: %w", err)
@@ -312,10 +313,11 @@ func (s *Service) ResetPassword(ctx context.Context, username, password string) 
 	}
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.User{}).Where("username = ?", username).Updates(map[string]any{
-		"password_hash": passwordHash,
-		"is_active":     true,
-		"auth_version":  gorm.Expr("auth_version + ?", 1),
-		"updated_at":    now,
+		"password_hash":        passwordHash,
+		"is_active":            true,
+		"auth_version":         gorm.Expr("auth_version + ?", 1),
+		"must_change_password": false,
+		"updated_at":           now,
 	})
 	if result.Error != nil {
 		return nil, fmt.Errorf("重置用户密码失败: %w", result.Error)
@@ -377,9 +379,10 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	result := s.db.WithContext(ctx).Model(&model.User{}).
 		Where("uuid = ? AND auth_version = ?", user.ID, user.AuthVersion).
 		Updates(map[string]any{
-			"password_hash": passwordHash,
-			"auth_version":  gorm.Expr("auth_version + ?", 1),
-			"updated_at":    now,
+			"password_hash":        passwordHash,
+			"auth_version":         gorm.Expr("auth_version + ?", 1),
+			"must_change_password": false,
+			"updated_at":           now,
 		})
 	if result.Error != nil {
 		return fmt.Errorf("修改当前用户密码失败: %w", result.Error)

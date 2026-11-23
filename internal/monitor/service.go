@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/model"
+	"edo/internal/netguard"
 	"edo/internal/notification"
 	"edo/internal/secret"
 	"edo/internal/task"
@@ -96,9 +98,15 @@ func NewService(
 	logger *slog.Logger,
 ) *Service {
 	if httpClient == nil {
-		httpClient = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-			return errors.New("监控探针不允许重定向")
-		}}
+		// 不使用环境代理：DialContext 校验的必须是最终连接目标，经代理转发会让校验对象变成代理地址。
+		httpClient = &http.Client{
+			Transport: &http.Transport{
+				DialContext: netguard.DialContext(&net.Dialer{Timeout: 10 * time.Second}),
+			},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return errors.New("监控探针不允许重定向")
+			},
+		}
 	}
 	return &Service{
 		db: db, secrets: secrets, notifier: notifier, httpClient: httpClient,
@@ -465,6 +473,9 @@ func (s *Service) normalize(ctx context.Context, id string, existing *model.Moni
 		parsed, err := url.Parse(endpoint)
 		if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" ||
 			(parsed.Scheme != "https" && !(input.AllowHTTP && parsed.Scheme == "http")) || len(endpoint) > 4096 {
+			return Input{}, "", "", ErrInvalidRule
+		}
+		if netguard.ValidateHost(parsed.Hostname()) != nil {
 			return Input{}, "", "", ErrInvalidRule
 		}
 		endpointCiphertext, err = s.secrets.Encrypt(endpoint, endpointAAD(id))

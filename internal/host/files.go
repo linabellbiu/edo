@@ -48,6 +48,19 @@ type hostFileSystem interface {
 type hostFileBackend struct {
 	lease *hostInteractionLease
 	fs    hostFileSystem
+	// protected 只在本地主机模式下非空：禁止通过终端文件接口访问 EDO 自身的加密密钥、
+	// 数据库连接配置等运行时机密所在目录，避免借助主机文件权限绕过凭据加密。
+	protected []string
+}
+
+// guardLocalPath 拒绝访问受保护前缀本身及其任意子路径。location 必须已经过 hostFilePath 清洗。
+func (b *hostFileBackend) guardLocalPath(location string) error {
+	for _, prefix := range b.protected {
+		if location == prefix || strings.HasPrefix(location, prefix+"/") {
+			return fs.ErrPermission
+		}
+	}
+	return nil
 }
 
 // 固定数量条带限制 EDO 内部同一路径并发覆盖，不保留无限增长的路径锁表。
@@ -68,6 +81,7 @@ func (s *Service) OpenFiles(ctx context.Context, id string) (terminalfiles.Backe
 	backend := &hostFileBackend{lease: lease}
 	if lease.target.host.Mode == model.HostModeLocal {
 		backend.fs = localHostFiles{}
+		backend.protected = s.protectedPaths
 	} else {
 		client, connectErr := s.interactionSSH(lease.ctx, lease.target)
 		if connectErr != nil {
@@ -149,6 +163,10 @@ func (b *hostFileBackend) List(ctx context.Context, location string) (terminalfi
 	location, err := hostFilePath(location)
 	if err != nil {
 		slog.WarnContext(ctx, "主机目录路径无效", "operation", "host_files_list_validate", "host_id", b.lease.target.host.ID, "err", err)
+		return terminalfiles.Directory{}, err
+	}
+	if err := b.guardLocalPath(location); err != nil {
+		slog.WarnContext(ctx, "拒绝访问受保护目录", "operation", "host_files_list_protected", "host_id", b.lease.target.host.ID)
 		return terminalfiles.Directory{}, err
 	}
 	result := terminalfiles.Directory{Path: location, Entries: []terminalfiles.Entry{}}
@@ -264,6 +282,10 @@ func (b *hostFileBackend) Open(ctx context.Context, location string) (io.ReadClo
 		slog.WarnContext(ctx, "主机文件路径无效", "operation", "host_files_read_validate", "host_id", b.lease.target.host.ID, "err", err)
 		return nil, terminalfiles.Entry{}, err
 	}
+	if err := b.guardLocalPath(location); err != nil {
+		slog.WarnContext(ctx, "拒绝读取受保护文件", "operation", "host_files_read_protected", "host_id", b.lease.target.host.ID)
+		return nil, terminalfiles.Entry{}, err
+	}
 	var opened hostReadableFile
 	var entry terminalfiles.Entry
 	err = b.operation(ctx, "host_files_read", func(context.Context) error {
@@ -327,6 +349,10 @@ func (b *hostFileBackend) Put(ctx context.Context, location string, input io.Rea
 			}
 		}
 		slog.WarnContext(ctx, "主机文件保存参数无效", "operation", "host_files_write_validate", "host_id", b.lease.target.host.ID, "err", err)
+		return terminalfiles.Entry{}, err
+	}
+	if err := b.guardLocalPath(location); err != nil {
+		slog.WarnContext(ctx, "拒绝写入受保护目录", "operation", "host_files_write_protected", "host_id", b.lease.target.host.ID)
 		return terminalfiles.Entry{}, err
 	}
 	if expected != "" {

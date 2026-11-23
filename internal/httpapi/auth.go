@@ -40,15 +40,16 @@ type changePasswordRequest struct {
 }
 
 type userResponse struct {
-	ID             string     `json:"id"`
-	Username       string     `json:"username"`
-	Nickname       string     `json:"nickname"`
-	DepartmentID   string     `json:"department_id"`
-	DepartmentName string     `json:"department_name,omitempty"`
-	IsSuperuser    bool       `json:"is_superuser"`
-	LastLoginAt    *time.Time `json:"last_login_at,omitempty"`
-	Permissions    []string   `json:"permissions"`
-	ProjectID      string     `json:"project_id,omitempty"`
+	ID                 string     `json:"id"`
+	Username           string     `json:"username"`
+	Nickname           string     `json:"nickname"`
+	DepartmentID       string     `json:"department_id"`
+	DepartmentName     string     `json:"department_name,omitempty"`
+	IsSuperuser        bool       `json:"is_superuser"`
+	MustChangePassword bool       `json:"must_change_password"`
+	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
+	Permissions        []string   `json:"permissions"`
+	ProjectID          string     `json:"project_id,omitempty"`
 }
 
 func (h authHandler) handleLogin(c *gin.Context) {
@@ -229,6 +230,14 @@ func requireAuth(
 			})
 			return
 		}
+		if user.MustChangePassword && !passwordChangeRequiredAllowed(c.FullPath()) {
+			// 初始管理员口令尚未修改前，只允许读取身份信息和完成改密，其他业务接口一律拒绝。
+			logger.Warn("账户必须先修改密码", "operation", "auth_password_change_required", "request_id", requestIDFrom(c), "user_id", user.ID, "path", c.Request.URL.Path)
+			c.AbortWithStatusJSON(http.StatusForbidden, errorResponse{
+				Code: "password_change_required", Message: "请先修改初始密码后再继续操作", RequestID: requestIDFrom(c),
+			})
+			return
+		}
 		c.Set(currentUserKey, user)
 		c.Request = c.Request.WithContext(database.WithDepartmentScope(c.Request.Context(), database.DepartmentScope{
 			UserID: user.ID, DepartmentID: user.DepartmentID, AllDepartments: user.IsSuperuser,
@@ -236,6 +245,18 @@ func requireAuth(
 		c.Next()
 	}
 }
+
+// passwordChangeRequiredAllowed 列出必须修改密码的账户仍可访问的路由。
+// 只放行改密、当前身份信息和退出登录，以便前端能展示改密页并完成首次改密。
+func passwordChangeRequiredAllowed(fullPath string) bool {
+	switch fullPath {
+	case "/api/v1/auth/me", "/api/v1/auth/password", "/api/v1/auth/logout":
+		return true
+	default:
+		return false
+	}
+}
+
 
 func requestPermission(c *gin.Context, accessService *access.Service, user *model.User, permission string) (bool, error) {
 	allowed, err := accessService.HasPermission(c.Request.Context(), user, permission)
@@ -343,6 +364,7 @@ func toUserResponse(user *model.User) userResponse {
 	return userResponse{
 		ID: user.ID, Username: user.Username, Nickname: user.Nickname,
 		DepartmentID: user.DepartmentID, IsSuperuser: user.IsSuperuser,
-		LastLoginAt: user.LastLoginAt, Permissions: []string{},
+		MustChangePassword: user.MustChangePassword,
+		LastLoginAt:        user.LastLoginAt, Permissions: []string{},
 	}
 }
