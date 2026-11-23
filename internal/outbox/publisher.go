@@ -20,9 +20,17 @@ type MessagePublisher interface {
 	Publish(ctx context.Context, subject string, payload []byte, messageID string) error
 }
 
+// TerminalFailureResolver 在任务永久无法进入队列时，把关联的业务状态收敛为失败。
+// 实现与 Worker 执行失败时使用的终止钩子相同，保证两条失败路径的收敛结果一致。
+type TerminalFailureResolver interface {
+	ResolveTerminalFailure(ctx context.Context, tx *gorm.DB, job model.Job, code, message string) error
+}
+
 const (
 	maximumPublishBatchSize = 100
 	payloadBatchSize        = 10
+	queuePublishErrorCode   = "queue_publish_failed"
+	queuePublishErrorText   = "任务进入队列失败，请稍后重试"
 )
 
 type Publisher struct {
@@ -33,6 +41,7 @@ type Publisher struct {
 	interval      time.Duration
 	subjectPrefix string
 	deadSubject   string
+	failures      TerminalFailureResolver
 }
 
 func New(db *gorm.DB, messages MessagePublisher, logger *slog.Logger, natsConfig config.NATS) *Publisher {
@@ -41,6 +50,12 @@ func New(db *gorm.DB, messages MessagePublisher, logger *slog.Logger, natsConfig
 		maxAttempts: natsConfig.MaxAttempts, interval: 500 * time.Millisecond,
 		subjectPrefix: natsConfig.SubjectPrefix, deadSubject: natsConfig.DeadSubject,
 	}
+}
+
+// ConfigureTerminalFailures 注册业务收敛器。未注册时，投递耗尽只更新 Job，不会推进业务状态，
+// 因此生产装配必须调用此方法。
+func (p *Publisher) ConfigureTerminalFailures(resolver TerminalFailureResolver) {
+	p.failures = resolver
 }
 
 func (p *Publisher) Run(ctx context.Context) error {
@@ -127,22 +142,51 @@ func (p *Publisher) publishOne(ctx context.Context, event *model.OutboxEvent) er
 		if updateErr := tx.Model(event).Updates(updates).Error; updateErr != nil {
 			return updateErr
 		}
-		if attempts >= p.maxAttempts {
-			return tx.Model(&model.Job{}).Where("uuid = ? AND status = ?", event.AggregateID, model.JobPending).
-				Updates(map[string]any{
-					"status":        model.JobFailed,
-					"error_code":    "queue_publish_failed",
-					"error_message": "任务进入队列失败，请稍后重试",
-					"finished_at":   now,
-					"updated_at":    now,
-				}).Error
+		if attempts < p.maxAttempts {
+			return nil
 		}
-		return nil
+		return p.terminateJob(ctx, tx, event.AggregateID, now)
 	}); updateErr != nil {
 		return fmt.Errorf("记录消息投递失败状态时发生错误: %v；原始错误: %w", updateErr, err)
 	}
 	return err
 }
+
+// terminateJob 把仍处于待投递状态的任务收敛为失败，并调用业务收敛器更新关联的流水线运行或发布记录。
+// 条件更新保证只有一个路径能完成收敛；已被其他路径推进的任务直接跳过。
+func (p *Publisher) terminateJob(ctx context.Context, tx *gorm.DB, jobID string, now time.Time) error {
+	var job model.Job
+	err := tx.First(&job, "uuid = ? AND status = ?", jobID, model.JobPending).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读取待收敛任务失败: %w", err)
+	}
+	result := tx.Model(&model.Job{}).
+		Where("uuid = ? AND status = ?", jobID, model.JobPending).
+		Updates(map[string]any{
+			"status":        model.JobFailed,
+			"error_code":    queuePublishErrorCode,
+			"error_message": queuePublishErrorText,
+			"finished_at":   now,
+			"updated_at":    now,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("收敛任务状态失败: %w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return nil
+	}
+	if p.failures == nil {
+		return nil
+	}
+	if err := p.failures.ResolveTerminalFailure(ctx, tx, job, queuePublishErrorCode, queuePublishErrorText); err != nil {
+		return fmt.Errorf("更新关联业务状态失败: %w", err)
+	}
+	return nil
+}
+
 
 func (p *Publisher) transportSubject(event *model.OutboxEvent) (string, error) {
 	if event.Subject == p.deadSubject || !strings.HasPrefix(event.Subject, task.LogicalSubjectPrefix+".") {

@@ -57,6 +57,9 @@ type Worker struct {
 
 func (w *Worker) ConfigureRealtime(bus *realtime.Bus) { w.realtime = bus }
 
+// TerminalFailures 返回与执行失败共用的业务收敛器，供投递层在消息永久无法入队时调用。
+func (w *Worker) TerminalFailures() *Registry { return w.registry }
+
 type RuntimeStats struct {
 	Instances int    `json:"instances"`
 	Consumer  string `json:"consumer"`

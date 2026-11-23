@@ -67,3 +67,14 @@ func (r *Registry) TerminalFailureHook(kind string) (TerminalFailureHook, bool) 
 	hook, ok := r.terminalFailureHooks[kind]
 	return hook, ok
 }
+
+// ResolveTerminalFailure 为仍未进入队列的任务执行与 Worker 相同的业务收敛。
+// 没有注册钩子的任务类型直接返回，由调用方只更新任务本身。
+func (r *Registry) ResolveTerminalFailure(ctx context.Context, tx *gorm.DB, job model.Job, code, message string) error {
+	hook, ok := r.TerminalFailureHook(job.Kind)
+	if !ok {
+		return nil
+	}
+	return hook(ctx, tx, job, code, message)
+}
+

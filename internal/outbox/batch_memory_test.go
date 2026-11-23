@@ -193,6 +193,44 @@ func newBatchTestPublisher(db *gorm.DB, transport MessagePublisher) *Publisher {
 	return New(db, transport, slog.New(slog.NewTextHandler(io.Discard, nil)), config.NATS{MaxAttempts: 4, SubjectPrefix: "edo.task", DeadSubject: "edo.dead.task"})
 }
 
+type recordingTerminalFailures struct {
+	calls []string
+}
+
+func (r *recordingTerminalFailures) ResolveTerminalFailure(_ context.Context, _ *gorm.DB, job model.Job, code, _ string) error {
+	r.calls = append(r.calls, job.ID+":"+code)
+	return nil
+}
+
+func TestPublishBatchExhaustedRetryResolvesBusinessFailure(t *testing.T) {
+	db := testutil.NewDatabase(t)
+	seedBatchEvents(t, db, 1, 256, 0)
+	job := model.Job{
+		ID: "job-0000", DepartmentID: database.DefaultDepartmentID, ProjectID: database.DefaultProjectID(database.DefaultDepartmentID),
+		Kind: "pipeline.build", Subject: "edo.task.pipeline.build", Payload: datatypes.JSON(`{}`),
+		Status: model.JobPending, MaxAttempts: 4, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.OutboxEvent{}).Where("event_id = ?", "event-0000").Update("publish_attempts", 3).Error; err != nil {
+		t.Fatal(err)
+	}
+	transport := batchPublisherFunc(func(context.Context, string, []byte, string) error {
+		return errors.New("临时发布失败")
+	})
+	resolver := &recordingTerminalFailures{}
+	publisher := newBatchTestPublisher(db, transport)
+	publisher.ConfigureTerminalFailures(resolver)
+	if err := publisher.PublishBatch(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	if len(resolver.calls) != 1 || resolver.calls[0] != "job-0000:queue_publish_failed" {
+		t.Fatalf("耗尽重试后未收敛业务状态: calls=%v", resolver.calls)
+	}
+}
+
+
 func seedBatchEvents(tb testing.TB, db *gorm.DB, count, payloadBytes, errorBytes int) []string {
 	tb.Helper()
 	payload := append([]byte(`{"content":"`), bytes.Repeat([]byte("x"), payloadBytes)...)

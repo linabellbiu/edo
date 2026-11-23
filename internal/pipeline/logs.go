@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"edo/internal/database"
 	"edo/internal/model"
@@ -156,7 +155,8 @@ func (s *Service) appendRunLog(ctx context.Context, runID, stage, level, message
 	}
 }
 
-// 状态收敛可复用同一事务写入日志；预算锁、截断与任务归属保持统一，通知由提交后的调用方发送。
+// 状态收敛可复用同一事务写入日志；配额通过条件更新原子预占，不再对流水线运行行加排他锁，
+// 避免与状态机推进互相等待。通知由提交后的调用方发送。
 func (s *Service) appendRunLogInTransaction(ctx context.Context, tx *gorm.DB, runID, stage, level, message string) error {
 	if node, ok := ctx.Value(pipelineNodeLogKey{}).(pipelineNodeLog); ok && node.name != "" {
 		message = "[" + node.name + "] " + message
@@ -170,45 +170,99 @@ func (s *Service) appendRunLogInTransaction(ctx context.Context, tx *gorm.DB, ru
 	if level == "" {
 		level = "info"
 	}
-	var run model.PipelineRun
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Select("uuid", "log_bytes", "log_truncated").First(&run, "uuid = ?", runID).Error; err != nil {
+	payloadLimit := maximumPipelineRunLogBytes - len(pipelineRunLogTruncatedMessage)
+	node, _ := ctx.Value(pipelineNodeLogKey{}).(pipelineNodeLog)
+
+	// 先按整条消息原子预占配额。条件更新同时校验"未截断"和"不超过上限"，
+	// 并发写入即使读到相同的旧值，也只会有一方预占成功。
+	stored := message
+	reserved, err := reserveRunLogBytes(tx, runID, len(stored), payloadLimit)
+	if err != nil {
 		return err
 	}
-	if run.LogTruncated {
-		return nil
-	}
-	payloadLimit := maximumPipelineRunLogBytes - len(pipelineRunLogTruncatedMessage)
-	remaining := payloadLimit - int(run.LogBytes)
-	truncated := remaining <= 0 || len(message) > remaining
-	if remaining > 0 {
-		stored := message
-		if len(stored) > remaining {
-			stored = truncateUTF8Bytes(stored, remaining)
-		}
-		if stored != "" {
-			if err := tx.Create(&model.PipelineRunLog{
-				NodeID: func() string { node, _ := ctx.Value(pipelineNodeLogKey{}).(pipelineNodeLog); return node.id }(), PipelineRunID: runID, Stage: stage, Level: level, Message: stored, CreatedAt: time.Now().UTC(),
-			}).Error; err != nil {
-				return err
-			}
-			run.LogBytes += uint64(len(stored))
-		}
-	}
-	if truncated || int(run.LogBytes) >= payloadLimit {
-		node, _ := ctx.Value(pipelineNodeLogKey{}).(pipelineNodeLog)
-		if err := tx.Create(&model.PipelineRunLog{
-			NodeID: node.id, PipelineRunID: runID, Stage: stage, Level: "warning",
-			Message: pipelineRunLogTruncatedMessage, CreatedAt: time.Now().UTC(),
-		}).Error; err != nil {
+	if !reserved {
+		// 剩余配额不足以放下整条消息：读取当前用量，决定截断还是部分写入。
+		var run model.PipelineRun
+		if err := tx.Select("uuid", "log_bytes", "log_truncated").First(&run, "uuid = ?", runID).Error; err != nil {
 			return err
 		}
-		run.LogBytes += uint64(len(pipelineRunLogTruncatedMessage))
-		run.LogTruncated = true
+		if run.LogTruncated {
+			return nil
+		}
+		remaining := payloadLimit - int(run.LogBytes)
+		if remaining > 0 {
+			stored = truncateUTF8Bytes(message, remaining)
+			if stored != "" {
+				reserved, err = reserveRunLogBytes(tx, runID, len(stored), payloadLimit)
+				if err != nil {
+					return err
+				}
+			}
+			if !reserved {
+				stored = ""
+			}
+		}
+		if err := insertRunLog(tx, runID, node.id, stage, level, stored); err != nil {
+			return err
+		}
+		return markRunLogTruncated(tx, runID, node, stage)
 	}
-	return tx.Model(&model.PipelineRun{}).Where("uuid = ?", runID).
-		Updates(map[string]any{"log_bytes": run.LogBytes, "log_truncated": run.LogTruncated}).Error
+
+	if err := insertRunLog(tx, runID, node.id, stage, level, stored); err != nil {
+		return err
+	}
+	// 配额刚好用尽时也要记录截断，避免后续消息悄悄丢失。
+	var run model.PipelineRun
+	if err := tx.Select("uuid", "log_bytes").First(&run, "uuid = ?", runID).Error; err != nil {
+		return err
+	}
+	if int(run.LogBytes) >= payloadLimit {
+		return markRunLogTruncated(tx, runID, node, stage)
+	}
+	return nil
 }
+
+// reserveRunLogBytes 以条件更新原子增加日志用量。只有未截断且不超过上限时才会成功。
+func reserveRunLogBytes(tx *gorm.DB, runID string, size, payloadLimit int) (bool, error) {
+	if size <= 0 {
+		return true, nil
+	}
+	result := tx.Model(&model.PipelineRun{}).
+		Where("uuid = ? AND log_truncated = ? AND log_bytes + ? <= ?", runID, false, size, payloadLimit).
+		UpdateColumn("log_bytes", gorm.Expr("log_bytes + ?", size))
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func insertRunLog(tx *gorm.DB, runID, nodeID, stage, level, message string) error {
+	if message == "" {
+		return nil
+	}
+	return tx.Create(&model.PipelineRunLog{
+		NodeID: nodeID, PipelineRunID: runID, Stage: stage, Level: level,
+		Message: message, CreatedAt: time.Now().UTC(),
+	}).Error
+}
+
+// markRunLogTruncated 写入截断提示，并把运行标记为已截断。条件更新保证只写一次。
+func markRunLogTruncated(tx *gorm.DB, runID string, node pipelineNodeLog, stage string) error {
+	result := tx.Model(&model.PipelineRun{}).
+		Where("uuid = ? AND log_truncated = ?", runID, false).
+		UpdateColumns(map[string]any{
+			"log_truncated": true,
+			"log_bytes":     gorm.Expr("log_bytes + ?", len(pipelineRunLogTruncatedMessage)),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return nil
+	}
+	return insertRunLog(tx, runID, node.id, stage, "warning", pipelineRunLogTruncatedMessage)
+}
+
 
 func truncateUTF8Bytes(value string, limit int) string {
 	if limit <= 0 {

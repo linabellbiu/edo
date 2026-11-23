@@ -440,6 +440,10 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		logger.Error("服务加密密钥未配置", "operation", "secret_bootstrap")
 		return errors.New("请配置 EDO_SECRETS_KEY 后重新启动")
 	}
+	if cfg.Environment == "production" && !cfg.Auth.CookieSecure {
+		logger.Warn("生产环境登录会话 Cookie 未启用 Secure 标记，未配置 HTTPS 时存在被截获风险，详见部署文档",
+			"operation", "auth_cookie_secure_disabled")
+	}
 
 	// 先占用监听地址，再初始化数据库、消息队列和后台消费者。端口冲突时应立即退出，
 	// 避免启动一半后产生一串 context canceled 的连带错误。
@@ -571,6 +575,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	k3sService := k3s.NewService(resources.Database, secretManager, kubernetesService, accessService, cfg.Runtime).WithConcurrency(cfg.Worker.Concurrency)
 	sshDeploymentService := sshdeploy.NewService(resources.Database, secretManager, cfg.Runtime)
 	hostService := hostmanager.NewService(resources.Database, secretManager, dockerService, kubernetesService)
+	hostService.ConfigureProtectedPaths(localHostProtectedPaths(cfg))
 	deploymentService := deployment.NewService(
 		resources.Database,
 		dockerService,
@@ -699,6 +704,9 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		}()
 	}
 	publisher := outbox.New(resources.Database, resources.NATS, logger, cfg.NATS)
+	publisher.ConfigureTerminalFailures(taskWorker.TerminalFailures())
+	taskReclaimer := worker.NewReclaimer(resources.Database, taskWorker.TerminalFailures(), logger)
+	startBackground("server_task_reclaimer", func() error { return taskReclaimer.Run(serviceCtx) })
 	startBackground("server_system_metrics", func() error { return systemMetricsService.Run(serviceCtx) })
 	startBackground("server_kubernetes_resource_watch", func() error { return kubernetesService.RunResourceWatching(serviceCtx) })
 	startBackground("server_kubernetes_rbac_sync", func() error { return kubernetesService.RunRBACSynchronization(serviceCtx) })
@@ -1002,3 +1010,32 @@ func newRepositoryService(
 		repository.WithCacheDirectory(cfg.Git.CacheDirectory),
 	), nil
 }
+
+// localHostProtectedPaths 列出"本地主机"终端文件接口禁止访问的目录：加密密钥文件、
+// 数据库连接配置文件所在目录，以及使用 SQLite 时数据库文件本身所在目录。
+// 路径统一转换为绝对路径，与终端文件接口清洗后的路径比较；无法解析的路径直接忽略而不是放行。
+func localHostProtectedPaths(cfg config.Config) []string {
+	var sources []string
+	if value := strings.TrimSpace(os.Getenv("EDO_SECRETS_KEY_FILE")); value != "" {
+		sources = append(sources, value)
+	}
+	if value := strings.TrimSpace(os.Getenv("EDO_DATABASE_DSN_FILE")); value != "" {
+		sources = append(sources, value)
+	}
+	if cfg.Database.Driver == "sqlite" {
+		if value := strings.TrimSpace(cfg.Database.DSN); value != "" {
+			sources = append(sources, value)
+		}
+	}
+	paths := make([]string, 0, len(sources))
+	for _, source := range sources {
+		absolute, err := filepath.Abs(source)
+		if err != nil {
+			continue
+		}
+		paths = append(paths, filepath.ToSlash(filepath.Dir(absolute)))
+	}
+	return paths
+}
+
+
