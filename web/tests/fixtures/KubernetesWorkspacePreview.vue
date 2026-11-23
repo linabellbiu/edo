@@ -1,14 +1,14 @@
 <script setup>
 import { theme } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Server, Boxes, LayoutDashboard, Database, Network, Settings } from 'lucide-vue-next'
+import { Server, Boxes, LayoutDashboard, Database, Layers, Network, Settings } from 'lucide-vue-next'
 import { usePreferencesStore } from '/src/stores/preferences'
 
 const route = useRoute(), router = useRouter(), preferences = usePreferencesStore()
 const dark = new URLSearchParams(location.search).get('theme') === 'dark'
 preferences.theme = dark ? 'dark' : 'light'
 document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-const pages = [{ key: 'clusters', label: '集群', icon: Boxes }, { key: 'overview', label: '集群总览', icon: LayoutDashboard }, { key: 'nodes', label: '节点', icon: Server }, { key: 'workloads', label: '工作负载', icon: Boxes }, { key: 'config', label: '配置中心', icon: Settings }, { key: 'storage', label: '存储', icon: Database }, { key: 'network', label: '服务与网络', icon: Network }]
+const pages = [{ key: 'clusters', label: '集群', icon: Boxes }, { key: 'overview', label: '集群总览', icon: LayoutDashboard }, { key: 'nodes', label: '节点', icon: Server }, { key: 'namespaces', label: '命名空间', icon: Layers }, { key: 'workloads', label: '工作负载', icon: Boxes }, { key: 'config', label: '配置中心', icon: Settings }, { key: 'storage', label: '存储', icon: Database }, { key: 'network', label: '服务与网络', icon: Network }]
 </script>
 
 <template>

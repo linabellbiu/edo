@@ -13,6 +13,9 @@ export function createKubernetesPreviewData() {
     configmaps: [{ apiVersion: 'v1', kind: 'ConfigMap', metadata: metadata('web-settings', 'preview'), data: { 'app.yaml': 'server:\n  port: 8080\nlog:\n  level: info', 'PUBLIC_PATH': '/assets' } }],
     secrets: [{ apiVersion: 'v1', kind: 'Secret', metadata: metadata('registry-auth', 'preview'), type: 'kubernetes.io/dockerconfigjson', keys: ['.dockerconfigjson'] }],
     namespaces: ['preview', 'staging'].map(name => ({ apiVersion: 'v1', kind: 'Namespace', metadata: metadata(name), status: { phase: 'Active' } })),
+    limitranges: [{ apiVersion: 'v1', kind: 'LimitRange', metadata: metadata('container-defaults', 'preview'), spec: { limits: [{ type: 'Container', defaultRequest: { cpu: '100m', memory: '128Mi' }, default: { cpu: '500m', memory: '512Mi' } }] } }],
+    resourcequotas: [{ apiVersion: 'v1', kind: 'ResourceQuota', metadata: metadata('team-budget', 'preview'), spec: { hard: { pods: '12', 'requests.cpu': '4', 'requests.memory': '4Gi' } }, status: { hard: { pods: '10', 'requests.cpu': '4', 'requests.memory': '4Gi' }, used: { pods: '2', 'requests.cpu': '200m', 'requests.memory': '256Mi' } } }],
+    serviceaccounts: [{ apiVersion: 'v1', kind: 'ServiceAccount', metadata: metadata('web-runtime', 'preview'), automountServiceAccountToken: false, imagePullSecrets: [{ name: 'registry-auth' }] }],
     storageclasses: [{ apiVersion: 'storage.k8s.io/v1', kind: 'StorageClass', metadata: metadata('local-path'), provisioner: 'rancher.io/local-path', reclaimPolicy: 'Delete', volumeBindingMode: 'WaitForFirstConsumer', allowVolumeExpansion: true }],
     persistentvolumes: [{ apiVersion: 'v1', kind: 'PersistentVolume', metadata: metadata('web-data-volume'), spec: { capacity: { storage: '20Gi' }, accessModes: ['ReadWriteOnce'], storageClassName: 'local-path', persistentVolumeReclaimPolicy: 'Retain', claimRef: { name: 'web-data', namespace: 'preview' }, hostPath: { path: '/var/lib/rancher/k3s/storage/web-data' } }, status: { phase: 'Bound' } }],
     persistentvolumeclaims: [{ apiVersion: 'v1', kind: 'PersistentVolumeClaim', metadata: metadata('web-data', 'preview'), spec: { accessModes: ['ReadWriteOnce'], storageClassName: 'local-path', volumeName: 'web-data-volume', resources: { requests: { storage: '20Gi' } } }, status: { phase: 'Bound', capacity: { storage: '20Gi' } } }],
@@ -30,6 +33,7 @@ export function createKubernetesPreviewData() {
     return revision?.current ? [event(revision.uid, 'SuccessfulCreate', `Created pod: ${pods[0].metadata.name}`)] : []
   }
   function overview(namespace = '') {
+    if (namespace === '*') namespace = ''
     const visiblePods = pods.filter(pod => !namespace || pod.metadata.namespace === namespace)
     return {
       counts: Object.fromEntries(Object.entries(resources).map(([key, rows]) => [key, { count: rows.filter(row => !namespace || !row.metadata.namespace || row.metadata.namespace === namespace).length, state: 'ok' }])),

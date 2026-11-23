@@ -336,7 +336,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	containerLogsAPI := containerLogHandler{docker: deps.Docker, audits: deps.Audits, logger: deps.Logger, streamAuth: func(c *gin.Context) func() bool { return streamAuthorization(deps, c, access.PermissionClusterRead) }}
 	protected.GET("/docker/endpoints/:id/containers/:container_id/logs/ws", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), containerLogsAPI.stream)
 
-	kubernetesReads := []string{access.PermissionClusterRead, "kubernetes.node.read", "kubernetes.workload.read", "kubernetes.config.read", "kubernetes.storage.read", "kubernetes.network.read"}
+	resourceReads := kube.ResourceReadPermissions()
+	kubernetesReads := append([]string{access.PermissionClusterRead}, resourceReads...)
 	clusterListPermissions := append(append([]string(nil), kubernetesReads...), kubernetesRBACRead, kubernetesRBACManage)
 	protected.GET("/kubernetes/clusters", requireAnyPermission(deps.Access, deps.Logger, clusterListPermissions...), clusterAPI.listKubernetesClusters)
 	protected.GET("/kubernetes/clusters/connection-statuses", requireAnyPermission(deps.Access, deps.Logger, clusterListPermissions...), clusterAPI.kubernetesConnectionStatuses)
@@ -350,9 +351,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/kubernetes/clusters/:id/pods", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listPods)
 	protected.GET("/kubernetes/clusters/:id/deployments", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listDeployments)
 	k8sResourcePath := "/kubernetes/clusters/:id/resources/:resource"
-	protected.GET("/kubernetes/clusters/:id/overview", requireAnyPermission(deps.Access, deps.Logger, kubernetesReads[1:]...), clusterAPI.overview(deps.Access))
+	protected.GET("/kubernetes/clusters/:id/overview", requireAnyPermission(deps.Access, deps.Logger, resourceReads...), clusterAPI.overview(deps.Access))
 	protected.GET("/kubernetes/clusters/:id/topology", requirePermission(deps.Access, deps.Logger, "kubernetes.node.read"), clusterAPI.topology(deps.Access))
-	protected.GET("/kubernetes/clusters/:id/watch", requireAnyPermission(deps.Access, deps.Logger, kubernetesReads[1:]...), streamKubernetesResources(deps))
+	protected.GET("/kubernetes/clusters/:id/watch", requireAnyPermission(deps.Access, deps.Logger, resourceReads...), streamKubernetesResources(deps))
 	protected.GET("/kubernetes/clusters/:id/nodes/:name/metrics", requirePermission(deps.Access, deps.Logger, "kubernetes.node.read"), clusterAPI.nodeHistory(deps.Access))
 	protected.POST("/kubernetes/clusters/:id/node-joins", auditAction(deps.Audits, deps.Logger, "kubernetes.node.join", "kubernetes_node"), requirePermission(deps.Access, deps.Logger, "kubernetes.node.create"), clusterAPI.nodeJoin)
 	protected.DELETE("/kubernetes/clusters/:id/node-joins/:join", auditAction(deps.Audits, deps.Logger, "kubernetes.node.join.revoke", "kubernetes_node"), requirePermission(deps.Access, deps.Logger, "kubernetes.node.create"), clusterAPI.nodeJoinRevoke)

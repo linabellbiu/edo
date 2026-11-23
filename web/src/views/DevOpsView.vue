@@ -158,7 +158,7 @@ const resourceErrors=ref<Record<string,string>>({}),resourcePending=ref<Record<s
 const locationHosts=ref<{id:string;name:string}[]>([]),locationClusters=ref<{id:string;name:string}[]>([])
 const hostsByID=computed(()=>new Map(locationHosts.value.map(item=>[item.id,item.name])))
 const clustersByID=computed(()=>new Map(locationClusters.value.map(item=>[item.id,item.name])))
-const locationCatalogPermissions=['cluster.read','kubernetes.workload.read','kubernetes.node.read','kubernetes.network.read','kubernetes.storage.read','kubernetes.config.read','kubernetes.rbac.read','kubernetes.rbac.manage']
+const locationCatalogPermissions=['cluster.read','kubernetes.workload.read','kubernetes.node.read','kubernetes.network.read','kubernetes.storage.read','kubernetes.config.read','kubernetes.namespace_policy.read','kubernetes.service_account.read','kubernetes.rbac.read','kubernetes.rbac.manage']
 const resourceReady=ref<Record<string,boolean>>({})
 const resourceRequests=new Map<string,{scope:string;controller:AbortController;promise:Promise<void>;again:boolean}>()
 const resourceLabels:Record<string,string>={applications:'应用',repositories:'代码仓库','git-credentials':'仓库凭据','build-plans':'构建方案','image-registries':'镜像仓库','pipeline-runs':'流水线运行','release-plans':'发布计划',deployments:'部署记录','deployment-plans':'部署方案','workflow-templates':'流水线模板',hosts:'主机名称','kubernetes/clusters':'集群名称'}

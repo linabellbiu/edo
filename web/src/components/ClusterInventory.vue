@@ -50,7 +50,7 @@ const canEditAssociations = computed(() => auth.canAny(['cluster.update']) && ca
 const canFilterAssociations = computed(() => canReadHosts.value && !props.hostError && props.clusters.every(cluster => Array.isArray(cluster.hosts)))
 const canCreateK3s = computed(() => auth.canAny(['cluster.create']) && auth.canAny(['cluster.execute']) && auth.canAny(['cluster.update']) && canReadHosts.value)
 // 查看集群进入 Kubernetes 工作区，权限与导航菜单中的集群总览一致。
-const canViewCluster = computed(() => auth.canAny(['kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read']))
+const canViewCluster = computed(() => auth.canAny(['kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.namespace_policy.read', 'kubernetes.service_account.read', 'kubernetes.storage.read', 'kubernetes.network.read']))
 const filtered = computed(() => props.clusters.filter(cluster => {
   const linked = hostsForCluster(cluster, props.hosts)
   if (association.value !== 'all' && !associationKnown(cluster)) return false

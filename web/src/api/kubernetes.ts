@@ -22,7 +22,10 @@ export const kubeTypes = [
   type('pods', 'Pod', 'v1', 'workloads', 'workload', true, true, false),
   type('configmaps', 'ConfigMap', 'v1', 'config', 'config'),
   type('secrets', 'Secret', 'v1', 'config', 'config'),
-  type('namespaces', 'Namespace', 'v1', 'config', 'config', false),
+  type('namespaces', 'Namespace', 'v1', 'namespaces', 'config', false),
+  type('limitranges', 'LimitRange', 'v1', 'namespaces', 'namespace_policy'),
+  type('resourcequotas', 'ResourceQuota', 'v1', 'namespaces', 'namespace_policy'),
+  type('serviceaccounts', 'ServiceAccount', 'v1', 'namespaces', 'service_account'),
   type('persistentvolumeclaims', 'PersistentVolumeClaim', 'v1', 'storage', 'storage'),
   type('persistentvolumes', 'PersistentVolume', 'v1', 'storage', 'storage', false, false, false),
   type('storageclasses', 'StorageClass', 'storage.k8s.io/v1', 'storage', 'storage', false, false, false),
@@ -145,7 +148,8 @@ function canonical(value: unknown): unknown {
   return value
 }
 export function writableSnapshot(object: KubeObject): string {
-  return JSON.stringify(canonical({spec:object.spec,data:object.data,binaryData:object.binaryData,type:object.type,immutable:object.immutable,labels:object.metadata.labels,annotations:object.metadata.annotations}))
+  return JSON.stringify(canonical({spec:object.spec,data:object.data,binaryData:object.binaryData,type:object.type,immutable:object.immutable,labels:object.metadata.labels,annotations:object.metadata.annotations,
+    ...(object.kind==='ServiceAccount'?{automountServiceAccountToken:object.automountServiceAccountToken,imagePullSecrets:object.imagePullSecrets}:{})}))
 }
 export class KubeResourceChanged extends Error {}
 export function kubeErrorMessage(error:unknown):string { return error instanceof KubeResourceChanged ? error.message : apiErrorMessage(error) }

@@ -21,7 +21,7 @@ export interface ClusterConnection {
   refreshing?: boolean
 }
 
-const readPermissions = ['cluster.read', 'kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read', 'kubernetes.rbac.read', 'kubernetes.rbac.update']
+const readPermissions = ['cluster.read', 'kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.namespace_policy.read', 'kubernetes.service_account.read', 'kubernetes.storage.read', 'kubernetes.network.read', 'kubernetes.rbac.read', 'kubernetes.rbac.update']
 const snapshotsByProfile = new WeakMap<object, Map<string, ClusterConnection>>()
 const snapshotLimit = 1024
 const passivePollInterval = 5_000

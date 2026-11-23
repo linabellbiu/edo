@@ -238,9 +238,7 @@ func TestKubernetesWatchIdleHeartbeatRechecksClusterEnabledState(t *testing.T) {
 
 func TestKubernetesWatchRouteRequiresSessionAndResourceReadPermission(t *testing.T) {
 	f := newStreamBoundaryFixture(t)
-	if err := f.deps.Access.SetUserPermissions(context.Background(), f.user.ID, access.UserPermissionOverrides{Deny: []string{
-		"kubernetes.node.read", "kubernetes.workload.read", "kubernetes.config.read", "kubernetes.storage.read", "kubernetes.network.read",
-	}}); err != nil {
+	if err := f.deps.Access.SetUserPermissions(context.Background(), f.user.ID, access.UserPermissionOverrides{Deny: kube.ResourceReadPermissions()}); err != nil {
 		t.Fatal(err)
 	}
 	for _, authenticated := range []bool{false, true} {

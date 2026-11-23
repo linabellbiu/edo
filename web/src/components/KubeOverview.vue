@@ -17,16 +17,17 @@ const root=ref<HTMLElement>(), cpuChart=ref<HTMLElement>(),memoryChart=ref<HTMLE
 const charts=new Map<HTMLElement,EChartsType>()
 let resize:ResizeObserver|undefined, disposed=false
 const cards=computed(()=>[
-  ['nodes','k8s.nodes',Server],['pods','Pod',Box],['deployments','Deployment',Boxes],['statefulsets','StatefulSet',Layers],['daemonsets','DaemonSet',Layers],['jobs','Job',Activity],['cronjobs','CronJob',Activity],['namespaces','Namespace',Boxes],['services','Service',Network],['ingresses','Ingress',Network],['configmaps','ConfigMap',Database],['secrets','Secret',FileKey2],['persistentvolumeclaims','PVC',Database],['persistentvolumes','PV',Database],['storageclasses','StorageClass',Database],['networkpolicies','NetworkPolicy',Network],
+  ['nodes','k8s.nodes',Server],['pods','Pod',Box],['deployments','Deployment',Boxes],['statefulsets','StatefulSet',Layers],['daemonsets','DaemonSet',Layers],['jobs','Job',Activity],['cronjobs','CronJob',Activity],['namespaces','Namespace',Layers],['limitranges','LimitRange',Settings],['resourcequotas','ResourceQuota',Activity],['serviceaccounts','ServiceAccount',FileKey2],['services','Service',Network],['ingresses','Ingress',Network],['configmaps','ConfigMap',Database],['secrets','Secret',FileKey2],['persistentvolumeclaims','PVC',Database],['persistentvolumes','PV',Database],['storageclasses','StorageClass',Database],['networkpolicies','NetworkPolicy',Network],
 ].filter(([key])=>Object.hasOwn(props.data?.counts??{},String(key))).map(([key,label,icon])=>({key:String(key),label:String(label).startsWith('k8s.')?t(String(label)):String(label),icon,count:props.data!.counts[String(key)]!})))
 const categories=computed(()=>[
   {key:'nodes',icon:Server,resources:['nodes']},
   {key:'workloads',icon:Boxes,resources:['deployments','statefulsets','daemonsets','jobs','cronjobs','pods']},
-  {key:'config',icon:Settings,resources:['configmaps','secrets','namespaces']},
+  {key:'namespace',icon:Layers,resources:['namespaces','limitranges','resourcequotas','serviceaccounts']},
+  {key:'config',icon:Settings,resources:['configmaps','secrets']},
   {key:'storage',icon:Database,resources:['storageclasses','persistentvolumes','persistentvolumeclaims']},
   {key:'network',icon:Network,resources:['services','ingresses','networkpolicies']},
 ].map(group=>({...group,cards:cards.value.filter(card=>group.resources.includes(card.key))})).filter(group=>group.cards.length))
-const overviewColumns=computed(()=>[['nodes','network'],['workloads'],['config','storage']].map(keys=>categories.value.filter(group=>keys.includes(group.key))).filter(groups=>groups.length))
+const overviewColumns=computed(()=>[['nodes','network'],['workloads','namespace'],['config','storage']].map(keys=>categories.value.filter(group=>keys.includes(group.key))).filter(groups=>groups.length))
 const totals=computed(()=>{
   const nodes=props.data?.nodes??[], all=props.data?.counts.nodes?.state==='ok'&&Array.isArray(props.data?.nodes), usages=Object.fromEntries(nodes.map(node=>[node.name,usageFor(props.data,{kind:'Node',metadata:{name:node.name}})]))
   const complete=!props.error&&all&&nodes.length>0&&nodes.every(node=>usages[node.name])

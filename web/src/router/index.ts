@@ -25,7 +25,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'deployment-plans', name: 'deployment-plans', component: () => import('@/views/DeploymentPlanView.vue'), meta: { title: 'nav.deploymentPlans', permissions: ['deployment_plan.read'] } },
       { path: 'environments', redirect: to => ({ path: '/hosts', query: { group: to.query.environment, create_group: to.query.create } }) },
       { path: 'hosts', name: 'hosts', component: () => import('@/views/HostClusterView.vue'), meta: { title: 'nav.hosts', permissions: ['cluster.read', 'deployment.read'] } },
-      { path: 'kubernetes', name: 'kubernetes', component: () => import('@/views/KubernetesView.vue'), meta: { title: 'k8s.title', permissions: ['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read'] } },
+      { path: 'kubernetes', name: 'kubernetes', component: () => import('@/views/KubernetesView.vue'), meta: { title: 'k8s.title', permissions: ['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.namespace_policy.read','kubernetes.service_account.read','kubernetes.storage.read','kubernetes.network.read'] } },
       { path: 'pipeline-plans', name: 'pipeline-plans', component: () => import('@/views/PipelinePlanListView.vue'), meta: { title: 'nav.pipelinePlans', permissions: ['workflow.read'] } },
       { path: 'pipeline-plans/editor', name: 'pipeline-editor', component: () => import('@/views/PipelineEditorView.vue'), meta: { title: 'nav.pipelinePlans', permissions: ['workflow.read'], fullscreen: true } },
       { path: 'release-plans', name: 'release-plans', component: () => import('@/views/DevOpsView.vue'), props: { section: 'release-plans' }, meta: { title: 'nav.releasePlans', permissions: ['release_plan.read'] } },
@@ -64,6 +64,9 @@ router.beforeEach(async (to) => {
   if (!auth.user) {
     const reason = auth.loadFailed ? '&reason=unavailable' : ''
     return `/login?redirect=${encodeURIComponent(to.fullPath)}${reason}`
+  }
+  if (to.path === '/kubernetes' && to.query.view === 'config' && to.query.resource === 'namespaces') {
+    return { path: to.path, query: { ...to.query, view: 'namespaces' }, hash: to.hash, replace: true }
   }
   const item = findNavigationItem(to.fullPath)
   let required = (to.meta.permissions as string[] | undefined) ?? []

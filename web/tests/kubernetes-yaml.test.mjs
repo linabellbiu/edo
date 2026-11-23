@@ -50,6 +50,24 @@ test('YAML 补丁明确删除键，数组整体替换，保留新的状态版本
   const after=yaml.editableKubeObject(deploymentType,before);after.spec.template.spec.containers.pop()
   assert.deepEqual(yaml.kubeYamlPatch(deploymentType,before,after,before).spec.template.spec.containers,[{name:'a',image:'old'}])
 })
+test('服务账户 YAML 只修改挂载设置和镜像拉取引用，版本校验能识别这两项变更', () => {
+  const api = load('../src/api/kubernetes.ts')
+  const accountType = api.kubeTypes.find(item => item.resource === 'serviceaccounts')
+  const account = { apiVersion: 'v1', kind: 'ServiceAccount', metadata: original.metadata,
+    automountServiceAccountToken: false, imagePullSecrets: [{ name: 'registry' }], secrets: [{ name: 'legacy-token' }] }
+  const editable = yaml.editableKubeObject(accountType, account)
+  assert.equal(editable.secrets, undefined)
+  assert.equal(yaml.readKubeYaml(yaml.kubeYamlText(editable) + 'secrets: []\n', { type: accountType, object: account }).issues[0].code, 'readonly')
+  delete editable.automountServiceAccountToken
+  editable.imagePullSecrets = []
+  const patch = yaml.kubeYamlPatch(accountType, account, editable, account)
+  assert.equal(patch.automountServiceAccountToken, null)
+  assert.deepEqual(patch.imagePullSecrets, [])
+  assert.equal(patch.secrets, undefined)
+  for (const change of [{ automountServiceAccountToken: true }, { imagePullSecrets: [] }]) {
+    assert.notEqual(api.writableSnapshot(account), api.writableSnapshot({ ...account, ...change }))
+  }
+})
 function drawer(client,dialogs=[]) {
   const component = load('../src/components/KubeYamlDrawer.vue', {vue:{...vue,onBeforeUnmount(){}}, 'vue-i18n':{useI18n:()=>({t:key=>key})}, 'ant-design-vue':{Modal:{confirm:options=>{dialogs.push(options);return{destroy(){}}}},message:{success(){}}}, '@/api/client':{default:client,__esModule:true}, '@/api/kubernetes':{resourceURL:()=>'/resource',withFreshKubeResource:async(_c,_t,o,_message,fn)=>fn(o),kubeErrorMessage:()=> '安全提示'}, '@/utils/kubernetesYaml':yaml}).default
   const props=vue.reactive({open:true,cluster:'test',type,object:original,allowed:true}),events=[]

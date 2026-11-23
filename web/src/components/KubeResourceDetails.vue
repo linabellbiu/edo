@@ -6,13 +6,19 @@ import { useI18n } from 'vue-i18n'
 import { formatKubeQuantity, podSpec, type KubeObject, type KubeServicePortSource, type KubeType } from '@/api/kubernetes'
 import { resourceCells, resourceColumns, ingressRoutes, isHeadlessService, podReferences, policyDirections, policyPeer, serviceAccessHints, type KubeReference } from '@/utils/kubernetesPresentation'
 import { kubeContainerDetails, kubeContainerProbes, kubeEnvironmentSources, kubeVolumeDetails } from '@/utils/kubernetesDetails'
+import { limitFields, limitRules, limitTypes, quotaRows } from '@/utils/kubernetesNamespaceResources'
 import KubeResourceCell from './KubeResourceCell.vue'
 import KubeServiceAccessHint from './KubeServiceAccessHint.vue'
 const props=defineProps<{object:KubeObject;type:KubeType;canFollow:(reference?:KubeReference)=>boolean;container?:string;containerKey?:string;selectionIdentity?:string;section?:'all'|'containers'|'storage'|'scheduling';servicePortSource?:KubeServicePortSource}>()
 const emit=defineEmits<{follow:[reference:KubeReference];container:[name:string];containerKey:[key:string,identity?:string]}>()
 const {t}=useI18n()
 const cells=computed(()=>resourceCells(props.object,t))
-const fields=computed(()=>resourceColumns(props.type,t).filter(item=>!['name','namespace','status','created','usage','images'].includes(item.key)))
+const fields=computed(()=>resourceColumns(props.type,t).filter(item=>!['name','namespace','status','created','usage','images','quotaUsage','limitRules'].includes(item.key)))
+const quota = computed(() => props.object.kind === 'ResourceQuota' ? quotaRows(props.object) : [])
+const limits = computed(() => props.object.kind === 'LimitRange' ? limitRules(props.object) : [])
+const hasLimitResources = computed(() => limits.value.some(rule => rule.resources.length))
+const visibleLimitFields = computed(() => limitFields.filter(field => limits.value.some(rule => rule.resources.some(row => row[field] !== undefined))))
+const limitTypeName = (type: string) => limitTypes.some(item => item === type) ? t(`k8s.limitType_${type}`) : type
 const servicePorts = computed(() => (props.object.spec?.ports ?? []).map((port: KubeObject) => {
   const protocol = port.protocol ?? 'TCP'
   return { port, protocol, endpoint: `${port.port}/${protocol}`, hints: serviceAccessHints(props.object, port, t) }
@@ -76,7 +82,33 @@ const resources=(container:KubeObject,field:string)=>Object.entries(container.re
 const rawResources=(container:KubeObject,field:string)=>Object.entries(container.resources?.[field]??{}).map(([key,value])=>`${key}: ${value}`).join(' · ')
 </script>
 <template>
-  <section v-if="(!section||section==='all')&&fields.length" class="resource-detail-section kube-facts-section"><h4>{{ t('k8s.resourceSettings') }}</h4><dl class="kube-detail-facts"><div v-for="field in fields" :key="field.key"><dt>{{ field.label }}</dt><dd><KubeResourceCell :cell="cells[field.key]" :date="['jobTiming','lastSchedule'].includes(field.key)" :can-follow="canFollow(cells[field.key]?.reference)" :service-port-source="field.key==='servicePorts'?servicePortSource:undefined" @follow="emit('follow',$event)" /></dd></div></dl></section>
+  <section v-if="object.kind === 'ResourceQuota'" class="resource-detail-section">
+    <h4>{{ t('k8s.quotaUsage') }}</h4>
+    <div v-if="quota.length" class="detail-table-scroll" tabindex="0" role="region" :aria-label="t('k8s.quotaUsage')">
+      <table class="kube-detail-table quota-detail-table">
+        <thead><tr><th scope="col">{{ t('k8s.resourceKey') }}</th><th scope="col">{{ t('k8s.used') }}</th><th scope="col">{{ t('k8s.quotaEffective') }}</th><th scope="col">{{ t('k8s.quotaHard') }}</th></tr></thead>
+        <tbody><tr v-for="row in quota" :key="row.name"><th scope="row">{{ row.name }}</th><td>{{ row.used ?? '—' }}</td><td>{{ row.effective ?? '—' }}</td><td>{{ row.configured ?? '—' }}</td></tr></tbody>
+      </table>
+    </div>
+    <a-empty v-else :description="t('k8s.emptyData')" />
+    <dl v-if="object.spec?.scopes?.length || object.spec?.scopeSelector?.matchExpressions?.length" class="kube-detail-facts additional-facts">
+      <div v-if="object.spec?.scopes?.length"><dt>{{ t('k8s.quotaScopes') }}</dt><dd>{{ object.spec.scopes.join(' · ') }}</dd></div>
+      <div v-if="object.spec?.scopeSelector?.matchExpressions?.length"><dt>{{ t('k8s.quotaScopeSelector') }}</dt><dd v-for="(rule, index) in object.spec.scopeSelector.matchExpressions" :key="index">{{ rule.scopeName }} {{ rule.operator }} {{ rule.values?.join(', ') }}</dd></div>
+    </dl>
+  </section>
+
+  <section v-if="object.kind === 'LimitRange'" class="resource-detail-section">
+    <h4>{{ t('k8s.limitRules') }}</h4>
+    <div v-if="hasLimitResources" class="detail-table-scroll" tabindex="0" role="region" :aria-label="t('k8s.limitRules')">
+      <table class="kube-detail-table quota-detail-table">
+        <thead><tr><th scope="col">{{ t('k8s.limitType') }}</th><th scope="col">{{ t('k8s.resourceKey') }}</th><th v-for="field in visibleLimitFields" :key="field" scope="col">{{ t(`k8s.limit_${field}`) }}</th></tr></thead>
+        <tbody v-for="(rule, index) in limits" :key="index"><tr v-for="row in rule.resources" :key="row.name"><td>{{ limitTypeName(rule.type) }}</td><th scope="row">{{ row.name }}</th><td v-for="field in visibleLimitFields" :key="field">{{ row[field] ?? '—' }}</td></tr></tbody>
+      </table>
+    </div>
+    <a-empty v-else :description="t('k8s.emptyData')" />
+  </section>
+
+  <section v-if="(!section||section==='all')&&fields.length" class="resource-detail-section kube-facts-section"><h4 v-if="type.group!=='namespaces'">{{ t('k8s.resourceSettings') }}</h4><dl class="kube-detail-facts"><div v-for="field in fields" :key="field.key"><dt>{{ field.label }}</dt><dd><KubeResourceCell :cell="cells[field.key]" :date="['jobTiming','lastSchedule'].includes(field.key)" :can-follow="canFollow(cells[field.key]?.reference)" :service-port-source="field.key==='servicePorts'?servicePortSource:undefined" @follow="emit('follow',$event)" /></dd></div></dl></section>
 
   <section v-if="(!section||section==='all'||section==='containers')&&(containers.length||containerMissing||section==='containers')" class="resource-detail-section kube-container-config">
     <div class="kube-container-layout">
@@ -193,6 +225,7 @@ dd{font-size:13px;margin:0;line-height:1.6;overflow-wrap:anywhere;font-variant-n
 .detail-table-scroll:focus-visible{outline:2px solid var(--kube-focus);outline-offset:2px}
 .kube-detail-table{width:100%;min-width:520px;border-collapse:separate;border-spacing:0;font-size:13px;text-align:left;color:var(--kube-text);font-variant-numeric:tabular-nums}
 .kube-detail-table th{background:var(--kube-heading);color:var(--kube-text);font-size:12px;font-weight:600;white-space:nowrap}
+.quota-detail-table th[scope="row"]{background:transparent;overflow-wrap:anywhere;white-space:normal}
 .kube-detail-table th,.kube-detail-table td{padding:8px 10px;border-bottom:1px solid var(--kube-border);border-right:1px solid var(--kube-border);vertical-align:top;min-width:90px;line-height:1.6}
 .kube-detail-table tr>:last-child{border-right:0}.kube-detail-table tbody tr:last-child td{border-bottom:0}
 .kube-detail-table tbody tr:nth-child(even) td{background:var(--kube-stripe)}

@@ -3,7 +3,7 @@ import {
   Activity, AppWindow, Boxes, Box, Building2, ChartNoAxesCombined, CloudCog,
   Container, FileText, GitBranch, History, KeyRound, ListChecks, PackageCheck,
   PanelsTopLeft, Play, Rocket, Server, ServerCog, Settings, ShieldCheck,
-  Tags, UserCog, UsersRound, Workflow, LayoutDashboard, Database, Network,
+  Tags, UserCog, UsersRound, Workflow, LayoutDashboard, Database, Network, Layers,
 } from 'lucide-vue-next'
 
 export interface NavItem {
@@ -65,9 +65,10 @@ export const navigation: NavSection[] = [
         { label: 'nav.domains', path: '/domains', permissions: ['dns.read'], icon: Tags },
         { label: 'nav.containers', path: '/kubernetes', permissions: [], icon: Boxes, children: [
           { label: 'nav.hosts', path: '/hosts', permissions: ['cluster.read', 'deployment.read'], icon: Server },
-          { label: 'k8s.clusters', path: '/hosts?view=clusters', permissions: ['cluster.read','kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read','kubernetes.rbac.read','kubernetes.rbac.update'], icon: Boxes },
-          { label: 'k8s.overview', path: '/kubernetes?view=overview', permissions: ['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read'], icon: LayoutDashboard },
+          { label: 'k8s.clusters', path: '/hosts?view=clusters', permissions: ['cluster.read','kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.namespace_policy.read','kubernetes.service_account.read','kubernetes.storage.read','kubernetes.network.read','kubernetes.rbac.read','kubernetes.rbac.update'], icon: Boxes },
+          { label: 'k8s.overview', path: '/kubernetes?view=overview', permissions: ['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.namespace_policy.read','kubernetes.service_account.read','kubernetes.storage.read','kubernetes.network.read'], icon: LayoutDashboard },
           { label: 'k8s.nodes', path: '/kubernetes?view=nodes', permissions: ['kubernetes.node.read'], icon: Server },
+          { label: 'k8s.namespace', path: '/kubernetes?view=namespaces', permissions: ['kubernetes.config.read','kubernetes.namespace_policy.read','kubernetes.service_account.read'], icon: Layers },
           { label: 'k8s.workloads', path: '/kubernetes?view=workloads', permissions: ['kubernetes.workload.read'], icon: Boxes },
           { label: 'k8s.configStorage', path: '/kubernetes?section=config-storage', permissions: [], icon: Database, children: [
             { label: 'k8s.config', path: '/kubernetes?view=config', permissions: ['kubernetes.config.read'], icon: Settings },
@@ -124,7 +125,10 @@ export function visibleNavigationItems(items: NavItem[], canAny: (permissions: s
 export function findNavigationItem(path: string): NavItem | undefined {
   const target = new URL(path, 'http://edo.local')
   if (target.pathname === '/kubernetes') {
-    if (target.searchParams.getAll('view').length !== 1 || !['overview','nodes','workloads','config','storage','network'].includes(target.searchParams.get('view') ?? '')) target.searchParams.set('view', 'overview')
+    const views = target.searchParams.getAll('view')
+    const view = views.length === 1 ? views[0] : ''
+    if (view === 'config' && target.searchParams.getAll('resource').join(',') === 'namespaces') target.searchParams.set('view', 'namespaces')
+    else if (!['overview','nodes','namespaces','workloads','config','storage','network'].includes(view ?? '')) target.searchParams.set('view', 'overview')
   }
   return flatNavigation().filter(item => {
     const candidate = new URL(item.path, 'http://edo.local')

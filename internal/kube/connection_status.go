@@ -277,8 +277,11 @@ func (s *Service) prioritizeConnectionChecks(clusters []model.KubernetesCluster,
 }
 
 func canReadConnectionStatuses(fresh *access.FreshProjectAuthorization) bool {
-	for _, permission := range []string{access.PermissionClusterRead, "kubernetes.node.read", "kubernetes.workload.read", "kubernetes.config.read", "kubernetes.storage.read", "kubernetes.network.read", "kubernetes.rbac.read", "kubernetes.rbac.update"} {
-		if fresh.Permissions[permission] {
+	if fresh.Permissions[access.PermissionClusterRead] || fresh.Permissions["kubernetes.rbac.read"] || fresh.Permissions["kubernetes.rbac.update"] {
+		return true
+	}
+	for _, def := range resourceDefinitions {
+		if fresh.Permissions[def.Permission+".read"] {
 			return true
 		}
 	}

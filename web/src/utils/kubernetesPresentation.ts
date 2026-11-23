@@ -1,5 +1,6 @@
 import { formatKubeQuantity, kubeTypes, podSpec, type KubeObject, type KubeServiceEndpoint, type KubeType } from '@/api/kubernetes'
 import { kubernetesNodeRoles, kubernetesNodeRoleKey } from '@/utils/kubernetesRoles'
+import { limitRules, quotaRows, serviceAccountAutomount } from '@/utils/kubernetesNamespaceResources'
 
 type Translate = (key:string, values?:Record<string,unknown>)=>string
 export interface KubeReference { resource:string; name:string; namespace?:string; uid?:string }
@@ -115,6 +116,9 @@ export function resourceColumns(type:KubeType,t:Translate) {
     configmaps:[status,column('dataKeys','dataItems','210px')],
     secrets:[column('secretType','secretType','230px'),column('dataKeys','dataItems','210px'),status],
     namespaces:[status,column('labels','labels','360px')],
+    limitranges:[column('limitRules','limitRules','360px')],
+    resourcequotas:[column('quotaUsage','quotaUsage','360px')],
+    serviceaccounts:[column('automount','serviceAccountAutomount','185px'),column('pullSecrets','imagePullSecretReferences','250px')],
     persistentvolumeclaims:[status,column('capacity','requestAndCapacity','150px'),column('accessModes','accessMode','170px'),column('storageClass','storageClass','190px'),column('volume','boundVolume','210px')],
     persistentvolumes:[status,column('capacity','capacity','125px'),column('accessModes','accessMode','170px'),column('storageClass','storageClass','170px'),column('claim','boundClaim','210px'),column('reclaim','reclaimPolicy','130px')],
     storageclasses:[column('defaultClass','defaultStorageClass','120px'),column('provisioner','provisioner','250px'),column('binding','bindingMode','205px'),column('reclaim','reclaimPolicy','125px'),column('expansion','volumeExpansion','120px')],
@@ -187,6 +191,19 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
     cells.nodeVersion=cell(status.nodeInfo?.kubeletVersion,joined([status.nodeInfo?.containerRuntimeVersion,status.nodeInfo?.architecture]))
   } else if(kind==='Service')cells.address=cell(spec.type==='ExternalName'?spec.externalName:joined(spec.clusterIPs??[spec.clusterIP]),joined([...(spec.externalIPs??[]),...(status.loadBalancer?.ingress??[]).map((item:KubeObject)=>item.ip??item.hostname)]))
   else if(kind==='Ingress')cells.address=cell(joined((status.loadBalancer?.ingress??[]).map((item:KubeObject)=>item.ip??item.hostname)))
+  else if(kind==='ResourceQuota') {
+    const quota = quotaRows(object)
+    const changes = quota.filter(row => row.configured !== undefined && row.configured !== row.effective)
+    cells.quotaUsage = cell(
+      joined(quota.map(row => `${row.name} ${row.used ?? '—'} / ${row.effective ?? '—'}`)),
+      changes.length ? `${t('k8s.quotaHard')} ${joined(changes.map(row => `${row.name} ${row.configured}`))}` : undefined,
+    )
+  } else if(kind==='LimitRange') {
+    cells.limitRules = cell(joined(limitRules(object).map(rule => `${rule.type} · ${rule.resources.map(item => item.name).join(', ')}`)))
+  } else if(kind==='ServiceAccount') {
+    cells.automount = cell(t(`k8s.automount_${serviceAccountAutomount(object)}`))
+    cells.pullSecrets = cell(joined((object.imagePullSecrets ?? []).map((item: KubeObject) => item.name)))
+  }
   if(['Deployment','StatefulSet','DaemonSet','Pod'].includes(kind)) {
     const desired=kind==='Pod'?containers.length:kind==='DaemonSet'?status.desiredNumberScheduled:spec.replicas??1
     const ready=kind==='Pod'?Array.isArray(status.containerStatuses)?status.containerStatuses.filter((item:KubeObject)=>item.ready).length:undefined:kind==='DaemonSet'?status.numberReady:status.readyReplicas??(status.replicas!==undefined?0:undefined)

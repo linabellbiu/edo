@@ -7,6 +7,12 @@ const limit = 2 * 1024 * 1024
 const record = (value: unknown): value is KubeObject => !!value && typeof value === 'object' && !Array.isArray(value)
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 
+function editableFields(type: KubeType) {
+  if (type.resource === 'configmaps') return ['data', 'binaryData', 'immutable']
+  if (type.resource === 'serviceaccounts') return ['automountServiceAccountToken', 'imagePullSecrets']
+  return ['spec']
+}
+
 export function readKubeYaml(source: string, target?: { type: KubeType; object: KubeObject }): YamlResult {
   const lines = new LineCounter()
   const issue = (code: string, from = 0, to = from + 1): YamlResult => {
@@ -55,7 +61,7 @@ export function readKubeYaml(source: string, target?: { type: KubeType; object: 
       for (const key of ['name', 'namespace', 'uid', 'resourceVersion']) {
         if (object.metadata[key] !== original.metadata[key] && !(key === 'namespace' && !type.namespaced && object.metadata[key] === undefined)) return at('identity', ['metadata', key])
       }
-      const fields = new Set(type.resource === 'configmaps' ? ['apiVersion', 'kind', 'metadata', 'data', 'binaryData', 'immutable'] : ['apiVersion', 'kind', 'metadata', 'spec'])
+      const fields = new Set(['apiVersion', 'kind', 'metadata', ...editableFields(type)])
       for (const key of Object.keys(object)) if (!fields.has(key)) return at('readonly', [key])
       for (const key of Object.keys(object.metadata)) if (!['name', 'namespace', 'uid', 'resourceVersion', 'labels', 'annotations'].includes(key)) return at('readonly', ['metadata', key])
       if (type.resource === 'nodes' && object.spec) for (const key of Object.keys(object.spec)) if (!['unschedulable', 'taints'].includes(key)) return at('readonly', ['spec', key])
@@ -67,7 +73,7 @@ export function readKubeYaml(source: string, target?: { type: KubeType; object: 
 // 编辑范围与后端白名单一致，不把状态、所有者或节点身份写回集群。
 export function editableKubeObject(type: KubeType, object: KubeObject): KubeObject {
   const metadata = Object.fromEntries(['name', 'namespace', 'uid', 'resourceVersion', 'labels', 'annotations'].filter(key => object.metadata[key] !== undefined).map(key => [key, object.metadata[key]]))
-  const keys = type.resource === 'configmaps' ? ['data', 'binaryData', 'immutable'] : ['spec']
+  const keys = editableFields(type)
   const output = clone({ apiVersion: type.apiVersion, kind: type.kind, metadata, ...Object.fromEntries(keys.filter(key => object[key] !== undefined).map(key => [key, object[key]])) }) as KubeObject
   if (type.resource === 'nodes') output.spec = Object.fromEntries(['unschedulable', 'taints'].filter(key => object.spec?.[key] !== undefined).map(key => [key, clone(object.spec[key])]))
   return output

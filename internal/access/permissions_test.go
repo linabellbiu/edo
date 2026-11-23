@@ -75,6 +75,8 @@ func TestPermissionCatalogContainsOnlyImplementedCapabilities(t *testing.T) {
 	want = append(want, "assistant.read", "assistant.execute", "assistant.platform.read", "kubernetes.node.read", "kubernetes.node.create", "kubernetes.node.update", "kubernetes.node.delete",
 		"kubernetes.workload.read", "kubernetes.workload.create", "kubernetes.workload.update", "kubernetes.workload.delete", "kubernetes.workload.execute",
 		"kubernetes.config.read", "kubernetes.config.create", "kubernetes.config.update", "kubernetes.config.delete",
+		"kubernetes.namespace_policy.read", "kubernetes.namespace_policy.create", "kubernetes.namespace_policy.update", "kubernetes.namespace_policy.delete",
+		"kubernetes.service_account.read", "kubernetes.service_account.create", "kubernetes.service_account.update", "kubernetes.service_account.delete",
 		"kubernetes.storage.read", "kubernetes.storage.create", "kubernetes.storage.update", "kubernetes.storage.delete",
 		"kubernetes.network.read", "kubernetes.network.create", "kubernetes.network.update", "kubernetes.network.delete", "kubernetes.secret.read", "kubernetes.rbac.read", "kubernetes.rbac.update")
 	for _, item := range Catalog() {

@@ -44,7 +44,10 @@ type ResourceDefinition struct {
 
 var resourceDefinitions = []ResourceDefinition{
 	{"nodes", "Node", "v1", "nodes", false, "kubernetes.node", false, true, false},
-	{"namespaces", "Namespace", "v1", "config", false, "kubernetes.config", true, true, true},
+	{"namespaces", "Namespace", "v1", "namespaces", false, "kubernetes.config", true, true, true},
+	{"limitranges", "LimitRange", "v1", "namespaces", true, "kubernetes.namespace_policy", true, true, true},
+	{"resourcequotas", "ResourceQuota", "v1", "namespaces", true, "kubernetes.namespace_policy", true, true, true},
+	{"serviceaccounts", "ServiceAccount", "v1", "namespaces", true, "kubernetes.service_account", true, true, true},
 	{"deployments", "Deployment", "apps/v1", "workloads", true, "kubernetes.workload", true, true, true},
 	{"horizontalpodautoscalers", "HorizontalPodAutoscaler", "autoscaling/v2", "workloads", true, "kubernetes.workload", true, true, true},
 	{"statefulsets", "StatefulSet", "apps/v1", "workloads", true, "kubernetes.workload", true, true, true},
@@ -64,6 +67,19 @@ var resourceDefinitions = []ResourceDefinition{
 
 func ResourceDefinitions() []ResourceDefinition {
 	return append([]ResourceDefinition(nil), resourceDefinitions...)
+}
+
+func ResourceReadPermissions() []string {
+	permissions := []string{}
+	seen := map[string]bool{}
+	for _, def := range resourceDefinitions {
+		permission := def.Permission + ".read"
+		if !seen[permission] {
+			permissions = append(permissions, permission)
+			seen[permission] = true
+		}
+	}
+	return permissions
 }
 
 func ResourceType(resource string) (ResourceDefinition, bool) {
@@ -192,6 +208,10 @@ func resourceView(resource string, item *unstructured.Unstructured, reveal bool)
 		delete(annotations, "rke2.io/node-env")
 	}
 	copy.SetAnnotations(annotations)
+	if resource == "serviceaccounts" {
+		// 账户管理只展示镜像拉取凭据引用，不传递旧版服务账户令牌的 Secret 引用。
+		delete(copy.Object, "secrets")
+	}
 	if resource == "secrets" {
 		if data, present, _ := unstructured.NestedMap(copy.Object, "data"); present {
 			keys := []any{}
@@ -287,6 +307,9 @@ func validateResourceObject(def ResourceDefinition, namespace, name string, obje
 	if item.GetName() != name || len(validation.IsDNS1123Subdomain(name)) != 0 || item.GetNamespace() != namespace {
 		return ErrInvalidResource
 	}
+	if def.Resource == "namespaces" && len(validation.IsDNS1123Label(name)) != 0 {
+		return ErrInvalidResource
+	}
 	if item.GetKind() != def.Kind || item.GetAPIVersion() != def.APIVersion {
 		return ErrInvalidResource
 	}
@@ -302,6 +325,10 @@ func validateResourceObject(def ResourceDefinition, namespace, name string, obje
 	}
 	if def.Resource == "secrets" {
 		allowed["data"], allowed["stringData"], allowed["type"], allowed["immutable"] = true, true, true, true
+	}
+	if def.Resource == "serviceaccounts" {
+		delete(allowed, "spec")
+		allowed["automountServiceAccountToken"], allowed["imagePullSecrets"] = true, true
 	}
 	for key := range object {
 		if !allowed[key] {

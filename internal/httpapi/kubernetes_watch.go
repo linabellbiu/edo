@@ -63,11 +63,7 @@ func writeKubernetesInventoryHeaders(c *gin.Context) {
 // notifications from leaking through a shared informer to another subscriber.
 func kubernetesReadAccess(ctx context.Context, service *access.Service, user *model.User) (map[string]bool, error) {
 	allowed := map[string]bool{}
-	for _, resource := range kube.ResourceDefinitions() {
-		permission := resource.Permission + ".read"
-		if _, checked := allowed[permission]; checked {
-			continue
-		}
+	for _, permission := range kube.ResourceReadPermissions() {
 		value, err := service.HasPermission(ctx, user, permission)
 		if err != nil {
 			return nil, err

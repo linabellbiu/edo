@@ -135,6 +135,7 @@ window.WebSocket = class PreviewWebSocket extends EventTarget {
 const pinia = createPinia()
 const auth = useAuthStore(pinia)
 auth.user = { id: 'local-preview-user', username: 'preview', nickname: '本地预览', project_id: localStorage.getItem('edo.project') ?? '', is_superuser: false, permissions: ['cluster.read', 'cluster.create', 'cluster.execute', 'cluster.update', 'terminal.open', 'kubernetes.rbac.read', 'kubernetes.rbac.update', ...['node', 'workload', 'config', 'storage', 'network'].flatMap(resource => ['read', 'update'].map(action => `kubernetes.${resource}.${action}`))] }
+auth.user.permissions.push('kubernetes.config.create', 'kubernetes.config.delete', ...['namespace_policy', 'service_account'].flatMap(resource => ['read', 'create', 'update', 'delete'].map(action => `kubernetes.${resource}.${action}`)))
 if (workloadActions) auth.user.permissions.push('kubernetes.workload.execute', 'kubernetes.workload.delete', 'terminal.file.read',
   'application.read', 'application.update', 'workflow.create', 'workflow.read', 'deployment_plan.create', 'deployment_plan.read', 'build_plan.read', 'deployment.read')
 auth.loaded = true

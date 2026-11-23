@@ -32,7 +32,8 @@ function luminance(color){
 const contrast=(a,b)=>(Math.max(luminance(a),luminance(b))+.05)/(Math.min(luminance(a),luminance(b))+.05)
 const api=loadFrontend('../src/api/kubernetes.ts')
 const roles=loadFrontend('../src/utils/kubernetesRoles.ts')
-const presentation=loadFrontend('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api,'@/utils/kubernetesRoles':roles})
+const namespaceResources=loadFrontend('../src/utils/kubernetesNamespaceResources.ts')
+const presentation=loadFrontend('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api,'@/utils/kubernetesRoles':roles,'@/utils/kubernetesNamespaceResources':namespaceResources})
 const details=loadFrontend('../src/utils/kubernetesDetails.ts',{'@/api/kubernetes':api})
 const translate=key=>key
 function compiledComponent(name){
@@ -40,7 +41,7 @@ function compiledComponent(name){
  const output=ts.transpileModule(script,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText
  const modules={
   vue,'vue-i18n':{useI18n:()=>({t:translate,locale:vue.ref('zh-CN')})},'lucide-vue-next':icons,
-  '@/api/kubernetes':api,'@/utils/kubernetesPresentation':presentation,'@/utils/kubernetesDetails':details,
+  '@/api/kubernetes':api,'@/utils/kubernetesPresentation':presentation,'@/utils/kubernetesDetails':details,'@/utils/kubernetesNamespaceResources':namespaceResources,
   '@/utils/kubernetesRoles':roles,'@/utils/kubernetesNode':{nodeConditionState:()=> 'default'},
   '@/utils/time':{formatDateTime:value=>value??'—'},
   '@/directives/copyFullText':{vCopyFullText:{},selectAndCopyFullText:()=>false},
@@ -168,8 +169,8 @@ test('K8s 真实组件模板与 scoped 样式可编译，辅助文字不再低�
  }
 })
 
-test('配置、存储、网络和节点详情横向表都可聚焦、有名称且列头具有语义',()=>{
- for(const [name,count] of [['KubeResourceDetails',9],['KubeNodeInfo',2]]){
+test('命名空间策略、配置、存储、网络和节点的详情横向表都可聚焦、有名称且列头具有语义',()=>{
+ for(const [name,count] of [['KubeResourceDetails',11],['KubeNodeInfo',2]]){
   const template=components[name].descriptor.template.content
   const wrappers=[...template.matchAll(/<div\b[^>]*class="detail-table-scroll"[^>]*>/g)].map(match=>match[0])
   assert.equal(wrappers.length,count,name)
@@ -180,6 +181,21 @@ test('配置、存储、网络和节点详情横向表都可聚焦、有名称�
   assert.equal(declarations(components[name].styles,'.kube-detail-table').width,'100%')
   assert.equal(declarations(components[name].styles,'.detail-table-scroll')['overflow-x'],'auto')
  }
+})
+
+test('资源配额分别呈现配置、生效和实际用量，更新上限时保留适用范围', async () => {
+ const object = { kind: 'ResourceQuota', metadata: { uid: 'quota', name: 'budget', namespace: 'preview' },
+  spec: { hard: { pods: '8', 'requests.cpu': '2' }, scopes: ['NotBestEffort'] },
+  status: { hard: { pods: '5' }, used: { pods: '0' } } }
+ const cell = presentation.resourceCells(object, translate).quotaUsage
+ assert.equal(cell.text, 'pods 0 / 5 · requests.cpu — / —')
+ assert.match(cell.secondary, /pods 8/)
+ const html = await renderComponent('KubeResourceDetails', { object, type: api.kubeTypes.find(item => item.kind === 'ResourceQuota'), canFollow: () => false })
+ assert.match(html, /<th scope="row">pods<\/th><td>0<\/td><td>5<\/td><td>8<\/td>/)
+ assert.match(html, /<th scope="row">requests\.cpu<\/th><td>—<\/td><td>—<\/td><td>2<\/td>/)
+ const draft = namespaceResources.readNamespaceResourceDraft(object.kind, object)
+ draft.limits = [{ name: 'pods', amount: '12' }]
+ assert.deepEqual(namespaceResources.namespaceResourcePatch(draft, object), { spec: { hard: { pods: '12', 'requests.cpu': null } } })
 })
 
 test('网络详情真实SSR保留关联权限和安全文本，滚动区域不成为修改入口',async()=>{

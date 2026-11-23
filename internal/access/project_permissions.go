@@ -25,7 +25,9 @@ func workspacePermissions() []Permission {
 	for _, resource := range []struct{ code, name, actions string }{
 		{"node", "集群节点", "read create update delete"},
 		{"workload", "工作负载", "read create update delete execute"},
-		{"config", "集群配置", "read create update delete"},
+		{"config", "集群配置与命名空间", "read create update delete"},
+		{"namespace_policy", "限制范围与资源配额", "read create update delete"},
+		{"service_account", "服务账户", "read create update delete"},
 		{"storage", "集群存储", "read create update delete"},
 		{"network", "服务与网络", "read create update delete"},
 	} {

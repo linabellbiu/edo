@@ -7,12 +7,14 @@ import { podSpec, resourceURL, kubeTypes, listKubeResources, withFreshKubeResour
 import KubeKeyValues, { type KeyValue } from './KubeKeyValues.vue'
 import KubeConfigEntries from './KubeConfigEntries.vue'
 import KubeContainerFields from './KubeContainerFields.vue'
+import KubeNamespaceResourceFields from './KubeNamespaceResourceFields.vue'
 import ASelect from './KubeEditorSelect.vue'
 import {containerForm,buildContainer,volumeForm,buildVolumes,workloadSettings,buildWorkloadSettings,type ContainerForm,type VolumeForm} from '@/utils/kubernetesWorkloadForm'
 import { inspectConfigFile } from '@/utils/kubernetesConfig'
 import { ingressForm, ingressFormPatch, networkPolicyForm, networkPolicyFormPatch } from '@/utils/kubernetesNetworkForm'
+import { namespaceResourcePatch, readNamespaceResourceDraft, type NamespaceResourceDraft } from '@/utils/kubernetesNamespaceResources'
 
-const props = defineProps<{open:boolean; cluster:string; type:KubeType; namespace:string; object?:KubeObject; returnToDetails?:boolean}>()
+const props = defineProps<{open:boolean; cluster:string; type:KubeType; namespace:string; object?:KubeObject; returnToDetails?:boolean; clusterName?:string; namespaceOptions?:string[]}>()
 const emit = defineEmits<{'update:open':[value:boolean]; saved:[]}>()
 const { t } = useI18n({ useScope: 'global' })
 const saving = ref(false), confirming=ref(false),error = ref('')
@@ -20,6 +22,8 @@ const editorActive=computed(()=>props.open&&!saving.value&&!confirming.value)
 const editing = computed(() => Boolean(props.object))
 const workload = computed(() => ['Deployment','StatefulSet','DaemonSet','Job','CronJob','Pod'].includes(props.type.kind))
 const configuration = computed(() => ['ConfigMap','Secret'].includes(props.type.kind))
+const namespaceManagement = computed(() => props.type.group === 'namespaces')
+const namespaceDraft = ref<NamespaceResourceDraft>()
 const configTab = ref('basic'),editorTab=ref('basic'),initialDraft=ref(''),errorPanel=ref<HTMLElement>()
 const lastTemplateTab=ref('containers'),activeContainerGroup=ref<'containers'|'initContainers'>('containers'),activeContainerIndex=ref(0)
 const templateTabs=['containers','pod','scheduling','options']
@@ -29,7 +33,7 @@ watch(editorTab,value=>{if(templateTabs.includes(value))lastTemplateTab.value=va
 let validationTab='basic',discardDialog:ReturnType<typeof Modal.confirm>|undefined,saveDialog:ReturnType<typeof Modal.confirm>|undefined
 let editorRevision=0,submitRevision=0,submitController:AbortController|undefined,disposed=false
 const editorIdentity=()=>JSON.stringify([props.open,props.cluster,props.namespace,props.type.resource,props.object?.metadata.uid,props.object?.metadata.name,props.object?.metadata.namespace])
-const draft=()=>JSON.stringify({form,restartPolicy:restartPolicy.value,workloadOptions})
+const draft=()=>JSON.stringify({form,restartPolicy:restartPolicy.value,workloadOptions,namespaceDraft:namespaceDraft.value})
 const dirty=computed(()=>Boolean(initialDraft.value)&&draft()!==initialDraft.value)
 const storageClasses = ref<KubeObject[]>([]), classesLoading = ref(false), classesError = ref('')
 let classRevision = 0
@@ -65,6 +69,7 @@ watch(editorIdentity, () => {
   error.value = ''
   configTab.value = 'basic';lastTemplateTab.value='containers';editorTab.value=workload.value&&editing.value?'containers':'basic';selectContainer('containers',0)
   const object = props.object ?? {}, spec = object.spec ?? {}, rule = spec.rules?.[0], ingressPath = rule?.http?.paths?.[0]
+  namespaceDraft.value = namespaceManagement.value ? readNamespaceResourceDraft(props.type.kind, object) : undefined
   restartPolicy.value=podSpec(object).restartPolicy ?? 'Always'
   Object.assign(workloadOptions,workloadSettings(object,props.type.kind))
   Object.assign(form, {name:object.metadata?.name ?? '', namespace:object.metadata?.namespace ?? (props.namespace === '*' ? 'default' : props.namespace), labels:entries(object.metadata?.labels), annotations:entries(object.metadata?.annotations), data:props.type.kind === 'Secret' ? (object.keys ?? []).map((key:string)=>({key,value:''})) : entries(object.data), selector:entries(spec.selector?.matchLabels ?? spec.selector), peer:[], taints:(spec.taints ?? []).map((item:KubeObject)=>({...item})), containers:(podSpec(object).containers ?? [{name:'app',image:''}]).map(containerForm), initContainers:(podSpec(object).initContainers??[]).map(containerForm),volumes:(podSpec(object).volumes??[]).map(volumeForm),imagePullSecrets:(podSpec(object).imagePullSecrets??[]).map((s:KubeObject)=>s.name).join(','),strategy:spec.strategy?.type??'RollingUpdate',maxSurge:String(spec.strategy?.rollingUpdate?.maxSurge??'25%'),maxUnavailable:String(spec.strategy?.rollingUpdate?.maxUnavailable??'25%'),minReadySeconds:spec.minReadySeconds??0,revisionHistoryLimit:spec.revisionHistoryLimit??10,progressDeadlineSeconds:spec.progressDeadlineSeconds??600, replicas:spec.replicas ?? 1, serviceName:spec.serviceName ?? '', schedule:spec.schedule ?? '*/5 * * * *', suspend:spec.suspend ?? false, storage:spec.resources?.requests?.storage ?? '1Gi', storageClass:spec.storageClassName ?? '', accessModes:[...(spec.accessModes ?? ['ReadWriteOnce'])], volumeMode:spec.volumeMode ?? 'Filesystem', secretType:object.type ?? 'Opaque', serviceType:spec.type ?? 'ClusterIP', port:spec.ports?.[0]?.port ?? 80, targetPort:String(spec.ports?.[0]?.targetPort ?? 80), hostname:rule?.host ?? '', path:ingressPath?.path ?? '/', backend:ingressPath?.backend?.service?.name ?? '', ingressClass:spec.ingressClassName ?? '', policyPort:80, denyAll:false})
@@ -105,16 +110,23 @@ function mapping(rows: KeyValue[]) {
 function buildObject(): KubeObject {
   validationTab='basic'
   const original = props.object ?? {}, kind = props.type.kind
-  if (!form.name.trim() || !/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/.test(form.name)) throw new Error(t('k8s.invalidName'))
-  if (props.type.namespaced && !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(form.namespace)) throw new Error(t('k8s.invalidNamespace'))
+  const namespaceName = (name: string) => name.length <= 63 && /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)
+  if (kind === 'Namespace' ? !namespaceName(form.name) : !/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/.test(form.name)) {
+    throw new Error(t(kind === 'Namespace' ? 'k8s.invalidNamespace' : 'k8s.invalidName'))
+  }
+  if (props.type.namespaced && !namespaceName(form.namespace)) throw new Error(t('k8s.invalidNamespace'))
   const labels: Record<string,string|null> = mapping(form.labels)
   for (const key of Object.keys(original.metadata?.labels ?? {})) if (!Object.hasOwn(labels,key)) labels[key]=null
   const object: KubeObject = {apiVersion:props.type.apiVersion,kind,metadata:{name:form.name,namespace:props.type.namespaced ? form.namespace : '',labels}}
   if (editing.value) Object.assign(object.metadata,{uid:original.metadata.uid,resourceVersion:original.metadata.resourceVersion})
-  if (kind === 'ConfigMap') {
+  if (kind === 'ConfigMap' || namespaceManagement.value) {
     const annotations: Record<string,string|null> = mapping(form.annotations)
     for (const key of Object.keys(original.metadata?.annotations ?? {})) if (!Object.hasOwn(annotations,key)) annotations[key] = null
     object.metadata.annotations = annotations
+  }
+  if (namespaceDraft.value && (!editing.value || JSON.stringify(namespaceDraft.value) !== JSON.stringify(readNamespaceResourceDraft(kind, original)))) {
+    try { Object.assign(object, namespaceResourcePatch(namespaceDraft.value, props.object)) }
+    catch (err) { throw new Error(t(err instanceof Error ? err.message : 'k8s.invalidForm')) }
   }
   if (workload.value) {
     validationTab='containers'
@@ -224,7 +236,7 @@ async function save() {
   let object:KubeObject
   try { object=buildObject() } catch (err) { error.value=err instanceof Error ? err.message : t('k8s.invalidForm');editorTab.value=validationTab;void nextTick(()=>errorPanel.value?.focus());return }
   const url=resourceURL(props.cluster,props.type,form.name), namespace=props.type.namespaced?form.namespace:'', method=editing.value?'PATCH':'POST', context=submissionContext()
-  if (props.type.kind==='Node'||props.type.group==='network'||props.type.permission==='kubernetes.storage'||workload.value&&editing.value) {
+  if (namespaceManagement.value||props.type.kind==='Node'||props.type.group==='network'||props.type.permission==='kubernetes.storage'||workload.value&&editing.value) {
     confirming.value=true
     let active=true
     const matches=()=>context.revision===editorRevision&&context.identity===editorIdentity()
@@ -233,7 +245,8 @@ async function save() {
       active=false
       if(matches()&&saveDialog===dialog){submitRevision++;submitController?.abort();submitController=undefined;saving.value=false;confirming.value=false;saveDialog=undefined}
     }
-    const dialog=Modal.confirm({title:t('k8s.confirmTitle',{action:t('k8s.save'),name:form.name}),content:h('div',[h('p',`${props.type.kind} / ${namespace||t('k8s.clusterScope')}`),h('p',t(props.type.kind==='Node'?'k8s.editNodeHint':'k8s.confirmHint'))]),okText:t('k8s.save'),cancelText:t('k8s.cancel'),maskClosable:false,closable:false,keyboard:true,onCancel:closed,afterClose:closed,async onOk(){
+    const target = [props.clusterName, props.type.kind, namespace || t('k8s.clusterScope')].filter(Boolean).join(' / ')
+    const dialog=Modal.confirm({title:t('k8s.confirmTitle',{action:t('k8s.save'),name:form.name}),content:h('div',[h('p',target),h('p',t(props.type.kind==='Node'?'k8s.editNodeHint':'k8s.confirmHint'))]),okText:t('k8s.save'),cancelText:t('k8s.cancel'),maskClosable:false,closable:false,keyboard:true,onCancel:closed,afterClose:closed,async onOk(){
       if(!active||saving.value||!matches())return
       dialog.update?.({cancelButtonProps:{disabled:true},keyboard:false})
       try{return await submit(url,namespace,method,object,context)}
@@ -281,12 +294,15 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 <template>
   <!-- 复用 Modal 的焦点管理与关闭恢复；非空动效名保留首次开窗的焦点生命周期。 -->
   <a-modal :open="open" :title="`${t(editing?'k8s.edit':'k8s.create')}${t(`k8s.type_${type.resource}`)}`" :width="workload?'min(1120px,96vw)':'min(800px,94vw)'" wrap-class-name="kube-resource-editor-modal" :focus-trigger-after-close="true" transition-name="kube-resource-editor-slide" mask-transition-name="" :mask-closable="!saving&&!confirming" :closable="!saving&&!confirming" :keyboard="!saving&&!confirming" @cancel="closeEditor">
-    <div class="editor-context"><a-tag>{{ type.kind }}</a-tag><span>{{ type.namespaced?form.namespace:t('k8s.clusterScope') }}</span><strong v-if="editing">{{ object?.metadata.name }}</strong></div>
+    <div class="editor-context"><a-tag>{{ type.kind }}</a-tag><span v-if="clusterName" class="editor-target-name">{{ clusterName }}</span><span class="editor-target-name">{{ type.namespaced?(form.namespace||'—'):t('k8s.clusterScope') }}</span><strong v-if="editing">{{ object?.metadata.name }}</strong></div>
     <div v-if="error" ref="errorPanel" tabindex="-1" role="alert" class="editor-error"><a-alert type="error" show-icon :message="error" class="editor-alert" /></div>
     <a-form layout="vertical" :disabled="saving||confirming" @finish="save">
       <template v-if="!configuration&&!workload&&type.kind!=='Service'">
-        <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
+        <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="type.kind==='Namespace'?63:253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :list="namespaceManagement&&!editing?'kube-namespace-targets':undefined" :maxlength="63" /></a-form-item></div>
+        <datalist v-if="namespaceManagement&&type.namespaced&&!editing" id="kube-namespace-targets"><option v-for="name in namespaceOptions" :key="name" :value="name" /></datalist>
+        <KubeNamespaceResourceFields v-if="namespaceDraft" v-model="namespaceDraft" :disabled="saving||confirming" />
         <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" /></a-form-item>
+        <a-form-item v-if="namespaceManagement" :label="t('k8s.annotations')"><KubeKeyValues v-model="form.annotations" :disabled="saving||confirming" compact /></a-form-item>
       </template>
       <a-tabs v-if="workload" v-model:active-key="editorSection" :animated="false" class="workload-editor-tabs">
         <a-tab-pane key="basic" :tab="t('k8s.basic')" force-render>
@@ -438,7 +454,7 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 </style>
 
 <style scoped>
-.workload-editor-tabs > :deep(.ant-tabs-nav){position:sticky;top:-24px;z-index:2;background:var(--edo-surface);margin-bottom:20px}.workload-editor-tabs :deep(.ant-tabs-tab){font-size:13px;padding:12px 0}.workload-editor-tabs :deep(.ant-tabs-tabpane){min-height:320px}.editor-footer .changed{color:var(--kube-warning)}.editor-error:focus{outline:none}.editor-context{margin-bottom:12px}.workload-editor-tabs h4{font-size:13px;margin:20px 0 12px}.editor-hint{display:block;margin-top:6px;color:var(--edo-muted);font-size:12px;line-height:1.6}
+.workload-editor-tabs > :deep(.ant-tabs-nav){position:sticky;top:-24px;z-index:2;background:var(--edo-surface);margin-bottom:20px}.workload-editor-tabs :deep(.ant-tabs-tab){font-size:13px;padding:12px 0}.workload-editor-tabs :deep(.ant-tabs-tabpane){min-height:320px}.editor-footer .changed{color:var(--kube-warning)}.editor-error:focus{outline:none}.editor-context{margin-bottom:12px;flex-wrap:wrap}.editor-target-name{min-width:0;overflow-wrap:anywhere}.workload-editor-tabs h4{font-size:13px;margin:20px 0 12px}.editor-hint{display:block;margin-top:6px;color:var(--edo-muted);font-size:12px;line-height:1.6}
 .pod-template-tabs > :deep(.ant-tabs-nav){margin-top:-12px;margin-bottom:18px}.pod-template-tabs > :deep(.ant-tabs-nav) .ant-tabs-tab{padding:9px 0}.container-workspace{display:grid;grid-template-columns:220px minmax(0,1fr);gap:22px;align-items:start}.container-navigation{display:grid;gap:24px;padding-right:18px;border-right:1px solid var(--edo-border);min-width:0}.container-navigation-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;color:var(--edo-muted);font-size:12px}.container-navigation-item{display:flex;flex-direction:column;align-items:flex-start;width:100%;height:auto;padding:9px 10px;margin-bottom:8px;white-space:normal;text-align:left;border-color:var(--edo-border);background:var(--edo-surface)}.container-navigation-item span,.container-navigation-item small{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.container-navigation-item small{margin-top:3px;font-size:11px;color:var(--edo-muted)}.container-navigation-item.active{color:var(--edo-primary);border-color:var(--edo-primary);background:var(--edo-primary-soft)}.container-navigation-item:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.container-editor-panel{min-width:0}.container-editor-panel>.section-heading{padding-bottom:13px;border-bottom:1px solid var(--edo-border)}
 @media(max-width:760px){.container-workspace{grid-template-columns:1fr;gap:18px}.container-navigation{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding-right:0;padding-bottom:16px;border-right:0;border-bottom:1px solid var(--edo-border)}.editor-footer{flex-wrap:wrap}.editor-footer>span{flex-basis:100%;margin-right:0}.workload-editor-tabs > :deep(.ant-tabs-nav){top:-16px}}
 .container-count{padding:1px 7px;border-radius:10px;font-size:11px;background:var(--edo-surface-soft);color:var(--edo-muted)}

@@ -133,7 +133,7 @@ const reviewHosts = computed(() => {
 })
 const hasHostConfig = computed(() => plan.value?.hosts?.some(host=>Boolean(host.config)))
 const endpointPlaceholder = computed(() => k3sAutomaticEndpoint(hosts.value.find(host=>host.id===form.server_host_id),form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:'')||'https://192.168.1.10:6443')
-const canManageClusterResources = computed(() => auth.canAny(['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read']))
+const canManageClusterResources = computed(() => auth.canAny(['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.namespace_policy.read','kubernetes.service_account.read','kubernetes.storage.read','kubernetes.network.read']))
 const canExecute = computed(() => auth.canAny([props.action==='create'?'cluster.create':'kubernetes.node.create'])&&auth.canAny(['cluster.execute'])&&auth.canAny(['cluster.update'])&&auth.canAny(['cluster.read','deployment.read']))
 const canCheck = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!hostConfigOpen.value&&!loading.value&&!busy.value&&sourceInputValid.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id&&(!isK3d.value||k3dImageReady.value&&validK3dConfig(form.k3d))):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
 const canPreview = computed(() => canCheck.value&&(!isK3d.value||reportPassed(preflight.value)&&checkedInput.value===signature.value&&checkedContext.value===context.value))

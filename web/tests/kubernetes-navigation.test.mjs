@@ -19,7 +19,7 @@ const api = load('../src/api/kubernetes.ts')
 const infrastructure = nav.navigation.flatMap(section => section.branches ?? []).find(branch => branch.key === 'infrastructure')
 test('配置与存储包含配置中心和存储，三个存储资源不进入主侧栏', () => {
   const kube = infrastructure.items.find(item => item.path === '/kubernetes')
-  assert.deepEqual(kube.children.map(item => item.label), ['nav.hosts','k8s.clusters','k8s.overview','k8s.nodes','k8s.workloads','k8s.configStorage','k8s.network'])
+  assert.deepEqual(kube.children.map(item => item.label), ['nav.hosts','k8s.clusters','k8s.overview','k8s.nodes','k8s.namespace','k8s.workloads','k8s.configStorage','k8s.network'])
   assert.equal(nav.flatNavigation().some(item => item.path === '/kubernetes'), false)
   assert.equal(nav.findNavigationItem('/kubernetes').label, 'k8s.overview')
   assert.equal(nav.findNavigationItem('/kubernetes?view=unknown').label, 'k8s.overview')
@@ -39,11 +39,25 @@ test('配置与存储分别检查权限，无权访问的资源和空父菜单�
   assert.deepEqual(storageOnly[0].children.map(item => item.label), ['k8s.clusters','k8s.overview','k8s.configStorage'])
   assert.deepEqual(storageOnly[0].children[2].children.map(item=>item.label),['k8s.storage'])
   const configOnly=nav.visibleNavigationItems(infrastructure.items,permissions=>permissions.includes('kubernetes.config.read'))
-  assert.deepEqual(configOnly[0].children.map(item=>item.label),['k8s.clusters','k8s.overview','k8s.configStorage'])
-  assert.deepEqual(configOnly[0].children[2].children.map(item=>item.label),['k8s.config'])
+  assert.deepEqual(configOnly[0].children.map(item=>item.label),['k8s.clusters','k8s.overview','k8s.namespace','k8s.configStorage'])
+  assert.deepEqual(configOnly[0].children.find(item=>item.label==='k8s.configStorage').children.map(item=>item.label),['k8s.config'])
   assert.deepEqual(nav.visibleNavigationItems(infrastructure.items, () => false), [])
   const networkOnly = nav.visibleNavigationItems(infrastructure.items, permissions => permissions.includes('kubernetes.network.read'))
   assert.deepEqual(networkOnly[0].children.map(item => item.label), ['k8s.clusters','k8s.overview','k8s.network'])
+})
+
+test('命名空间管理有独立入口，策略或服务账户的查看权限不授予配置中心', () => {
+  for (const permission of ['kubernetes.namespace_policy.read', 'kubernetes.service_account.read']) {
+    const visible = nav.visibleNavigationItems(infrastructure.items, permissions => permissions.includes(permission))
+    assert.deepEqual(visible[0].children.map(item => item.label), ['k8s.clusters', 'k8s.overview', 'k8s.namespace'])
+  }
+  for (const resource of ['namespaces', 'limitranges', 'resourcequotas', 'serviceaccounts']) {
+    const path = `/kubernetes?view=namespaces&resource=${resource}&cluster=test`
+    assert.equal(nav.findNavigationItem(path).label, 'k8s.namespace')
+    assert.deepEqual(nav.navigationTrail(path).map(item => item.label), ['nav.platform', 'nav.infrastructure', 'nav.containers', 'k8s.namespace'])
+  }
+  assert.equal(nav.findNavigationItem('/kubernetes?view=config&resource=namespaces&cluster=test').label, 'k8s.namespace')
+  assert.equal(nav.findNavigationItem('/kubernetes?view=config&resource=secrets').label, 'k8s.config')
 })
 
 test('集群目录有独立菜单和面包屑，主机详情仍选中主机入口', () => {
@@ -158,7 +172,7 @@ test('存储列表跟随导航和浏览历史，刷新恢复准确类型，无�
   route.query.resource=['storageclasses','persistentvolumes'];await vue.nextTick()
   assert.equal(state.activeType.value.resource,'persistentvolumeclaims')
   route.query.view='config';await vue.nextTick()
-  assert.deepEqual(state.types.value.map(item=>item.resource),['configmaps','secrets','namespaces'])
+  assert.deepEqual(state.types.value.map(item=>item.resource),['configmaps','secrets'])
   state.selectResource('storageclasses')
   assert.deepEqual(pushes[0].query,{view:'storage',resource:'storageclasses'})
   scope.stop()
