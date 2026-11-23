@@ -1065,6 +1065,38 @@ func TestComposeDeploymentUsesLowerPlanAndTargetTimeout(t *testing.T) {
 	}
 }
 
+func TestRenewTargetLockKeepsLockAliveUntilStopped(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { _ = redisClient.Close() })
+	service := &Service{
+		locks: redislock.New(redisClient), lockKeyPrefix: "edo:test:renew",
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	lock, err := service.locks.Obtain(context.Background(), "edo:test:renew:target-renew", 2*time.Second, nil)
+	if err != nil {
+		t.Fatalf("获取测试锁失败: %v", err)
+	}
+	stop := service.renewTargetLock(context.Background(), lock, "deployment-renew", "target-renew")
+	// 停止函数必须同步返回，且之后不能再有续期动作。
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("停止续期协程超时，存在死锁风险")
+	}
+	if err := lock.Release(context.Background()); err != nil {
+		t.Fatalf("释放测试锁失败: %v", err)
+	}
+}
+
+func TestRenewTargetLockToleratesMissingLock(t *testing.T) {
+	service := &Service{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	stop := service.renewTargetLock(context.Background(), nil, "deployment-none", "target-none")
+	stop()
+}
+
 func TestSSHDeploymentRejectsTamperedDigestAndRelativeWorkingDirectory(t *testing.T) {
 	service, db, _ := newDeploymentTestService(t)
 	environment, host := createSSHDeploymentResources(t, db)

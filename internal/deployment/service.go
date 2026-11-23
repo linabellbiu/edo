@@ -33,6 +33,10 @@ import (
 	"edo/internal/task"
 )
 
+// targetLockRenewTTL 是发布执行期间目标锁的有效期。续期协程每 TTL/3 延长一次，
+// 因此只要进程存活，锁不会因为执行时间超过首次估算而过期。
+const targetLockRenewTTL = 60 * time.Second
+
 var (
 	ErrInvalidTarget                = errors.New("部署配置无效")
 	ErrEnvironmentTargetUnavailable = errors.New("当前环境没有可用的执行主机")
@@ -964,7 +968,10 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		return s.markFailed(ctx, deploymentID, "deployment_lock_failed", "等待部署运行环境可用失败，请稍后重试", internalErr, "", nil)
 	}
 	if lock != nil {
+		// 锁 TTL 只覆盖首次估算；文件传输与命令执行可能合计超过它，因此在执行期间周期续期。
+		stopRenewal := s.renewTargetLock(ctx, lock, deploymentID, record.TargetID)
 		defer func() {
+			stopRenewal()
 			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
 			if err := lock.Release(releaseCtx); err != nil && !errors.Is(err, redislock.ErrLockNotHeld) {
@@ -1403,6 +1410,45 @@ func kubernetesFailureDetails(err error) (string, string) {
 		return "kubernetes_deployment_canceled", "Kubernetes 部署已取消"
 	default:
 		return "kubernetes_deployment_failed", "Kubernetes 部署失败：集群未完成工作负载更新，请检查工作负载事件和系统日志"
+	}
+}
+
+// renewTargetLock 在发布执行期间周期性延长目标锁的 TTL，返回的函数会同步等待续期协程结束，
+// 保证锁释放之后不会再有续期请求把已经交给其他发布的锁延长。续期失败只记录告警，
+// 不取消正在进行的远程操作：中途取消会留下比锁丢失更难恢复的半完成状态，需要运维根据日志确认目标状态。
+func (s *Service) renewTargetLock(ctx context.Context, lock *redislock.Lock, deploymentID, targetID string) func() {
+	if lock == nil {
+		return func() {}
+	}
+	ttl := targetLockRenewTTL
+	interval := ttl / 3
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				renewCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				err := lock.Refresh(renewCtx, ttl, nil)
+				cancel()
+				if err != nil {
+					s.logger.Error("续期发布环境并发锁失败，同一环境的其他发布可能并发执行",
+						"operation", "deployment_lock_refresh", "deployment_id", deploymentID, "target_id", targetID, "err", err)
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
 	}
 }
 
