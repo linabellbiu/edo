@@ -40,6 +40,7 @@
 .kube-workspace .kube-compact-table .resource-identity { min-width: 135px; max-width: 230px; gap: 2px; }
 .kube-workspace .kube-compact-table .resource-label-summary { max-width: 100%; font-size: 12px; line-height: 16px; color: var(--kube-muted); }
 .kube-workspace .kube-compact-table .kube-cell { min-width: 0; }
+.kube-workspace .kube-compact-table .kube-cell.kube-secret-reference-cell { max-width: 144px; }
 .kube-workspace .kube-compact-table .status-cell .ant-tag {
   display: inline-flex;
   align-items: center;

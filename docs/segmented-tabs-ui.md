@@ -54,6 +54,8 @@ cd web && npm run dev   # 打开 /tests/fixtures/segmented-tabs.html 目视校�
 
 操作按钮复用 `web/src/styles/buttons.css` 的语义配色。颜色随操作用途选择，文字、图标、尺寸、禁用和确认流程继续沿用共用组件。
 
+图标和文字作为一组水平、垂直居中，图文间距为 6px。资源列表的普通行按钮高 28px，左右内边距各 10px，按钮之间间距为 6px。「更多」使用 30 × 28px 的纯图标按钮。行按钮尺寸由 `web/src/styles/resource-list.css` 统一维护。
+
 | 用途 | 配色 | 用法 |
 | --- | --- | --- |
 | 保存、提交等主操作 | 中蓝实底、白字 | `type="primary"` |

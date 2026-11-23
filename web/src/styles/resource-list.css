@@ -13,7 +13,20 @@
 .resource-filter-bar > .ant-input-affix-wrapper { max-width:320px; }
 .resource-filter-bar > .ant-select { min-width:180px; }
 .resource-row-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; white-space:nowrap; }
-.resource-row-actions > .ant-btn,.resource-row-actions > .ant-dropdown-trigger { display:inline-flex; height:28px; align-items:center; justify-content:center; gap:4px; padding:0 10px; border:1px solid var(--edo-border); border-radius:4px; color:var(--edo-text); background:var(--edo-surface); box-shadow:0 2px 2px rgb(31 35 41 / 6%); font-size:12px; }
+.resource-row-actions > :is(.ant-btn, .ant-dropdown-trigger) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding-block: 0;
+  padding-inline: 10px;
+  border: 1px solid var(--edo-border);
+  border-radius: 4px;
+  color: var(--edo-text);
+  background: var(--edo-surface);
+  box-shadow: 0 2px 2px rgb(31 35 41 / 6%);
+  font-size: 12px;
+}
 .resource-row-actions > .ant-btn:hover { color:var(--edo-primary); border-color:var(--edo-primary); }
 .resource-row-actions > .ant-btn-dangerous { color:var(--edo-danger,#ed5965); }
 /* 固定宽度：任何额外的图标或加载元素都裁剪在按钮内，不能撑破操作列。 */

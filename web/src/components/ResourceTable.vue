@@ -125,6 +125,5 @@ tbody tr.active td { background: var(--edo-primary-soft); }
 .table-actions,.table-action-heading { position:sticky; right:0; width:1%; white-space:nowrap; background:var(--edo-surface); }
 .has-right-overflow .table-actions,.has-right-overflow .table-action-heading { box-shadow:-5px 0 7px -5px rgb(31 35 41 / 16%); }
 .resource-pagination { display:flex; justify-content:flex-end; margin:14px 16px; }
-.table-actions :deep(.ant-btn) { padding-inline: 5px; }
 .column-sort{display:flex;align-items:center;gap:8px;padding:0;border:0;background:none;color:inherit;font:inherit;cursor:pointer}.column-sort span{color:var(--edo-muted)}.column-sort:focus-visible{outline:2px solid var(--edo-primary);outline-offset:4px}.table-empty-cell{height:220px!important;text-align:center}
 </style>

@@ -118,7 +118,7 @@ export function resourceColumns(type:KubeType,t:Translate) {
     namespaces:[status,column('labels','labels','360px')],
     limitranges:[column('limitRules','limitRules','360px')],
     resourcequotas:[column('quotaUsage','quotaUsage','360px')],
-    serviceaccounts:[column('automount','serviceAccountAutomount','185px'),column('pullSecrets','imagePullSecretReferences','250px')],
+    serviceaccounts:[column('automount','serviceAccountAutomount','185px'),column('pullSecrets','imagePullSecretReferences','1%')],
     persistentvolumeclaims:[status,column('capacity','requestAndCapacity','150px'),column('accessModes','accessMode','170px'),column('storageClass','storageClass','190px'),column('volume','boundVolume','210px')],
     persistentvolumes:[status,column('capacity','capacity','125px'),column('accessModes','accessMode','170px'),column('storageClass','storageClass','170px'),column('claim','boundClaim','210px'),column('reclaim','reclaimPolicy','130px')],
     storageclasses:[column('defaultClass','defaultStorageClass','120px'),column('provisioner','provisioner','250px'),column('binding','bindingMode','205px'),column('reclaim','reclaimPolicy','125px'),column('expansion','volumeExpansion','120px')],
