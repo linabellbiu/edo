@@ -1129,16 +1129,17 @@ test('两个父页面的安装完成回调在等待刷新后核对用户、实�
       if(change==='project')ctx.storage.project='project-b'
       if(change==='user')ctx.auth.user.id='other-user'
       if(change==='permission')ctx.auth.user.permissions=[]
-      if(change==='cluster'){if(view==='HostView')ctx.route.query.cluster='user-picked';else ctx.state.cluster.value='user-picked'}
+      if(change==='cluster'){if(view==='HostView')ctx.route.query.cluster='user-picked';else ctx.state.selectedClusters.value=['user-picked']}
       if(view==='KubernetesView'&&change==='user'){
         await settle()
         assert.equal(ctx.reads[0].signal.aborted,true)
         assert.ok(ctx.reads.some(read=>read.actor==='other-user'&&read.path==='/kubernetes/clusters'))
         ctx.replacement.resolve({data:{clusters:[{id:'other-user-cluster',is_active:true,default_namespace:'default'}]}})
       }
-      ctx.pending.resolve({data:{clusters:[{id:'new-cluster',is_active:true,default_namespace:'default'}]}});await request;await settle()
+      ctx.pending.resolve({data:{clusters:[{id:'new-cluster',is_active:true,default_namespace:'default'},{id:'user-picked',is_active:true,default_namespace:'default'}]}});await request;await settle()
       if(view==='HostView')assert.equal(ctx.replacements.length,0,`${view}:${change}`)
       else if(change==='user')assert.equal(ctx.state.cluster.value,'other-user-cluster')
+      else if(change==='cluster')assert.deepEqual(ctx.state.selectedClusters.value,['user-picked'])
       else assert.notEqual(ctx.state.cluster.value,'new-cluster',`${view}:${change}`)
     }finally{ctx.stop()}
   }

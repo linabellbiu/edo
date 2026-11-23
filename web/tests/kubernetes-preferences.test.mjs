@@ -159,6 +159,30 @@ test('用户与项目隔离；同页切换身份不把旧范围写入新身份�
   assert.deepEqual(h.helpers.readKubeWorkspacePreferences('new-reader', 'project-b'), {})
 })
 
+test('后台核验返回同一身份的新资料对象时保留总览、勾选和现有 Watch', async t => {
+  const h = await harness({ saved: multiSaved(), path: '/kubernetes?view=overview' }); t.after(h.stop)
+  const overview = h.state.overview.value
+  const directories = h.state.namespaceCatalogs.value
+  const url = h.route.fullPath
+  const readCount = h.reads.length
+  const sessions = [...h.sessions]
+  assert.ok(overview)
+  assert.equal(sessions.length, 2)
+
+  h.auth.user = { ...h.auth.user, nickname: '新显示名' }
+  assert.equal(h.state.overview.value, overview)
+  assert.deepEqual(h.state.selectedClusters.value, ['a', 'b'])
+  await settle()
+
+  assert.equal(h.state.overview.value, overview)
+  assert.equal(h.state.namespaceCatalogs.value, directories)
+  assert.deepEqual(h.state.scopeSelections.value, { a: ['prod'], b: ['test'] })
+  assert.equal(h.route.fullPath, url)
+  assert.equal(h.reads.length, readCount)
+  assert.deepEqual(h.sessions, sessions)
+  assert.ok(sessions.every(session => !session.signal.aborted))
+})
+
 test('删除、停用或不在当前可见目录的保存集群不自动成为执行范围', async t => {
   const saved = storage(), helpers = loadFrontend('../src/utils/kubernetesWorkspace.ts', {}, { localStorage: saved })
   helpers.writeKubeWorkspacePreferences('reader', 'project-a', { cluster: 'b', scopes: { b: ['prod'] } })

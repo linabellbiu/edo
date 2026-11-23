@@ -978,7 +978,8 @@ async function resetWorkspacePreferences(){
   await router.replace({query:{...withoutKubeListQuery(route.query),cluster:undefined,namespace:undefined,scope:undefined}})
   if(mounted&&owner===preferenceOwner&&auth.user?.id&&auth.user.project_id)void loadClusters()
 }
-watch(()=>[auth.user?.id,auth.user?.project_id],()=>{void resetWorkspacePreferences()},{flush:'sync'})
+// 后台权限校准会替换用户资料对象，只有用户或项目切换才重置工作区。
+watch([()=>auth.user?.id,()=>auth.user?.project_id],()=>{void resetWorkspacePreferences()},{flush:'sync'})
 function watchProjectChanged(event:StorageEvent){if(event.key==='edo.project')void resetWorkspacePreferences()}
 onMounted(()=>{watchMounted=true;void loadClusters();startKubeWatch();timer=setInterval(syncVisible,5000);document.addEventListener('visibilitychange',workspaceVisibility);window.addEventListener('focus',syncVisible);window.addEventListener('storage',watchProjectChanged)})
 onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty.clear();cancelPendingEdit();cancelListPersist();clusterRevision++;clusterController?.abort();resetNamespaceRead();revision++;detailRevision++;overviewRevision++;controller?.abort();detailController?.abort();overviewController?.abort();document.removeEventListener('visibilitychange',workspaceVisibility);window.removeEventListener('focus',syncVisible);window.removeEventListener('storage',watchProjectChanged);if(timer)clearInterval(timer);hideSecret();stream.value.open=false})

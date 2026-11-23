@@ -168,7 +168,7 @@ test('集群页面关闭详情或切换记录后丢弃旧响应，不重新打�
   '@/api/client':{__esModule:true,default:{get:()=>new Promise(resolve=>pending.push(resolve))}},
  }).default
  const state=component.setup({}, {expose(){}})
- state.cluster.value='test';state.clusters.value=[{id:'test',is_active:true}]
+ state.clusters.value=[{id:'test',is_active:true}];state.selectedClusters.value=['test']
  const object=name=>({kind:'Node',metadata:{name,uid:name,resourceVersion:'1'}})
  const first=state.openDetails(object('a'));state.closeDetails();pending.shift()({data:{object:object('a')}});await first
  assert.equal(state.detailOpen.value,false);assert.equal(state.detail.value,undefined)
@@ -188,11 +188,11 @@ test('后台总览同步不闪加载，不重复请求；首屏仍有加载反�
   '@/api/client':{__esModule:true,default:{get:()=>new Promise(resolve=>pending.push(resolve))}},
  }).default
  const state=component.setup({}, {expose(){}})
- state.cluster.value='a';state.clusters.value=[{id:'a',is_active:true}];state.overview.value={counts:{}}
+ state.clusters.value=[{id:'a',is_active:true}];state.selectedClusters.value=['a'];state.scopeSelections.value={a:['*']};state.overview.value={counts:{}}
  const sync=state.refreshOverview(true);assert.equal(state.overviewLoading.value,false)
  await state.refreshOverview(true);assert.equal(pending.length,1)
  pending.shift()({data:{counts:{pods:{count:2,state:'ok'}}}});await sync;assert.equal(state.overview.value.counts.pods.count,2)
- state.overview.value=null;const initial=state.refreshOverview(true);assert.equal(state.overviewLoading.value,true)
+ state.overview.value=null;const initial=state.refreshOverview();assert.equal(state.overviewLoading.value,true)
  pending.shift()({data:{counts:{}}});await initial;assert.equal(state.overviewLoading.value,false)
  state.overview.value=null;state.overviewSnapshotPending.value=true
  const waiting=state.refreshOverview(true);assert.equal(state.overviewLoading.value,false)
@@ -310,12 +310,12 @@ test('跨类型详情使用自己的资源路径和权限，返回时保留原�
   '@/api/client':{__esModule:true,default:{get:async(path,options)=>{paths.push(path);if(path.endsWith('/events'))return {data:{items:[]}};const name=path.split('/').at(-1);return {data:{object:{kind:path.includes('/services/')?'Service':'Ingress',metadata:{name,namespace:options.params.namespace,uid:name}}}}}}},
  }).default
  const state=component.setup({}, {expose(){}})
- state.cluster.value='cluster-a';state.clusters.value=[{id:'cluster-a',is_active:true}];state.query.value='keep-filter'
+ state.clusters.value=[{id:'cluster-a',is_active:true}];state.selectedClusters.value=['cluster-a'];state.query.value='keep-filter'
  const ingress={kind:'Ingress',metadata:{name:'public',namespace:'team',uid:'public'}}
  await state.openDetails(ingress)
  await state.followReference({resource:'services',name:'api',namespace:'team'})
- assert.equal(state.detailType.value.resource,'services');assert.equal(state.activeType.value.resource,'ingresses');assert.equal(state.query.value,'keep-filter');assert.equal(state.detailOrigin.value,'public')
- assert.equal(state.detailHistory.value.length,1);assert.ok(paths.some(path=>path.endsWith('/resources/services/api')))
+ assert.equal(state.detailType.value.resource,'services');assert.equal(state.activeType.value.resource,'ingresses');assert.equal(state.query.value,'keep-filter');assert.deepEqual(JSON.parse(state.detailOrigin.value),['cluster-a','public'])
+ assert.equal(state.detailHistory.value.length,1);assert.ok(paths.includes('/kubernetes/clusters/cluster-a/resources/services/api'))
  const before=paths.length;await state.followReference({resource:'secrets',name:'token',namespace:'team'});assert.equal(paths.length,before)
  state.backDetail();await new Promise(resolve=>setImmediate(resolve));assert.equal(state.detail.value.metadata.name,'public');assert.equal(state.detailHistory.value.length,0)
  state.closeDetails();assert.equal(state.detailHistory.value.length,0);assert.equal(state.detailOrigin.value,'');assert.equal(state.query.value,'keep-filter')
