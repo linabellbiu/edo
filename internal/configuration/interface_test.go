@@ -33,7 +33,7 @@ func TestGitHubLogoDefaultsVisibleAndPersistsGloballyWithRevision(t *testing.T) 
 		t.Fatal(visible, err)
 	}
 	var item model.Configuration
-	if err = s.db.Where("namespace = ? AND key = ?", systemNamespace, githubLogoSettingKey).First(&item).Error; err != nil {
+	if err = s.db.Where(model.Configuration{Namespace: systemNamespace, Key: githubLogoSettingKey}).First(&item).Error; err != nil {
 		t.Fatal(err)
 	}
 	revisions, err := s.Revisions(context.Background(), item.ID, 10)
@@ -61,7 +61,7 @@ func TestDeliveryControlsMenuDefaultsHiddenAndPersistsGloballyWithRevision(t *te
 		t.Fatal("设置未持久化或不属于全站", saved, err)
 	}
 	var item model.Configuration
-	if err = s.db.Where("namespace = ? AND key = ?", systemNamespace, deliveryControlsMenuSettingKey).First(&item).Error; err != nil {
+	if err = s.db.Where(model.Configuration{Namespace: systemNamespace, Key: deliveryControlsMenuSettingKey}).First(&item).Error; err != nil {
 		t.Fatal(err)
 	}
 	revisions, err := s.Revisions(context.Background(), item.ID, 10)

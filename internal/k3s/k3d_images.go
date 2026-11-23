@@ -129,7 +129,7 @@ func (s *Service) K3dImages(ctx context.Context, actorID, source string) (*K3dIm
 		slog.WarnContext(ctx, "k3d 镜像来源无效", "operation", "k3d_images_source", "err", err)
 		return nil, err
 	}
-	cache := &s.k3dImages
+	cache := s.k3dImages
 	cache.init()
 	request := cache.requests.DoChan(source, func() (any, error) {
 		cache.mu.Lock()

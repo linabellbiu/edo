@@ -43,17 +43,19 @@ test('系统监控用失败趋势卡替换任务失败数字，并可跳到对�
   assert.match(card, /openReleasePlanFailures/)
 })
 test('交付失败按自然日分桶，今天为最后一桶，超出范围的记录不统计', () => {
-  const now = Date.parse('2026-11-20T09:30:00+08:00')
+  const localTime = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute)
+  const now = localTime(20, 9, 30).getTime()
   const runs = [
-    { id: 'today', created_at: '2026-11-20T08:00:00+08:00' },
-    { id: 'yesterday', created_at: '2026-11-19T23:00:00+08:00' },
-    { id: 'plan', created_at: '2026-11-18T12:00:00+08:00', release_plan_execution_id: 'exec-1' },
-    { id: 'plan-dup', created_at: '2026-11-18T12:30:00+08:00', release_plan_execution_id: 'exec-1' },
-    { id: 'edge', created_at: '2026-11-14T00:00:00+08:00' },
-    { id: 'old', created_at: '2026-11-10T12:00:00+08:00' },
+    { id: 'today', created_at: localTime(20, 8).toISOString() },
+    { id: 'yesterday', created_at: localTime(19, 23).toISOString() },
+    { id: 'plan', created_at: localTime(18, 12).toISOString(), release_plan_execution_id: 'exec-1' },
+    { id: 'plan-dup', created_at: localTime(18, 12, 30).toISOString(), release_plan_execution_id: 'exec-1' },
+    { id: 'edge', created_at: localTime(14, 0).toISOString() },
+    { id: 'old', created_at: localTime(13, 23, 59).toISOString() },
   ]
   const summary = buildDailyFailureBuckets(runs, 7, now)
   assert.equal(summary.buckets.length, 7)
+  assert.equal(summary.buckets[0].start, localTime(14, 0).getTime())
   assert.equal(summary.buckets.at(0).label.length > 0, true)
   assert.equal(summary.pipelineTotal, 3)
   assert.equal(summary.releasePlanTotal, 1)

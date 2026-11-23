@@ -77,8 +77,9 @@ type clusterService interface {
 }
 
 type Service struct {
-	localK3d        *localK3dRuntime
-	k3dImages       k3dImageCatalogCache
+	localK3d *localK3dRuntime
+	// 事务内复制服务时共享镜像目录缓存及其同步状态。
+	k3dImages       *k3dImageCatalogCache
 	db              *gorm.DB
 	secrets         *secret.Manager
 	kubernetes      clusterService
@@ -90,7 +91,17 @@ type Service struct {
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, kubernetes *kube.Service, authorizer Authorizer, cfg config.Runtime) *Service {
-	return &Service{localK3d: newLocalK3dRuntime(dockerengine.NewService(db, secrets, cfg)), db: db, secrets: secrets, kubernetes: kubernetes, authorizer: authorizer, transport: &sshTransport{timeout: cfg.ConnectTimeout}, owner: uuid.NewString(), concurrency: 1}
+	return &Service{
+		localK3d:    newLocalK3dRuntime(dockerengine.NewService(db, secrets, cfg)),
+		k3dImages:   &k3dImageCatalogCache{},
+		db:          db,
+		secrets:     secrets,
+		kubernetes:  kubernetes,
+		authorizer:  authorizer,
+		transport:   &sshTransport{timeout: cfg.ConnectTimeout},
+		owner:       uuid.NewString(),
+		concurrency: 1,
+	}
 }
 
 // WithConcurrency 复用后台任务并发配置；主机唯一锁继续限制同一目标。
