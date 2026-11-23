@@ -15,6 +15,7 @@ export interface User {
   department_id?: string
   department_name?: string
   is_superuser: boolean
+  must_change_password?: boolean
   last_login_at?: string
   permissions: string[]
 }

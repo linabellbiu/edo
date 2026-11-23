@@ -1,7 +1,7 @@
 import axios from 'axios'
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
-import { openLiveSocket, type LiveSocketState } from '@/utils/liveSocket'
+import { openLiveSocket } from '@/utils/liveSocket'
 
 import {
   default as client,
@@ -28,7 +28,6 @@ export const useAuthStore = defineStore('auth', () => {
   let refresh: { subject: User; project: string; revision: number; cancelled: boolean; promise: Promise<void> } | undefined
   let schedulePermissionSync: (() => void) | undefined
   let stopSync: (() => void) | undefined
-  let socketState: LiveSocketState | undefined
   const selectedProject = () => localStorage.getItem('edo.project') ?? ''
 
   function clearAuditPositions() {
@@ -42,12 +41,12 @@ export const useAuthStore = defineStore('auth', () => {
   function applyProfile(profile: User) {
     if (user.value && profileContext(user.value) !== profileContext(profile)) clearAuditPositions()
     user.value = profile
-    authorizationState.value = socketState && socketState !== 'connected' ? 'unavailable' : 'ready'
+    authorizationState.value = 'ready'
   }
 
-  function suspendAuthorization(state: 'checking' | 'unavailable' = 'checking') {
+  function suspendAuthorization() {
     permissionRevision++
-    authorizationState.value = state
+    authorizationState.value = 'checking'
   }
 
   function invalidateSession() {
@@ -188,7 +187,7 @@ export const useAuthStore = defineStore('auth', () => {
               user.value = { ...subject, permissions: [], is_superuser: false }
               window.dispatchEvent(new Event('edo:projects-changed'))
             }
-            authorizationState.value = socketState && socketState !== 'connected' ? 'unavailable' : 'ready'
+            authorizationState.value = 'ready'
           } else {
             authorizationState.value = 'unavailable'
           }
@@ -239,15 +238,14 @@ export const useAuthStore = defineStore('auth', () => {
     const stopIdentity = watch([() => user.value?.id ?? '', identityRevision], ([id]) => {
       const epoch = ++socketEpoch
       closeSocket?.()
-      closeSocket = undefined
-      socketState = undefined
       if (disposed || !id) return
       closeSocket = openLiveSocket({
         path: '/api/v1/auth/events/ws', protocol: 'edo-auth-v1',
         onState(state) {
           if (disposed || epoch !== socketEpoch) return
           socketState = state
-          if (state === 'connecting' || state === 'disconnected' || state === 'stopped') suspendAuthorization(state === 'connecting' ? 'checking' : 'unavailable')
+          // 实时通道只负责推送撤权事件，断线不代表权限失效；权威判定仍是服务端逐请求鉴权。
+          // 因此断线时保留最近一次 REST 核验得到的权限快照，不让一次网络抖动把整站判为不可用。
           if (state === 'connected') sync()
         },
         onEvent(data) {
@@ -274,7 +272,6 @@ export const useAuthStore = defineStore('auth', () => {
       socketEpoch++
       stopIdentity()
       closeSocket?.()
-      socketState = undefined
       if (stopSync === stop) stopSync = undefined
       if (schedulePermissionSync === schedule) schedulePermissionSync = undefined
       if (refresh) { refresh.cancelled = true; refresh = undefined }
@@ -297,7 +294,6 @@ export const useAuthStore = defineStore('auth', () => {
 
   function canAny(required: string[]) {
     if (required.length === 0) return true
-    if (!authorizationReady.value) return false
     if (!user.value || (user.value.project_id ?? '') !== selectedProject()) return false
     if (user.value?.is_superuser) return true
     return required.some((permission) => permissions.value.has(permission))

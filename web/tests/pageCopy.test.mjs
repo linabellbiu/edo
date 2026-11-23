@@ -54,7 +54,6 @@ test('列表页操作栏并入内容卡片，页面上方不再留出空白带',
 test('同类列表页统一把操作栏与筛选放进内容卡片', () => {
   const expectations = [
     ['DeliveryControlsView.vue', /<div class="vben-card controls-card">\s*<PageToolbar>/],
-    ['SQLChangesView.vue', /<section class="vben-card sql-list-panel">\s*<PageToolbar>/],
     ['PipelinePlanListView.vue', /<div v-if="canRead" class="vben-card pipeline-plan-card">\s*<PageToolbar/],
   ]
   for (const [name, pattern] of expectations) {

@@ -65,6 +65,10 @@ router.beforeEach(async (to) => {
     const reason = auth.loadFailed ? '&reason=unavailable' : ''
     return `/login?redirect=${encodeURIComponent(to.fullPath)}${reason}`
   }
+  // 初始管理员口令未修改时，只允许停留在设置页完成改密（设置页默认区块即为修改密码）。
+  if (auth.user.must_change_password && to.path !== '/settings') {
+    return { path: '/settings', replace: true }
+  }
   if (to.path === '/kubernetes' && to.query.view === 'config' && to.query.resource === 'namespaces') {
     return { path: to.path, query: { ...to.query, view: 'namespaces' }, hash: to.hash, replace: true }
   }
