@@ -14,7 +14,8 @@ x-edo-environment: &edo-environment
   EDO_LOG_MAX_FILE_SIZE_MB: ${EDO_LOG_MAX_FILE_SIZE_MB:-100}
   EDO_LOG_COMPRESS_AFTER_DAYS: ${EDO_LOG_COMPRESS_AFTER_DAYS:-3}
 
-  # 默认 HTTP；配置 HTTPS 反向代理后在 .env 中改为 true。
+  # 默认 HTTP，Cookie 不加 Secure 标记以保证开箱可登录；配置 HTTPS 反向代理后，
+  # 务必在 .env 中把 EDO_AUTH_COOKIE_SECURE 改为 true，否则登录会话可能在明文传输中被截获。
   EDO_AUTH_COOKIE_SECURE: ${EDO_AUTH_COOKIE_SECURE:-false}
 
   # 宿主机路径、127.0.0.1 与容器内地址含义不同，使用根 .env 的 Compose 专用值映射实际运行变量。
