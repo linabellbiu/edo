@@ -7,6 +7,42 @@ export type LimitAmounts = Partial<Record<LimitField, string>>
 export interface LimitResource extends LimitAmounts { name: string }
 export interface LimitRule { type: string; resources: LimitResource[] }
 export interface QuotaLimit { name: string; amount: string }
+export const quotaResourcePresets = {
+  'requests.cpu': 'quotaCpuRequests',
+  'limits.cpu': 'quotaCpuLimits',
+  'requests.memory': 'quotaMemoryRequests',
+  'limits.memory': 'quotaMemoryLimits',
+  'requests.ephemeral-storage': 'quotaEphemeralStorageRequests',
+  'limits.ephemeral-storage': 'quotaEphemeralStorageLimits',
+  'requests.storage': 'quotaStorageRequests',
+  persistentvolumeclaims: 'quotaPersistentVolumeClaims',
+  pods: 'quotaPods',
+  services: 'quotaServices',
+  'services.loadbalancers': 'quotaLoadBalancers',
+  'services.nodeports': 'quotaNodePorts',
+  configmaps: 'quotaConfigMaps',
+  secrets: 'quotaSecrets',
+  resourcequotas: 'quotaResourceQuotas',
+  replicationcontrollers: 'quotaReplicationControllers',
+  'count/deployments.apps': 'quotaDeployments',
+  'count/statefulsets.apps': 'quotaStatefulSets',
+  'count/daemonsets.apps': 'quotaDaemonSets',
+  'count/jobs.batch': 'quotaJobs',
+  'count/cronjobs.batch': 'quotaCronJobs',
+  'count/ingresses.networking.k8s.io': 'quotaIngresses',
+} as const
+
+export function quotaAmountKind(name: string): 'cpu' | 'memory' | 'storage' | 'count' | 'raw' {
+  const resource = name.trim()
+  const base = resource.replace(/^(requests|limits)\./, '')
+  if (base === 'cpu') return 'cpu'
+  if (base === 'memory' || base.startsWith('hugepages-')) return 'memory'
+  if (base === 'storage' || base === 'ephemeral-storage' || resource.endsWith('.storageclass.storage.k8s.io/requests.storage')) return 'storage'
+  if (Object.hasOwn(quotaResourcePresets, resource) || resource.startsWith('count/') ||
+    resource.endsWith('.storageclass.storage.k8s.io/persistentvolumeclaims') || /^requests\.[^/]+\/.+$/.test(resource)) return 'count'
+  return 'raw'
+}
+
 export type NamespaceResourceDraft =
   | { kind: 'LimitRange'; rules: LimitRule[] }
   | { kind: 'ResourceQuota'; limits: QuotaLimit[] }

@@ -198,6 +198,18 @@ test('资源配额分别呈现配置、生效和实际用量，更新上限时�
  assert.deepEqual(namespaceResources.namespaceResourcePatch(draft, object), { spec: { hard: { pods: '12', 'requests.cpu': null } } })
 })
 
+test('配额按资源使用对应单位，扩展资源和旧配置的 Quantity 原样写入', () => {
+ const { quotaAmountKind, namespaceResourcePatch, readNamespaceResourceDraft } = namespaceResources
+ const hard = {
+  'limits.cpu': '500m', 'requests.memory': '512Mi', 'requests.storage': '12Gi', 'limits.ephemeral-storage': '4Gi',
+  'fast.storageclass.storage.k8s.io/requests.storage': '50Gi', 'fast.storageclass.storage.k8s.io/persistentvolumeclaims': '3',
+  'requests.hugepages-2Mi': '64Mi', pods: '12', 'count/deployments.apps': '4', 'requests.nvidia.com/gpu': '2',
+  'count/widgets.example.com': '3', 'future-resource': '4e3',
+ }
+ assert.deepEqual(Object.keys(hard).map(quotaAmountKind), ['cpu', 'memory', 'storage', 'storage', 'storage', 'count', 'memory', 'count', 'count', 'count', 'count', 'raw'])
+ assert.deepEqual(namespaceResourcePatch(readNamespaceResourceDraft('ResourceQuota', {spec: {hard}})), {spec: {hard}})
+})
+
 test('网络详情真实SSR保留关联权限和安全文本，滚动区域不成为修改入口',async()=>{
  const literal='<img src=x onerror=alert(1)>',object={kind:'Ingress',metadata:{uid:'ingress-test',name:'public',namespace:'preview'},spec:{rules:[{host:literal,http:{paths:[{path:'/',pathType:'Prefix',backend:{service:{name:'gateway',port:{number:8080}}}}]}}]}}
  const base={object,type:api.kubeTypes.find(type=>type.kind==='Ingress')}

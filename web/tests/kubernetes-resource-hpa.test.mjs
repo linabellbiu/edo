@@ -22,6 +22,23 @@ test('资源单位可独立选择并序列化为 Kubernetes 数量，旧格式�
  assert.equal(h.state.units.value.find(v=>v.value==='Ki').label,'KiB')
  assert.equal(h.events.length,1)
 })
+test('存储配额默认使用 Gi，可改为其他字节单位或粘贴原始 Quantity', async t => {
+  const props = vue.reactive({resource: 'storage', value: '', label: '上限', disabled: false})
+  const h = componentHarness('../src/components/KubernetesResourceQuantityInput.vue', {props})
+  t.after(h.stop)
+  assert.equal(h.state.selectedUnit.value, 'Gi')
+  h.state.amount('1.25')
+  assert.equal(h.events.at(-1).args[0], '1.25Gi')
+  let handled = false
+  h.state.pasteQuantity({clipboardData: {getData: () => ' 0.123456789012345678Ti '}, preventDefault: () => { handled = true }})
+  assert.equal(handled, true)
+  props.value = h.events.at(-1).args[0]
+  await vue.nextTick()
+  assert.equal(props.value, '0.123456789012345678Ti')
+  assert.equal(h.state.selectedUnit.value, 'Ti')
+  h.state.unit('')
+  assert.equal(h.events.at(-1).args[0], '0.123456789012345678')
+})
 test('HPA 默认关闭，可配置资源目标并保存阶段快照，清除 CPU 后不被补回',async t=>{
  const utils=loadFrontend('../src/utils/kubernetesDeployment.ts'),overrides=loadFrontend('../src/utils/kubernetesPlanOverride.ts')
  const base={name:'通用方案',kind:'kubernetes',timeout_seconds:600,execution_config:{kubernetes:utils.defaultKubernetesDeployment()}}

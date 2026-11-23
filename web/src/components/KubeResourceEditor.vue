@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, reactive, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { computed, h, reactive, ref, watch, nextTick, onMounted, onBeforeUnmount, useId } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import client from '@/api/client'
@@ -46,6 +46,16 @@ const workloadOptions=reactive(workloadSettings({},props.type.kind))
 const restartPolicy=ref('Always'), nodeSelector=computed<KeyValue[]>({get:()=>workloadOptions.nodeSelector,set:value=>{workloadOptions.nodeSelector=value}})
 const entries = (object: Record<string, unknown> = {}): KeyValue[] => Object.entries(object).map(([key,value])=>({key,value:String(value)}))
 const form = reactive({name:'', namespace:'', labels:[] as KeyValue[], annotations:[] as KeyValue[], data:[] as KeyValue[], selector:[] as KeyValue[], peer:[] as KeyValue[], taints:[] as Array<{key:string;value:string;effect:string}>, containers:[] as ContainerForm[], initContainers:[] as ContainerForm[], volumes:[] as VolumeForm[], imagePullSecrets:'', strategy:'RollingUpdate', maxSurge:'25%', maxUnavailable:'25%', minReadySeconds:0, revisionHistoryLimit:10, progressDeadlineSeconds:600, replicas:1, serviceName:'', schedule:'*/5 * * * *', suspend:false, storage:'1Gi', storageClass:'', accessModes:['ReadWriteOnce'], volumeMode:'Filesystem', secretType:'Opaque', serviceType:'ClusterIP', port:80, targetPort:'80', hostname:'', path:'/', backend:'', ingressClass:'', ingressPort:'80', policyPort:80 as number|null, denyAll:false})
+const namespaceName = (name: string) => name.length <= 63 && /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)
+const namespaceSelectId = useId()
+const namespaceSearch = ref('')
+const namespaceChoices = computed(() => {
+  const typed = namespaceSearch.value.trim()
+  const names = new Set([...(props.namespaceOptions ?? []), form.namespace].filter(namespaceName))
+  const options = [...names].map(name => ({ value: name, label: name, manual: false }))
+  if (namespaceName(typed) && !names.has(typed)) options.push({ value: typed, label: typed, manual: true })
+  return options
+})
 const networkReadOnly = computed(() => props.type.kind === 'Ingress' ? ingressForm(props.object).readonly : props.type.kind === 'NetworkPolicy' ? networkPolicyForm(props.object).readonly : false)
 const networkRulePreview = computed(() => JSON.stringify(props.object?.spec??{},null,2))
 const selectedContainer=computed(()=>form[activeContainerGroup.value][activeContainerIndex.value])
@@ -65,6 +75,7 @@ function removeContainer(){
 watch(editorIdentity, () => {
   editorRevision++;submitRevision++;submitController?.abort();submitController=undefined;saving.value=false;saveDialog?.destroy?.();saveDialog=undefined;confirming.value=false
   classRevision++
+  namespaceSearch.value = ''
   if (!props.open) return
   error.value = ''
   configTab.value = 'basic';lastTemplateTab.value='containers';editorTab.value=workload.value&&editing.value?'containers':'basic';selectContainer('containers',0)
@@ -110,7 +121,6 @@ function mapping(rows: KeyValue[]) {
 function buildObject(): KubeObject {
   validationTab='basic'
   const original = props.object ?? {}, kind = props.type.kind
-  const namespaceName = (name: string) => name.length <= 63 && /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)
   if (kind === 'Namespace' ? !namespaceName(form.name) : !/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/.test(form.name)) {
     throw new Error(t(kind === 'Namespace' ? 'k8s.invalidNamespace' : 'k8s.invalidName'))
   }
@@ -298,10 +308,19 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
     <div v-if="error" ref="errorPanel" tabindex="-1" role="alert" class="editor-error"><a-alert type="error" show-icon :message="error" class="editor-alert" /></div>
     <a-form layout="vertical" :disabled="saving||confirming" @finish="save">
       <template v-if="!configuration&&!workload&&type.kind!=='Service'">
-        <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="type.kind==='Namespace'?63:253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :list="namespaceManagement&&!editing?'kube-namespace-targets':undefined" :maxlength="63" /></a-form-item></div>
-        <datalist v-if="namespaceManagement&&type.namespaced&&!editing" id="kube-namespace-targets"><option v-for="name in namespaceOptions" :key="name" :value="name" /></datalist>
-        <KubeNamespaceResourceFields v-if="namespaceDraft" v-model="namespaceDraft" :disabled="saving||confirming" />
-        <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" /></a-form-item>
+        <div class="form-grid">
+          <a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="type.kind==='Namespace'?63:253" /></a-form-item>
+          <a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" :html-for="namespaceSelectId" required>
+            <a-select v-if="namespaceManagement && !editing" :id="namespaceSelectId" :active="editorActive" :aria-label="t('k8s.namespace')" :value="form.namespace || undefined"
+              :placeholder="t('k8s.namespaceSelectOrEnter')" :options="namespaceChoices" show-search option-filter-prop="label"
+              @search="namespaceSearch = $event" @dropdown-visible-change="open => { if (!open) namespaceSearch = '' }" @update:value="form.namespace = $event">
+              <template #option="{ label, manual }"><span>{{ label }}</span><small v-if="manual" class="namespace-typed-option">{{ t('k8s.manuallyEntered') }}</small></template>
+            </a-select>
+            <a-input v-else :id="namespaceSelectId" :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :maxlength="63" />
+          </a-form-item>
+        </div>
+        <KubeNamespaceResourceFields v-if="namespaceDraft" v-model="namespaceDraft" :disabled="!editorActive" />
+        <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" :compact="namespaceManagement" /></a-form-item>
         <a-form-item v-if="namespaceManagement" :label="t('k8s.annotations')"><KubeKeyValues v-model="form.annotations" :disabled="saving||confirming" compact /></a-form-item>
       </template>
       <a-tabs v-if="workload" v-model:active-key="editorSection" :animated="false" class="workload-editor-tabs">
@@ -443,6 +462,7 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 @media(prefers-reduced-motion:reduce){:global(.kube-resource-editor-modal .kube-resource-editor-slide-enter),:global(.kube-resource-editor-modal .kube-resource-editor-slide-leave){transition-duration:1ms}}
 </style>
 <style scoped>
+.namespace-typed-option { margin-inline-start: 8px; color: var(--edo-muted); font-size: 12px; }
 .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}.editor-alert{margin-bottom:16px}.container-form{padding:16px;margin-bottom:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}.section-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.container-form :deep(.ant-form-item:last-child){margin-bottom:0}.taint-row{display:grid;grid-template-columns:1fr 1fr 160px 32px;gap:8px;margin-bottom:8px}.editor-footer{display:flex;justify-content:flex-end;gap:8px}@media(max-width:640px){.form-grid{grid-template-columns:1fr}.taint-row{grid-template-columns:1fr 1fr}.taint-row :deep(.ant-select){min-width:130px}}
 .container-count{padding:1px 7px;border-radius:10px;font-size:11px;background:var(--edo-surface-soft);color:var(--edo-muted)}
 .network-rule-heading{margin:16px 0 8px;font-size:13px}.network-rule-preview{max-height:320px;overflow:auto;padding:12px;border:1px solid var(--edo-border);border-radius:5px;background:var(--edo-surface-soft);color:var(--edo-text);font-size:12px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}.network-rule-preview:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
