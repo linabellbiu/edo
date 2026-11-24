@@ -6,7 +6,7 @@ import { getReadyStatus, type ReadyResponse } from '@/api/client'
 export const useSystemStore = defineStore('system', () => {
   const ready = ref<ReadyResponse | null>(null)
   const loading = ref(false)
-  const error = ref('')
+  const failed = ref(false)
   const updatedAt = ref<Date | null>(null)
   let revision = 0
 
@@ -14,22 +14,21 @@ export const useSystemStore = defineStore('system', () => {
     // 仅最新回执可通知页面记录采样或失败断点。
     const request = ++revision
     loading.value = true
-    error.value = ''
     try {
       const response = await getReadyStatus()
       if (request !== revision) return false
       ready.value = response
+      failed.value = false
       updatedAt.value = new Date()
       return true
     } catch {
       if (request !== revision) return false
-      ready.value = null
-      error.value = '无法连接 EDO API，请检查服务是否已启动。'
+      failed.value = true
       return true
     } finally {
       if (request === revision) loading.value = false
     }
   }
 
-  return { ready, loading, error, updatedAt, refresh }
+  return { ready, loading, failed, updatedAt, refresh }
 })

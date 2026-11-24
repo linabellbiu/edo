@@ -45,7 +45,10 @@ export function setAuthorizationFreshness(fresh: boolean) {
 }
 const selectedProject = () => typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') ?? ''
 const projectChangedMessage = '项目已切换，请刷新页面后重试'
-const contextRequest = (config: InternalAxiosRequestConfig) => /^\/?auth(?:\/|$)/.test(config.url ?? '') || config.method === 'get' && config.url === '/projects'
+// 就绪探测为公开接口，不读取项目或用户授权数据。
+const readinessPath = '/health/ready'
+const readinessRequest = (config: InternalAxiosRequestConfig) => config.method === 'get' && config.url === readinessPath
+const contextRequest = (config: InternalAxiosRequestConfig) => readinessRequest(config) || /^\/?auth(?:\/|$)/.test(config.url ?? '') || config.method === 'get' && config.url === '/projects'
 
 function clusterResourceDenied(config: InternalAxiosRequestConfig, data: unknown) {
   if (!/^\/?kubernetes\/clusters\/[^/?#]+(?:[/?#]|$)/.test(config.url ?? '') || !data || typeof data !== 'object' || !('code' in data)) return false
@@ -54,6 +57,7 @@ function clusterResourceDenied(config: InternalAxiosRequestConfig, data: unknown
 }
 
 client.interceptors.request.use(config => {
+  if (readinessRequest(config)) return config
   if (!contextRequest(config)) {
     if (!authorizationFresh) throw new axios.AxiosError('正在重新核验权限，请稍后重试', 'EDO_AUTHORIZATION_PENDING', config)
     requestEpochs.set(config, authorizationEpoch)
@@ -100,9 +104,12 @@ client.interceptors.response.use(response => {
 })
 
 export async function getReadyStatus(): Promise<ReadyResponse> {
-  const response = await client.get<ReadyResponse>('/health/ready', {
+  const response = await client.get<ReadyResponse>(readinessPath, {
     validateStatus: (status) => status === 200 || status === 503,
   })
+  if (!response.data?.checks || !['ok', 'degraded', 'failed'].includes(response.data.status)) {
+    throw new Error('就绪接口未返回有效状态')
+  }
   return response.data
 }
 

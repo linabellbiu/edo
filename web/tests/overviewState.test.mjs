@@ -86,11 +86,17 @@ test('概览缺测保持空值和中性，不造趋势点；真实四项检查�
 
 test('网络失败保留真实断档，恢复后不跨断点连线，builder降级不冒充整体失败', async t => {
   let count = 0
-  const h = harness(t, async () => { if (++count === 2) throw Error('synthetic offline'); return count === 1 ? ready() : ready({ status: 'degraded', checks: { database: 'ok', redis: 'ok', nats: 'ok', builder: 'unavailable' } }) })
+  const recovery = deferred()
+  const h = harness(t, async () => { if (++count === 2) throw Error('synthetic offline'); return count === 1 ? ready() : recovery.promise })
   await h.state.refresh(); await h.state.refresh()
-  assert.deepEqual(h.state.history.value, [100, null]); assert.equal(h.state.healthPercent.value, null)
-  assert.deepEqual(h.state.cards.value.slice(1).map(card => card.value), ['—', '—', '—'])
-  await h.state.refresh()
+  assert.deepEqual(h.state.history.value, [100, null]); assert.equal(h.state.healthPercent.value, 100)
+  assert.equal(h.state.healthStatus.value.label, 'dashboard.stale')
+  assert.deepEqual(h.state.cards.value.slice(1).map(card => card.value), ['正常', '正常', '正常'])
+  const background = h.state.refresh()
+  assert.equal(h.system.failed, true); assert.equal(h.state.manualRefreshing.value, false)
+  recovery.resolve(ready({ status: 'degraded', checks: { database: 'ok', redis: 'ok', nats: 'ok', builder: 'unavailable' } }))
+  await background
+  assert.equal(h.system.failed, false)
   assert.deepEqual(h.state.history.value, [100, null, 75])
   assert.deepEqual(h.state.segments.value.map(segment => segment.length), [1, 1])
   assert.notEqual(h.state.cards.value[0].status, 'failed'); assert.equal(h.state.healthStatus.value.label, 'dashboard.degraded')
@@ -114,18 +120,18 @@ test('最新健康读取获胜，旧成功失败与finally均不覆盖当前值�
   for (const oldFails of [false, true]) {
     const first = deferred(), second = deferred(); let count = 0
     const h = harness(t, () => ++count === 1 ? first.promise : second.promise)
-    const old = h.state.refresh(), current = h.state.refresh()
+    const old = h.state.refresh(), current = h.state.refresh(true)
     if (oldFails) first.reject(Error('synthetic old failure')); else first.resolve(ready({ status: 'failed', checks: { database: 'failed', redis: 'failed', nats: 'failed', builder: 'unavailable' } }))
     await old
     assert.equal(h.system.loading, true); assert.deepEqual(h.state.history.value, [])
     second.resolve(ready()); await current
-    assert.equal(h.system.ready.status, 'ok'); assert.deepEqual(h.state.history.value, [100]); assert.equal(h.system.error, '')
+    assert.equal(h.system.ready.status, 'ok'); assert.deepEqual(h.state.history.value, [100]); assert.equal(h.system.failed, false)
   }
   const first = deferred(), second = deferred(); let count = 0
   const h = harness(t, () => ++count === 1 ? first.promise : second.promise)
-  const old = h.state.refresh(), current = h.state.refresh(); second.resolve(ready()); await current
+  const old = h.state.refresh(), current = h.state.refresh(true); second.resolve(ready()); await current
   first.reject(Error('late old failure')); await old
-  assert.equal(h.system.ready.status, 'ok'); assert.deepEqual(h.state.history.value, [100]); assert.equal(h.system.error, '')
+  assert.equal(h.system.ready.status, 'ok'); assert.deepEqual(h.state.history.value, [100]); assert.equal(h.system.failed, false)
 })
 
 test('离开概览后迟到结果不追加页面历史，也不再启动该页的新读取', async t => {

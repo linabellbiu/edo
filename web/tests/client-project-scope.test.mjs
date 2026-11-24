@@ -33,6 +33,24 @@ test('未知授权阻断业务读写但不阻断正常身份复核，已发送�
   assert.equal(h.requests.length, 3)
 })
 
+test('公开就绪接口不等待权限校准，保留真实 503 并拒绝反代错误页', async () => {
+  const h = harness()
+  await h.module.getCurrentUser()
+  h.module.setAuthorizationFreshness(false)
+  h.select('project-b')
+  const payload = { status: 'failed', checks: { database: 'failed', redis: 'ok', nats: 'ok', builder: 'ok' } }
+  let data = payload
+  h.client.defaults.adapter = async config => {
+    assert.equal(config.url, '/health/ready')
+    assert.equal(config.headers.has('X-EDO-Project-ID'), false)
+    assert.equal(config.validateStatus(503), true)
+    return { config, status: 503, data }
+  }
+  assert.deepEqual(await h.module.getReadyStatus(), payload)
+  data = '<html>Service unavailable</html>'
+  await assert.rejects(h.module.getReadyStatus(), /未返回有效状态/)
+})
+
 test('未知授权期间的旧业务响应即使随后重新核验通过也不能恢复敏感正文', async () => {
   for (const failed of [false, true]) {
     const h = harness()

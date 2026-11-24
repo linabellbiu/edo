@@ -8,6 +8,7 @@ import { useSystemStore } from '@/stores/system'
 
 const system = useSystemStore()
 const { t } = useI18n()
+const manualRefreshing = ref(false)
 const history = ref<Array<number | null>>([])
 let timer = 0
 let disposed = false
@@ -21,6 +22,7 @@ const healthPercent = computed(() => {
   return Math.round((healthyCount.value / checkCount.value) * 100)
 })
 const healthStatus = computed(() => {
+  if (system.failed) return { color: 'default', label: system.ready ? 'dashboard.stale' : 'dashboard.syncFailed' }
   if (healthPercent.value === null) return { color: 'default', label: 'dashboard.noData' }
   if (system.ready?.status === 'ok') return { color: 'success', label: 'dashboard.healthy' }
   if (system.ready?.status === 'degraded') return { color: 'warning', label: 'dashboard.degraded' }
@@ -46,12 +48,17 @@ const cards = computed(() => [
   { key: 'nats', label: '任务服务', value: serviceValue(system.ready?.checks?.nats), detail: '任务投递与失败重试', icon: RadioTower, status: system.ready?.checks?.nats },
 ])
 
-async function refresh() {
-  if (disposed) return
-  const accepted = await system.refresh()
-  if (!accepted || disposed) return
-  // 失败请求留下断点；迟到的旧回执不应追加采样。
-  history.value = [...history.value, healthPercent.value].slice(-24)
+async function refresh(manual = false) {
+  if (disposed || (manual ? manualRefreshing.value : system.loading)) return
+  if (manual) manualRefreshing.value = true
+  try {
+    const accepted = await system.refresh()
+    if (!accepted || disposed) return
+    // 查询失败时保留卡片快照，但趋势图必须保留缺测断点。
+    history.value = [...history.value, system.failed ? null : healthPercent.value].slice(-24)
+  } finally {
+    if (manual) manualRefreshing.value = false
+  }
 }
 
 onMounted(() => {
@@ -64,9 +71,11 @@ onBeforeUnmount(() => { disposed = true; window.clearInterval(timer) })
 <template>
   <div class="analytics-page">
     <PageToolbar>
-      <a-button :loading="system.loading" @click="refresh"><RefreshCw :size="15" />{{ t('common.refresh') }}</a-button>
+      <div class="overview-refresh">
+        <span class="overview-sync-status" role="status">{{ system.failed ? t(system.ready ? 'dashboard.syncFailedStale' : 'dashboard.syncFailed') : '' }}</span>
+        <a-button :loading="manualRefreshing" @click="refresh(true)"><RefreshCw :size="15" />{{ t('common.refresh') }}</a-button>
+      </div>
     </PageToolbar>
-    <a-alert v-if="system.error" type="error" show-icon :message="system.error" class="dashboard-alert" />
 
     <div class="analytics-cards">
       <article v-for="card in cards" :key="card.key" class="analytics-card vben-card">
@@ -99,7 +108,10 @@ onBeforeUnmount(() => { disposed = true; window.clearInterval(timer) })
 </template>
 
 <style scoped>
-.dashboard-alert { margin-bottom: 14px; }.analytics-cards { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 14px; }
+.overview-refresh { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.overview-sync-status { color: var(--edo-muted); font-size: 12px; line-height: 15px; text-align: end; }
+.overview-refresh > button { flex-shrink: 0; }
+.analytics-cards { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 14px; }
 .analytics-card { min-height: 164px; padding: 22px; }.analytics-card-head { display: flex; align-items: center; justify-content: space-between; font-size: 16px; }.card-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 50%; color: var(--edo-primary); background: var(--edo-primary-soft); }.card-icon svg { width: 19px; }
 .analytics-card-value { margin: 25px 0 20px; font-size: 26px; font-weight: 650; letter-spacing: -.02em; }.analytics-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--edo-muted); font-size: 12px; }
 .trend-card { margin-top: 16px; padding: 20px 22px 14px; }.card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.card-heading strong,.card-heading span { display: block; }.card-heading strong { font-size: 16px; }.card-heading span { margin-top: 3px; color: var(--edo-muted); font-size: 12px; }.card-heading > svg { width: 22px; color: var(--edo-primary); }
