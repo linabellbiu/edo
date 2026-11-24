@@ -54,7 +54,7 @@
    ```
 5. **前端构建与类型检查**：`npm run build` 会先跑 `vue-tsc --noEmit`。本轮改动未在本机运行过它，需要在 Mac 上确认没有类型错误（尤其是 `web/src/stores/auth.ts` 与 `web/src/router/index.ts`）。
 6. **前端测试**：`node --test web/tests/*.test.mjs`。删除了两个 SQL 审阅测试文件，并修改了 `pageCopy.test.mjs`，需要确认通过。
-7. **DevOpsView 拆分**：`web/src/views/DevOpsView.vue` 仍为 2383 行 script，承载 5 个页面。未拆分，因为无法在本机运行 `vue-tsc` 和做可视化验证。
+7. **DevOpsView 拆分**：暂不拆分。`web/src/views/DevOpsView.vue` 为 3109 行（script 2383 行），承载应用、代码仓库、发布计划、构建方案、镜像仓库 5 个页面，188 个函数与 122 个响应式变量共享同一作用域。当前未引起功能问题，拆分的收益（改动范围与合并冲突）不足以抵消风险：5 个页面共享状态抽错会悄悄失效，且有 24 个测试按路径读取该文件的源码需逐个修改。若之后这几个页面频繁改动或经常产生合并冲突，再按页面拆分（每个 section 一个子组件，外壳仅做分发）。若只想减轻负担，可先抽纯函数与常量到 `utils`，不动页面状态。
 8. **长列表虚拟滚动**：暂不实现。生产规模无上限，但当前所有列表的服务端与客户端上限都已有界：Kubernetes 对象列表服务端上限 500、相关事件上限 200、流水线运行每页上限 200、日志上限 100–500；共享的 `ResourceTable` 按页渲染（每页 10–100 行），无分页的事件列表也受 200 上限约束。因此当前不需要虚拟滚动。若服务端上限被提高，或新增无上限列表，应在那时重新评估。
 9. **`SECURITY.md` 占位符**：报告邮箱仍是 `<!-- TODO -->`，需要替换为真实地址。
 10. **Windows 不可编译的包**：`internal/artifact`、`internal/sshdeploy`、`internal/host/terminal.go` 依赖 Unix 专用 API，在 Windows 上无法编译。这是项目平台限制，在 Mac 上不受影响。
