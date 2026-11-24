@@ -54,7 +54,7 @@ cd web && npm run dev   # 打开 /tests/fixtures/segmented-tabs.html 目视校�
 
 操作按钮复用 `web/src/styles/buttons.css` 的语义配色。颜色随操作用途选择，文字、图标、尺寸、禁用和确认流程继续沿用共用组件。
 
-图标和文字作为一组水平、垂直居中，图文间距为 6px。资源列表的普通行按钮高 28px，左右内边距各 10px，按钮之间间距为 6px。「更多」使用 30 × 28px 的纯图标按钮。行按钮尺寸由 `web/src/styles/resource-list.css` 统一维护。
+图标和文字作为一组水平、垂直居中，图文间距为 6px。资源列表的普通行按钮高 28px，左右内边距各 10px，按钮之间间距为 6px。「更多」使用 30 × 28px 的纯图标按钮。`ResourceTable` 与其他使用 `.resource-row-actions` 的列表共同使用 `web/src/styles/resource-list.css` 定义的行按钮尺寸。
 
 | 用途 | 配色 | 用法 |
 | --- | --- | --- |
@@ -67,3 +67,5 @@ cd web && npm run dev   # 打开 /tests/fixtures/segmented-tabs.html 目视校�
 | 取消、普通刷新 | 主题中性 | 使用默认或文字按钮 |
 
 浅色和深色主题统一检查默认、悬停、按下、键盘焦点和禁用。可操作状态下文字对比度至少 4.5:1。按钮配色预览使用 `/tests/fixtures/button-layout.html`，支持 `?theme=dark`。
+
+行按钮验收用服务账户的「编辑」「YAML」「更多」核对两侧留白、图文间距和图标按钮尺寸，并在窄屏检查固定操作列。 [Kubernetes 表格规范](kubernetes-workbench-design.md#3-表格语言)
