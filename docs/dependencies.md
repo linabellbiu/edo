@@ -130,7 +130,7 @@ Git 元数据继续使用已固定版本的 [go-git 文件存储](https://pkg.go
 
 ## Compose 首次初始化
 
-默认数据库复用 Docker Official Image `postgres:17.11-trixie` 的同步版 的初始化、权限处理与 `POSTGRES_PASSWORD_FILE`，不自行安装 PostgreSQL 或维护数据库安装器。PostgreSQL License 宽松且兼容项目使用；17 大版本受官方维护，Debian 运行层较 Alpine 大，但固定的 postgres UID/GID 便于收紧密码文件权限，官方支持 Linux amd64/arm64 和 Docker Desktop；本次同步站选定条目为 amd64，Apple Silicon 使用 Docker Desktop 仿真，原生 arm64 需覆盖镜像地址。镜像固定为 17.11 补丁版，升级前备份，大版本需独立处理；未增加 Go/npm 包。
+默认数据库复用 Docker Official Image `postgres:18.6-trixie` 的同步版 的初始化、权限处理与 `POSTGRES_PASSWORD_FILE`，不自行安装 PostgreSQL 或维护数据库安装器。PostgreSQL License 宽松且兼容项目使用；18 大版本受官方维护，Debian 运行层较 Alpine 大，但固定的 postgres UID/GID 便于收紧密码文件权限，官方支持 Linux amd64/arm64 和 Docker Desktop；本次同步站选定条目为 amd64，Apple Silicon 使用 Docker Desktop 仿真，原生 arm64 需覆盖镜像地址。镜像固定为 18.6 补丁版，升级前备份，大版本需独立处理；未增加 Go/npm 包。
 
 一次性配置准备复用官方 Alpine 3.22 的 BusyBox（POSIX Shell、base64、od、文件权限工具）与 Linux `/dev/urandom`。评估过让用户安装 OpenSSL 手工生成配置，以及增加 Vault 等常驻密钥服务；前者增加安装步骤，后者扩大常驻组件，均不符合此次默认启动需求。仅由项目脚本承担 EDO 专有的持久化、旧数据防护和密钥一致性规则，不自制加密算法。Alpine/BusyBox 体积小、持续维护且适用于当前容器平台；镜像内各包遵循其原许可证，不打包到 EDO 二进制。维护风险在 Shell 中断、权限与旧数据识别，使用一次性启动依赖、独占初始化锁、原子落盘和真实容器回归约束；后续可替换实现而保留配置文件格式。
 

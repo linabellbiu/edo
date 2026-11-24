@@ -93,18 +93,19 @@ services:
       # 与 API 共用宿主机部署根目录，仅初始化新目录的顶层权限。
       - ${EDO_DEPLOY_HOST_DIRECTORY:-${HOME}/edo/deply}:/app/data/edo/deply
       # 只读识别既有数据库，数据目录由 PostgreSQL 官方入口管理。
-      - edo-postgres-data:/var/lib/postgresql/data:ro
+      - edo-postgres-data:/var/lib/postgresql:ro
     network_mode: none
     read_only: true
     security_opt:
       - no-new-privileges:true
     restart: "no"
 
-  # 官方 PostgreSQL 17：密码从文件读取，不暴露数据库端口，数据库与日志均使用上海时区。
+  # 官方 PostgreSQL 18：密码从文件读取，不暴露数据库端口，数据库与日志均使用上海时区。
+  # PG 18 起数据目录为 /var/lib/postgresql/<major>/docker，因此挂载点必须是 /var/lib/postgresql。
   # 官方入口负责首次建库与数据目录权限；版本升级前须备份，不自动跨大版本升级。
   postgres:
     platform: ${EDO_DOCKER_PLATFORM:-linux/amd64}
-    image: ${EDO_POSTGRES_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:17.11-trixie}
+    image: ${EDO_POSTGRES_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:18.6-trixie}
     environment:
       POSTGRES_USER: edo
       POSTGRES_DB: edo
@@ -114,7 +115,7 @@ services:
     command: ["postgres", "-c", "timezone=Asia/Shanghai", "-c", "log_timezone=Asia/Shanghai"]
     volumes:
       # Docker 卷保留真实 Linux UID/GID，避免 Docker Desktop bind 目录的身份映射。
-      - edo-postgres-data:/var/lib/postgresql/data
+      - edo-postgres-data:/var/lib/postgresql
       # 仅挂载数据库密码子目录，PG 容器中不存在 API 加密密钥。
       - ./data/bootstrap/postgres:/run/edo-postgres:ro
     depends_on:

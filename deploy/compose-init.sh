@@ -63,7 +63,7 @@ if [ -f "$data/postgres/PG_VERSION" ]; then
   fail '检测到原目录中的 PostgreSQL 数据，请保留原数据挂载或明确恢复备份，不自动改用新数据库卷'
 fi
 existing=false
-if [ -f "$state/initialized" ] || [ -f /var/lib/postgresql/data/PG_VERSION ] || [ -s "$data/edo.db" ]; then
+if [ -f "$state/initialized" ] || [ -f /var/lib/postgresql/18/docker/PG_VERSION ] || [ -s "$data/edo.db" ]; then
   existing=true
 fi
 
@@ -89,7 +89,7 @@ if [ ! -f "$state/secrets-key" ]; then
 fi
 
 if [ ! -f "$state/postgres-password" ]; then
-  if [ -f "$state/initialized" ] || [ -f /var/lib/postgresql/data/PG_VERSION ]; then
+  if [ -f "$state/initialized" ] || [ -f /var/lib/postgresql/18/docker/PG_VERSION ]; then
     fail '已有数据缺少 PostgreSQL 密码，请从备份恢复'
   fi
   od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$state/postgres-password.tmp"

@@ -28,7 +28,7 @@ curl --fail http://localhost:8080/api/v1/health/ready
 
 ### 初始化与默认值
 
-- 数据库：官方镜像同步版 `postgres:17.11-trixie`，库及用户为 `edo`，随机密码通过官方 `POSTGRES_PASSWORD_FILE` 传入，端口仅在容器网络内可用。`TZ`、`PGTZ`、数据库 `TimeZone` 和 `log_timezone` 均为 `Asia/Shanghai`。
+- 数据库：官方镜像同步版 `postgres:18.6-trixie`，库及用户为 `edo`，随机密码通过官方 `POSTGRES_PASSWORD_FILE` 传入，端口仅在容器网络内可用。`TZ`、`PGTZ`、数据库 `TimeZone` 和 `log_timezone` 均为 `Asia/Shanghai`。
 - 加密密钥：首次随机生成 32 字节 Base64，保存到 `data/bootstrap/secrets-key`；数据库密码及连接分别保存到同目录的 `postgres-password`、`postgres-dsn`。PG 仅挂载单独的 `data/bootstrap/postgres/` 密码子目录，不获得 API 密钥。配置不输出到日志或写入镜像，后续启动固定复用。
 - 自带 PostgreSQL 的 DSN：`.env` 中 `EDO_COMPOSE_DATABASE_DSN` 留空，从持久化连接文件读取。可在首次初始化前填写外部数据库 DSN；该值优先于文件，内置 PostgreSQL 仍由当前 Compose 启动。使用其他数据库驱动时必须同时提供 DSN。
 - 一次性 `bootstrap` 使用官方 Alpine/BusyBox 和系统随机源准备配置与顶层目录权限，无网络、不安装软件、不递归修改已有子目录。API 与迁移仍使用 `10001:10001`，Web 使用 `101:101`，无需手工创建或修改 data 权限。
@@ -60,7 +60,7 @@ docker compose up -d --no-deps --wait docker-builder
 | 用途 | 同步的官方镜像版本 |
 | --- | --- |
 | 初始化 | `alpine:3.22` |
-| PostgreSQL | `postgres:17.11-trixie` |
+| PostgreSQL | `postgres:18.6-trixie` |
 | Redis | `redis:7.4.9` |
 | Docker CLI / DinD | `docker:29.8.2-cli` / `docker:29.8.2-dind` |
 | Go 编译 | `golang:1.26.10-alpine`，仍为 CGO 关闭的 Go 构建 |

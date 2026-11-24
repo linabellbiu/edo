@@ -93,7 +93,8 @@ func TestProductionComposeSeparatesWebAndAPI(t *testing.T) {
 	if postgres.Environment["TZ"] != "Asia/Shanghai" || postgres.Environment["PGTZ"] != "Asia/Shanghai" || postgres.Environment["POSTGRES_PASSWORD_FILE"] != "/run/edo-postgres/password" || !slices.Contains(postgres.Command, "timezone=Asia/Shanghai") || !slices.Contains(postgres.Command, "log_timezone=Asia/Shanghai") {
 		t.Fatal("默认 PostgreSQL 必须通过文件读取密码并统一数据库和日志时区")
 	}
-	if !slices.Contains(postgres.Volumes, "edo-postgres-data:/var/lib/postgresql/data") || !strings.Contains(strings.Join(postgres.Healthcheck.Test, " "), "SELECT 1") {
+	// PG 18 起数据目录位于 /var/lib/postgresql/<major>/docker，挂载点必须是 /var/lib/postgresql。
+	if !slices.Contains(postgres.Volumes, "edo-postgres-data:/var/lib/postgresql") || slices.Contains(postgres.Volumes, "edo-postgres-data:/var/lib/postgresql/data") || !strings.Contains(strings.Join(postgres.Healthcheck.Test, " "), "SELECT 1") {
 		t.Fatal("PostgreSQL 必须使用持久卷并实际查询目标数据库才能就绪")
 	}
 	if !slices.Contains(postgres.Volumes, "./data/bootstrap/postgres:/run/edo-postgres:ro") || slices.Contains(postgres.Volumes, "./data:/app/data") {
