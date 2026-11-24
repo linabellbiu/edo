@@ -20,6 +20,7 @@ func TestComposeBootstrapFilesystem(t *testing.T) {
 	}
 	// Docker 卷保留真实 Linux UID/GID，避免 Docker Desktop 的宿主机身份映射干扰权限断言。
 	data := "edo-compose-bootstrap-test-" + time.Now().Format("20060102150405.000000000")
+	var postgresLayout string
 	if output, err := exec.Command("docker", "volume", "create", data).CombinedOutput(); err != nil {
 		t.Fatalf("创建独立测试卷失败：%v，日志：%s", err, output)
 	}
@@ -31,6 +32,7 @@ func TestComposeBootstrapFilesystem(t *testing.T) {
 	run := func(user string, environment []string, args ...string) (string, error) {
 		command := []string{"run", "--rm", "--network", "none", "--read-only", "--user", user,
 			"-v", data + ":/app/data",
+			"-v", postgresLayout + ":/var/lib/postgresql:ro",
 			"-v", filepath.Join(root, "deploy", "compose-init.sh") + ":/init.sh:ro",
 			"-v", filepath.Join(root, "deploy", "docker-entrypoint.sh") + ":/entrypoint.sh:ro"}
 		for _, value := range environment {
@@ -50,6 +52,26 @@ func TestComposeBootstrapFilesystem(t *testing.T) {
 		return output
 	}
 	initialize := func() (string, error) { return run("0:0", nil, "sh", "/init.sh") }
+	// 应用配置缺失时，任一已有 PostgreSQL 布局都必须阻止生成新密钥。
+	for _, layout := range []struct{ marker, version string }{
+		{"PG_VERSION", "17"},
+		{"data/PG_VERSION", "17"},
+		{"18/docker/PG_VERSION", "18"},
+		{"19/docker/PG_VERSION", "19"},
+	} {
+		postgresLayout = t.TempDir()
+		marker := filepath.Join(postgresLayout, layout.marker)
+		if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(marker, []byte(layout.version+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := initialize(); err == nil || !strings.Contains(output, "已有数据缺少加密密钥") {
+			t.Fatalf("识别 %s 失败：%v，日志：%s", layout.marker, err, output)
+		}
+	}
+	postgresLayout = t.TempDir()
 	// 复现 Docker 为嵌套挂载点预建 root 目录，再验证 API 可以创建应用配置子目录。
 	mustRun("0:0", nil, "sh", "-ec", "mkdir -p /app/data/edo/deply")
 	if output, err := initialize(); err != nil {

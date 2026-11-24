@@ -93,7 +93,7 @@ Kubernetes 工作区按集群和命名空间浏览节点、工作负载、配置
 
 Web 和 Go API 分别运行，Web 提供页面并转发 API 与 WebSocket。Go API 只运行一个进程，同时处理接口和后台任务。
 
-默认 Compose 一起管理 Web、API、PostgreSQL 17、Redis、NATS JetStream 和 Docker 构建器，只有 Web 的 `8080` 端口对外开放。构建器需要特权模式，在独立容器中运行 Docker，通过 mTLS 与 API 通信，不挂载宿主机 Docker Socket。
+默认 Compose 一起管理 Web、API、PostgreSQL 18、Redis、NATS JetStream 和 Docker 构建器，只有 Web 的 `8080` 端口对外开放。构建器需要特权模式，在独立容器中运行 Docker，通过 mTLS 与 API 通信，不挂载宿主机 Docker Socket。
 
 日常查看状态和日志：
 

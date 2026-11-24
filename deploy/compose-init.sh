@@ -8,6 +8,16 @@ fail() {
   exit 1
 }
 
+postgres_data_present() {
+  # 兼容旧卷根目录、旧镜像的 data 子目录和按大版本分目录的官方布局。
+  for marker in "$1"/PG_VERSION "$1"/data/PG_VERSION "$1"/*/docker/PG_VERSION; do
+    if [ -f "$marker" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 prepare_deployment_directory() {
   parent=/app/data/edo
   [ ! -L "$parent" ] || fail '部署目录的上级不能是符号链接'
@@ -59,11 +69,15 @@ done
 if [ -s "$data/edo.db" ] && [ "${EDO_DATABASE_DRIVER:-postgres}" = postgres ] && [ -z "${EDO_DATABASE_DSN:-}" ]; then
   fail '检测到已有 SQLite 数据，请恢复原数据库配置；不支持自动切换数据库'
 fi
-if [ -f "$data/postgres/PG_VERSION" ]; then
+if postgres_data_present "$data/postgres"; then
   fail '检测到原目录中的 PostgreSQL 数据，请保留原数据挂载或明确恢复备份，不自动改用新数据库卷'
 fi
+postgres_existing=false
+if postgres_data_present /var/lib/postgresql; then
+  postgres_existing=true
+fi
 existing=false
-if [ -f "$state/initialized" ] || [ -f /var/lib/postgresql/18/docker/PG_VERSION ] || [ -s "$data/edo.db" ]; then
+if [ -f "$state/initialized" ] || [ "$postgres_existing" = true ] || [ -s "$data/edo.db" ]; then
   existing=true
 fi
 
@@ -89,7 +103,7 @@ if [ ! -f "$state/secrets-key" ]; then
 fi
 
 if [ ! -f "$state/postgres-password" ]; then
-  if [ -f "$state/initialized" ] || [ -f /var/lib/postgresql/18/docker/PG_VERSION ]; then
+  if [ -f "$state/initialized" ] || [ "$postgres_existing" = true ]; then
     fail '已有数据缺少 PostgreSQL 密码，请从备份恢复'
   fi
   od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$state/postgres-password.tmp"

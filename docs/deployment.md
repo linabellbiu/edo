@@ -13,7 +13,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-默认配置面向 Linux amd64；ARM64 宿主机（包括 Apple Silicon）首次安装时，上面的复制命令改为 `cp .env.arm64.example .env`，让 EDO、Web 和构建器原生运行。该模板通过标准 `COMPOSE_FILE` 自动合并 `docker-compose.arm64.yml`，将应用数据、部署文件、Redis 和 NATS 放入独立的 Linux 持久卷，保留 Docker Desktop 上的 UID/GID 和受限目录权限。Docker 与 Compose 需支持 [volume subpath](https://docs.docker.com/engine/storage/volumes/#mount-a-volume-subdirectory)。首次自动构建 Web/API，初始化 PostgreSQL 17、Redis、NATS JetStream 和隔离的 Docker 构建器，迁移成功且 API 健康后启动 Web。首次构建需要能访问官方镜像仓库、Go/npm 依赖源。浏览器访问 `http://服务器IP:8080`，本机使用 `http://localhost:8080`。
+默认配置面向 Linux amd64。ARM64 宿主机（包括 Apple Silicon）首次安装时，上面的复制命令改为 `cp .env.arm64.example .env`，让 EDO、Web 和构建器原生运行。该模板通过标准 `COMPOSE_FILE` 自动合并 `docker-compose.arm64.yml`，将应用数据、部署文件、Redis 和 NATS 放入独立的 Linux 持久卷，保留 Docker Desktop 上的 UID/GID 和受限目录权限。首次自动构建 Web/API，初始化 PostgreSQL 18、Redis、NATS JetStream 和隔离的 Docker 构建器，迁移成功且 API 健康后启动 Web。首次构建需要能访问官方镜像仓库、Go/npm 依赖源。浏览器访问 `http://服务器IP:8080`，本机使用 `http://localhost:8080`。Docker 与 Compose 需支持卷子路径挂载。[Docker 文档](https://docs.docker.com/engine/storage/volumes/#mount-a-volume-subdirectory)
 
 空账户库自动创建 `admin`，初始密码 `123456`。登录后可通过头像菜单修改密码，不限制最小长度，不能为空；创建与重置本地账户采用相同规则。已有账户不会被覆盖。
 
@@ -31,7 +31,7 @@ curl --fail http://localhost:8080/api/v1/health/ready
 - 数据库：官方镜像同步版 `postgres:18.6-trixie`，库及用户为 `edo`，随机密码通过官方 `POSTGRES_PASSWORD_FILE` 传入，端口仅在容器网络内可用。`TZ`、`PGTZ`、数据库 `TimeZone` 和 `log_timezone` 均为 `Asia/Shanghai`。
 - 加密密钥：首次随机生成 32 字节 Base64，保存到 `data/bootstrap/secrets-key`；数据库密码及连接分别保存到同目录的 `postgres-password`、`postgres-dsn`。PG 仅挂载单独的 `data/bootstrap/postgres/` 密码子目录，不获得 API 密钥。配置不输出到日志或写入镜像，后续启动固定复用。
 - 自带 PostgreSQL 的 DSN：`.env` 中 `EDO_COMPOSE_DATABASE_DSN` 留空，从持久化连接文件读取。可在首次初始化前填写外部数据库 DSN；该值优先于文件，内置 PostgreSQL 仍由当前 Compose 启动。使用其他数据库驱动时必须同时提供 DSN。
-- 一次性 `bootstrap` 使用官方 Alpine/BusyBox 和系统随机源准备配置与顶层目录权限，无网络、不安装软件、不递归修改已有子目录。API 与迁移仍使用 `10001:10001`，Web 使用 `101:101`，无需手工创建或修改 data 权限。
+- 一次性 `bootstrap` 使用官方 Alpine/BusyBox 和系统随机源准备配置与顶层目录权限，无网络、不安装软件、不递归修改已有子目录。初始化读取挂载卷中的 `PG_VERSION`，兼容旧卷根目录、`data` 子目录和按大版本分目录的官方布局。API 与迁移仍使用 `10001:10001`，Web 使用 `101:101`，无需手工创建或修改 data 权限。
 - 已有 `.env` 的 `EDO_SECRETS_KEY` 会在首次接管时固定保存；以后必须与保存值一致。已有数据库或初始化记录缺少密钥、密码时拒绝启动，不静默生成替代值。已有 SQLite 不自动迁入 PostgreSQL，应保留原 DRIVER、DSN 和密钥。
 
 PostgreSQL 使用默认名为 `edo_edo-postgres-data` 的 Docker 持久卷（自定义项目名时前缀相应变化），兼容 Docker Desktop 的文件身份映射。`data/bootstrap`、数据库卷和 `.env` 必须一起备份。配置目录权限受限，Linux 备份通常需要 sudo。不要重新复制模板覆盖已有 `.env`，不要删除配置目录解决启动错误。中断遗留的 `data/bootstrap/.init-lock` 会阻断初始化，先核对没有其他初始化进程，再由管理员处理遗留锁。
