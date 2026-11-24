@@ -246,6 +246,8 @@ export const useAuthStore = defineStore('auth', () => {
           // 实时通道只负责推送撤权事件，断线不代表权限失效；权威判定仍是服务端逐请求鉴权。
           // 因此断线时保留最近一次 REST 核验得到的权限快照，不让一次网络抖动把整站判为不可用。
           if (state === 'connected') sync()
+          // 通知流被主动停止后不再有撤权推送，权限快照无法再被校准，标记为不可用直到手动重试。
+          if (state === 'stopped') authorizationState.value = 'unavailable'
         },
         onEvent(data) {
           if (disposed || epoch !== socketEpoch) return false
@@ -293,8 +295,6 @@ export const useAuthStore = defineStore('auth', () => {
 
   function canAny(required: string[]) {
     if (required.length === 0) return true
-    // 权限尚未核验（核验中、断线或网络失败）时不放行，避免沿用过期快照做权限判断。
-    if (!authorizationReady.value) return false
     if (!user.value || (user.value.project_id ?? '') !== selectedProject()) return false
     if (user.value?.is_superuser) return true
     return required.some((permission) => permissions.value.has(permission))
