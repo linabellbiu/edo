@@ -9,6 +9,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [部署说明](deployment.md) | Compose、端口、数据库、备份与恢复 |
+| [运行配置](runtime-configuration.md) | 系统设置、环境变量、默认值和生效方式 |
 | [本地开发](development.md) | 工具安装、Mage 命令、本地启动排查 |
 | [测试说明](testing.md) | 测试分层、真实数据库与容器测试的运行条件 |
 | [应用与交付](unified-delivery.md) | 应用、流水线、构建与部署方案 |

@@ -16,9 +16,9 @@ const settingsReads = [
 const fields = ['workspace_directory', 'build_directory', 'cache_directory', 'local_artifact_directory']
 const usages = ['workspace_usage', 'build_usage', 'cache_usage', 'artifact_usage']
 const paths = prefix => Object.fromEntries(fields.map((key, index) => [key, `/public-test/${prefix}/${index}`]))
-const dto = (version = 3, prefix = 'actual') => ({ ...paths(prefix), version, ...Object.fromEntries(usages.map((key, index) => [key, { path: `/public-test/${prefix}/${index}`, files: index + version, bytes: (index + version) * 1024 }])) })
-const draft = paths('unsaved')
-const pick = value => Object.fromEntries([...fields, 'version'].map(key => [key, value[key]]))
+const dto = (version = 3, prefix = 'actual') => ({ ...paths(prefix), artifact_max_bytes: 1024 ** 3, version, ...Object.fromEntries(usages.map((key, index) => [key, { path: `/public-test/${prefix}/${index}`, files: index + version, bytes: (index + version) * 1024 }])) })
+const draft = { ...paths('unsaved'), artifact_max_bytes: 64 * 1024 ** 2 }
+const pick = value => Object.fromEntries([...fields, 'artifact_max_bytes', 'version'].map(key => [key, value[key]]))
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const failure = status => Object.assign(new Error(`公开测试错误 ${status}`), { response: { status } })
 const settle = () => new Promise(resolve => setImmediate(resolve))

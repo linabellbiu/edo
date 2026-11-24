@@ -34,6 +34,7 @@ const (
 	defaultBuildDirectory     = "data/builds"
 	defaultArtifactsDirectory = "data/artifacts"
 	defaultArtifactsMaxBytes  = int64(1024 * 1024 * 1024)
+	MaxArtifactBytes          = int64(1024 * 1024 * 1024 * 1024)
 	defaultGitDirectory       = "data/repositories"
 	defaultGitCacheDirectory  = "data/cache"
 	defaultLogDirectory       = "logs"
@@ -147,7 +148,27 @@ type Artifacts struct {
 }
 
 func Load() (Config, error) {
-	if err := rejectExplicitEmptyValues(
+	values := make(map[string]string)
+	for _, entry := range os.Environ() {
+		key, value, _ := strings.Cut(entry, "=")
+		values[key] = value
+	}
+	containerDirectory := strings.TrimSpace(values["EDO_CONTAINER_DATA_DIRECTORY"])
+	if containerDirectory != "" {
+		if !filepath.IsAbs(containerDirectory) {
+			return Config{}, errors.New("容器数据目录必须是绝对路径")
+		}
+		// Compose 转发的旧覆盖值为空时，使用与宿主机相同的应用默认值。
+		for _, key := range []string{
+			"EDO_LOG_LEVEL", "EDO_LOG_FILE_ENABLED", "EDO_LOG_MAX_FILE_SIZE_MB", "EDO_LOG_COMPRESS_AFTER_DAYS",
+			"EDO_BUILD_DIRECTORY", "EDO_ARTIFACTS_DIRECTORY", "EDO_ARTIFACTS_MAX_BYTES", "EDO_GIT_DIRECTORY", "EDO_GIT_CACHE_DIRECTORY",
+		} {
+			if values[key] == "" {
+				delete(values, key)
+			}
+		}
+	}
+	if err := rejectExplicitEmptyValues(values,
 		"EDO_AUTH_COOKIE_NAME",
 		"EDO_DATABASE_DRIVER",
 		"EDO_DATABASE_DSN",
@@ -169,7 +190,8 @@ func Load() (Config, error) {
 	probe := struct {
 		Environment string `env:"EDO_ENV" envDefault:"development"`
 	}{}
-	if err := env.Parse(&probe); err != nil {
+	options := env.Options{Environment: values}
+	if err := env.ParseWithOptions(&probe, options); err != nil {
 		return Config{}, fmt.Errorf("读取运行环境配置失败: %w", err)
 	}
 	environment := strings.TrimSpace(probe.Environment)
@@ -248,7 +270,14 @@ func Load() (Config, error) {
 			MaxBytes:       defaultArtifactsMaxBytes,
 		},
 	}
-	if err := env.Parse(&cfg); err != nil {
+	if containerDirectory != "" {
+		cfg.Logging.Directory = filepath.Join(containerDirectory, defaultLogDirectory)
+		cfg.Git.Directory = filepath.Join(containerDirectory, filepath.Base(defaultGitDirectory))
+		cfg.Git.CacheDirectory = filepath.Join(containerDirectory, filepath.Base(defaultGitCacheDirectory))
+		cfg.Artifacts.Directory = filepath.Join(containerDirectory, filepath.Base(defaultArtifactsDirectory))
+		cfg.Artifacts.BuildDirectory = filepath.Join(containerDirectory, filepath.Base(defaultBuildDirectory))
+	}
+	if err := env.ParseWithOptions(&cfg, options); err != nil {
 		return Config{}, fmt.Errorf("读取 EDO 环境变量失败: %w", err)
 	}
 	cfg.normalizeStrings()
@@ -263,9 +292,9 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-func rejectExplicitEmptyValues(keys ...string) error {
+func rejectExplicitEmptyValues(values map[string]string, keys ...string) error {
 	for _, key := range keys {
-		if value, exists := os.LookupEnv(key); exists && strings.TrimSpace(value) == "" {
+		if value, exists := values[key]; exists && strings.TrimSpace(value) == "" {
 			return fmt.Errorf("环境变量 %s 不能为空", key)
 		}
 	}
@@ -354,7 +383,7 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Git.Directory) == "" || strings.TrimSpace(c.Git.CacheDirectory) == "" {
 		return errors.New("Git 仓库构建或缓存目录不能为空")
 	}
-	if c.Artifacts.MaxBytes < 1 || c.Artifacts.MaxBytes > 1024*1024*1024*1024 {
+	if c.Artifacts.MaxBytes < 1 || c.Artifacts.MaxBytes > MaxArtifactBytes {
 		return errors.New("单个制品大小限制必须在 1 字节到 1 TiB 之间")
 	}
 	return nil

@@ -12,6 +12,10 @@ import { deploymentResourcesZh, deploymentResourcesEn } from './deploymentResour
 
 export const messages = {
   'zh-CN': {
+    runtimeSettings: {
+      storage: '存储设置', storageHeading: '运行目录与制品', artifactLimit: '单个文件制品上限（MiB）',
+      artifactLimitInvalid: '请输入 1 字节到 1 TiB 之间的大小', storageSaved: '存储设置已生效',
+    },
     deploymentResources: deploymentResourcesZh,
     drawerSection: { basic:'基础信息', connection:'连接设置', credentials:'登录凭据', scope:'关联主机', target:'部署目标' },
     assistant: assistantZh,
@@ -253,6 +257,10 @@ export const messages = {
     },
   },
   'en-US': {
+    runtimeSettings: {
+      storage: 'Storage settings', storageHeading: 'Runtime directories and artifacts', artifactLimit: 'Single artifact file limit (MiB)',
+      artifactLimitInvalid: 'Enter a size from 1 byte to 1 TiB', storageSaved: 'Storage settings applied',
+    },
     deploymentResources: deploymentResourcesEn,
     drawerSection: { basic:'Basic information', connection:'Connection settings', credentials:'Credentials', scope:'Linked hosts', target:'Deployment targets' },
     assistant: assistantEn,

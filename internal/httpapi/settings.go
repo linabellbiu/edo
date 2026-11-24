@@ -34,6 +34,7 @@ type runtimeDirectoryUpdateRequest struct {
 	BuildDirectory         string `json:"build_directory" binding:"required,max=4096"`
 	CacheDirectory         string `json:"cache_directory" binding:"required,max=4096"`
 	LocalArtifactDirectory string `json:"local_artifact_directory" binding:"required,max=4096"`
+	ArtifactMaxBytes       *int64 `json:"artifact_max_bytes"`
 	ExpectedVersion        int    `json:"expected_version" binding:"min=0"`
 }
 
@@ -264,6 +265,7 @@ func (h settingsHandler) runtimeDirectories(c *gin.Context) {
 		BuildDirectory:         h.artifacts.BuildRoot(),
 		CacheDirectory:         repositoryDirectories.CacheDirectory,
 		LocalArtifactDirectory: h.artifacts.Root(),
+		ArtifactMaxBytes:       h.artifacts.MaxBytes(),
 	})
 	if err != nil {
 		h.logger.Error("读取运行目录设置失败", "operation", "settings_runtime_directories_read", "request_id", requestIDFrom(c), "err", err)
@@ -284,6 +286,15 @@ func (h settingsHandler) updateRuntimeDirectories(c *gin.Context) {
 		h.logger.Warn("修改运行目录参数无效", "operation", "settings_runtime_directories_bind", "request_id", requestIDFrom(c), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_settings", "工作区、构建、缓存或本地产物目录无效")
 		return
+	}
+	var artifactMaxBytes int64
+	if request.ArtifactMaxBytes != nil {
+		artifactMaxBytes = *request.ArtifactMaxBytes
+		if artifactMaxBytes < 1 || artifactMaxBytes > config.MaxArtifactBytes {
+			h.logger.Warn("制品大小上限无效", "operation", "settings_artifact_limit_validate", "request_id", requestIDFrom(c), "max_bytes", artifactMaxBytes)
+			writeError(c, http.StatusBadRequest, "invalid_settings", "单个制品大小上限须在 1 字节到 1 TiB 之间")
+			return
+		}
 	}
 	preparedRepositories, err := h.repositories.PrepareDirectories(request.WorkspaceDirectory, request.CacheDirectory)
 	if err != nil {
@@ -309,7 +320,7 @@ func (h settingsHandler) updateRuntimeDirectories(c *gin.Context) {
 		h.writeRuntimeDirectoryError(c, "settings_runtime_directories_validate", err)
 		return
 	}
-	change, err := h.artifacts.StageDirectory(c.Request.Context(), artifactDirectory)
+	change, err := h.artifacts.StageDirectory(c.Request.Context(), artifactDirectory, artifactMaxBytes)
 	if err != nil {
 		h.writeRuntimeDirectoryError(c, "settings_runtime_directories_stage_artifact", err)
 		return
@@ -321,6 +332,7 @@ func (h settingsHandler) updateRuntimeDirectories(c *gin.Context) {
 		BuildDirectory:         buildDirectory,
 		CacheDirectory:         preparedRepositories.CacheDirectory,
 		LocalArtifactDirectory: artifactDirectory,
+		ArtifactMaxBytes:       change.MaxBytes(),
 	}, request.ExpectedVersion)
 	if err != nil {
 		h.logger.Warn("保存运行目录设置失败", "operation", "settings_runtime_directories_update", "request_id", requestIDFrom(c), "user_id", actor.ID, "err", err)

@@ -220,20 +220,24 @@ func (s *Service) LocalArtifactUsage() (manageddirectory.UsageReport, error) {
 	return manageddirectory.InspectSubdirectory(s.store.Root(), localArtifactDirectoryKind, filepath.Join("blobs", "sha256"))
 }
 
-// StageDirectory 在配置落库前同步现有本地制品，并持有写锁直到 Commit 或 Abort。
+// StageDirectory 在配置落库前同步现有本地制品，并持有写锁直到 Commit 或 Abort。上限为零时沿用当前值。
 // 这样目录切换与并发上传、构建登记之间不会出现可见性空窗。
-func (s *Service) StageDirectory(ctx context.Context, directory string) (*DirectoryChange, error) {
+func (s *Service) StageDirectory(ctx context.Context, directory string, maxBytes int64) (*DirectoryChange, error) {
 	resolved, err := manageddirectory.Prepare(directory, localArtifactDirectoryKind, false)
 	if err != nil {
 		s.logger.Warn("准备新的本地产物目录失败", "operation", "artifact_directory_prepare", "err", err)
 		return nil, err
 	}
-	next, err := NewLocalStore(resolved, s.MaxBytes())
+	s.storeMu.Lock()
+	if maxBytes == 0 {
+		maxBytes = s.store.MaxBytes()
+	}
+	next, err := NewLocalStore(resolved, maxBytes)
 	if err != nil {
+		s.storeMu.Unlock()
 		s.logger.Error("打开新的本地产物目录失败", "operation", "artifact_directory_open", "directory", resolved, "err", err)
 		return nil, err
 	}
-	s.storeMu.Lock()
 	change := &DirectoryChange{service: s, previous: s.store, next: next, changed: s.store.Root() != next.Root()}
 	if change.changed {
 		if err := copyLocalBlobs(ctx, s.store.Root(), next.Root()); err != nil {
@@ -245,15 +249,17 @@ func (s *Service) StageDirectory(ctx context.Context, directory string) (*Direct
 	return change, nil
 }
 
+func (c *DirectoryChange) MaxBytes() int64 { return c.next.MaxBytes() }
+
 func (c *DirectoryChange) Commit() (manageddirectory.CleanupReport, error) {
 	if c == nil || c.service == nil || c.finished {
 		return manageddirectory.CleanupReport{}, ErrInvalidStore
 	}
 	c.finished = true
+	c.service.store = c.next
 	var report manageddirectory.CleanupReport
 	var err error
 	if c.changed {
-		c.service.store = c.next
 		report, err = manageddirectory.ClearSubdirectory(c.previous.Root(), localArtifactDirectoryKind, filepath.Join("blobs", "sha256"))
 	}
 	c.service.storeMu.Unlock()

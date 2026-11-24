@@ -10,18 +10,17 @@ EDO（EasyDevOps）是一个简单、轻量的自动发布工具，面向没有�
 
 ## 快速开始
 
-支持 Linux 和 macOS。准备好 Git、Docker、Compose v2 或更新版本及 Buildx 插件，确认当前用户可以运行 Docker。macOS 可使用 Docker Desktop。
+支持 Linux 和 macOS。准备好 Git、Docker、Compose v2.24.0 或更新版本及 Buildx 插件，确认当前用户可以运行 Docker。macOS 可使用 Docker Desktop。
 
 Apple Silicon 和其他 ARM64 机器用 `.env.arm64.example` 生成 `.env`。
 
 ```bash
 git clone --branch main https://github.com/linabellbiu/edo.git
 cd edo
-cp .env.example .env
 docker compose up -d
 ```
 
-复制后的配置可以直接使用，无需安装 Go、Node.js 或数据库。首次启动会构建前后端镜像，生成并保存随机加密密钥和数据库密码，初始化数据库。镜像及依赖下载需要联网，首次构建请耐心等待。
+默认配置可以直接使用。首次启动会构建前后端镜像，生成并保存随机加密密钥和数据库密码，初始化数据库。需要调整默认值时再填写配置。[运行配置](docs/runtime-configuration.md)
 
 启动后打开 [http://localhost:8080](http://localhost:8080)。安装在服务器上时，使用 `http://服务器IP:8080`。默认账户为 `admin`，初始密码为 `123456`，登录后从头像菜单修改密码。已有账户不会被覆盖。
 
@@ -143,6 +142,7 @@ mage start --dev
 | 文档 | 内容 |
 | --- | --- |
 | [部署说明](docs/deployment.md) | Compose、端口与镜像源、数据库、更新和备份 |
+| [运行配置](docs/runtime-configuration.md) | 系统设置、环境变量、默认值和生效方式 |
 | [本地开发](docs/development.md) | 工具安装、Mage 命令、进程管理和启动排查 |
 | [应用与交付](docs/unified-delivery.md) | 应用、流水线、构建与部署方案 |
 | [流水线检查](docs/delivery-checks.md) | 测试报告、变量与密钥、检查和发布保护 |

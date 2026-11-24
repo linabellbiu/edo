@@ -510,6 +510,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		BuildDirectory:         cfg.Artifacts.BuildDirectory,
 		CacheDirectory:         cfg.Git.CacheDirectory,
 		LocalArtifactDirectory: cfg.Artifacts.Directory,
+		ArtifactMaxBytes:       cfg.Artifacts.MaxBytes,
 	})
 	if err != nil {
 		logger.Error("读取运行目录设置失败", "operation", "runtime_directories_bootstrap", "err", err)
@@ -561,7 +562,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	defer realtimeBus.Close()
 	pipelineService.ConfigureRealtime(realtimeBus)
 	artifactService, err := artifactmanager.NewService(
-		resources.Database, cfg.Artifacts.Directory, cfg.Artifacts.MaxBytes, logger,
+		resources.Database, cfg.Artifacts.Directory, runtimeDirectories.ArtifactMaxBytes, logger,
 		artifactmanager.WithBuildDirectory(cfg.Artifacts.BuildDirectory),
 	)
 	if err != nil {
@@ -1037,5 +1038,3 @@ func localHostProtectedPaths(cfg config.Config) []string {
 	}
 	return paths
 }
-
-

@@ -45,6 +45,7 @@ interface RuntimeDirectorySetting {
   build_directory: string;
   cache_directory: string;
   local_artifact_directory: string;
+  artifact_max_bytes: number;
   version: number;
   workspace_usage: DirectoryUsage;
   build_usage: DirectoryUsage;
@@ -72,6 +73,17 @@ const lockout = ref<LockoutSetting | null>(null),
   variableSearch = ref(""),
   variableKind = ref("all");
 const password = reactive({ current: "", next: "", confirm: "" });
+const bytesPerMiB = 1024 ** 2, maxArtifactMiB = 1024 ** 2;
+const artifactLimitMiB = computed<number | null>({
+  get: () => runtimeDirectories.value?.artifact_max_bytes ? runtimeDirectories.value.artifact_max_bytes / bytesPerMiB : null,
+  set: (value) => {
+    if (runtimeDirectories.value) runtimeDirectories.value.artifact_max_bytes = Math.round((value ?? 0) * bytesPerMiB);
+  },
+});
+const artifactLimitInvalid = computed(() => {
+  const bytes = runtimeDirectories.value?.artifact_max_bytes;
+  return bytes !== undefined && (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > maxArtifactMiB * bytesPerMiB);
+});
 const lockoutDuration = computed(() => {
   const seconds = lockout.value?.window_seconds;
   if (typeof seconds !== "number" || !Number.isSafeInteger(seconds) || seconds <= 0) return "—";
@@ -104,7 +116,7 @@ const sections = computed(() => [
   ...(canConfig.value
     ? [
         { key: "logs", label: "日志设置" },
-        { key: "storage", label: "存储目录" },
+        { key: "storage", label: t("runtimeSettings.storage") },
       ]
     : []),
   ...(canIdentity.value ? [{ key: "identity", label: "登录方式" }] : []),
@@ -161,6 +173,7 @@ async function load(directoryDraft?: RuntimeDirectorySetting, expectedVersion = 
         build_directory: directoryDraft.build_directory,
         cache_directory: directoryDraft.cache_directory,
         local_artifact_directory: directoryDraft.local_artifact_directory,
+        artifact_max_bytes: directoryDraft.artifact_max_bytes,
         version: expectedVersion ?? directoryDraft.version,
       } : directoriesResponse.data;
     }
@@ -269,7 +282,7 @@ async function saveRuntimeLogging() {
 }
 async function saveRuntimeDirectories() {
   const draft = runtimeDirectories.value;
-  if (!draft || !canConfig.value || !canUpdate.value || disposed || saving.value === "runtime-directories") return;
+  if (!draft || artifactLimitInvalid.value || !canConfig.value || !canUpdate.value || disposed || saving.value === "runtime-directories") return;
   const version = draft.version, revision = directoryRevision, read = directoryReadRevision;
   const current = () => !disposed && revision === directoryRevision && canConfig.value && canUpdate.value;
   saving.value = "runtime-directories";
@@ -279,11 +292,12 @@ async function saveRuntimeDirectories() {
       build_directory: draft.build_directory,
       cache_directory: draft.cache_directory,
       local_artifact_directory: draft.local_artifact_directory,
+      artifact_max_bytes: draft.artifact_max_bytes,
       expected_version: version,
     });
     if (!current()) return;
     if (read === directoryReadRevision) runtimeDirectories.value = response.data;
-    message.success("存储目录已立即生效");
+    message.success(t("runtimeSettings.storageSaved"));
   } catch (error) {
     if (!current()) return;
     message.error(apiErrorMessage(error));
@@ -469,16 +483,19 @@ onMounted(() => {
         <header>
           <span><FolderCog /></span>
           <div>
-            <h3>运行目录</h3>
+            <h3>{{ t("runtimeSettings.storageHeading") }}</h3>
             <p>保存后对新任务生效。</p>
           </div>
         </header>
         <div class="settings-form storage-form">
           <a-form-item label="仓库工作区目录"><a-input v-model:value="runtimeDirectories.workspace_directory" :disabled="!canUpdate" placeholder="/app/data/repositories" /></a-form-item><a-form-item label="构建目录"><a-input v-model:value="runtimeDirectories.build_directory" :disabled="!canUpdate" placeholder="/app/data/builds" /></a-form-item><a-form-item label="Git 缓存目录"><a-input v-model:value="runtimeDirectories.cache_directory" :disabled="!canUpdate" placeholder="/app/data/cache" /></a-form-item><a-form-item label="本地产物目录"><a-input v-model:value="runtimeDirectories.local_artifact_directory" :disabled="!canUpdate" placeholder="/app/data/artifacts" /></a-form-item>
+          <a-form-item :label="t('runtimeSettings.artifactLimit')" for="artifact-max-size" :validate-status="artifactLimitInvalid ? 'error' : undefined" :help="artifactLimitInvalid ? t('runtimeSettings.artifactLimitInvalid') : undefined">
+            <a-input-number id="artifact-max-size" v-model:value="artifactLimitMiB" :min="1 / bytesPerMiB" :max="maxArtifactMiB" :disabled="!canUpdate" />
+          </a-form-item>
         </div>
         <a-alert type="info" show-icon message="四个目录必须彼此独立，不能互相包含。新目录必须为空或此前已由 EDO 用于相同用途；切换产物目录时会先同步现有本地产物。" />
         <footer>
-          <a-button type="primary" :disabled="!canUpdate" :loading="saving === 'runtime-directories'" @click="saveRuntimeDirectories">保存并立即生效</a-button>
+          <a-button type="primary" :disabled="!canUpdate || artifactLimitInvalid" :loading="saving === 'runtime-directories'" @click="saveRuntimeDirectories">保存并立即生效</a-button>
         </footer>
       </article>
       <article v-if="runtimeDirectories" class="setting-card vben-card">

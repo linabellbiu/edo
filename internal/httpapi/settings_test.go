@@ -207,13 +207,20 @@ func TestRuntimeDirectoriesCanBeHotUpdatedAndCleanedSeparately(t *testing.T) {
 		"build_directory":          buildDirectory,
 		"cache_directory":          cacheDirectory,
 		"local_artifact_directory": artifactDirectory,
+		"artifact_max_bytes":       4,
 		"expected_version":         0,
 	}, adminCookie)
 	if updated.Code != http.StatusOK || !bytes.Contains(updated.Body.Bytes(), []byte(`"version":1`)) ||
+		!bytes.Contains(updated.Body.Bytes(), []byte(`"artifact_max_bytes":4`)) ||
 		!bytes.Contains(updated.Body.Bytes(), []byte(`"workspace_directory"`)) ||
 		!bytes.Contains(updated.Body.Bytes(), []byte(`"workspace_usage":{"path":"`)) ||
 		!bytes.Contains(updated.Body.Bytes(), []byte(`"artifact_usage":{"path":"`)) {
 		t.Fatalf("热更新运行目录失败: status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	artifactCookie, applicationID := createArtifactTestApplication(t, router)
+	upload := performArtifactUpload(t, router, "/api/v1/applications/"+applicationID+"/artifacts/upload", "oversize.bin", []byte("12345"), artifactCookie)
+	if upload.Code != http.StatusRequestEntityTooLarge || !strings.Contains(upload.Body.String(), "artifact_too_large") {
+		t.Fatalf("新上限未应用到后续上传: status=%d body=%s", upload.Code, upload.Body.String())
 	}
 	for _, target := range []string{
 		filepath.Join(workspaceDirectory, "workspace", "source.go"),

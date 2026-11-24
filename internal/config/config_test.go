@@ -1,9 +1,39 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestLoadComposeRuntimeUsesCodeDefaultsAndExplicitOverrides(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("EDO_CONTAINER_DATA_DIRECTORY", directory)
+	for _, key := range []string{"EDO_BUILD_DIRECTORY", "EDO_ARTIFACTS_DIRECTORY", "EDO_GIT_DIRECTORY", "EDO_GIT_CACHE_DIRECTORY", "EDO_LOG_FILE_ENABLED", "EDO_ARTIFACTS_MAX_BYTES"} {
+		t.Setenv(key, "")
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Logging.Directory != filepath.Join(directory, "logs") || !cfg.Logging.FileEnabled ||
+		cfg.Artifacts.BuildDirectory != filepath.Join(directory, "builds") || cfg.Artifacts.Directory != filepath.Join(directory, "artifacts") ||
+		cfg.Git.Directory != filepath.Join(directory, "repositories") || cfg.Git.CacheDirectory != filepath.Join(directory, "cache") ||
+		cfg.Artifacts.MaxBytes != defaultArtifactsMaxBytes {
+		t.Fatalf("容器默认目录或上限错误：%+v %+v %+v", cfg.Logging, cfg.Artifacts, cfg.Git)
+	}
+	customBuild := filepath.Join(directory, "custom-builds")
+	t.Setenv("EDO_BUILD_DIRECTORY", customBuild)
+	t.Setenv("EDO_LOG_FILE_ENABLED", "false")
+	t.Setenv("EDO_ARTIFACTS_MAX_BYTES", "1048576")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Artifacts.BuildDirectory != customBuild || cfg.Logging.FileEnabled || cfg.Artifacts.MaxBytes != 1048576 {
+		t.Fatal("显式容器覆盖未生效")
+	}
+}
 
 func TestLoadRejectsExplicitEmptyDatabaseConfig(t *testing.T) {
 	t.Setenv("EDO_DATABASE_DRIVER", "sqlite")

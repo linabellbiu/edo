@@ -74,6 +74,11 @@ func TestProductionComposeSeparatesWebAndAPI(t *testing.T) {
 	if _, ok := api.Environment["EDO_WEB_ROOT"]; ok || api.Environment["EDO_SERVER_ADDRESS"] != ":8080" {
 		t.Fatal("正式 API 只保留内部 8080 入口，不再配置前端静态目录")
 	}
+	for _, key := range []string{"EDO_LOG_FILE_ENABLED", "EDO_LOG_DIRECTORY", "EDO_LOG_MAX_FILE_SIZE_MB", "EDO_LOG_COMPRESS_AFTER_DAYS", "EDO_ARTIFACTS_MAX_BYTES", "EDO_GIT_DIRECTORY", "EDO_GIT_CACHE_DIRECTORY", "EDO_BUILD_DIRECTORY", "EDO_ARTIFACTS_DIRECTORY"} {
+		if _, ok := api.Environment[key]; ok {
+			t.Errorf("应用默认值须由后端提供，Compose 不重复配置 %s", key)
+		}
+	}
 	for name, value := range map[string]string{
 		"EDO_DATABASE_DRIVER":        "${EDO_COMPOSE_DATABASE_DRIVER:-postgres}",
 		"EDO_DATABASE_DSN":           "${EDO_COMPOSE_DATABASE_DSN:-}",
@@ -134,14 +139,19 @@ func TestPostgresTemplatesMatchComposeVersion(t *testing.T) {
 	if !ok {
 		t.Fatal("Compose 默认 PostgreSQL 镜像必须指定版本")
 	}
-	for _, path := range []string{".env.example", ".env.arm64.example"} {
-		values, err := godotenv.Read(path)
-		if err != nil {
-			t.Fatalf("读取 %s 失败：%v", path, err)
-		}
-		if !strings.HasSuffix(values["EDO_POSTGRES_IMAGE"], ":"+tagged.Tag()) {
-			t.Errorf("%s 的 PostgreSQL 镜像版本必须与 Compose 默认版本 %s 一致", path, tagged.Tag())
-		}
+	base, err := godotenv.Read(".env.example")
+	if err != nil {
+		t.Fatalf("读取默认环境模板失败：%v", err)
+	}
+	if _, exists := base["EDO_POSTGRES_IMAGE"]; exists {
+		t.Error("默认环境模板应继承 Compose 的 PostgreSQL 镜像")
+	}
+	arm64, err := godotenv.Read(".env.arm64.example")
+	if err != nil {
+		t.Fatalf("读取 ARM64 环境模板失败：%v", err)
+	}
+	if !strings.HasSuffix(arm64["EDO_POSTGRES_IMAGE"], ":"+tagged.Tag()) {
+		t.Errorf("ARM64 的 PostgreSQL 镜像版本必须与 Compose 默认版本 %s 一致", tagged.Tag())
 	}
 }
 

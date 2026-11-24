@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"edo/internal/config"
 	"edo/internal/model"
 	"edo/internal/secret"
 )
@@ -113,6 +114,7 @@ type RuntimeDirectorySettings struct {
 	BuildDirectory         string `json:"build_directory"`
 	CacheDirectory         string `json:"cache_directory"`
 	LocalArtifactDirectory string `json:"local_artifact_directory"`
+	ArtifactMaxBytes       int64  `json:"artifact_max_bytes"`
 	Version                int    `json:"version"`
 }
 
@@ -130,6 +132,7 @@ type runtimeDirectoryValue struct {
 	BuildDirectory                 string `json:"build_directory"`
 	CacheDirectory                 string `json:"cache_directory"`
 	LocalArtifactDirectory         string `json:"local_artifact_directory"`
+	ArtifactMaxBytes               int64  `json:"artifact_max_bytes,omitempty"`
 	LegacyRepositoryBuildDirectory string `json:"repository_build_directory,omitempty"`
 }
 
@@ -598,11 +601,16 @@ func (s *Service) GetRuntimeDirectorySettings(
 	if strings.TrimSpace(buildDirectory) == "" {
 		buildDirectory = defaults.BuildDirectory
 	}
+	artifactMaxBytes := value.ArtifactMaxBytes
+	if artifactMaxBytes == 0 {
+		artifactMaxBytes = defaults.ArtifactMaxBytes
+	}
 	settings := normalizeRuntimeDirectories(RuntimeDirectorySettings{
 		WorkspaceDirectory:     workspaceDirectory,
 		BuildDirectory:         buildDirectory,
 		CacheDirectory:         value.CacheDirectory,
 		LocalArtifactDirectory: value.LocalArtifactDirectory,
+		ArtifactMaxBytes:       artifactMaxBytes,
 		Version:                item.Version,
 	})
 	if !validRuntimeDirectories(settings) {
@@ -626,6 +634,7 @@ func (s *Service) UpdateRuntimeDirectorySettings(
 		BuildDirectory:         settings.BuildDirectory,
 		CacheDirectory:         settings.CacheDirectory,
 		LocalArtifactDirectory: settings.LocalArtifactDirectory,
+		ArtifactMaxBytes:       settings.ArtifactMaxBytes,
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -656,6 +665,9 @@ func cleanDirectory(value string) string {
 }
 
 func validRuntimeDirectories(value RuntimeDirectorySettings) bool {
+	if value.ArtifactMaxBytes < 0 || value.ArtifactMaxBytes > config.MaxArtifactBytes {
+		return false
+	}
 	for _, directory := range []string{value.WorkspaceDirectory, value.BuildDirectory, value.CacheDirectory, value.LocalArtifactDirectory} {
 		if directory == "" || len(directory) > 4096 || strings.ContainsRune(directory, 0) {
 			return false

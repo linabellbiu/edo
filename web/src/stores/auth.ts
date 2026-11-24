@@ -95,13 +95,19 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function restoreProject(request: number) {
-    const {data}=await client.get<{projects:Array<{id:string;is_active:boolean}>}>('/projects')
-    if (request !== revision) return
-    const active=data.projects.filter(item=>item.is_active)
-    const saved=localStorage.getItem('edo.project')
-    if(!active.some(item=>item.id===saved)) {
-      if(active[0])localStorage.setItem('edo.project',active[0].id)
-      else localStorage.removeItem('edo.project')
+    try {
+      const {data}=await client.get<{projects:Array<{id:string;is_active:boolean}>}>('/projects')
+      if (request !== revision) return
+      const active=data.projects.filter(item=>item.is_active)
+      const saved=localStorage.getItem('edo.project')
+      if(!active.some(item=>item.id===saved)) {
+        if(active[0])localStorage.setItem('edo.project',active[0].id)
+        else localStorage.removeItem('edo.project')
+      }
+    } catch (error) {
+      // 初始口令待修改时，服务端仍允许读取身份并进入改密页。
+      if (axios.isAxiosError(error) && error.response?.status === 403 && error.response.data?.code === 'password_change_required') return
+      throw error
     }
   }
 
@@ -205,6 +211,8 @@ export const useAuthStore = defineStore('auth', () => {
 
   function startPermissionSync() {
     stopSync?.()
+    // 改密前不订阅业务授权通知，避免预期中的拒绝隐藏改密表单。
+    if (user.value?.must_change_password) return () => {}
     let disposed = false, lastAttempt = -Infinity
     let closeSocket: (() => void) | undefined, socketEpoch = 0
     let retry: number | undefined
@@ -295,7 +303,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   function canAny(required: string[]) {
     if (required.length === 0) return true
-    if (!user.value || (user.value.project_id ?? '') !== selectedProject()) return false
+    if (!user.value || user.value.must_change_password || (user.value.project_id ?? '') !== selectedProject()) return false
     if (user.value?.is_superuser) return true
     return required.some((permission) => permissions.value.has(permission))
   }

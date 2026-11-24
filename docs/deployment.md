@@ -4,16 +4,15 @@ EDO 的 Web 与 Go API 分别构建和运行，API 一个进程同时处理 HTTP
 
 ## Docker Compose
 
-宿主机准备 Git、Docker 和 Compose v2/更新版本、Buildx，当前账户可运行 Docker 后：
+准备 Git、Docker、Compose v2.24.0 或更新版本及 Buildx，确认当前账户可运行 Docker。
 
 ```bash
 git clone --branch main https://github.com/linabellbiu/edo.git
 cd edo
-cp .env.example .env
 docker compose up -d
 ```
 
-默认配置面向 Linux amd64。ARM64 宿主机（包括 Apple Silicon）首次安装时，上面的复制命令改为 `cp .env.arm64.example .env`，让 EDO、Web 和构建器原生运行。该模板通过标准 `COMPOSE_FILE` 自动合并 `docker-compose.arm64.yml`，将应用数据、部署文件、Redis 和 NATS 放入独立的 Linux 持久卷，保留 Docker Desktop 上的 UID/GID 和受限目录权限。首次自动构建 Web/API，初始化 PostgreSQL 18、Redis、NATS JetStream 和隔离的 Docker 构建器，迁移成功且 API 健康后启动 Web。首次构建需要能访问官方镜像仓库、Go/npm 依赖源。浏览器访问 `http://服务器IP:8080`，本机使用 `http://localhost:8080`。Docker 与 Compose 需支持卷子路径挂载。[Docker 文档](https://docs.docker.com/engine/storage/volumes/#mount-a-volume-subdirectory)
+默认配置面向 Linux amd64。ARM64 宿主机（包括 Apple Silicon）首次安装时先执行 `cp .env.arm64.example .env`，再启动 Compose。该模板通过标准 `COMPOSE_FILE` 自动合并 `docker-compose.arm64.yml`，应用数据、部署文件、Redis 和 NATS 随 Linux 卷持久化。首次启动会构建 Web 和 API，并初始化 PostgreSQL 18、Redis、NATS JetStream 和隔离构建器。迁移成功且 API 健康后，Web 可通过 `http://localhost:8080` 或服务器的相同端口访问。ARM64 卷布局要求 Docker 与 Compose 支持卷子路径挂载。[Docker 文档](https://docs.docker.com/engine/storage/volumes/#mount-a-volume-subdirectory)
 
 空账户库自动创建 `admin`，初始密码 `123456`。登录后可通过头像菜单修改密码，不限制最小长度，不能为空；创建与重置本地账户采用相同规则。已有账户不会被覆盖。
 
@@ -74,7 +73,7 @@ docker compose up -d --no-deps --wait docker-builder
 
 ### 访问与配置覆盖
 
-`.env` 支持以下常用配置，修改后执行 `docker compose up -d`：
+`.env` 只需要填写要覆盖的部署配置，修改后执行 `docker compose up -d`。应用运行设置在页面内保存，进程启动专用参数可写入 `.env.runtime`。[完整参数与生效方式](runtime-configuration.md)
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -111,7 +110,7 @@ docker compose ps -a
 curl --fail http://localhost:8080/api/v1/health/ready
 ```
 
-更新前备份并确认没有正在执行的发布。远端未提交修改需先核对，不能覆盖。更新后记录分支和 Commit，并检查页面及 Web/API 健康。源码变更使用 `--build` 重建两个独立镜像，普通再次启动只需 `up -d`。PostgreSQL 固定大版本 17，不自动做跨大版本升级。
+更新前备份并确认没有正在执行的发布。远端未提交修改需先核对，不能覆盖。更新后记录分支和 Commit，并检查页面及 Web/API 健康。源码变更使用 `--build` 重建两个独立镜像，普通再次启动只需 `up -d`。内置数据库使用 PostgreSQL 18，跨大版本升级需按上文迁移数据。
 
 自行使用 systemd 部署时，Web 与 API 仍需分别发布。[EDO 保护发布](../tools/release-activate/README.md) 提供 Go API 的备份、切换及回滚步骤。
 

@@ -322,7 +322,7 @@ func TestServiceHotSwitchesDirectoryAndClearsLocalArtifacts(t *testing.T) {
 	}
 	oldRoot := service.Root()
 	oldPath := filepath.Join(oldRoot, filepath.FromSlash(item.StorageKey))
-	change, err := service.StageDirectory(context.Background(), t.TempDir())
+	change, err := service.StageDirectory(context.Background(), t.TempDir(), 0)
 	if err != nil {
 		t.Fatalf("准备本地产物目录热切换失败: %v", err)
 	}

@@ -24,7 +24,7 @@ func TestLocalArtifactCleanupReturnsConflictWhileDirectoryIsInUse(t *testing.T) 
 		t.Fatal("登录隔离测试管理员失败")
 	}
 	root := artifacts.Root()
-	change, err := artifacts.StageDirectory(context.Background(), root)
+	change, err := artifacts.StageDirectory(context.Background(), root, 0)
 	if err != nil {
 		t.Fatalf("准备目录维护锁失败: %v", err)
 	}

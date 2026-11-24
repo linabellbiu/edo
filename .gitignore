@@ -3,6 +3,7 @@
 /.history/
 AGENTS.md
 /.env
+/.env.runtime
 /bin/
 /data/
 /deply/

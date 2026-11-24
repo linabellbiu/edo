@@ -1,18 +1,14 @@
-# EDO 单机部署：复制 .env.example 为 .env 后直接 docker compose up -d。
+# EDO 单机部署：docker compose up -d。需要覆盖默认值时再填写 .env。
 # Web 与 Go API 独立运行，默认 PostgreSQL；数据库使用 Docker 卷，业务文件与密钥保存在 data。
 name: edo
 
-# migrate 和 api 共用这组环境变量。这里仅保留容器部署必须指定的内容，
-# 重试次数、任务超时、Stream 容量等默认值统一放在 Go 配置中维护。
+# migrate 和 api 共用容器专用的连接和目录。应用默认值由 Go 提供。
 x-edo-environment: &edo-environment
   EDO_ENV: production
   EDO_SERVER_ADDRESS: :8080
+  EDO_CONTAINER_DATA_DIRECTORY: /app/data
   # 不自动信任 Docker 私网（含构建器）；只有明确配置的代理 IP/CIDR 才可提供客户端地址。
   EDO_SERVER_TRUSTED_PROXIES: ${EDO_COMPOSE_SERVER_TRUSTED_PROXIES:-}
-  EDO_LOG_FILE_ENABLED: ${EDO_LOG_FILE_ENABLED:-true}
-  EDO_LOG_DIRECTORY: /app/data/logs
-  EDO_LOG_MAX_FILE_SIZE_MB: ${EDO_LOG_MAX_FILE_SIZE_MB:-100}
-  EDO_LOG_COMPRESS_AFTER_DAYS: ${EDO_LOG_COMPRESS_AFTER_DAYS:-3}
 
   # 默认 HTTP，Cookie 不加 Secure 标记以保证开箱可登录；配置 HTTPS 反向代理后，
   # 务必在 .env 中把 EDO_AUTH_COOKIE_SECURE 改为 true，否则登录会话可能在明文传输中被截获。
@@ -23,14 +19,6 @@ x-edo-environment: &edo-environment
   EDO_DATABASE_DRIVER: ${EDO_COMPOSE_DATABASE_DRIVER:-postgres}
   EDO_DATABASE_DSN: ${EDO_COMPOSE_DATABASE_DSN:-}
   EDO_DATABASE_DSN_FILE: /app/data/bootstrap/postgres-dsn
-
-  # 构建中间输出与文件制品分开存放；单产物默认限制为 1 GiB。
-  EDO_BUILD_DIRECTORY: ${EDO_COMPOSE_BUILD_DIRECTORY:-/app/data/builds}
-  EDO_ARTIFACTS_DIRECTORY: ${EDO_COMPOSE_ARTIFACTS_DIRECTORY:-/app/data/artifacts}
-  EDO_ARTIFACTS_MAX_BYTES: ${EDO_ARTIFACTS_MAX_BYTES:-1073741824}
-  # Git 对象缓存与 Tag/Commit 隔离工作区随 data 卷持久化，避免每次流水线重新 Clone。
-  EDO_GIT_DIRECTORY: ${EDO_COMPOSE_GIT_DIRECTORY:-/app/data/repositories}
-  EDO_GIT_CACHE_DIRECTORY: ${EDO_COMPOSE_GIT_CACHE_DIRECTORY:-/app/data/cache}
 
   # redis 和 nats 是下面的 Compose 服务名，只在容器网络内使用。
   EDO_REDIS_URL: ${EDO_COMPOSE_REDIS_URL:-redis://redis:6379/0}
@@ -56,6 +44,11 @@ x-edo-runtime: &edo-runtime
       EDO_GO_BUILD_IMAGE: ${EDO_GO_BUILD_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.26.10-alpine}
       EDO_API_BASE_IMAGE: ${EDO_API_BASE_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/debian:bookworm-slim}
   environment: *edo-environment
+  # 兼容旧部署显式提供的应用覆盖值。可选文件只由 Go 后端和迁移读取。
+  env_file:
+    - ./deploy/compose-runtime.env
+    - path: ./.env.runtime
+      required: false
   init: true
   # 容器根目录只读，并禁止进程提权。
   read_only: true

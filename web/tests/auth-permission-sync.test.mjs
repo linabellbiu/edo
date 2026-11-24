@@ -8,7 +8,7 @@ const profile = (permissions = ['cluster.read'], extra = {}) => ({ id: 'viewer',
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
-function harness() {
+function harness({ getProjects } = {}) {
   let project = 'project-a', now = 10_000
   const requests = [], intervals = new Map(), timeouts = new Map(), events = [], sockets = [], freshness = []
   const window = new EventTarget(), document = new EventTarget()
@@ -20,7 +20,7 @@ function harness() {
   window.addEventListener('edo:projects-changed', () => events.push('projects-changed'))
   const api = {
     __esModule: true,
-    default: { get: async () => ({ data: { projects: [{ id: project, is_active: true }] } }), post: async () => {} },
+    default: { get: getProjects ?? (async () => ({ data: { projects: [{ id: project, is_active: true }] } })), post: async () => {} },
     getCurrentUser: () => { const request = deferred(); requests.push(request); return request.promise },
     login: async () => {}, loginLDAP: async () => {}, logout: async () => {},
     setAuthorizationFreshness: value => freshness.push(value),
@@ -33,6 +33,24 @@ function harness() {
   store.user.value = profile(); store.loaded.value = true; store.authorizationState.value = 'ready'
   return { store, requests, intervals, timeouts, window, document, events, sockets, freshness, select: value => { project = value }, advance: value => { now += value }, denied: value => window.dispatchEvent(new CustomEvent('edo:permissions-stale', { detail: { project: value ?? project } })) }
 }
+
+test('首登待改密时项目目录403仍加载身份，并保留改密页所需的访问', async () => {
+  const h = harness({ getProjects: async () => {
+    throw new axios.AxiosError('需要修改初始密码', undefined, undefined, undefined, { status: 403, data: { code: 'password_change_required' } })
+  } })
+  const login = h.store.login('admin', 'synthetic-password'); await tick()
+  assert.equal(h.requests.length, 1)
+  h.requests[0].resolve(profile(['config.update'], { is_superuser: true, must_change_password: true }))
+  await login
+  assert.equal(h.store.user.value.must_change_password, true)
+  assert.equal(h.store.canAny(['config.update']), false)
+  assert.equal(h.store.canAny([]), true)
+  const stop = h.store.startPermissionSync()
+  h.denied()
+  assert.equal(h.sockets.length, 0)
+  assert.equal(h.store.authorizationReady.value, true)
+  stop()
+})
 
 test('无业务通知权限的普通用户，403触发去重刷新并移除旧权限', async () => {
   const h = harness(), stop = h.store.startPermissionSync()
