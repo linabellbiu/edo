@@ -44,10 +44,7 @@
    curl --fail http://localhost:8080/api/v1/health/ready
    ```
 2. **确认 `sh -se` 与 dash 问题**：见上文"已知失败"。
-3. **PostgreSQL 版本**：交付镜像仍为 `postgres:17.11-trixie`，未切换。PG 17 与 PG 18 的数据目录布局不同（PG 18 起 `VOLUME` 与 `PGDATA` 变更），直接切换会让已有安装看起来丢数据。
-   - 已确认的上游事实：PG 18 最新补丁为 18.7（[发布说明](https://www.postgresql.org/docs/release/18.7/)）。
-   - 未核实：`postgres:18.7-trixie` 标签是否存在。请在 Mac 上执行 `docker pull postgres:18.7-trixie` 确认。
-   - 已选择的方案："新安装用 18，已有安装保留 17"。尚未实现。实现时需要在启动前检测数据目录版本，并在真实环境验证。
+3. **PostgreSQL** 已在 macOS 验证 `18.6-trixie`、持久卷挂载和迁移后的业务数据。新安装使用 PostgreSQL 18.6，跨大版本迁移需要独立导出、恢复和校验。[部署说明](deployment.md#更新发布)
 4. **卸载未使用依赖**：`@codemirror/lang-sql` 已无引用，但仍在 `web/package.json`。在 Mac 上执行：
    ```bash
    cd web && npm uninstall @codemirror/lang-sql && npm run build

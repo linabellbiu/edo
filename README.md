@@ -12,6 +12,8 @@ EDO（EasyDevOps）是一个简单、轻量的自动发布工具，面向没有�
 
 支持 Linux 和 macOS。准备好 Git、Docker、Compose v2 或更新版本及 Buildx 插件，确认当前用户可以运行 Docker。macOS 可使用 Docker Desktop。
 
+Apple Silicon 和其他 ARM64 机器用 `.env.arm64.example` 生成 `.env`。
+
 ```bash
 git clone --branch main https://github.com/linabellbiu/edo.git
 cd edo

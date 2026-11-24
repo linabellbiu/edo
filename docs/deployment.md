@@ -99,6 +99,8 @@ API、数据库、Redis、NATS 和构建器不直接暴露宿主机端口。生�
 
 ## 更新发布
 
+已有数据库跨大版本升级时，先用 `pg_dump -Fc` 导出，再用 `pg_restore` 将数据迁入独立的 PostgreSQL 18 实例。保留原加密密钥，核对业务数据后再切换 Compose 配置。
+
 先验证、提交并推送 GitHub，再在服务器仓库执行：
 
 ```bash

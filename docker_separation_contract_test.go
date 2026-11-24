@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/distribution/reference"
+	"github.com/joho/godotenv"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -97,6 +99,10 @@ func TestProductionComposeSeparatesWebAndAPI(t *testing.T) {
 	if !slices.Contains(postgres.Volumes, "edo-postgres-data:/var/lib/postgresql") || slices.Contains(postgres.Volumes, "edo-postgres-data:/var/lib/postgresql/data") || !strings.Contains(strings.Join(postgres.Healthcheck.Test, " "), "SELECT 1") {
 		t.Fatal("PostgreSQL 必须使用持久卷并实际查询目标数据库才能就绪")
 	}
+	bootstrap := services["bootstrap"]
+	if !slices.Contains(bootstrap.Volumes, "edo-postgres-data:/var/lib/postgresql:ro") {
+		t.Fatal("初始化必须从同一个 PostgreSQL 卷只读识别数据")
+	}
 	if !slices.Contains(postgres.Volumes, "./data/bootstrap/postgres:/run/edo-postgres:ro") || slices.Contains(postgres.Volumes, "./data:/app/data") {
 		t.Fatal("PostgreSQL 只能挂载独立密码子目录，不能持有 API 加密密钥")
 	}
@@ -114,6 +120,28 @@ func TestProductionComposeSeparatesWebAndAPI(t *testing.T) {
 	}
 	if !slices.Contains(api.Volumes, "./data:/app/data") || !slices.Contains(migrate.Volumes, "./data:/app/data") || !slices.Equal(builder.Networks, []string{"edo-builder"}) {
 		t.Fatal("数据库持久化与构建器网络隔离必须保留")
+	}
+}
+
+func TestPostgresTemplatesMatchComposeVersion(t *testing.T) {
+	value := separationComposeServices(t, "docker-compose.yml")["postgres"].Image
+	image := strings.TrimSuffix(strings.TrimPrefix(value, "${EDO_POSTGRES_IMAGE:-"), "}")
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		t.Fatalf("解析 Compose 默认 PostgreSQL 镜像失败：%v", err)
+	}
+	tagged, ok := named.(reference.Tagged)
+	if !ok {
+		t.Fatal("Compose 默认 PostgreSQL 镜像必须指定版本")
+	}
+	for _, path := range []string{".env.example", ".env.arm64.example"} {
+		values, err := godotenv.Read(path)
+		if err != nil {
+			t.Fatalf("读取 %s 失败：%v", path, err)
+		}
+		if !strings.HasSuffix(values["EDO_POSTGRES_IMAGE"], ":"+tagged.Tag()) {
+			t.Errorf("%s 的 PostgreSQL 镜像版本必须与 Compose 默认版本 %s 一致", path, tagged.Tag())
+		}
 	}
 }
 
