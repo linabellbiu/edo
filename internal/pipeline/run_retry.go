@@ -8,6 +8,9 @@ import (
 )
 
 func pipelineRunRetryAllowed(run *model.PipelineRun, workflow *model.ReleaseWorkflow) bool {
+	if run.Application.DeletedAt.Valid {
+		return false
+	}
 	return run.Status == model.PipelineRunFailed ||
 		run.Status == model.PipelineRunSucceeded && workflow != nil &&
 			workflow.ID == run.WorkflowID && workflow.ApplicationID == run.ApplicationID &&
@@ -18,7 +21,7 @@ func pipelineRunRetryAllowed(run *model.PipelineRun, workflow *model.ReleaseWork
 func (s *Service) attachRunRetryEligibility(ctx context.Context, runs []model.PipelineRun) error {
 	ids := make(map[string]struct{})
 	for i := range runs {
-		runs[i].RetryAllowed = runs[i].Status == model.PipelineRunFailed
+		runs[i].RetryAllowed = pipelineRunRetryAllowed(&runs[i], nil)
 		if runs[i].Status == model.PipelineRunSucceeded && runs[i].WorkflowID != "" {
 			ids[runs[i].WorkflowID] = struct{}{}
 		}

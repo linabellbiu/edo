@@ -413,6 +413,16 @@ var migrations = []migration{
 	{version: "202611230082", up: func(tx *gorm.DB) error {
 		return addColumns(tx, &model.User{}, []string{"MustChangePassword"})
 	}},
+	{version: "202611240083", up: func(tx *gorm.DB) error {
+		app := &model.Application{}
+		if err := addColumns(tx, app, []string{"DeletedAt"}); err != nil {
+			return err
+		}
+		if tx.Migrator().HasIndex(app, "DeletedAt") {
+			return nil
+		}
+		return tx.Migrator().CreateIndex(app, "DeletedAt")
+	}},
 }
 
 // 移除入站 Webhook 的专用授权，避免旧权限导致角色列表校验失败。
@@ -1069,7 +1079,7 @@ func migrateStructuredWorkflows(tx *gorm.DB) error {
 	// MySQL 的 DDL 会隐式提交事务。先完成表替换，再修改应用行，避免在同一连接上
 	// 持有 applications 行锁时获取关联表的元数据锁。
 	if tx.Migrator().HasTable(&model.Application{}) && tx.Migrator().HasColumn(&model.Application{}, "WorkflowTemplateID") {
-		if err := tx.Model(&model.Application{}).Where("workflow_template_id <> ''").Update("workflow_template_id", "").Error; err != nil {
+		if err := tx.Unscoped().Model(&model.Application{}).Where("workflow_template_id <> ''").Update("workflow_template_id", "").Error; err != nil {
 			return fmt.Errorf("清空应用旧流水线方案关联失败: %w", err)
 		}
 	}

@@ -7,9 +7,9 @@ import { loadFrontend } from './acceptanceHarness.mjs'
 
 const settle = async () => { await vue.nextTick(); await new Promise(resolve => setImmediate(resolve)) }
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
-const codes = ['application.read', 'application.update', 'repository.read', 'repository.update', 'build_plan.read', 'build_plan.update', 'build_plan.delete', 'image_registry.read']
+const codes = ['application.read', 'application.update', 'application.delete', 'repository.read', 'repository.update', 'build_plan.read', 'build_plan.update', 'build_plan.delete', 'image_registry.read']
 
-async function harness({ section = 'applications', patch, get } = {}) {
+async function harness({ section = 'applications', patch, remove, get } = {}) {
   const requests = [], confirmations = [], notifications = [], unmounts = []
   const auth = vue.reactive({ authorizationReady: true, user: { id: 'operator', project_id: 'project-a', department_id: 'department-a', permissions: [...codes] }, canAny(required) { return this.authorizationReady && required.some(code => this.user?.permissions.includes(code)) } })
   const storage = { project: 'project-a' }, window = new EventTarget()
@@ -17,6 +17,7 @@ async function harness({ section = 'applications', patch, get } = {}) {
   const client = {
     async get(path, options) { requests.push({ method: 'get', path, options }); return await get?.(path, options) || { data: path === '/applications' ? { applications: structuredClone(rows.applications) } : path === '/repositories' ? { repositories: structuredClone(rows.repositories) } : path === '/build-plans' ? { build_plans: structuredClone(rows.build_plans) } : path === '/image-registries' ? { image_registries: structuredClone(rows.image_registries) } : {} } },
     async patch(path, body, options) { requests.push({ method: 'patch', path, body, options }); if (patch) return patch(path, body, options); rows[section][0].is_active = body.active; return { status: 204 } },
+    async delete(path, options) { requests.push({ method: 'delete', path, options }); if (remove) await remove(); rows.applications = []; return { status: 204 } },
   }
   const Modal = { confirm(config) { const dialog = { ...config, destroyed: false, destroy() { this.destroyed = true }, update(value) { Object.assign(this, value) } }; confirmations.push(dialog); return dialog } }
   const component = loadFrontend('../src/views/DevOpsView.vue', {
@@ -36,6 +37,23 @@ async function harness({ section = 'applications', patch, get } = {}) {
 }
 const writes = h => h.requests.filter(item => item.method === 'patch')
 const submit = dialog => { dialog.onOk(() => { dialog.destroyed = true; dialog.afterClose?.() }); return settle() }
+
+test('删除应用使用独立权限和当前项目，失败可重试，成功后移除对应应用', async t => {
+  let attempts = 0
+  const h = await harness({ remove: async () => { if (++attempts === 1) throw new Error('仍有运行') } }); t.after(h.stop)
+  h.auth.user.permissions = ['application.read', 'application.update']; await settle()
+  h.state.confirmDeleteApplication(h.state.applications.value[0]); assert.equal(h.confirmations.length, 0)
+  h.auth.user.permissions = ['application.read', 'application.delete']; await settle()
+  h.state.confirmDeleteApplication(h.state.applications.value[0]); assert.equal(h.confirmations.length, 1)
+  const dialog = h.confirmations[0]
+  assert.equal(dialog.okType, 'danger'); assert.match(dialog.title, /应用甲/)
+  await submit(dialog)
+  assert.equal(dialog.destroyed, false); assert.equal(h.state.applications.value.length, 1)
+  await Promise.all([submit(dialog), submit(dialog)])
+  assert.equal(attempts, 2); assert.equal(dialog.destroyed, true); assert.equal(h.state.applications.value.length, 0)
+  const request = h.requests.find(item => item.method === 'delete')
+  assert.equal(request.path, '/applications/app-a'); assert.equal(request.options.headers['X-EDO-Project-ID'], 'project-a')
+})
 
 test('应用及无 project_id 的真实仓库 DTO 均可确认启停，准确 PATCH 且不重复提交', async t => {
   for (const section of ['applications', 'repositories']) {

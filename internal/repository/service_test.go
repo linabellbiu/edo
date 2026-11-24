@@ -131,7 +131,13 @@ func TestRepositoryCanBeUpdatedAndDeletedWhenUnused(t *testing.T) {
 		t.Fatalf("使用中的代码仓库未阻止删除: %v", err)
 	}
 	if err := db.Delete(&application).Error; err != nil {
-		t.Fatalf("清理仓库引用失败: %v", err)
+		t.Fatalf("归档测试应用失败: %v", err)
+	}
+	if err := service.Delete(context.Background(), repo.ID); !errors.Is(err, ErrRepositoryInUse) {
+		t.Fatalf("历史关联仍持有仓库外键: %v", err)
+	}
+	if err := db.Unscoped().Delete(&application).Error; err != nil {
+		t.Fatalf("清理测试仓库引用失败: %v", err)
 	}
 	if err := service.Delete(context.Background(), repo.ID); err != nil {
 		t.Fatalf("删除未使用的代码仓库失败: %v", err)

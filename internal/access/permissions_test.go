@@ -59,7 +59,7 @@ func TestPermissionCatalogContainsOnlyImplementedCapabilities(t *testing.T) {
 	}
 
 	want = append(want, "organization.read", "organization.update", "project.read", "project.create", "project.update", "project.delete", "project.member.update",
-		"application.read", "application.create", "application.update", "application.execute",
+		"application.read", "application.create", "application.update", "application.delete", "application.execute",
 		"workflow.read", "workflow.create", "workflow.update", "workflow.delete", "workflow.execute",
 		"build_plan.read", "build_plan.create", "build_plan.update", "build_plan.delete",
 		"image_registry.read", "image_registry.create", "image_registry.execute",

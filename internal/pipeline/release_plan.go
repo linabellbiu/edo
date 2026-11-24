@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -188,6 +189,9 @@ func (s *Service) CreateReleasePlan(ctx context.Context, actorID string, input R
 			return err
 		}
 		for index, groupInput := range input.Groups {
+			if err := lockReleasePlanApplications(tx, groupInput.Applications); err != nil {
+				return err
+			}
 			group := model.ReleaseGroup{
 				ID: uuid.NewString(), ReleasePlanID: plan.ID, Name: groupInput.Name,
 				Mode: groupInput.Mode, FailurePolicy: groupInput.FailurePolicy,
@@ -421,6 +425,9 @@ func (s *Service) SaveReleasePlanConfiguration(
 		groups := make([]model.ReleaseGroup, 0, len(input.Groups))
 		applications := make([]model.ReleaseGroupApplication, 0, len(seenApplications))
 		for index, groupInput := range input.Groups {
+			if err := lockReleasePlanApplications(tx, groupInput.Applications); err != nil {
+				return err
+			}
 			createdAt := now
 			if existing, exists := existingByID[groupInput.ID]; exists {
 				createdAt = existing.CreatedAt
@@ -528,6 +535,9 @@ func (s *Service) saveReleaseGroup(ctx context.Context, planID, groupID string, 
 		if groupCount != 1 {
 			return ErrReleasePlanSingleGroup
 		}
+		if err := lockReleasePlanApplications(tx, input.Applications); err != nil {
+			return err
+		}
 		if err := ensureReleaseApplicationsUnassigned(tx, planID, groupID, input.Applications); err != nil {
 			return err
 		}
@@ -632,6 +642,23 @@ func (s *Service) normalizeReleaseGroupInput(ctx context.Context, planID, groupI
 		}
 	}
 	return input, nil
+}
+
+func lockReleasePlanApplications(tx *gorm.DB, applications []ReleaseApplicationInput) error {
+	ids := make([]string, 0, len(applications))
+	for _, application := range applications {
+		ids = append(ids, application.ApplicationID)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		if err := lockWorkflowApplication(tx, id); err != nil {
+			if errors.Is(err, ErrApplicationNotFound) {
+				return errInvalidReleaseApplications
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureReleaseApplicationsUnassigned(tx *gorm.DB, planID, groupID string, applications []ReleaseApplicationInput) error {

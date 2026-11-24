@@ -1699,6 +1699,33 @@ function confirmDeleteBuildPlan(plan:Pick<BuildPlan,'id'|'name'>){
  })
  resourceStatusDialog=dialog
 }
+function confirmDeleteApplication(application:Application){
+ if(props.section!=='applications'||resourceStatusDialog||resourceMutationID.value)return
+ const scope=resourceScopeKey(),projectID=planExecutionSelectedProject.value,id=application.id
+ const authorized=()=>!planExecutionDisposed&&props.section==='applications'&&scope===resourceScopeKey()&&Boolean(projectID)&&auth.user?.project_id===projectID&&auth.canAny(['application.delete'])
+ const selectable=()=>resourceLoadedScope===scope&&applications.value.some(item=>item.id===id)
+ if(!authorized()||!selectable())return
+ const release=()=>{if(resourceStatusDialog===dialog)resourceStatusDialog=undefined}
+ const dialog=asyncConfirm({
+  title:t('applicationCard.deleteTitle',{name:application.name}),
+  content:t('applicationCard.deleteHint'),okText:t('applicationCard.delete'),okType:'danger',cancelText:t('delivery.cancel'),
+  isCurrent:authorized,onCancel:release,afterClose:release,onError:error=>message.error(apiErrorMessage(error)),
+  action:async signal=>{
+   if(!selectable()){dialog.destroy();release();return}
+   resourceMutationID.value=id
+   try{
+    await client.delete(`/applications/${id}`,{headers:{'X-EDO-Project-ID':projectID},signal})
+    if(signal.aborted||!authorized())return
+    resourceRequests.get('applications')?.controller.abort()
+    resourceRequests.delete('applications')
+    applications.value=applications.value.filter(item=>item.id!==id)
+    message.success(t('applicationCard.deleted'))
+    await resourceReaders.applications()
+   }finally{if(scope===resourceScopeKey()&&resourceStatusDialog===dialog)resourceMutationID.value=''}
+  },
+ })
+ resourceStatusDialog=dialog
+}
 async function testRepository(){if(testing.value||saving.value||!formOpen.value||!canUseResourceForm()||!auth.canAny(['repository.execute']))return;const request=startResourceFormRequest('repository.execute');testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null};const result=formEditingID.value?await client.post<RefResult>(`/repositories/${formEditingID.value}/test`,undefined,{...request.options,timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{...request.options,timeout:35000});if(request.current())message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){if(request.current())message.error(apiErrorMessage(error))}finally{finishResourceFormRequest(request.controller)}}
 async function testStoredRepository(repository:Repository){repositoryTestingID.value=repository.id;try{const result=await client.post<RefResult>(`/repositories/${repository.id}/test`,undefined,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`);await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{repositoryTestingID.value=''}}
 async function testRegistry(){if(testing.value||saving.value||!formOpen.value||!canUseResourceForm()||!auth.canAny(['image_registry.execute']))return;const request=startResourceFormRequest('image_registry.execute'),payload=registryRequestPayload(),snapshot=JSON.stringify(payload);testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',payload,{...request.options,timeout:35000});if(!request.current()||snapshot!==JSON.stringify(registryRequestPayload()))return;registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){if(request.current()&&snapshot===JSON.stringify(registryRequestPayload()))message.error(apiErrorMessage(error))}finally{finishResourceFormRequest(request.controller)}}
@@ -2430,9 +2457,13 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
         <button type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'}" :aria-label="t('applicationCard.deploymentInstances')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'deployments')"><Boxes :size="14"/>{{ t('applicationWorkspace.instances') }}<span v-if="canReadDeployments" class="apps-count">{{ card.countReady?card.deploymentInstances.length:'—' }}</span></button>
         <button v-if="auth.canAny(['delivery_variable.read'])" type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='environment'}" :aria-label="t('applicationWorkspace.environmentConfiguration')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='environment'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'environment')"><Settings2 :size="14" aria-hidden="true"/>{{ t('applicationWorkspace.environmentVariables') }}</button>
       </div>
-      <ResourceRowActions v-else-if="column.key==='actions'" :more="canUpdate">
+      <ResourceRowActions v-else-if="column.key==='actions'" :more="canUpdate||canDelete" :loading="resourceMutationID===card.application.id">
         <a-button v-if="canExecute" size="small" :loading="checkingApplicationIDs[card.application.id]" :disabled="card.sync.live" @click="checkApplicationUpdates(card.application)">{{ t('applicationCard.checkUpdates') }}</a-button>
-        <template #more><a-menu-item v-if="canUpdate" @click="edit(card.application)">{{ t('applicationCard.modify') }}</a-menu-item><a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(card.application)"><Power :size="14"/>{{ t(card.application.is_active?'delivery.disable':'delivery.enable') }}</a-menu-item></template>
+        <template #more>
+          <a-menu-item v-if="canUpdate" @click="edit(card.application)">{{ t('applicationCard.modify') }}</a-menu-item>
+          <a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(card.application)"><Power :size="14" aria-hidden="true"/>{{ t(card.application.is_active?'delivery.disable':'delivery.enable') }}</a-menu-item>
+          <a-menu-item v-if="canDelete" danger :disabled="Boolean(resourceMutationID)" @click="confirmDeleteApplication(card.application)"><Trash2 :size="14" aria-hidden="true"/>{{ t('applicationCard.delete') }}</a-menu-item>
+        </template>
       </ResourceRowActions>
     </template>
   </a-table>

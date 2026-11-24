@@ -291,6 +291,9 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		updates["last_checked_at"] = nil
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWorkflowApplication(tx, existing.ID); err != nil {
+			return err
+		}
 		if err := tx.Model(&model.Application{}).Where("uuid = ?", existing.ID).Updates(updates).Error; err != nil {
 			return err
 		}
@@ -1185,7 +1188,7 @@ func (s *Service) FindRun(ctx context.Context, id string) (*model.PipelineRun, e
 }
 
 func pipelineRunQuery(db *gorm.DB) *gorm.DB {
-	return db.Preload("Application").
+	return db.Preload("Application", func(db *gorm.DB) *gorm.DB { return db.Unscoped() }).
 		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
 		Preload("Repositories.Repository").Preload("Repositories.BuildPlan").Preload("Repositories.DeploymentPlan")
 }
@@ -1446,6 +1449,9 @@ func (s *Service) createPendingRun(ctx context.Context, application *model.Appli
 		components[i].Status = model.PipelineRunRepositoryPending
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWorkflowApplication(tx, application.ID); err != nil {
+			return err
+		}
 		if err := tx.Create(run).Error; err != nil {
 			return err
 		}
@@ -1744,6 +1750,9 @@ func (s *Service) createObservedRun(
 	component := pipelineRunRepositoryForLink(run.ID, link, candidate.Ref, candidate.Commit, now)
 	created := false
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWorkflowApplication(tx, application.ID); err != nil {
+			return err
+		}
 		if candidate.Event == "tag" && candidate.RawTagOID != "" {
 			existing, err := tagEventRecorded(tx, application.ID, workflow.ID, candidate.Ref, candidate.Commit, candidate.RawTagOID)
 			if err != nil {

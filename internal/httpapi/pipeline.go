@@ -187,6 +187,16 @@ func (h pipelineHandler) setApplicationStatus(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+func (h pipelineHandler) deleteApplication(c *gin.Context) {
+	id := c.Param("id")
+	if err := h.service.DeleteApplication(c.Request.Context(), id); err != nil {
+		h.writeError(c, "application_delete", err)
+		return
+	}
+	setAuditResourceID(c, id)
+	c.Status(http.StatusNoContent)
+}
+
 func (h pipelineHandler) syncApplication(c *gin.Context) {
 	application, run, err := h.service.SyncApplication(c.Request.Context(), c.Param("id"), "manual_sync")
 	if err != nil {
@@ -871,6 +881,10 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusConflict, "deployment_plan_in_use", err.Error())
 	case errors.Is(err, pipeline.ErrApplicationNotFound):
 		writeError(c, http.StatusNotFound, "application_not_found", err.Error())
+	case errors.Is(err, pipeline.ErrApplicationRunning):
+		writeError(c, http.StatusConflict, "application_running", pipeline.ErrApplicationRunning.Error())
+	case errors.Is(err, pipeline.ErrApplicationInUse):
+		writeError(c, http.StatusConflict, "application_in_use", pipeline.ErrApplicationInUse.Error())
 	case errors.Is(err, pipeline.ErrBuildPlanNotFound):
 		writeError(c, http.StatusNotFound, "build_plan_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrDeploymentPlanNotFound):

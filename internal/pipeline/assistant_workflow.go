@@ -469,6 +469,9 @@ func (s *Service) assistantRun(ctx context.Context, actor string, input Assistan
 		return nil, ErrRetrySnapshotChanged
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWorkflowApplication(tx, run.ApplicationID); err != nil {
+			return err
+		}
 		var locked model.ReleaseWorkflow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, &model.ReleaseWorkflow{ID: run.WorkflowID, ApplicationID: run.ApplicationID}).Error; err != nil {
 			return err

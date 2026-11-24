@@ -239,6 +239,7 @@ type Application struct {
 	CreatedBy           string                  `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt           time.Time               `gorm:"not null" json:"created_at"`
 	UpdatedAt           time.Time               `gorm:"not null" json:"updated_at"`
+	DeletedAt           gorm.DeletedAt          `gorm:"index" json:"-"`
 	Repository          GitRepository           `gorm:"foreignKey:RepositoryID;references:ID" json:"repository,omitempty"`
 	Workflows           []ReleaseWorkflow       `gorm:"foreignKey:ApplicationID;references:ID" json:"workflows"`
 	Repositories        []ApplicationRepository `gorm:"foreignKey:ApplicationID;references:ID" json:"-"`

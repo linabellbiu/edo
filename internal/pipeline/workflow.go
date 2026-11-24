@@ -2595,6 +2595,9 @@ func (s *Service) retryRun(ctx context.Context, runID, actorID string, artifactI
 		}
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWorkflowApplication(tx, run.ApplicationID); err != nil {
+			return err
+		}
 		if err := tx.Create(run).Error; err != nil {
 			return err
 		}

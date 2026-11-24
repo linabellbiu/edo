@@ -14,7 +14,7 @@ func workspacePermissions() []Permission {
 	}
 	for _, resource := range []struct{ code, name string }{{"application", "应用"}, {"workflow", "流水线"}, {"build_plan", "构建方案"}, {"image_registry", "镜像仓库"}, {"deployment_plan", "部署方案"}, {"release_plan", "发布计划"}, {"pipeline_run", "流水线运行"}, {"artifact", "构建制品"}} {
 		for _, action := range []struct{ code, name string }{{"read", "查看"}, {"create", "创建"}, {"update", "修改"}, {"delete", "删除"}, {"execute", "执行"}} {
-			implemented := map[string]string{"application": "read create update execute", "workflow": "read create update delete execute", "build_plan": "read create update delete", "image_registry": "read create execute", "deployment_plan": "read create update delete", "release_plan": "read create update delete execute", "pipeline_run": "read execute", "artifact": "read create"}
+			implemented := map[string]string{"application": "read create update delete execute", "workflow": "read create update delete execute", "build_plan": "read create update delete", "image_registry": "read create execute", "deployment_plan": "read create update delete", "release_plan": "read create update delete execute", "pipeline_run": "read execute", "artifact": "read create"}
 			if !strings.Contains(" "+implemented[resource.code]+" ", " "+action.code+" ") {
 				continue
 			}

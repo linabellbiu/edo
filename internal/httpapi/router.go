@@ -238,6 +238,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.POST("/applications", auditAction(deps.Audits, deps.Logger, "application.create", "application"), requirePermission(deps.Access, deps.Logger, "application.create"), pipelineAPI.createApplication)
 	protected.PUT("/applications/:id", auditAction(deps.Audits, deps.Logger, "application.update", "application"), requirePermission(deps.Access, deps.Logger, "application.update"), pipelineAPI.updateApplication)
 	protected.PATCH("/applications/:id/status", auditAction(deps.Audits, deps.Logger, "application.status.update", "application"), requirePermission(deps.Access, deps.Logger, "application.update"), pipelineAPI.setApplicationStatus)
+	protected.DELETE("/applications/:id", auditAction(deps.Audits, deps.Logger, "application.delete", "application"), requirePermission(deps.Access, deps.Logger, "application.delete"), pipelineAPI.deleteApplication)
 	protected.POST("/applications/:id/sync", auditAction(deps.Audits, deps.Logger, "application.sync", "application"), requirePermission(deps.Access, deps.Logger, "application.execute"), pipelineAPI.syncApplication)
 	protected.GET("/applications/:id/artifacts", requirePermission(deps.Access, deps.Logger, "artifact.read"), artifactAPI.list)
 	protected.POST("/applications/:id/artifacts/upload", auditAction(deps.Audits, deps.Logger, "artifact.upload", "artifact"), requirePermission(deps.Access, deps.Logger, "artifact.create"), artifactAPI.upload)

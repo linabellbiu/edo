@@ -337,7 +337,8 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		}
 
 		var legacyReferences, references int64
-		if err := tx.Model(&model.Application{}).Where("repository_id = ?", id).Count(&legacyReferences).Error; err != nil {
+		// 归档应用仍保留仓库外键和历史关联，物理删除仓库前需要一并检查。
+		if err := tx.Unscoped().Model(&model.Application{}).Where("repository_id = ?", id).Count(&legacyReferences).Error; err != nil {
 			return fmt.Errorf("检查代码仓库使用状态失败: %w", err)
 		}
 		if err := tx.Model(&model.ApplicationRepository{}).Where("repository_id = ?", id).Count(&references).Error; err != nil {
