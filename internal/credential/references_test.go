@@ -89,7 +89,7 @@ func TestReferenceChecksUseCurrentRowReadAcrossDialects(t *testing.T) {
 			if dialect == "sqlite" && !regexp.MustCompile(`\bLIMIT\s+1\b`).MatchString(upper) {
 				t.Fatalf("SQLite 当前行查询没有准确限制一条: sql=%q", actual)
 			}
-			for _, predicate := range []string{`(?i)\bcredential_id\s+IN\s*\(`, `(?i)\bOR\s+api_credential_id\s+IN\s*\(`, `(?i)\bAND\s+department_id\s*=`} {
+			for _, predicate := range []string{`(?i)\bdeleted_at\s+IS\s+NULL`, `(?i)\bcredential_id\s+IN\s*\(`, `(?i)\bOR\s+api_credential_id\s+IN\s*\(`, `(?i)\bAND\s+department_id\s*=`} {
 				if !regexp.MustCompile(predicate).MatchString(actual) {
 					t.Fatalf("引用当前读缺少准确过滤条件: dialect=%s predicate=%q sql=%q", dialect, predicate, actual)
 				}

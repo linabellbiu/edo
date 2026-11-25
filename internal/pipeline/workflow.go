@@ -2601,7 +2601,7 @@ func (s *Service) retryRun(ctx context.Context, runID, actorID string, artifactI
 		if err := tx.Create(run).Error; err != nil {
 			return err
 		}
-		if err := tx.Create(&components).Error; err != nil {
+		if err := createPipelineRunRepositories(tx, components); err != nil {
 			return err
 		}
 		if len(skipRecords) == 0 {

@@ -2,12 +2,13 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { parse } from '@vue/compiler-sfc'
+import axios from 'axios'
 import * as vue from 'vue'
 import { loadFrontend } from './acceptanceHarness.mjs'
 
 const settle = async () => { await vue.nextTick(); await new Promise(resolve => setImmediate(resolve)) }
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
-const codes = ['application.read', 'application.update', 'application.delete', 'repository.read', 'repository.update', 'build_plan.read', 'build_plan.update', 'build_plan.delete', 'image_registry.read']
+const codes = ['application.read', 'application.update', 'application.delete', 'repository.read', 'repository.update', 'repository.delete', 'build_plan.read', 'build_plan.update', 'build_plan.delete', 'image_registry.read']
 
 async function harness({ section = 'applications', patch, remove, get } = {}) {
   const requests = [], confirmations = [], notifications = [], unmounts = []
@@ -17,7 +18,7 @@ async function harness({ section = 'applications', patch, remove, get } = {}) {
   const client = {
     async get(path, options) { requests.push({ method: 'get', path, options }); return await get?.(path, options) || { data: path === '/applications' ? { applications: structuredClone(rows.applications) } : path === '/repositories' ? { repositories: structuredClone(rows.repositories) } : path === '/build-plans' ? { build_plans: structuredClone(rows.build_plans) } : path === '/image-registries' ? { image_registries: structuredClone(rows.image_registries) } : {} } },
     async patch(path, body, options) { requests.push({ method: 'patch', path, body, options }); if (patch) return patch(path, body, options); rows[section][0].is_active = body.active; return { status: 204 } },
-    async delete(path, options) { requests.push({ method: 'delete', path, options }); if (remove) await remove(); rows.applications = []; return { status: 204 } },
+    async delete(path, options) { requests.push({ method: 'delete', path, options }); if (remove) await remove(path, options); const [, key, id] = path.split('/'); if (rows[key]) rows[key] = rows[key].filter(row => row.id !== decodeURIComponent(id)); return { status: 204 } },
   }
   const Modal = { confirm(config) { const dialog = { ...config, destroyed: false, destroy() { this.destroyed = true }, update(value) { Object.assign(this, value) } }; confirmations.push(dialog); return dialog } }
   const component = loadFrontend('../src/views/DevOpsView.vue', {
@@ -25,7 +26,7 @@ async function harness({ section = 'applications', patch, remove, get } = {}) {
     'vue-router': { useRoute: () => ({ query: {} }), useRouter: () => ({}) },
     'vue-i18n': { useI18n: () => ({ t: (key, args) => args ? `${key}:${JSON.stringify(args)}` : key, locale: vue.ref('zh-CN') }) },
     '@/stores/auth': { useAuthStore: () => auth }, '@/api/client': { __esModule: true, default: client },
-    '@/api/resources': { apiErrorMessage: () => '操作失败' },
+    '@/api/resources': loadFrontend('../src/api/resources.ts', { axios, '@/api/client': { __esModule: true, default: client } }),
     '@/utils/deploymentInstances': loadFrontend('../src/utils/deploymentInstances.ts'),
     'ant-design-vue': { Modal, message: Object.fromEntries(['error', 'success'].map(kind => [kind, value => notifications.push({ kind, value })])) },
     '@/utils/asyncConfirm': loadFrontend('../src/utils/asyncConfirm.ts', { 'ant-design-vue': { Modal } }),
@@ -53,6 +54,105 @@ test('删除应用使用独立权限和当前项目，失败可重试，成功�
   assert.equal(attempts, 2); assert.equal(dialog.destroyed, true); assert.equal(h.state.applications.value.length, 0)
   const request = h.requests.find(item => item.method === 'delete')
   assert.equal(request.path, '/applications/app-a'); assert.equal(request.options.headers['X-EDO-Project-ID'], 'project-a')
+})
+
+test('删除代码仓库只需独立删除权限，引用冲突保留确认及真实提示，重试防重并准确移除目标', async t => {
+  let attempts = 0
+  const pending = deferred(), hint = '代码仓库仍被应用使用，请先解除关联'
+  const h = await harness({ section: 'repositories', remove: async () => {
+    if (++attempts === 1) throw new axios.AxiosError('Conflict', undefined, undefined, undefined, { status: 409, data: { message: hint } })
+    await pending.promise
+  } }); t.after(h.stop)
+  h.auth.user.permissions = ['repository.read', 'repository.update', 'application.delete']; await settle()
+  assert.equal(h.state.canDelete.value, false)
+  h.state.confirmDeleteRepository(h.state.repositories.value[0]); assert.equal(h.confirmations.length, 0)
+  h.auth.user.permissions = ['repository.read', 'repository.delete']; await settle()
+  assert.equal(h.state.canDelete.value, true); assert.equal(h.state.canUpdate.value, false)
+  h.rows.repositories.push({ id: 'repo-other', name: '其他仓库', is_active: true }); await h.state.refresh()
+  h.state.confirmDeleteRepository(h.state.repositories.value[0]); const dialog = h.confirmations[0]
+  assert.match(dialog.title, /仓库甲/); assert.equal(dialog.okType, 'danger'); assert.equal(dialog.content, 'repositoryActions.deleteHint')
+  await submit(dialog)
+  assert.equal(dialog.destroyed, false); assert.equal(dialog.okButtonProps.loading, false); assert.equal(dialog.cancelButtonProps.disabled, false)
+  assert.deepEqual(h.state.repositories.value.map(row => row.id), ['repo-a', 'repo-other'])
+  assert.deepEqual(h.notifications, [{ kind: 'error', value: hint }])
+  await Promise.all([submit(dialog), submit(dialog)])
+  assert.equal(attempts, 2); assert.equal(dialog.okButtonProps.loading, true)
+  dialog.onCancel(); assert.equal(dialog.destroyed, false)
+  pending.resolve(); await settle()
+  const request = h.requests.find(item => item.method === 'delete')
+  assert.equal(request.path, '/repositories/repo-a'); assert.equal(request.options.headers['X-EDO-Project-ID'], 'project-a')
+  assert.deepEqual(h.state.repositories.value.map(row => row.id), ['repo-other'])
+  assert.equal(dialog.destroyed, true); assert.equal(h.state.resourceMutationID.value, '')
+  assert.equal(h.notifications.filter(item => item.kind === 'success').length, 1)
+  await submit(dialog); assert.equal(attempts, 2)
+})
+
+test('代码仓库删除确认取消、撤权、项目失配或目标已移除后，旧回调不能发出删除请求', async t => {
+  for (const change of ['cancel', 'permission', 'project', 'removed']) {
+    const h = await harness({ section: 'repositories' }); t.after(h.stop)
+    h.state.confirmDeleteRepository(h.state.repositories.value[0]); const dialog = h.confirmations[0]
+    if (change === 'cancel') dialog.onCancel()
+    else if (change === 'permission') h.auth.user.permissions = ['repository.read', 'repository.update']
+    else if (change === 'project') h.storage.project = 'project-b'
+    else h.state.repositories.value = []
+    await settle(); await submit(dialog)
+    assert.equal(h.requests.filter(item => item.method === 'delete').length, 0, change)
+    assert.equal(dialog.destroyed, change !== 'cancel', change)
+    assert.equal(h.notifications.length, 0)
+  }
+})
+
+test('代码仓库删除中切换项目、撤权或离开页面时中止请求，迟到结果不污染新范围', async t => {
+  for (const change of ['project', 'permission', 'unmount']) {
+    const pending = deferred(), h = await harness({ section: 'repositories', remove: () => pending.promise }); t.after(h.stop)
+    h.state.confirmDeleteRepository(h.state.repositories.value[0]); const dialog = h.confirmations[0]
+    await submit(dialog)
+    const request = h.requests.find(item => item.method === 'delete')
+    if (change === 'project') {
+      h.rows.repositories = [{ id: 'repo-b', name: '新项目仓库', is_active: true }]
+      h.storage.project = 'project-b'; h.auth.user.project_id = 'project-b'; h.state.syncPlanExecutionProject()
+    } else if (change === 'permission') h.auth.user.permissions = ['repository.read']
+    else h.stop()
+    await settle(); const requestCount = h.requests.length
+    assert.equal(request.options.signal.aborted, true, change); assert.equal(dialog.destroyed, true, change)
+    if (change === 'unmount') pending.reject(new Error('已离开的旧错误'))
+    else pending.resolve()
+    await settle()
+    assert.equal(h.requests.length, requestCount, change); assert.deepEqual(h.notifications, [], change)
+    if (change === 'project') assert.deepEqual(h.state.repositories.value.map(row => row.id), ['repo-b'])
+  }
+})
+
+test('代码仓库删除成功立即关闭确认，慢刷新不占用操作且旧读取不能恢复已删除仓库', async t => {
+  const stale = deferred(), fresh = deferred(); let reads = 0
+  const h = await harness({ section: 'repositories', get: path => {
+    if (path !== '/repositories') return
+    if (++reads === 2) return stale.promise
+    if (reads === 3) return fresh.promise
+  } }); t.after(h.stop)
+  const oldRead = h.state.resourceReaders.repositories()
+  const oldRequest = h.requests.filter(item => item.path === '/repositories').at(-1)
+  h.state.confirmDeleteRepository(h.state.repositories.value[0]); const dialog = h.confirmations[0]
+  await submit(dialog)
+  assert.equal(oldRequest.options.signal.aborted, true)
+  assert.equal(dialog.destroyed, true); assert.equal(h.state.resourceMutationID.value, '')
+  assert.equal(h.state.resourcePending.value.repositories, true); assert.deepEqual(h.state.repositories.value, [])
+  stale.resolve({ data: { repositories: [{ id: 'repo-a', name: '旧仓库', is_active: true }] } }); await oldRead; await settle()
+  assert.deepEqual(h.state.repositories.value, [])
+  fresh.resolve({ data: { repositories: [{ id: 'repo-new', name: '新仓库', is_active: true }] } }); await settle()
+  assert.deepEqual(h.state.repositories.value.map(row => row.id), ['repo-new'])
+})
+
+test('代码仓库删除入口只出现在行更多菜单，删除权限独立于修改权限且提交中禁用', () => {
+  const { descriptor } = parse(readFileSync(new URL('../src/views/DevOpsView.vue', import.meta.url), 'utf8'))
+  const controls = []; const visit = (node, parents = []) => { if (node.type === 1 && node.props?.some(prop => prop.type === 7 && prop.name === 'on' && prop.arg?.content === 'click' && prop.exp?.content.startsWith('confirmDeleteRepository('))) controls.push({ node, parents }); for (const child of node.children || []) visit(child, [...parents, node]) }; visit(descriptor.template.ast)
+  assert.equal(controls.length, 1)
+  const { node, parents } = controls[0], actions = parents.find(item => item.tag === 'ResourceRowActions')
+  assert.ok(actions); assert.ok(actions.props.some(prop => prop.type === 7 && prop.name === 'bind' && prop.arg?.content === 'more' && prop.exp?.content === 'canUpdate||canDelete'))
+  assert.ok(parents.some(item => item.props?.some(prop => prop.type === 7 && prop.name === 'slot' && prop.arg?.content === 'more')))
+  assert.ok(node.props.some(prop => prop.type === 7 && prop.name === 'if' && prop.exp?.content === 'canDelete'))
+  assert.ok(node.props.some(prop => prop.type === 6 && prop.name === 'danger'))
+  assert.ok(node.props.some(prop => prop.type === 7 && prop.name === 'bind' && prop.arg?.content === 'disabled' && prop.exp?.content === 'Boolean(resourceMutationID)'))
 })
 
 test('应用及无 project_id 的真实仓库 DTO 均可确认启停，准确 PATCH 且不重复提交', async t => {
@@ -101,7 +201,7 @@ test('状态保存失败保留确认框、提示和原状态，可正常重试�
   const h = await harness({ patch: async () => { if (++attempts === 1) throw new Error('failed'); h.rows.applications[0].is_active = false; return { status: 204 } } }); t.after(h.stop)
   h.state.confirmResourceStatus(h.state.applications.value[0]); const dialog = h.confirmations[0]
   await submit(dialog); assert.equal(dialog.destroyed, false); assert.equal(h.state.applications.value[0].is_active, true)
-  assert.deepEqual(h.notifications, [{ kind: 'error', value: '操作失败' }])
+  assert.deepEqual(h.notifications, [{ kind: 'error', value: '操作失败，请稍后重试' }])
   assert.equal(dialog.cancelButtonProps.disabled, false); assert.equal(dialog.keyboard, true)
   await submit(dialog); assert.equal(writes(h).length, 2); assert.equal(h.state.applications.value[0].is_active, false)
 })

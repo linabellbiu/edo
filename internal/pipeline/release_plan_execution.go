@@ -223,6 +223,14 @@ func (s *Service) CreateReleasePlanExecution(
 			}
 		}
 
+		// 同一批次按仓库 UUID 统一排序加锁，避免不同应用共享仓库时交叉等待。
+		repositoryGroups := make([][]model.PipelineRunRepository, 0, len(prepared.items))
+		for _, item := range prepared.items {
+			repositoryGroups = append(repositoryGroups, item.components)
+		}
+		if err := lockPipelineRunRepositories(tx, repositoryGroups...); err != nil {
+			return err
+		}
 		if err := tx.Create(&prepared.execution).Error; err != nil {
 			return err
 		}
@@ -1096,5 +1104,5 @@ func isReleasePlanExecutionPublicError(err error) bool {
 	return errors.Is(err, ErrReleasePlanNotFound) || errors.Is(err, ErrReleasePlanDisabled) || errors.Is(err, ErrInvalidReleasePlanExecution) ||
 		errors.Is(err, ErrReleasePlanExecutionExists) || errors.Is(err, ErrReleasePlanExecutionPlanChanged) ||
 		errors.Is(err, ErrReleasePlanExecutionWorkflowChanged) || errors.Is(err, ErrReleasePlanExecutionVersionChanged) ||
-		errors.Is(err, ErrReleasePlanExecutionArtifactChanged)
+		errors.Is(err, ErrReleasePlanExecutionArtifactChanged) || errors.Is(err, ErrPipelineRepositoryUnavailable)
 }

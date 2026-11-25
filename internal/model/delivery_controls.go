@@ -168,7 +168,7 @@ type RepositoryCheckDelivery struct {
 	ProjectID     string    `gorm:"type:varchar(36);not null;index" json:"project_id"`
 	DepartmentID  string    `gorm:"type:varchar(36);not null;index" json:"department_id"`
 	PipelineRunID string    `gorm:"type:varchar(36);not null;index" json:"pipeline_run_id"`
-	RepositoryID  string    `gorm:"type:varchar(36);not null" json:"repository_id"`
+	RepositoryID  string    `gorm:"type:varchar(36);not null;index" json:"repository_id"`
 	CommitSHA     string    `gorm:"type:varchar(64);not null" json:"commit_sha"`
 	Context       string    `gorm:"type:varchar(128);not null" json:"context"`
 	State         string    `gorm:"type:varchar(24);not null" json:"state"`

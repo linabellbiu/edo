@@ -895,6 +895,8 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusNotFound, "pipeline_run_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineRunNotRetryable):
 		writeError(c, http.StatusConflict, "pipeline_run_not_retryable", err.Error())
+	case errors.Is(err, pipeline.ErrPipelineRepositoryUnavailable):
+		writeError(c, http.StatusConflict, "pipeline_repository_unavailable", pipeline.ErrPipelineRepositoryUnavailable.Error())
 	case errors.Is(err, pipeline.ErrRetryArtifactInvalid):
 		writeError(c, http.StatusConflict, "retry_artifact_unavailable", err.Error())
 	case errors.Is(err, pipeline.ErrRetryArtifactsUnavailable):

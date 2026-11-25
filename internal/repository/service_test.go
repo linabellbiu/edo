@@ -133,17 +133,69 @@ func TestRepositoryCanBeUpdatedAndDeletedWhenUnused(t *testing.T) {
 	if err := db.Delete(&application).Error; err != nil {
 		t.Fatalf("归档测试应用失败: %v", err)
 	}
-	if err := service.Delete(context.Background(), repo.ID); !errors.Is(err, ErrRepositoryInUse) {
-		t.Fatalf("历史关联仍持有仓库外键: %v", err)
-	}
-	if err := db.Unscoped().Delete(&application).Error; err != nil {
-		t.Fatalf("清理测试仓库引用失败: %v", err)
-	}
 	if err := service.Delete(context.Background(), repo.ID); err != nil {
-		t.Fatalf("删除未使用的代码仓库失败: %v", err)
+		t.Fatalf("仅有已归档应用引用时应能删除代码仓库: %v", err)
+	}
+	var archived model.GitRepository
+	if err := db.Unscoped().First(&archived, "uuid = ?", repo.ID).Error; err != nil || !archived.DeletedAt.Valid {
+		t.Fatalf("历史仓库关联应保留: %v", err)
 	}
 	if err := service.Delete(context.Background(), repo.ID); !errors.Is(err, ErrRepositoryNotFound) {
 		t.Fatalf("重复删除仓库未返回不存在: %v", err)
+	}
+}
+
+func TestRepositoryDeleteBlocksFrozenRunAndPendingWriteback(t *testing.T) {
+	service, db := newRepositoryTestService(t)
+	ctx := context.Background()
+	create := func(name string) *model.GitRepository {
+		t.Helper()
+		repo, err := service.Create(ctx, "admin", Input{Name: name, Provider: model.GitProviderGeneric,
+			CloneURL: "https://git.example.com/team/repo.git", AuthType: model.GitAuthNone})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return repo
+	}
+	old, current := create("原仓库"), create("当前仓库")
+	app := model.Application{ID: "switched-app", Name: "已经更换仓库的应用", RepositoryID: current.ID}
+	run := model.PipelineRun{ID: "frozen-run", ApplicationID: app.ID, Status: model.PipelineRunRunning, StatusWriteback: true}
+	link := model.PipelineRunRepository{ID: "frozen-repo", PipelineRunID: run.ID, RepositoryID: old.ID}
+	for _, value := range []any{&app, &run, &link} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertBlocked := func() {
+		t.Helper()
+		if err := service.Delete(ctx, old.ID); !errors.Is(err, ErrRepositoryRunning) {
+			t.Fatalf("仍在使用冻结仓库时应阻止删除：%v", err)
+		}
+	}
+	assertBlocked()
+	if err := db.Model(&run).Update("status", model.PipelineRunSucceeded).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertBlocked() // 已成功，回写尚未入队。
+	if err := db.Model(&run).Update("repository_check_state", "success").Error; err != nil {
+		t.Fatal(err)
+	}
+	check := model.RepositoryCheckDelivery{ID: "report-frozen-repo", DeliveryKey: "report-frozen-repo", PipelineRunID: run.ID, RepositoryID: old.ID, Status: "pending"}
+	if err := db.Create(&check).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertBlocked()
+	if err := db.Model(&check).Update("status", "delivered").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(ctx, old.ID); err != nil {
+		t.Fatalf("只剩已完成的运行历史应允许删除：%v", err)
+	}
+	if err := db.First(&link, "uuid = ?", link.ID).Error; err != nil || link.RepositoryID != old.ID {
+		t.Fatalf("删除连接不应改变历史运行快照：%v", err)
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error { return LockReference(tx, old.ID) }); !errors.Is(err, ErrRepositoryNotFound) {
+		t.Fatalf("已归档仓库不能再被绑定：%v", err)
 	}
 }
 

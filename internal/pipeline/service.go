@@ -252,6 +252,9 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 		}
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockApplicationRepository(tx, input.RepositoryID); err != nil {
+			return err
+		}
 		if err := tx.Create(application).Error; err != nil {
 			return err
 		}
@@ -294,6 +297,9 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		if err := lockWorkflowApplication(tx, existing.ID); err != nil {
 			return err
 		}
+		if err := lockApplicationRepository(tx, input.RepositoryID); err != nil {
+			return err
+		}
 		if err := tx.Model(&model.Application{}).Where("uuid = ?", existing.ID).Updates(updates).Error; err != nil {
 			return err
 		}
@@ -320,6 +326,14 @@ func (s *Service) SetApplicationActive(ctx context.Context, id string, active bo
 		return ErrApplicationNotFound
 	}
 	return nil
+}
+
+func lockApplicationRepository(tx *gorm.DB, id string) error {
+	err := repository.LockReference(tx, id)
+	if errors.Is(err, repository.ErrRepositoryNotFound) {
+		return ErrInvalidApplication
+	}
+	return err
 }
 
 func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInput) (ApplicationInput, error) {
@@ -1190,7 +1204,8 @@ func (s *Service) FindRun(ctx context.Context, id string) (*model.PipelineRun, e
 func pipelineRunQuery(db *gorm.DB) *gorm.DB {
 	return db.Preload("Application", func(db *gorm.DB) *gorm.DB { return db.Unscoped() }).
 		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
-		Preload("Repositories.Repository").Preload("Repositories.BuildPlan").Preload("Repositories.DeploymentPlan")
+		Preload("Repositories.Repository", func(db *gorm.DB) *gorm.DB { return db.Unscoped() }).
+		Preload("Repositories.BuildPlan").Preload("Repositories.DeploymentPlan")
 }
 
 func (s *Service) enrichPipelineRuns(ctx context.Context, runs []model.PipelineRun) error {
@@ -1455,7 +1470,7 @@ func (s *Service) createPendingRun(ctx context.Context, application *model.Appli
 		if err := tx.Create(run).Error; err != nil {
 			return err
 		}
-		return tx.Create(&components).Error
+		return createPipelineRunRepositories(tx, components)
 	}); err != nil {
 		return nil, fmt.Errorf("创建流水线运行失败: %w", err)
 	}
@@ -1770,7 +1785,7 @@ func (s *Service) createObservedRun(
 			return nil
 		}
 		created = true
-		return tx.Create(&component).Error
+		return createPipelineRunRepositories(tx, []model.PipelineRunRepository{component})
 	}); err != nil {
 		return nil, fmt.Errorf("记录代码变更失败: %w", err)
 	}

@@ -1726,6 +1726,33 @@ function confirmDeleteApplication(application:Application){
  })
  resourceStatusDialog=dialog
 }
+function confirmDeleteRepository(repository:Repository){
+ if(props.section!=='repositories'||resourceStatusDialog||resourceMutationID.value)return
+ const scope=resourceScopeKey(),projectID=planExecutionSelectedProject.value,id=repository.id
+ const authorized=()=>!planExecutionDisposed&&props.section==='repositories'&&scope===resourceScopeKey()&&Boolean(projectID)&&auth.user?.project_id===projectID&&auth.canAny(['repository.delete'])
+ const selectable=()=>resourceLoadedScope===scope&&repositories.value.some(item=>item.id===id)
+ if(!authorized()||!selectable())return
+ const release=()=>{if(resourceStatusDialog===dialog)resourceStatusDialog=undefined}
+ const dialog=asyncConfirm({
+  title:t('repositoryActions.deleteTitle',{name:repository.name}),
+  content:t('repositoryActions.deleteHint'),okText:t('repositoryActions.delete'),okType:'danger',cancelText:t('delivery.cancel'),
+  isCurrent:authorized,onCancel:release,afterClose:release,onError:error=>message.error(apiErrorMessage(error)),
+  action:async signal=>{
+   if(!selectable()){dialog.destroy();release();return}
+   resourceMutationID.value=id
+   try{
+    await client.delete(`/repositories/${encodeURIComponent(id)}`,{headers:{'X-EDO-Project-ID':projectID},signal})
+    if(signal.aborted||!authorized())return
+    resourceRequests.get('repositories')?.controller.abort()
+    resourceRequests.delete('repositories')
+    repositories.value=repositories.value.filter(item=>item.id!==id)
+    message.success(t('repositoryActions.deleted'))
+    void resourceReaders.repositories()
+   }finally{if(scope===resourceScopeKey()&&resourceStatusDialog===dialog)resourceMutationID.value=''}
+  },
+ })
+ resourceStatusDialog=dialog
+}
 async function testRepository(){if(testing.value||saving.value||!formOpen.value||!canUseResourceForm()||!auth.canAny(['repository.execute']))return;const request=startResourceFormRequest('repository.execute');testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null};const result=formEditingID.value?await client.post<RefResult>(`/repositories/${formEditingID.value}/test`,undefined,{...request.options,timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{...request.options,timeout:35000});if(request.current())message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){if(request.current())message.error(apiErrorMessage(error))}finally{finishResourceFormRequest(request.controller)}}
 async function testStoredRepository(repository:Repository){repositoryTestingID.value=repository.id;try{const result=await client.post<RefResult>(`/repositories/${repository.id}/test`,undefined,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`);await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{repositoryTestingID.value=''}}
 async function testRegistry(){if(testing.value||saving.value||!formOpen.value||!canUseResourceForm()||!auth.canAny(['image_registry.execute']))return;const request=startResourceFormRequest('image_registry.execute'),payload=registryRequestPayload(),snapshot=JSON.stringify(payload);testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',payload,{...request.options,timeout:35000});if(!request.current()||snapshot!==JSON.stringify(registryRequestPayload()))return;registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){if(request.current()&&snapshot===JSON.stringify(registryRequestPayload()))message.error(apiErrorMessage(error))}finally{finishResourceFormRequest(request.controller)}}
@@ -2650,9 +2677,13 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
    <template #cell-description="{value}"><span :title="String(value||'')">{{ value||'—' }}</span></template>
    <template #cell-timeout_seconds="{value}">{{ value }} 秒</template>
    <template #actions="{row}">
-    <ResourceRowActions v-if="props.section==='repositories'" :more="canUpdate" :loading="resourceMutationID===String(row.id)">
+    <ResourceRowActions v-if="props.section==='repositories'" :more="canUpdate||canDelete" :loading="resourceMutationID===String(row.id)">
      <a-button v-if="canExecute" type="link" :loading="repositoryTestingID===String(row.id)" :disabled="Boolean(repositoryTestingID)&&repositoryTestingID!==String(row.id)" @click="testStoredRepository(row as Repository)">测试</a-button>
-     <template #more><a-menu-item v-if="canUpdate" @click="edit(row)">{{ t('applicationCard.configure') }}</a-menu-item><a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(row as Repository)"><Power :size="14"/>{{ t((row as Repository).is_active?'delivery.disable':'delivery.enable') }}</a-menu-item></template>
+     <template #more>
+      <a-menu-item v-if="canUpdate" @click="edit(row)">{{ t('applicationCard.configure') }}</a-menu-item>
+      <a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(row as Repository)"><Power :size="14"/>{{ t((row as Repository).is_active?'delivery.disable':'delivery.enable') }}</a-menu-item>
+      <a-menu-item v-if="canDelete" danger :disabled="Boolean(resourceMutationID)" @click="confirmDeleteRepository(row as Repository)"><Trash2 :size="14" aria-hidden="true"/>{{ t('repositoryActions.delete') }}</a-menu-item>
+     </template>
     </ResourceRowActions>
    </template>
   </ResourceTable>

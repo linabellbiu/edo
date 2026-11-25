@@ -191,6 +191,8 @@ func (h repositoryHandler) writeServiceError(c *gin.Context, operation string, e
 		writeError(c, http.StatusNotFound, "repository_not_found", repository.ErrRepositoryNotFound.Error())
 	case errors.Is(err, repository.ErrRepositoryInUse):
 		writeError(c, http.StatusConflict, "repository_in_use", repository.ErrRepositoryInUse.Error())
+	case errors.Is(err, repository.ErrRepositoryRunning):
+		writeError(c, http.StatusConflict, "repository_running", repository.ErrRepositoryRunning.Error())
 	case errors.Is(err, secret.ErrUnavailable):
 		writeError(c, http.StatusServiceUnavailable, "secrets_unavailable", secret.ErrUnavailable.Error())
 	default:

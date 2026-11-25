@@ -41,8 +41,8 @@ func ReferencesInUse(tx *gorm.DB, ids []string, departmentID string) (bool, erro
 		ID string `gorm:"column:uuid"`
 	}
 	// Table 避免项目过滤隐藏引用；当前行读取避免 MySQL RR 复用加锁前的旧快照。
-	query := tx.Table("git_repositories").Select("uuid").
-		Where("credential_id IN ? OR api_credential_id IN ?", ids, ids)
+	query := tx.Table("git_repositories").Select("uuid").Where("deleted_at IS NULL").
+		Where("(credential_id IN ? OR api_credential_id IN ?)", ids, ids)
 	if departmentID != "" {
 		query = query.Where("department_id = ?", departmentID)
 	}

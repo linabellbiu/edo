@@ -246,7 +246,7 @@ func (s *Service) ExecuteRunSelection(ctx context.Context, runID, actorID, ref, 
 		if err := tx.Where("pipeline_run_id = ?", run.ID).Delete(&model.PipelineRunRepository{}).Error; err != nil {
 			return err
 		}
-		return tx.Create(&components).Error
+		return createPipelineRunRepositories(tx, components)
 	})
 	if err != nil {
 		return nil, err
@@ -753,7 +753,7 @@ func (s *Service) saveBlockedManualSelection(
 		if err := tx.Where("pipeline_run_id = ?", run.ID).Delete(&model.PipelineRunRepository{}).Error; err != nil {
 			return err
 		}
-		return tx.Create(&components).Error
+		return createPipelineRunRepositories(tx, components)
 	})
 	if err != nil {
 		return nil, err

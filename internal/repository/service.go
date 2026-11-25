@@ -32,7 +32,8 @@ var (
 	ErrRepositoryExists         = errors.New("代码仓库名称已存在")
 	ErrRepositoryNotFound       = errors.New("代码仓库不存在")
 	ErrRepositoryChanged        = errors.New("代码仓库配置已变化，请刷新后重试")
-	ErrRepositoryInUse          = errors.New("代码仓库正在被应用使用，不能删除")
+	ErrRepositoryInUse          = errors.New("代码仓库仍被应用绑定，请先更换相关应用的仓库或删除相关应用")
+	ErrRepositoryRunning        = errors.New("代码仓库仍有未结束的流水线或待回写的检查结果，请处理完成后再删除")
 	ErrInvalidCredential        = errors.New("代码仓库凭据配置无效")
 	ErrCredentialRebindRequired = errors.New("更换代码仓库地址后，请重新提供凭据或选择本人保存的令牌")
 	ErrKnownHostsRequired       = errors.New("SSH 仓库必须配置可信 known_hosts 文件")
@@ -324,34 +325,6 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 		return ErrRepositoryNotFound
 	}
 	return nil
-}
-
-func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing model.GitRepository
-		if err := tx.First(&existing, "uuid = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrRepositoryNotFound
-			}
-			return fmt.Errorf("查询待删除代码仓库失败: %w", err)
-		}
-
-		var legacyReferences, references int64
-		// 归档应用仍保留仓库外键和历史关联，物理删除仓库前需要一并检查。
-		if err := tx.Unscoped().Model(&model.Application{}).Where("repository_id = ?", id).Count(&legacyReferences).Error; err != nil {
-			return fmt.Errorf("检查代码仓库使用状态失败: %w", err)
-		}
-		if err := tx.Model(&model.ApplicationRepository{}).Where("repository_id = ?", id).Count(&references).Error; err != nil {
-			return fmt.Errorf("检查代码仓库关联状态失败: %w", err)
-		}
-		if legacyReferences > 0 || references > 0 {
-			return ErrRepositoryInUse
-		}
-		if err := tx.Delete(&existing).Error; err != nil {
-			return fmt.Errorf("删除代码仓库失败: %w", err)
-		}
-		return nil
-	})
 }
 
 func (s *Service) TestConnection(ctx context.Context, id string) (RefResult, error) {

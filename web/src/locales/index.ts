@@ -170,6 +170,9 @@ export const messages = {
       noResults: '没有符合条件的应用', clearFilters: '清除筛选',
       emptyHint: '先创建应用并连接代码仓库，再配置流水线。', noRunHint: '运行后将在这里显示提交与执行进度。', template: '绑定方案：{name}',
     },
+    repositoryActions: {
+      delete: '删除仓库', deleteTitle: '删除代码仓库“{name}”？', deleteHint: '仅删除 EDO 中的仓库配置，远端 Git 仓库保留。仍被引用时无法删除。', deleted: '代码仓库已删除',
+    },
     applicationCard: {
       autoRefresh: '自动更新', active: '已启用', inactive: '已停用', noDescription: '暂无应用说明', currentPipeline: '当前流水线', latestRun: '最近运行',
       currentNode: '当前任务', repository: '代码仓库', workflow: '流水线', commitMessage: 'Commit message：', codeStatus: '代码状态',
@@ -415,6 +418,9 @@ export const messages = {
       columns: { application: 'Application', resources: 'Resources', actions: 'Actions', status: 'Enabled', source: 'Trigger rules', template: 'Linked template', tasks: 'Tasks', runTime: 'Run time' },
       noResults: 'No matching applications', clearFilters: 'Clear filters',
       emptyHint: 'Create an application, connect its repository, and configure a pipeline.', noRunHint: 'Commits and progress will appear after the first run.', template: 'Linked template: {name}',
+    },
+    repositoryActions: {
+      delete: 'Delete repository', deleteTitle: 'Delete repository “{name}”?', deleteHint: 'Only the repository configuration in EDO will be deleted. The remote Git repository is retained. Referenced repositories cannot be deleted.', deleted: 'Repository deleted',
     },
     applicationCard: {
       autoRefresh: 'Auto refresh', active: 'Enabled', inactive: 'Disabled', noDescription: 'No description', currentPipeline: 'Current pipeline', latestRun: 'Latest run',

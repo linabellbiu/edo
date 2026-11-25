@@ -423,6 +423,16 @@ var migrations = []migration{
 		}
 		return tx.Migrator().CreateIndex(app, "DeletedAt")
 	}},
+	{version: "202611250084", up: func(tx *gorm.DB) error {
+		repo := &model.GitRepository{}
+		if err := addColumns(tx, repo, []string{"DeletedAt"}); err != nil {
+			return err
+		}
+		if err := addIndexes(tx, repo, []string{"DeletedAt"}); err != nil {
+			return err
+		}
+		return addIndexes(tx, &model.RepositoryCheckDelivery{}, []string{"RepositoryID"})
+	}},
 }
 
 // 移除入站 Webhook 的专用授权，避免旧权限导致角色列表校验失败。

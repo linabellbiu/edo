@@ -41,23 +41,34 @@ func (s *Service) RunRepositoryChecks(ctx context.Context) {
 }
 func (s *Service) ReconcileRepositoryChecks(ctx context.Context) error {
 	var runs []model.PipelineRun
-	expected := "CASE WHEN status = 'succeeded' THEN 'success' WHEN status = 'failed' THEN 'failure' WHEN status IN ('canceled','skipped') THEN 'error' ELSE 'pending' END"
-	if err := s.db.WithContext(ctx).Where("status_writeback = ? AND repository_check_state <> "+expected, true).Order("id ASC").Limit(100).Find(&runs).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("status_writeback = ? AND repository_check_state <> "+repository.ExpectedCheckStateSQL, true).Order("id ASC").Limit(100).Find(&runs).Error; err != nil {
 		return err
 	}
 	for _, run := range runs {
 		scope := database.WithDepartmentScope(ctx, database.DepartmentScope{ProjectID: run.ProjectID, DepartmentID: run.DepartmentID})
 		state := checkState(run.Status)
 		err := s.db.WithContext(scope).Transaction(func(tx *gorm.DB) error {
+			// 先锁定并推进当前运行的写回状态；后续失败会与记录入队一并回滚。
+			claimed := tx.Model(&model.PipelineRun{}).
+				Where("uuid = ? AND status = ? AND status_writeback = ? AND repository_check_state <> ?", run.ID, run.Status, true, state).
+				UpdateColumn("repository_check_state", state)
+			if claimed.Error != nil || claimed.RowsAffected != 1 {
+				return claimed.Error
+			}
 			var link model.PipelineRunRepository
 			if err := tx.First(&link, "pipeline_run_id = ?", run.ID).Error; err != nil {
 				return err
 			}
 			item := model.RepositoryCheckDelivery{ID: uuid.NewString(), ProjectID: run.ProjectID, DepartmentID: run.DepartmentID, PipelineRunID: run.ID, RepositoryID: link.RepositoryID, CommitSHA: run.CommitSHA, Context: "edo/" + run.WorkflowID, State: state, DeliveryKey: strings.TrimPrefix(sha256Digest([]byte(run.ID+":"+state)), "sha256:"), Status: "pending", NextAttemptAt: time.Now().UTC()}
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&item).Error; err != nil {
-				return err
+			if err := repository.LockReference(tx, link.RepositoryID); err != nil {
+				if !errors.Is(err, repository.ErrRepositoryNotFound) {
+					return err
+				}
+				// 旧数据的仓库不存在时保留失败结果，不阻塞其他运行的写回。
+				s.logger.WarnContext(ctx, "仓库检查结果无法回写", "operation", "repository_check_deliver", "run_id", run.ID, "repository_id", link.RepositoryID, "err", err)
+				item.Status, item.Message = "failed", "代码仓库已不可用，无法回写检查结果"
 			}
-			return tx.Model(&model.PipelineRun{}).Where("uuid = ? AND status = ?", run.ID, run.Status).Update("repository_check_state", state).Error
+			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&item).Error
 		})
 		if err != nil {
 			return err

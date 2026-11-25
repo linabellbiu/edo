@@ -487,7 +487,7 @@ func (s *Service) assistantRun(ctx context.Context, actor string, input Assistan
 		if err := tx.Create(run).Error; err != nil {
 			return err
 		}
-		return tx.Create(&components).Error
+		return createPipelineRunRepositories(tx, components)
 	}); err != nil {
 		return nil, err
 	}

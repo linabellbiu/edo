@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type GitProvider string
 
@@ -33,14 +37,15 @@ type GitRepository struct {
 	APICredentialID      *string     `gorm:"type:varchar(36);index" json:"api_credential_id,omitempty"`
 	CredentialCiphertext string      `gorm:"type:text;not null" json:"-"`
 	// 旧数据库的此列无默认值。创建仓库时继续写入空值，已有密文不再读取或更新。
-	LegacyWebhookSecretCiphertext string    `gorm:"column:webhook_secret_ciphertext;type:text;not null;->:false;<-:create" json:"-"`
-	AllowInsecureHTTP             bool      `gorm:"not null;default:false" json:"allow_insecure_http"`
-	IsActive                      bool      `gorm:"not null;default:true;index" json:"is_active"`
-	DepartmentID                  string    `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_git_repositories_department_name,priority:1" json:"department_id"`
-	ProjectID                     string    `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_git_repositories_project_name,priority:1" json:"project_id"`
-	CreatedBy                     string    `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	CreatedAt                     time.Time `gorm:"not null" json:"created_at"`
-	UpdatedAt                     time.Time `gorm:"not null" json:"updated_at"`
+	LegacyWebhookSecretCiphertext string         `gorm:"column:webhook_secret_ciphertext;type:text;not null;->:false;<-:create" json:"-"`
+	AllowInsecureHTTP             bool           `gorm:"not null;default:false" json:"allow_insecure_http"`
+	IsActive                      bool           `gorm:"not null;default:true;index" json:"is_active"`
+	DepartmentID                  string         `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_git_repositories_department_name,priority:1" json:"department_id"`
+	ProjectID                     string         `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_git_repositories_project_name,priority:1" json:"project_id"`
+	CreatedBy                     string         `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt                     time.Time      `gorm:"not null" json:"created_at"`
+	UpdatedAt                     time.Time      `gorm:"not null" json:"updated_at"`
+	DeletedAt                     gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (GitRepository) TableName() string { return "git_repositories" }
