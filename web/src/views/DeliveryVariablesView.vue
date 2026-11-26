@@ -30,6 +30,7 @@ const auth = useAuthStore()
 const rows = ref<Variable[]>([]), applications = ref<Choice[]>([]), environments = ref<Choice[]>([]), projectName = ref('')
 const loading = ref(false), saving = ref(false), open = ref(false), editing = ref<Variable | null>(null)
 const search = ref(''), usage = ref('all'), environmentFilter = ref(''), replaceValue = ref(false), error = ref(''), editorError = ref('')
+const refreshError = ref('')
 
 const routeQueryCategory = computed<EntryCategory | null>(() => {
   if (embedded.value || !unifiedMode.value) return null
@@ -143,11 +144,13 @@ const drawerTitle = computed(() => {
 })
 
 let revision = 0, generation = 0, disposed = false, editorContext = ''
+let readNeedsAuthorization = false
 let listController: AbortController | undefined, saveController: AbortController | undefined, deleteController: AbortController | undefined, originalController: AbortController | undefined, confirmation: ReturnType<typeof Modal.confirm> | undefined
 
 function readSelectedProject() { return typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '' }
 function project() { const id = readSelectedProject(); return id && id === auth.user?.project_id ? id : '' }
 function can(action: string) { return !!project() && auth.canAny([`delivery_variable.${action}`]) }
+function canMutate(action: string) { return auth.authorizationReady && can(action) }
 function identity() { return JSON.stringify([props.applicationId, props.configurationFiles, auth.user?.id, auth.user?.department_id, auth.user?.project_id, auth.user?.is_superuser, [...(auth.user?.permissions || [])].sort(), readSelectedProject(), ...['read', 'create', 'update', 'delete'].map(can), auth.canAny(['application.read']), auth.canAny(['deployment.read'])]) }
 function current(epoch: number, context: string) { return !disposed && epoch === generation && context === identity() && can('read') }
 function requestOptions(projectID: string, signal: AbortSignal) { return { headers: { 'X-EDO-Project-ID': projectID }, signal } }
@@ -159,22 +162,49 @@ function forbidden(cause: unknown) {
 }
 
 async function load() {
-  if (!can('read')) return
+  if (disposed || !can('read')) return
   const request = ++revision, epoch = generation, context = identity(), projectID = project()
   listController?.abort(); const controller = new AbortController(); listController = controller; const options = requestOptions(projectID, controller.signal)
-  loading.value = true; error.value = ''
+  const active = () => current(epoch, context) && !controller.signal.aborted && request === revision
+  loading.value = true; error.value = ''; refreshError.value = ''
   try {
-    const [variables, apps, envs, projects] = await Promise.all([
-      client.get<{ variables: Variable[] }>('/delivery-variables', options),
-      auth.canAny(['application.read']) ? client.get<{ applications: Choice[] }>('/applications', options) : Promise.resolve({ data: { applications: [] } }),
-      auth.canAny(['deployment.read']) ? client.get<{ environments: Choice[] }>('/environments', options) : Promise.resolve({ data: { environments: [] } }),
-      client.get<{ projects: Choice[] }>('/projects', options),
-    ])
-    if (!current(epoch, context) || controller.signal.aborted || request !== revision) return
-    rows.value = variables.data.variables.filter(item => item.project_id === projectID)
-    applications.value = apps.data.applications; environments.value = envs.data.environments; projectName.value = projects.data.projects.find(item => item.id === projectID)?.name || ''
-  } catch (cause) { if (current(epoch, context) && !controller.signal.aborted && request === revision) { if (!forbidden(cause)) { clearContent(); error.value = apiErrorMessage(cause) } } }
-  finally { if (current(epoch, context) && request === revision) loading.value = false }
+    // 首次连接会校准权限；只对普通列表等待一次并重读，不使用校准前的回执。
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!auth.authorizationReady) {
+        readNeedsAuthorization = true
+        if (!await auth.waitForAuthorization(controller.signal)) return
+      }
+      if (!active()) return
+      try {
+        const [variables, apps, envs, projects] = await Promise.all([
+          client.get<{ variables: Variable[] }>('/delivery-variables', options),
+          auth.canAny(['application.read']) ? client.get<{ applications: Choice[] }>('/applications', options) : Promise.resolve({ data: { applications: [] } }),
+          auth.canAny(['deployment.read']) ? client.get<{ environments: Choice[] }>('/environments', options) : Promise.resolve({ data: { environments: [] } }),
+          client.get<{ projects: Choice[] }>('/projects', options),
+        ])
+        if (!active()) return
+        if (!auth.authorizationReady) { readNeedsAuthorization = true; continue }
+        rows.value = variables.data.variables.filter(item => item.project_id === projectID)
+        applications.value = apps.data.applications; environments.value = envs.data.environments; projectName.value = projects.data.projects.find(item => item.id === projectID)?.name || ''
+        readNeedsAuthorization = false
+        return
+      } catch (cause) {
+        if (!active()) return
+        if (!(cause instanceof Error) || !('code' in cause) || !['EDO_AUTHORIZATION_PENDING', 'EDO_AUTHORIZATION_CHANGED'].includes(String(cause.code))) throw cause
+        readNeedsAuthorization = true
+      }
+    }
+    if (active() && auth.authorizationReady) {
+      readNeedsAuthorization = false
+      refreshError.value = '读取期间权限状态多次变化，请刷新列表。'
+      message.warning(refreshError.value)
+    }
+  } catch (cause) {
+    if (active()) {
+      readNeedsAuthorization = false
+      if (!forbidden(cause)) { clearContent(); error.value = apiErrorMessage(cause) }
+    }
+  } finally { if (current(epoch, context) && request === revision) loading.value = false }
 }
 
 function available(item: Variable) {
@@ -204,7 +234,7 @@ function switchEntryType(targetType: string | number) {
 }
 
 function edit(item?: Variable) {
-  if (!can('read') || !can(item ? 'update' : 'create') || saving.value || confirmation || item && !available(item)) return
+  if (!can('read') || !canMutate(item ? 'update' : 'create') || saving.value || confirmation || item && !available(item)) return
   clearEditor(); historyTarget.value = undefined
   editing.value = item ? { ...item } : null; replaceValue.value = !item || !item.is_secret; textTouched.value = false; editorError.value = ''; editorContext = identity()
   Object.assign(form, item ? { ...item, value: item.is_secret ? '' : item.value || '', protected_refs: (item.protected_refs || []).join('\n') } : emptyForm())
@@ -220,7 +250,7 @@ function showHistory(item: Variable) {
 
 async function readOriginal() {
   const target = editing.value
-  if (!target || !isConfigKind(target.kind) || !target.is_secret || !can('read') || !can('update') || !can('reveal') || saving.value || readingOriginal.value || !open.value || editorContext !== identity() || !available(target)) return
+  if (!target || !isConfigKind(target.kind) || !target.is_secret || !can('read') || !canMutate('update') || !can('reveal') || saving.value || readingOriginal.value || !open.value || editorContext !== identity() || !available(target)) return
   const epoch = generation, context = identity(), controller = new AbortController()
   originalController?.abort(); originalController = controller; readingOriginal.value = true; editorError.value = ''
   try {
@@ -236,7 +266,7 @@ async function readOriginal() {
 
 async function save() {
   const action = editing.value ? 'update' : 'create'
-  if (saving.value || readingOriginal.value || !open.value || !can('read') || !can(action) || editorContext !== identity() || !form.name.trim() || editing.value && !available(editing.value)) return
+  if (saving.value || readingOriginal.value || !open.value || !can('read') || !canMutate(action) || editorContext !== identity() || !form.name.trim() || editing.value && !available(editing.value)) return
   textTouched.value = true
   if (textError.value) { editorError.value = textError.value; return }
   const configMode = formIsConfig.value
@@ -265,7 +295,7 @@ async function save() {
 function closeEditor() { if (!saving.value) clearEditor() }
 
 function remove(item: Variable) {
-  if (!can('read') || !can('delete') || !available(item) || saving.value || open.value || confirmation) return
+  if (!can('read') || !canMutate('delete') || !available(item) || saving.value || open.value || confirmation) return
   const epoch = generation, context = identity(), projectID = project(), target = { ...item }, configMode = isConfigKind(item.kind)
   let pending = false
   confirmation = Modal.confirm({
@@ -274,7 +304,7 @@ function remove(item: Variable) {
     okText: '删除', okType: 'danger',
     afterClose() { if (current(epoch, context)) confirmation = undefined },
     async onOk() {
-      if (pending || !current(epoch, context) || !can('delete') || !available(target)) return
+      if (pending || !current(epoch, context) || !canMutate('delete') || !available(target)) return
       pending = true; const controller = new AbortController(); deleteController = controller
       try {
         await client.delete(`/delivery-variables/${encodeURIComponent(target.id)}`, { ...requestOptions(projectID, controller.signal), params: { version: target.version } })
@@ -288,7 +318,8 @@ function remove(item: Variable) {
 
 function reset() {
   generation++; revision++; listController?.abort(); saveController?.abort(); deleteController?.abort(); clearContent()
-  loading.value = false; saving.value = false; error.value = ''; search.value = ''; usage.value = 'all'; selectedProject.value = readSelectedProject()
+  readNeedsAuthorization = false
+  loading.value = false; saving.value = false; error.value = ''; refreshError.value = ''; search.value = ''; usage.value = 'all'; selectedProject.value = readSelectedProject()
   category.value = resolveCategory()
   if (can('read')) void load()
 }
@@ -305,6 +336,7 @@ watch(() => form.kind, value => { if (embedded.value && !isConfigKind(value) && 
 watch(() => form.name, name => { if (formIsConfig.value && !editing.value) { const format = guessConfigFormat(name); if (format) form.kind = `config_${format}` } })
 watch(() => form.usage, value => { if (editing.value || formIsConfig.value) return; if (value === 'build' && isEnvText.value) form.kind = 'env'; else if (value === 'deploy' && form.kind === 'file') form.kind = 'env_text' })
 watch(identity, reset, { immediate: true, flush: 'sync' })
+watch(() => auth.authorizationReady, ready => { if (ready && readNeedsAuthorization && !loading.value) void load() })
 onMounted(() => { window.addEventListener('storage', projectChanged); window.addEventListener('edo:projects-changed', projectChanged) })
 onBeforeUnmount(() => { disposed = true; generation++; revision++; listController?.abort(); saveController?.abort(); deleteController?.abort(); clearContent(); window.removeEventListener('storage', projectChanged); window.removeEventListener('edo:projects-changed', projectChanged) })
 </script>
@@ -315,7 +347,7 @@ onBeforeUnmount(() => { disposed = true; generation++; revision++; listControlle
     <template v-else>
     <div class="vben-card variables-card">
     <PageToolbar>
-      <a-button :loading="loading" @click="load"><RefreshCw :size="15"/>刷新</a-button>
+      <a-button :loading="loading" :title="refreshError || undefined" :aria-label="refreshError ? `重试。${refreshError}` : undefined" @click="load"><RefreshCw :size="15"/>{{ refreshError ? '重试' : '刷新' }}</a-button>
       <a-button v-if="can('create')" type="primary" @click="edit()"><Plus :size="15"/>{{ addButtonLabel }}</a-button>
     </PageToolbar>
     <a-alert v-if="error" type="error" show-icon :message="error"/>

@@ -12,9 +12,22 @@ const settle = async () => { await vue.nextTick(); await new Promise(resolve => 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const variable = (project = 'project-a', patch = {}) => ({ id: `variable-${project}`, project_id: project, name: 'API_URL', description: '仅当前项目使用', kind: 'env', usage: 'build', application_id: '', environment_id: '', is_secret: false, is_active: true, version: 3, protected_refs: [], value: 'https://example.test', ...patch })
 
-async function harness({ permissions = codes, project = 'project-a', selected = project, props = {}, search = '', preferences = new Map(), get, put, post, del, resolveVueProps = false } = {}) {
+async function harness({ permissions = codes, project = 'project-a', selected = project, props = {}, search = '', preferences = new Map(), get, put, post, del, resolveVueProps = false, authorizationState = 'ready' } = {}) {
   const requests = [], notifications = [], confirmations = [], mounted = [], unmounts = []
-  const auth = vue.reactive({ user: { id: 'operator-a', department_id: 'department-a', project_id: project, is_superuser: false, permissions: [...permissions] }, canAny(required) { return !!this.user && (this.user.is_superuser || required.some(code => this.user.permissions.includes(code))) } })
+  const auth = vue.reactive({
+    user: { id: 'operator-a', department_id: 'department-a', project_id: project, is_superuser: false, permissions: [...permissions] }, authorizationState,
+    get authorizationReady() { return this.authorizationState === 'ready' },
+    canAny(required) { return !!this.user && (this.user.is_superuser || required.some(code => this.user.permissions.includes(code))) },
+    waitForAuthorization(signal) {
+      if (signal.aborted || this.authorizationState !== 'checking') return Promise.resolve(!signal.aborted && this.authorizationReady)
+      return new Promise(resolve => {
+        const finish = ready => { stop(); signal.removeEventListener('abort', abort); resolve(ready) }
+        const abort = () => finish(false)
+        const stop = vue.watch(() => this.authorizationState, state => { if (state !== 'checking') finish(state === 'ready') }, { flush: 'sync' })
+        signal.addEventListener('abort', abort, { once: true })
+      })
+    },
+  })
   const storage = { selected }
   const localStorage = {
     getItem: key => key === 'edo.project' ? storage.selected : (preferences.get(key) ?? null),
@@ -49,6 +62,88 @@ async function harness({ permissions = codes, project = 'project-a', selected = 
 }
 const writes = h => h.requests.filter(item => item.method !== 'get')
 const changeProject = async (h, id) => { h.storage.selected = id; h.window.dispatchEvent(new Event('edo:projects-changed')); h.auth.user.project_id = id; await settle() }
+
+test('首次打开配置页等待当前项目授权就绪，校准暂不可用后恢复也会自动加载', async t => {
+  const h = await harness({ authorizationState: 'checking' }); t.after(h.stop)
+  assert.deepEqual(h.requests, [])
+  h.auth.authorizationState = 'unavailable'; await settle()
+  assert.equal(h.state.error.value, ''); assert.deepEqual(h.requests, [])
+  h.auth.authorizationState = 'checking'
+  h.auth.authorizationState = 'ready'; await settle()
+  assert.equal(h.state.rows.value[0].project_id, 'project-a')
+  assert.equal(h.requests.filter(request => request.path === '/delivery-variables').length, 1)
+})
+
+test('首轮目录请求遇到实时授权校准后自动重读一次，原回执不显示错误或覆盖新数据', async t => {
+  for (const code of ['EDO_AUTHORIZATION_PENDING', 'EDO_AUTHORIZATION_CHANGED']) {
+    const first = deferred(); let reads = 0
+    const h = await harness({ get: request => request.path === '/delivery-variables' && ++reads === 1 ? first.promise : undefined }); t.after(h.stop)
+    h.auth.authorizationState = 'checking'
+    first.reject(Object.assign(new Error('旧授权下的目录读取已失效'), { code })); await settle()
+    assert.equal(reads, 1); assert.equal(h.state.error.value, '')
+    h.auth.authorizationState = 'ready'; await settle()
+    assert.equal(reads, 2); assert.equal(h.state.rows.value[0].project_id, 'project-a'); assert.equal(h.state.error.value, '')
+    assert.deepEqual(writes(h), [])
+  }
+})
+
+test('连续两次目录重读遇到权限变化时保留已有内容并在刷新入口提示重试', async t => {
+  let changes = 0
+  const h = await harness({ get: request => {
+    if (request.path === '/delivery-variables' && changes > 0) {
+      changes--
+      throw Object.assign(new Error('旧授权下的目录读取已失效'), { code: 'EDO_AUTHORIZATION_CHANGED' })
+    }
+  } }); t.after(h.stop)
+  const rows = h.state.rows.value
+  assert.equal(rows.length, 1)
+  changes = 2
+  await h.state.load(); await settle()
+  assert.equal(h.requests.filter(request => request.path === '/delivery-variables').length, 3)
+  assert.equal(h.state.rows.value, rows)
+  assert.equal(h.state.loading.value, false)
+  assert.equal(h.state.error.value, '')
+  assert.match(h.state.refreshError.value, /请刷新列表/)
+  assert.deepEqual(h.notifications, [{ kind: 'warning', text: h.state.refreshError.value }])
+
+  await h.state.load(); await settle()
+  assert.equal(h.requests.filter(request => request.path === '/delivery-variables').length, 4)
+  assert.equal(h.state.refreshError.value, '')
+  assert.deepEqual(writes(h), [])
+})
+
+test('真实 403 不随权限校准重试，也不会自动重放变更', async t => {
+  const first = deferred(); let reads = 0
+  const h = await harness({ get: request => request.path === '/delivery-variables' && ++reads === 1 ? first.promise : undefined }); t.after(h.stop)
+  h.auth.authorizationState = 'checking'
+  first.reject(Object.assign(new Error('没有执行此操作的权限'), { response: { status: 403 } })); await settle()
+  h.auth.authorizationState = 'ready'; await settle()
+  assert.equal(reads, 1); assert.notEqual(h.state.error.value, ''); assert.deepEqual(writes(h), [])
+})
+
+test('等待校准时切换项目会中止旧范围，只读取新项目并拦住旧编辑和确认', async t => {
+  const h = await harness(); t.after(h.stop)
+  const item = h.state.rows.value[0]
+  h.state.edit(item)
+  h.auth.authorizationState = 'checking'
+  await h.state.save()
+  assert.deepEqual(writes(h), [])
+  h.auth.authorizationState = 'ready'; await settle()
+  assert.deepEqual(writes(h), [], '授权恢复不能自动保存草稿')
+  h.state.closeEditor()
+  h.state.remove(item)
+  const confirmation = h.confirmations[0]
+  h.auth.authorizationState = 'checking'
+  await confirmation.onOk()
+  assert.deepEqual(writes(h), [], '正在核验时旧确认不能提交')
+  const waiting = h.state.load()
+  await changeProject(h, 'project-b')
+  h.auth.authorizationState = 'ready'; await waiting; await settle()
+  await confirmation.onOk()
+  assert.deepEqual(writes(h), [])
+  assert.deepEqual(h.requests.filter(request => request.path === '/delivery-variables').map(request => request.options.headers['X-EDO-Project-ID']), ['project-a', 'project-b'])
+  assert.equal(h.state.rows.value[0].project_id, 'project-b')
+})
 
 test('真实 Vue 挂载不传配置类型时，独立入口与应用入口都显示配置文件和变量', async t => {
   for (const props of [{}, { applicationId: 'app-project-a' }]) {
