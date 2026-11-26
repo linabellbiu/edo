@@ -7,7 +7,7 @@ import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import KubeEditorSelect from '@/components/KubeEditorSelect.vue'
-import type { ProjectTransferCatalog, ProjectTransferInput, ProjectTransferPlan, ProjectTransferResource, ProjectTransferResourceRef } from '@/types/projectResourceTransfer'
+import type { ProjectTransferCatalog, ProjectTransferInput, ProjectTransferPlan, ProjectTransferProject, ProjectTransferResource, ProjectTransferResourceRef } from '@/types/projectResourceTransfer'
 
 const props = withDefaults(defineProps<{
   open: boolean
@@ -40,7 +40,9 @@ const fixedApplication = computed(() => fixedApplicationRef.value ? resourceMap.
 const selectedResources = computed(() => selectedKeys.value.map(key => selectableMap.value.get(key)).filter((item): item is ProjectTransferResource => Boolean(item)))
 const kindLabels = computed(() => new Map((catalog.value?.kinds || []).map(item => [item.kind, item.label])))
 const kindOptions = computed(() => [{ value: '', label: t('projectTransfer.allKinds') }, ...(catalog.value?.kinds || []).map(item => ({ value: item.kind, label: item.label }))])
-const projectOptions = computed(() => (catalog.value?.projects || []).filter(item => item.id !== auth.user?.project_id).map(item => ({ value: item.id, label: item.name })))
+function projectLabel(project: ProjectTransferProject) { return project.department_name ? `${project.name} · ${project.department_name}` : project.name }
+const sourceName = computed(() => catalog.value?.source_project ? projectLabel(catalog.value.source_project) : props.sourceProjectName || t('workspace.current'))
+const projectOptions = computed(() => (catalog.value?.projects || []).filter(item => item.id !== auth.user?.project_id).map(item => ({ value: item.id, label: projectLabel(item) })))
 const targetName = computed(() => projectOptions.value.find(item => item.value === targetProjectID.value)?.label || '')
 const visibleResources = computed(() => {
   const keyword = query.value.trim().toLocaleLowerCase()
@@ -85,6 +87,7 @@ async function loadCatalog() {
   try {
     const { data } = await client.get<ProjectTransferCatalog>('/project-resource-transfers/catalog', { headers: { 'X-EDO-Project-ID': auth.user?.project_id || '' }, signal: controller.signal })
     if (controller.signal.aborted || !current(requestEpoch, requestIdentity)) return
+    if (data.source_project && data.source_project.id !== auth.user?.project_id) { catalog.value = undefined; selectedKeys.value = []; targetProjectID.value = ''; error.value = t('projectTransfer.planChanged'); return }
     catalog.value = data
     selectedKeys.value = validSelectionKeys(selectedBefore)
     if (selectedKeys.value.length !== new Set(selectedBefore).size) error.value = t('projectTransfer.selectionChanged')
@@ -137,7 +140,7 @@ onBeforeUnmount(() => { disposed = true; reset(); if (typeof window !== 'undefin
   <a-modal :open="open" :title="t('projectTransfer.title')" :width="820" :closable="!submitting" :mask-closable="false" :keyboard="!submitting" :destroy-on-close="true" wrap-class-name="project-transfer-modal" @cancel="close">
     <div class="project-transfer-content">
       <div class="transfer-projects">
-        <div class="transfer-field"><span>{{ t('projectTransfer.sourceProject') }}</span><strong>{{ sourceProjectName || t('workspace.current') }}</strong></div>
+        <div class="transfer-field"><span>{{ t('projectTransfer.sourceProject') }}</span><strong>{{ sourceName }}</strong></div>
         <ArrowRight :size="18" aria-hidden="true" class="transfer-arrow" />
         <div class="transfer-field"><label for="transfer-target-project">{{ t('projectTransfer.targetProject') }}</label>
           <KubeEditorSelect v-if="stage === 'selection'" :active="open && allowed" id="transfer-target-project" :value="targetProjectID || undefined" :options="projectOptions" :placeholder="t('projectTransfer.chooseTarget')" :aria-label="t('projectTransfer.targetProject')" show-search option-filter-prop="label" :disabled="loading || previewing || submitting" :get-popup-container="popupContainer" @update:value="changeTarget" />

@@ -11,7 +11,7 @@ func workspacePermissions() []Permission {
 		permission("project.update", "组织与项目", "project", "项目空间", "update", "修改", "修改或停用项目空间", false),
 		permission("project.delete", "组织与项目", "project", "项目空间", "delete", "删除", "删除没有业务资源的非默认项目", true),
 		permission("project.member.update", "组织与项目", "project", "项目成员", "members", "分配", "分配项目成员角色，不能授予超过自身的权限", true),
-		permission(PermissionProjectResourceMove, "组织与项目", "project", "项目资源", "move", "移动", "在同时获得授权的同部门项目之间移动资源及其依赖", true),
+		permission(PermissionProjectResourceMove, "组织与项目", "project", "项目资源", "move", "移动", "在同时获得授权的项目之间移动资源及其依赖，跨部门仅限系统超级管理员", true),
 	}
 	for _, resource := range []struct{ code, name string }{{"application", "应用"}, {"workflow", "流水线"}, {"build_plan", "构建方案"}, {"image_registry", "镜像仓库"}, {"deployment_plan", "部署方案"}, {"release_plan", "发布计划"}, {"pipeline_run", "流水线运行"}, {"artifact", "构建制品"}} {
 		for _, action := range []struct{ code, name string }{{"read", "查看"}, {"create", "创建"}, {"update", "修改"}, {"delete", "删除"}, {"execute", "执行"}} {

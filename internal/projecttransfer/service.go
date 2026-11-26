@@ -25,7 +25,7 @@ import (
 const maxSelection = 100
 
 var (
-	ErrInvalid      = errors.New("请选择有效的资源和同部门目标项目")
+	ErrInvalid      = errors.New("请选择有效的资源和目标项目")
 	ErrNotFound     = errors.New("待移动的资源或项目不存在")
 	ErrConflict     = errors.New("资源仍有依赖、正在使用或与目标项目的资源冲突，请重新预览")
 	ErrConfirmation = errors.New("移动范围已变化，请重新预览并确认")
@@ -59,14 +59,16 @@ type Blocker struct {
 }
 
 type Plan struct {
-	SourceProjectID string    `json:"source_project_id"`
-	TargetProjectID string    `json:"target_project_id"`
-	Resources       []Item    `json:"resources"`
-	Blockers        []Blocker `json:"blockers"`
-	Confirmation    string    `json:"confirmation"`
-	HistoryCount    int64     `json:"history_count"`
-	records         []rootRow
-	history         historyPlan
+	SourceProjectID    string    `json:"source_project_id"`
+	TargetProjectID    string    `json:"target_project_id"`
+	SourceDepartmentID string    `json:"source_department_id"`
+	TargetDepartmentID string    `json:"target_department_id"`
+	Resources          []Item    `json:"resources"`
+	Blockers           []Blocker `json:"blockers"`
+	Confirmation       string    `json:"confirmation"`
+	HistoryCount       int64     `json:"history_count"`
+	records            []rootRow
+	history            historyPlan
 }
 
 type Kind struct {
@@ -134,7 +136,7 @@ func (s *Service) run(ctx context.Context, source string, input Input, commit bo
 			options = append(options, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 		}
 		err = s.db.WithContext(neutral).Transaction(func(tx *gorm.DB) error {
-			if err := checkProjects(tx, source, input.TargetProjectID, commit); err != nil {
+			if err := checkProjects(tx, &plan, commit); err != nil {
 				return err
 			}
 			if input.Authorize != nil {
@@ -194,7 +196,8 @@ func validateInput(source string, input Input) error {
 	return nil
 }
 
-func checkProjects(tx *gorm.DB, source, target string, lock bool) error {
+func checkProjects(tx *gorm.DB, plan *Plan, lock bool) error {
+	source, target := plan.SourceProjectID, plan.TargetProjectID
 	ids := []string{source, target}
 	slices.Sort(ids)
 	var projects []model.Project
@@ -216,8 +219,26 @@ func checkProjects(tx *gorm.DB, source, target string, lock bool) error {
 	if len(projects) != 2 {
 		return ErrNotFound
 	}
-	if projects[0].DepartmentID != projects[1].DepartmentID {
-		return ErrInvalid
+	for _, project := range projects {
+		if project.ID == source {
+			plan.SourceDepartmentID = project.DepartmentID
+		} else {
+			plan.TargetDepartmentID = project.DepartmentID
+		}
+	}
+	if plan.SourceDepartmentID != plan.TargetDepartmentID {
+		// 跨部门仅限数据库中当前有效的系统超级管理员，不能相信调用方传入的范围标记。
+		scope, _ := database.DepartmentScopeFromContext(tx.Statement.Context)
+		var actor model.User
+		if err := tx.First(&actor, "uuid = ? AND is_active = ?", scope.UserID, true).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrForbidden
+			}
+			return err
+		}
+		if !actor.IsSuperuser {
+			return ErrForbidden
+		}
 	}
 	return nil
 }
@@ -517,7 +538,7 @@ func compareKeys(a, b resourceKey) int {
 
 func (s *Service) confirm(actor string, p Plan) string {
 	// 指纹仅检测预览变化，不能替代实际操作时的 RBAC 或关系复核；多个 API 实例可独立校验。
-	encoded, _ := json.Marshal([]any{actor, p.SourceProjectID, p.TargetProjectID, p.Resources, p.records, p.history.Fingerprint()})
+	encoded, _ := json.Marshal([]any{actor, p.SourceProjectID, p.TargetProjectID, p.SourceDepartmentID, p.TargetDepartmentID, p.Resources, p.records, p.history.Fingerprint()})
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:])
 }

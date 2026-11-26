@@ -14,10 +14,17 @@ export interface ProjectTransferInput {
   confirmation?: string
 }
 
+export interface ProjectTransferProject {
+  id: string
+  name: string
+  department_name?: string
+}
+
 export interface ProjectTransferCatalog {
   kinds: Array<{ kind: string; label: string }>
   resources: ProjectTransferResource[]
-  projects: Array<{ id: string; name: string }>
+  source_project?: ProjectTransferProject
+  projects: ProjectTransferProject[]
 }
 
 export interface ProjectTransferPlan {

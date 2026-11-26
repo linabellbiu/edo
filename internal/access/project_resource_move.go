@@ -10,7 +10,7 @@ import (
 	"edo/internal/model"
 )
 
-// ProjectResourceMoveTargets 批量读取同部门的有效目标，目录不代替执行时授权。
+// ProjectResourceMoveTargets 批量读取当前可用目标，只有超级管理员可以跨部门移动。
 func (s *Service) ProjectResourceMoveTargets(ctx context.Context, actor *model.User) (projects []model.Project, err error) {
 	projects = []model.Project{}
 	scope, ok := database.DepartmentScopeFromContext(ctx)
@@ -33,9 +33,14 @@ func (s *Service) ProjectResourceMoveTargets(ctx context.Context, actor *model.U
 	if !current.IsActive || current.AuthVersion != actor.AuthVersion || current.DepartmentID != actor.DepartmentID || current.IsSuperuser != actor.IsSuperuser || (!current.IsSuperuser && current.DepartmentID != scope.DepartmentID) {
 		return nil, ErrAccessDelegationDenied
 	}
-	query := s.db.WithContext(ctx).Model(&model.Project{}).
-		Where("projects.department_id = ? AND projects.is_active = ? AND projects.uuid <> ?", scope.DepartmentID, true, scope.ProjectID)
+	queryContext := ctx
+	if current.IsSuperuser {
+		queryContext = identityContext
+	}
+	query := s.db.WithContext(queryContext).Model(&model.Project{}).
+		Where("projects.is_active = ? AND projects.uuid <> ?", true, scope.ProjectID)
 	if !current.IsSuperuser {
+		query = query.Where("projects.department_id = ?", scope.DepartmentID)
 		// 所有候选项目在一次查询中应用成员、角色及个人覆盖，拒绝优先于允许。
 		query = query.Where(`EXISTS (
 			SELECT 1 FROM project_members pm WHERE pm.project_id = projects.uuid AND pm.user_id = ?
@@ -59,5 +64,59 @@ func (s *Service) ProjectResourceMoveTargets(ctx context.Context, actor *model.U
 			allowed = append(allowed, project)
 		}
 	}
+	if err := s.projectResourceMoveDepartmentNames(queryContext, allowed); err != nil {
+		return nil, err
+	}
 	return allowed, nil
+}
+
+// ProjectResourceMoveSource 使用请求中的真实项目身份补齐移动来源，不能由客户端填写。
+func (s *Service) ProjectResourceMoveSource(ctx context.Context, actor *model.User) (project *model.Project, err error) {
+	scope, ok := database.DepartmentScopeFromContext(ctx)
+	defer func() {
+		if err != nil {
+			s.logger.WarnContext(ctx, "查询资源移动来源失败", "operation", "project_resource_move_source", "project_id", scope.ProjectID, "err", err)
+		}
+	}()
+	if !ok || actor == nil || scope.UserID != actor.ID || scope.ProjectID == "" {
+		return nil, ErrAccessDelegationDenied
+	}
+	project, err = s.ResolveProject(ctx, actor, scope.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if !project.IsActive || project.DepartmentID != scope.DepartmentID {
+		return nil, ErrAccessDelegationDenied
+	}
+	projects := []model.Project{*project}
+	if err := s.projectResourceMoveDepartmentNames(ctx, projects); err != nil {
+		return nil, err
+	}
+	return &projects[0], nil
+}
+
+func (s *Service) projectResourceMoveDepartmentNames(ctx context.Context, projects []model.Project) error {
+	if len(projects) == 0 {
+		return nil
+	}
+	ids := make(map[string]struct{}, len(projects))
+	for _, project := range projects {
+		ids[project.DepartmentID] = struct{}{}
+	}
+	departmentIDs := make([]string, 0, len(ids))
+	for id := range ids {
+		departmentIDs = append(departmentIDs, id)
+	}
+	var departments []model.Department
+	if err := s.db.WithContext(ctx).Select("uuid", "name").Where("uuid IN ?", departmentIDs).Find(&departments).Error; err != nil {
+		return err
+	}
+	names := make(map[string]string, len(departments))
+	for _, department := range departments {
+		names[department.ID] = department.Name
+	}
+	for index := range projects {
+		projects[index].DepartmentName = names[projects[index].DepartmentID]
+	}
+	return nil
 }

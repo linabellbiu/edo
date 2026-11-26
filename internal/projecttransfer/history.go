@@ -53,6 +53,17 @@ func buildHistory(tx *gorm.DB, p *Plan, selected map[resourceKey]bool, add func(
 	for k := range ids {
 		slices.Sort(ids[k])
 	}
+	if p.SourceDepartmentID != p.TargetDepartmentID && len(ids["repository"]) > 0 {
+		var privateReferences []string
+		// 私人令牌的引用不能随仓库跨部门迁移，不以账户此刻的部门作为许可。
+		if err := scopedRows(tx, "git_repositories", source, "uuid IN ?", ids["repository"]).
+			Where("(credential_id <> '' OR api_credential_id <> '')").Pluck("uuid", &privateReferences).Error; err != nil {
+			return fmt.Errorf("检查跨部门迁移的个人仓库凭据引用: %w", err)
+		}
+		for _, id := range privateReferences {
+			add(resourceKey{"repository", id}, "仓库仍引用个人令牌，请先解除令牌引用，移动后在目标项目重新配置凭据")
+		}
+	}
 	for _, kind := range kinds() {
 		if len(ids[kind]) == 0 {
 			continue
@@ -181,7 +192,7 @@ func moveRows(tx *gorm.DB, p Plan) error {
 		if r.count == 0 {
 			continue
 		}
-		result := scopedRows(tx, r.table, source, r.where, r.args...).Update("project_id", target)
+		result := scopedRows(tx, r.table, source, r.where, r.args...).Updates(map[string]any{"project_id": target, "department_id": p.TargetDepartmentID})
 		if result.Error != nil {
 			return fmt.Errorf("转移相关记录 %s: %w", r.table, result.Error)
 		}
@@ -195,7 +206,7 @@ func moveRows(tx *gorm.DB, p Plan) error {
 			continue
 		}
 		d := definitions[kind]
-		values := map[string]any{"project_id": target}
+		values := map[string]any{"project_id": target, "department_id": p.TargetDepartmentID}
 		if kind == "delivery_variable" {
 			var expr strings.Builder
 			expr.WriteString("CASE uuid")

@@ -61,20 +61,26 @@ func (h projectTransferHandler) catalog(c *gin.Context) {
 		h.fail(c, "project_transfer_catalog_targets", "", err)
 		return
 	}
+	source, err := h.access.ProjectResourceMoveSource(c.Request.Context(), actor)
+	if err != nil {
+		h.fail(c, "project_transfer_catalog_source", "", err)
+		return
+	}
 	result, err := h.service.Catalog(c.Request.Context(), scope.ProjectID)
 	if err != nil {
 		h.fail(c, "project_transfer_catalog", "", err)
 		return
 	}
 	type target struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID             string `json:"id"`
+		Name           string `json:"name"`
+		DepartmentName string `json:"department_name"`
 	}
 	targets := make([]target, 0, len(projects))
 	for _, project := range projects {
-		targets = append(targets, target{ID: project.ID, Name: project.Name})
+		targets = append(targets, target{ID: project.ID, Name: project.Name, DepartmentName: project.DepartmentName})
 	}
-	c.JSON(http.StatusOK, gin.H{"kinds": result.Kinds, "resources": result.Resources, "projects": targets})
+	c.JSON(http.StatusOK, gin.H{"kinds": result.Kinds, "resources": result.Resources, "projects": targets, "source_project": target{ID: source.ID, Name: source.Name, DepartmentName: source.DepartmentName}})
 }
 
 func (h projectTransferHandler) preview(c *gin.Context) {
@@ -108,7 +114,7 @@ func (h projectTransferHandler) move(c *gin.Context) {
 			ActorUserID: actor.ID, Action: access.PermissionProjectResourceMove, ResourceType: "project",
 			ResourceID: source, Result: model.AuditSucceeded, RequestID: requestIDFrom(c),
 			ClientIP: c.ClientIP(), UserAgent: truncateText(c.Request.UserAgent(), 512),
-			Metadata: map[string]any{"source_project_id": source, "target_project_id": input.TargetProjectID, "resources": resources, "history_count": plan.HistoryCount},
+			Metadata: map[string]any{"source_project_id": source, "target_project_id": input.TargetProjectID, "source_department_id": plan.SourceDepartmentID, "target_department_id": plan.TargetDepartmentID, "resources": resources, "history_count": plan.HistoryCount},
 		})
 	}
 	plan, err := h.service.Move(c.Request.Context(), source, input)
@@ -119,8 +125,12 @@ func (h projectTransferHandler) move(c *gin.Context) {
 	c.Set(auditCommittedKey, true)
 	if h.bus != nil {
 		scope, _ := database.DepartmentScopeFromContext(c.Request.Context())
-		for _, projectID := range []string{source, input.TargetProjectID} {
-			scope.ProjectID = projectID
+		for _, project := range []struct{ id, departmentID string }{
+			{plan.SourceProjectID, plan.SourceDepartmentID},
+			{plan.TargetProjectID, plan.TargetDepartmentID},
+		} {
+			scope.ProjectID = project.id
+			scope.DepartmentID = project.departmentID
 			ctx := database.WithDepartmentScope(c.Request.Context(), scope)
 			for _, resource := range []string{"applications", "pipeline_runs", "release_plans", "deployments", "deployment_plans"} {
 				h.bus.Changed(ctx, resource, "")
@@ -156,12 +166,13 @@ func (h projectTransferHandler) request(c *gin.Context) (projecttransfer.Input, 
 		h.fail(c, "project_transfer_target", input.TargetProjectID, err)
 		return input, scope.ProjectID, false
 	}
-	if target.ID == scope.ProjectID || target.DepartmentID != scope.DepartmentID {
+	if target.ID == scope.ProjectID || (!actor.IsSuperuser && target.DepartmentID != scope.DepartmentID) {
 		h.fail(c, "project_transfer_target", input.TargetProjectID, projecttransfer.ErrInvalid)
 		return input, scope.ProjectID, false
 	}
 	targetScope := scope
 	targetScope.ProjectID = target.ID
+	targetScope.DepartmentID = target.DepartmentID
 	targetContext := database.WithDepartmentScope(c.Request.Context(), targetScope)
 	allowed, err := h.access.HasPermission(targetContext, actor, access.PermissionProjectResourceMove)
 	if err == nil && allowed {
@@ -174,17 +185,15 @@ func (h projectTransferHandler) request(c *gin.Context) (projecttransfer.Input, 
 		h.fail(c, "project_transfer_target_permission", target.ID, err)
 		return input, scope.ProjectID, false
 	}
-	input.Authorize = h.authorize(c.Request.Context(), *actor, scope, target.ID)
+	input.Authorize = h.authorize(c.Request.Context(), *actor, scope, targetScope)
 	return input, scope.ProjectID, true
 }
 
-func (h projectTransferHandler) authorize(ctx context.Context, actor model.User, source database.DepartmentScope, targetID string) func(*gorm.DB) error {
+func (h projectTransferHandler) authorize(ctx context.Context, actor model.User, source, target database.DepartmentScope) func(*gorm.DB) error {
 	return func(tx *gorm.DB) error {
-		for _, projectID := range []string{source.ProjectID, targetID} {
-			scope := source
-			scope.ProjectID = projectID
+		for _, scope := range []database.DepartmentScope{source, target} {
 			projectContext := database.WithDepartmentScope(ctx, scope)
-			current, err := access.FreshProjectPermissions(tx, projectContext, actor.ID, projectID)
+			current, err := access.FreshProjectPermissions(tx, projectContext, actor.ID, scope.ProjectID)
 			if err == nil && (current.User.AuthVersion != actor.AuthVersion || current.User.DepartmentID != actor.DepartmentID || current.User.IsSuperuser != actor.IsSuperuser || !current.Permissions[access.PermissionProjectResourceMove]) {
 				err = access.ErrAccessDelegationDenied
 			}
@@ -196,7 +205,7 @@ func (h projectTransferHandler) authorize(ctx context.Context, actor model.User,
 				}
 			}
 			if err != nil {
-				h.logger.WarnContext(ctx, "事务内资源移动权限复核失败", "operation", "project_transfer_authorize", "user_id", actor.ID, "project_id", projectID, "err", err)
+				h.logger.WarnContext(ctx, "事务内资源移动权限复核失败", "operation", "project_transfer_authorize", "user_id", actor.ID, "project_id", scope.ProjectID, "department_id", scope.DepartmentID, "err", err)
 				if errors.Is(err, access.ErrAccessDelegationDenied) {
 					return projecttransfer.ErrForbidden
 				}

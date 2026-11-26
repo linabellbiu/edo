@@ -131,7 +131,9 @@ func TestProjectResourceTransferTransactionRechecksRevokedIdentity(t *testing.T)
 	scope := database.DepartmentScope{UserID: f.user.ID, DepartmentID: f.user.DepartmentID, ProjectID: source}
 	ctx := database.WithDepartmentScope(context.Background(), scope)
 	h := projectTransferHandler{access: f.deps.Access, logger: f.deps.Logger}
-	authorize := h.authorize(ctx, *f.user, scope, f.project.ID)
+	targetScope := scope
+	targetScope.ProjectID = f.project.ID
+	authorize := h.authorize(ctx, *f.user, scope, targetScope)
 	if err := f.db.Transaction(authorize); err != nil {
 		t.Fatalf("有效授权不能被拒绝：%v", err)
 	}
@@ -185,16 +187,113 @@ func TestProjectResourceTransferCatalogHonorsExplicitDeny(t *testing.T) {
 	}
 }
 
-func TestProjectResourceTransferRejectsOtherDepartmentEvenForAdmin(t *testing.T) {
-	f, admin, source, repositoryID, _ := projectTransferHTTPFixture(t)
+func TestProjectResourceTransferAdminCanMoveApplicationAcrossDepartments(t *testing.T) {
+	f, admin, source, repositoryID, roleID := projectTransferHTTPFixture(t)
 	departmentID := createDepartmentForHTTPTest(t, f.router, admin, "移动隔离部门")
-	response := deliveryVariableProjectRequest(t, f, admin, http.MethodPost, "/project-resource-transfers/preview", source, projectTransferHTTPInput(database.DefaultProjectID(departmentID), repositoryID))
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("跨部门移动应被明确拒绝：%d %s", response.Code, response.Body.String())
+	targetID := database.DefaultProjectID(departmentID)
+	applicationID := createApplicationForDepartmentTest(t, f.router, admin, "transfer_department", repositoryID)
+	input := map[string]any{
+		"target_project_id": targetID, "include_dependencies": true,
+		"resources": []map[string]string{{"kind": "application", "id": applicationID}},
+	}
+	// 即使遗留成员记录错误地跨部门关联，普通操作者仍不能读取或移动到该目标。
+	if err := f.db.Create(&model.ProjectMember{ProjectID: targetID, UserID: f.user.ID, RoleID: roleID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	memberCatalog := deliveryVariableProjectRequest(t, f, f.cookie, http.MethodGet, "/project-resource-transfers/catalog", source, nil)
+	if memberCatalog.Code != http.StatusOK || strings.Contains(memberCatalog.Body.String(), targetID) {
+		t.Fatalf("普通用户不应看到跨部门目标：%d %s", memberCatalog.Code, memberCatalog.Body.String())
+	}
+	for _, path := range []string{"/project-resource-transfers/preview", "/project-resource-transfers"} {
+		response := deliveryVariableProjectRequest(t, f, f.cookie, http.MethodPost, path, source, input)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("普通用户不能借跨部门成员记录移动资源：%d %s", response.Code, response.Body.String())
+		}
 	}
 	catalog := deliveryVariableProjectRequest(t, f, admin, http.MethodGet, "/project-resource-transfers/catalog", source, nil)
-	if catalog.Code != http.StatusOK || strings.Contains(catalog.Body.String(), database.DefaultProjectID(departmentID)) {
-		t.Fatalf("管理员的移动目录不应包含其他部门：%d %s", catalog.Code, catalog.Body.String())
+	type projectView struct {
+		ID             string `json:"id"`
+		Name           string `json:"name"`
+		DepartmentName string `json:"department_name"`
+	}
+	var directory struct {
+		Source   projectView   `json:"source_project"`
+		Projects []projectView `json:"projects"`
+	}
+	if err := json.Unmarshal(catalog.Body.Bytes(), &directory); err != nil || catalog.Code != http.StatusOK || directory.Source.ID != source || directory.Source.Name == "" || directory.Source.DepartmentName == "" {
+		t.Fatalf("移动目录缺少准确来源项目：%d %s err=%v", catalog.Code, catalog.Body.String(), err)
+	}
+	found := false
+	for _, target := range directory.Projects {
+		if target.ID == targetID {
+			found = true
+			if target.Name == "" || target.DepartmentName != "移动隔离部门" {
+				t.Fatalf("目标目录应显示实际项目及部门：%+v", target)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("管理员的移动目录缺少其他部门的有效项目：%s", catalog.Body.String())
+	}
+	preview := deliveryVariableProjectRequest(t, f, admin, http.MethodPost, "/project-resource-transfers/preview", source, input)
+	var plan projecttransfer.Plan
+	if err := json.Unmarshal(preview.Body.Bytes(), &plan); err != nil || preview.Code != http.StatusOK || plan.Confirmation == "" || len(plan.Blockers) != 0 || len(plan.Resources) != 3 {
+		t.Fatalf("跨部门应用移动预览失败：%d %s err=%v", preview.Code, preview.Body.String(), err)
+	}
+	if plan.SourceDepartmentID != f.admin.DepartmentID || plan.TargetDepartmentID != departmentID {
+		t.Fatalf("预览未冻结两端真实部门：%+v", plan)
+	}
+	var application model.Application
+	if err := f.db.First(&application, "uuid = ?", applicationID).Error; err != nil || application.ProjectID != source || application.DepartmentID != f.admin.DepartmentID {
+		t.Fatalf("预览不能修改应用归属：%v", err)
+	}
+	input["confirmation"] = plan.Confirmation
+	response := deliveryVariableProjectRequest(t, f, admin, http.MethodPost, "/project-resource-transfers", source, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("管理员确认后跨部门移动失败：%d %s", response.Code, response.Body.String())
+	}
+	if err := f.db.First(&application, "uuid = ?", applicationID).Error; err != nil || application.ProjectID != targetID || application.DepartmentID != departmentID {
+		t.Fatalf("应用未进入准确目标项目及部门：%+v err=%v", application, err)
+	}
+	var repository model.GitRepository
+	if err := f.db.First(&repository, "uuid = ?", repositoryID).Error; err != nil || repository.ProjectID != targetID || repository.DepartmentID != departmentID {
+		t.Fatalf("关联仓库未进入准确目标项目及部门：%+v err=%v", repository, err)
+	}
+	var workflow model.ReleaseWorkflow
+	if err := f.db.First(&workflow, "application_id = ?", applicationID).Error; err != nil || workflow.ProjectID != targetID || workflow.DepartmentID != departmentID {
+		t.Fatalf("关联流水线未进入准确目标项目及部门：%+v err=%v", workflow, err)
+	}
+	var entry model.AuditLog
+	if err := f.db.Where("action = ? AND result = ?", access.PermissionProjectResourceMove, model.AuditSucceeded).Take(&entry).Error; err != nil {
+		t.Fatal(err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(entry.Metadata, &metadata); err != nil || metadata["source_department_id"] != f.admin.DepartmentID || metadata["target_department_id"] != departmentID || entry.DepartmentID != f.admin.DepartmentID {
+		t.Fatalf("跨部门移动审计应保留来源归属及两端部门：%+v err=%v", entry, err)
+	}
+}
+
+func TestProjectResourceTransferCrossDepartmentRechecksAdminAndTargetScope(t *testing.T) {
+	f, admin, sourceID, _, _ := projectTransferHTTPFixture(t)
+	departmentID := createDepartmentForHTTPTest(t, f.router, admin, "事务复核部门")
+	source := database.DepartmentScope{UserID: f.admin.ID, DepartmentID: f.admin.DepartmentID, ProjectID: sourceID, AllDepartments: true}
+	target := database.DepartmentScope{UserID: f.admin.ID, DepartmentID: departmentID, ProjectID: database.DefaultProjectID(departmentID), AllDepartments: true}
+	ctx := database.WithDepartmentScope(context.Background(), source)
+	h := projectTransferHandler{access: f.deps.Access, logger: f.deps.Logger}
+	authorize := h.authorize(ctx, *f.admin, source, target)
+	if err := f.db.Transaction(authorize); err != nil {
+		t.Fatalf("有效管理员跨部门授权被拒绝：%v", err)
+	}
+	wrongTarget := target
+	wrongTarget.DepartmentID = source.DepartmentID
+	if err := f.db.Transaction(h.authorize(ctx, *f.admin, source, wrongTarget)); !errors.Is(err, projecttransfer.ErrForbidden) {
+		t.Fatalf("目标部门不匹配时仍通过事务授权：%v", err)
+	}
+	if err := f.db.Model(&model.User{}).Where("uuid = ?", f.admin.ID).Update("is_superuser", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Transaction(authorize); !errors.Is(err, projecttransfer.ErrForbidden) {
+		t.Fatalf("撤销管理员后仍可使用旧预览移动：%v", err)
 	}
 }
 

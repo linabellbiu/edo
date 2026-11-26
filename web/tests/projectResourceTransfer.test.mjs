@@ -61,6 +61,38 @@ test('目录按真实返回类型展示全部可选资源，筛选不改变已�
   assert.deepEqual(h.state.selectedResources.value, [catalog.resources[2], catalog.resources[3]])
 })
 
+test('来源显示目录返回的真实项目，跨部门候选按真实部门区分同名项目且保留原 ID', async t => {
+  const projects=[{id:'project-a',name:'来源项目',department_name:'来源部门'},{id:'project-b',name:'交付项目',department_name:'部门 B'},{id:'project-c',name:'交付项目',department_name:'部门 C'}]
+  const h=await harness(t,{get:async()=>({data:{...catalog,source_project:{id:'project-a',name:'真实来源项目',department_name:'来源部门'},projects}})})
+  assert.equal(h.state.sourceName.value,'真实来源项目 · 来源部门')
+  assert.deepEqual(h.state.projectOptions.value,[{value:'project-b',label:'交付项目 · 部门 B'},{value:'project-c',label:'交付项目 · 部门 C'}])
+  choose(h,[catalog.resources[0]],'project-c');await h.state.preview()
+  assert.equal(h.state.targetName.value,'交付项目 · 部门 C')
+  assert.equal(previews(h)[0].body.target_project_id,'project-c')
+  assert.equal(h.state.canSubmit.value,true)
+})
+
+test('目录来源错位不显示或使用其他项目候选，缺少元数据时沿用来源名称', async t => {
+  const h=await harness(t,{initialResources:[catalog.resources[0]],get:async()=>({data:{...catalog,source_project:{id:'other-project',name:'其他项目'}}})})
+  assert.equal(h.state.catalog.value,undefined);assert.equal(h.state.error.value,'projectTransfer.planChanged')
+  h.state.changeTarget('project-b');await h.state.preview();assert.equal(previews(h).length,0)
+  const fallback=await harness(t)
+  assert.equal(fallback.state.sourceName.value,'来源项目 A')
+  fallback.props.sourceProjectName='';assert.equal(fallback.state.sourceName.value,'workspace.current')
+})
+
+test('刷新项目名称或部门展示不会改变已选应用和目标身份，空状态不误报同部门限制', async t => {
+  let department='部门 B'
+  const h=await harness(t,{applicationOnly:true,initialResources:[catalog.resources[0]],get:async()=>({data:{...catalog,source_project:{id:'project-a',name:'真实来源项目'},projects:[{id:'project-b',name:'目标项目',department_name:department}]}})})
+  h.state.changeTarget('project-b');department='更新后的部门';await h.state.loadCatalog()
+  assert.equal(h.state.sourceName.value,'真实来源项目')
+  assert.equal(h.state.targetProjectID.value,'project-b');assert.equal(h.state.targetName.value,'目标项目 · 更新后的部门')
+  assert.deepEqual(h.state.selectedResources.value,[catalog.resources[0]])
+  const {projectTransferZh,projectTransferEn}=loadFrontend('../src/locales/projectResourceTransfer.ts')
+  assert.doesNotMatch(projectTransferZh.noTargets,/同部门/)
+  assert.doesNotMatch(projectTransferEn.noTargets,/same department/)
+})
+
 test('只有移动权限且源项目一致才请求目录，编辑权限不能代替，空选择或无效目标无法预览', async t => {
   for (const options of [{ permissions: ['project.update', 'application.update'] }, { selectedProject: 'other-project' }]) {
     const h = await harness(t, options)
