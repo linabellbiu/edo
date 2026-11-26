@@ -98,6 +98,9 @@ func (h authHandler) handleLogout(c *gin.Context) {
 }
 
 func (h authHandler) handleMe(c *gin.Context) {
+	if abortCanceledAuthorization(c) {
+		return
+	}
 	user, ok := currentUser(c)
 	if !ok {
 		h.logger.Error("鉴权中间件未注入用户", "operation", "auth_me_context", "request_id", requestIDFrom(c))
@@ -107,6 +110,9 @@ func (h authHandler) handleMe(c *gin.Context) {
 		return
 	}
 	permissions, err := h.access.CurrentUserPermissions(c.Request.Context(), user)
+	if abortCanceledAuthorization(c) {
+		return
+	}
 	if err != nil {
 		h.logger.Error("读取当前用户权限失败", "operation", "auth_me_permissions", "request_id", requestIDFrom(c), "user_id", user.ID, "err", err)
 		if errors.Is(err, access.ErrAccessDelegationDenied) {
@@ -197,6 +203,9 @@ func requireAuth(
 	cookieName string,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if abortCanceledAuthorization(c) {
+			return
+		}
 		token, err := c.Cookie(cookieName)
 		if err != nil {
 			logger.Debug("请求缺少登录会话", "operation", "auth_required", "request_id", requestIDFrom(c), "path", c.Request.URL.Path)
@@ -204,6 +213,9 @@ func requireAuth(
 			return
 		}
 		session, err := sessions.Get(c.Request.Context(), token)
+		if abortCanceledAuthorization(c) {
+			return
+		}
 		if errors.Is(err, auth.ErrSessionNotFound) {
 			logger.Warn("请求使用无效登录会话", "operation", "auth_session_invalid", "request_id", requestIDFrom(c), "path", c.Request.URL.Path)
 			unauthorized(c)
@@ -217,6 +229,9 @@ func requireAuth(
 			return
 		}
 		user, err := accounts.FindByID(c.Request.Context(), session.UserID)
+		if abortCanceledAuthorization(c) {
+			return
+		}
 		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && (!user.IsActive || session.AuthVersion != user.AuthVersion)) {
 			logger.Warn("登录会话对应账户不可用", "operation", "auth_user_invalid", "request_id", requestIDFrom(c), "user_id", session.UserID)
 			_ = sessions.Delete(c.Request.Context(), token)
@@ -257,7 +272,6 @@ func passwordChangeRequiredAllowed(fullPath string) bool {
 	}
 }
 
-
 func requestPermission(c *gin.Context, accessService *access.Service, user *model.User, permission string) (bool, error) {
 	allowed, err := accessService.HasPermission(c.Request.Context(), user, permission)
 	if err != nil || !allowed || !access.ProjectPermission(permission) {
@@ -269,6 +283,9 @@ func requestPermission(c *gin.Context, accessService *access.Service, user *mode
 
 func requirePermission(accessService *access.Service, logger *slog.Logger, permission string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if abortCanceledAuthorization(c) {
+			return
+		}
 		user, ok := currentUser(c)
 		if !ok {
 			logger.Error("权限校验缺少当前用户", "operation", "permission_context", "request_id", requestIDFrom(c), "permission", permission)
@@ -277,6 +294,9 @@ func requirePermission(accessService *access.Service, logger *slog.Logger, permi
 			return
 		}
 		allowed, err := requestPermission(c, accessService, user, permission)
+		if abortCanceledAuthorization(c) {
+			return
+		}
 		scope, _ := database.DepartmentScopeFromContext(c.Request.Context())
 		if err != nil {
 			logger.Error("查询用户权限失败", "operation", "permission_check", "request_id", requestIDFrom(c), "user_id", user.ID, "project_id", scope.ProjectID, "permission", permission, "err", err)
@@ -297,6 +317,9 @@ func requirePermission(accessService *access.Service, logger *slog.Logger, permi
 
 func requireAnyPermission(accessService *access.Service, logger *slog.Logger, permissions ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if abortCanceledAuthorization(c) {
+			return
+		}
 		user, ok := currentUser(c)
 		if !ok {
 			logger.Error("权限校验缺少当前用户", "operation", "permission_any_context", "request_id", requestIDFrom(c))
@@ -307,6 +330,9 @@ func requireAnyPermission(accessService *access.Service, logger *slog.Logger, pe
 		scope, _ := database.DepartmentScopeFromContext(c.Request.Context())
 		for _, permission := range permissions {
 			allowed, err := requestPermission(c, accessService, user, permission)
+			if abortCanceledAuthorization(c) {
+				return
+			}
 			if err != nil {
 				logger.Error("查询用户权限失败", "operation", "permission_any_check", "request_id", requestIDFrom(c), "user_id", user.ID, "project_id", scope.ProjectID, "permission", permission, "err", err)
 				writeInternalError(c)
@@ -327,6 +353,9 @@ func requireAnyPermission(accessService *access.Service, logger *slog.Logger, pe
 
 func requireSuperuser(logger *slog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if abortCanceledAuthorization(c) {
+			return
+		}
 		user, ok := currentUser(c)
 		if !ok {
 			logger.Error("超级管理员校验缺少当前用户", "operation", "superuser_context", "request_id", requestIDFrom(c))

@@ -87,6 +87,10 @@ func securityHeaders() gin.HandlerFunc {
 func auditAction(audits *audit.Service, logger *slog.Logger, action, resourceType string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
+		// 尚未完成鉴权就断开的请求没有业务动作，不能记录为成功或权限拒绝。
+		if canceled, exists := c.Get(authorizationCanceledKey); exists && canceled == true {
+			return
+		}
 		// 业务提交已在同一事务写入成功审计时，不再重复记录。
 		if committed, exists := c.Get(auditCommittedKey); exists && committed == true {
 			return

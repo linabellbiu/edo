@@ -263,6 +263,7 @@ function formatTime(value: string) {
 <template>
   <div class="expandable-plan-list build-plan-list vben-card">
     <PageToolbar>
+      <slot name="toolbar-status" />
       <a-button :loading="loading" @click="emit('refresh')"><RefreshCw :size="15" />刷新</a-button>
       <a-button v-if="canCreate" type="primary" @click="emit('create')"><Plus :size="15" />新建</a-button>
     </PageToolbar>

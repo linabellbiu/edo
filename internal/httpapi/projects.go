@@ -23,6 +23,9 @@ type projectRequest struct {
 
 func projectScope(service *access.Service, logger *slog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if abortCanceledAuthorization(c) {
+			return
+		}
 		if service == nil {
 			return
 		}
@@ -58,6 +61,15 @@ func projectScope(service *access.Service, logger *slog.Logger) gin.HandlerFunc 
 			return
 		}
 		project, err := service.ResolveProject(c.Request.Context(), user, id)
+		if abortCanceledAuthorization(c) {
+			return
+		}
+		if err != nil && !errors.Is(err, access.ErrProjectNotFound) {
+			logger.Error("读取请求项目范围失败", "operation", "project_scope_lookup", "request_id", requestIDFrom(c), "user_id", user.ID, "project_id", projectAuditUUID(id), "err", err)
+			writeInternalError(c)
+			c.Abort()
+			return
+		}
 		if err != nil || !project.IsActive {
 			if platformContext {
 				logger.Debug("平台操作不采用不可访问的项目上下文", "operation", "platform_scope", "project_id", projectAuditUUID(id), "err", err)
@@ -92,6 +104,9 @@ func (h projectHandler) fail(c *gin.Context, operation string, err error) {
 func (h projectHandler) list(c *gin.Context) {
 	user, _ := currentUser(c)
 	items, err := h.service.Projects(c.Request.Context(), user)
+	if abortCanceledAuthorization(c) {
+		return
+	}
 	if err != nil {
 		h.fail(c, "project_list", err)
 		return

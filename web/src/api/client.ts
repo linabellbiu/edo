@@ -93,7 +93,8 @@ client.interceptors.response.use(response => {
   if (responseProjectChanged(response.config)) throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', response.config)
   return response
 }, error => {
-  if (axios.isAxiosError(error) && error.code === 'EDO_AUTHORIZATION_PENDING') throw error
+  // 页面重载主动中止的读取不属于授权失败，也不能触发再次核验。
+  if (axios.isCancel(error) || axios.isAxiosError(error) && ['EDO_AUTHORIZATION_PENDING', 'EDO_PROJECT_CHANGED'].includes(error.code ?? '')) throw error
   if (axios.isAxiosError(error) && responseAuthorizationChanged(error.config)) throw new axios.AxiosError('授权状态已更新，请重新读取', 'EDO_AUTHORIZATION_CHANGED', error.config)
   if (axios.isAxiosError(error) && responseProjectChanged(error.config)) throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', error.config)
   if (axios.isAxiosError(error) && error.response?.status === 403 && error.config && !contextRequest(error.config) && !clusterResourceDenied(error.config, error.response.data) && typeof window !== 'undefined') {

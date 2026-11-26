@@ -319,6 +319,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
 <template>
   <div class="vben-card release-plan-list-card">
     <PageToolbar>
+      <slot name="toolbar-status" />
       <a-tag color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag>
       <a-button :loading="loading" @click="emit('refresh')"><RefreshCw :size="15" />刷新</a-button>
       <a-button v-if="canCreate" type="primary" @click="emit('create')"><Plus :size="15" />{{ t('releasePlan.create') }}</a-button>

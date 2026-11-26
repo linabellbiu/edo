@@ -36,10 +36,14 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   const profileContext = (profile: User) => JSON.stringify([
-    profile.id, profile.department_id, profile.project_id, profile.is_superuser, [...new Set(profile.permissions)].sort(),
+    profile.id, profile.department_id, profile.project_id, profile.is_superuser, profile.must_change_password === true, [...new Set(profile.permissions)].sort(),
   ])
   function applyProfile(profile: User) {
-    if (user.value && profileContext(user.value) !== profileContext(profile)) clearAuditPositions()
+    if (user.value && profileContext(user.value) !== profileContext(profile)) {
+      clearAuditPositions()
+      // 低频校准也可能先于通知发现真实撤权，立即作废旧请求。
+      suspendAuthorization()
+    }
     user.value = profile
     authorizationState.value = 'ready'
   }
@@ -58,6 +62,27 @@ export const useAuthStore = defineStore('auth', () => {
     clearAuditPositions()
     user.value = null
     identityRevision.value++
+  }
+
+  // 普通列表可以等待当前范围核验完成，再发一次全新的读取；不复用旧响应。
+  function waitForAuthorization(signal: AbortSignal): Promise<boolean> {
+    const subject = user.value, project = selectedProject(), request = revision
+    const current = () => !signal.aborted && request === revision && Boolean(subject && user.value &&
+      user.value.id === subject.id && user.value.department_id === subject.department_id &&
+      (user.value.project_id ?? '') === project && selectedProject() === project)
+    if (!current() || authorizationState.value !== 'checking') return Promise.resolve(current() && authorizationReady.value)
+    return new Promise(resolve => {
+      const finish = (ready: boolean) => {
+        stop()
+        signal.removeEventListener('abort', abort)
+        resolve(ready)
+      }
+      const abort = () => finish(false)
+      const stop = watch([user, authorizationState], () => {
+        if (!current() || authorizationState.value !== 'checking') finish(current() && authorizationReady.value)
+      }, { flush: 'sync' })
+      signal.addEventListener('abort', abort, { once: true })
+    })
   }
 
   async function ensureLoaded() {
@@ -253,7 +278,8 @@ export const useAuthStore = defineStore('auth', () => {
           if (disposed || epoch !== socketEpoch) return
           // 实时通道只负责推送撤权事件，断线不代表权限失效；权威判定仍是服务端逐请求鉴权。
           // 因此断线时保留最近一次 REST 核验得到的权限快照，不让一次网络抖动把整站判为不可用。
-          if (state === 'connected') sync()
+          // 服务端确认订阅并复核会话后会紧接着发送 resync，由它统一发起核验。
+          // 握手时再发一次会让初始 resync 作废同一轮在途请求。
           // 通知流被主动停止后不再有撤权推送，权限快照无法再被校准，标记为不可用直到手动重试。
           if (state === 'stopped') authorizationState.value = 'unavailable'
         },
@@ -308,5 +334,5 @@ export const useAuthStore = defineStore('auth', () => {
     return required.some((permission) => permissions.value.has(permission))
   }
 
-  return { user, loaded, loadFailed, permissions, authorizationState, authorizationReady, ensureLoaded, refreshPermissions, retryAuthorization, startPermissionSync, login, loginLDAP, loginEmail, logout, canAny }
+  return { user, loaded, loadFailed, permissions, authorizationState, authorizationReady, ensureLoaded, refreshPermissions, retryAuthorization, waitForAuthorization, startPermissionSync, login, loginLDAP, loginEmail, logout, canAny }
 })

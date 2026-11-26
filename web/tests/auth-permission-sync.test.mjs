@@ -76,6 +76,41 @@ test('同一范围多个刷新入口共用一次请求，成功响应和权限�
   assert.deepEqual([...h.store.permissions.value], ['project.read', 'kubernetes.workload.read'])
 })
 
+test('连续连接仅在 resync 发起一次校准，等待的列表读取在同一身份恢复后继续', async () => {
+  const h = harness(), stop = h.store.startPermissionSync(), socket = h.sockets[0]
+  try {
+    for (let index = 0; index < 6; index++) {
+      h.advance(2000); socket.onState('connecting'); socket.onState('connected')
+      assert.equal(h.requests.length, index)
+      socket.onEvent({ type: 'resync' })
+      const waiters = Array.from({ length: 8 }, () => h.store.waitForAuthorization(new AbortController().signal))
+      assert.equal(h.requests.length, index + 1)
+      h.requests[index].resolve(profile())
+      assert.deepEqual(await Promise.all(waiters), Array(8).fill(true))
+      await tick()
+      assert.equal(h.requests.length, index + 1)
+      socket.onState('disconnected')
+    }
+  } finally { stop() }
+})
+
+test('等候校准的列表读取在中止、切项目或校准失败时不继续', async () => {
+  const h = harness(), stop = h.store.startPermissionSync(), socket = h.sockets[0]
+  try {
+    socket.onEvent({ type: 'resync' })
+    const canceled = new AbortController(), active = new AbortController()
+    const first = h.store.waitForAuthorization(canceled.signal), second = h.store.waitForAuthorization(active.signal)
+    canceled.abort()
+    assert.equal(await first, false)
+    h.requests[0].reject(new Error('synthetic lookup failure'))
+    assert.equal(await second, false)
+    h.store.authorizationState.value = 'checking'
+    const old = h.store.waitForAuthorization(active.signal)
+    h.select('project-b'); h.store.user.value = profile(['project.read'], { project_id: 'project-b' })
+    assert.equal(await old, false)
+  } finally { stop() }
+})
+
 test('短期重复403被有界延后核验而不是静默丢弃，停止时取消待处理核验', async () => {
   const h = harness(), stop = h.store.startPermissionSync()
   h.denied(); h.requests[0].resolve(profile()); await tick()
@@ -258,8 +293,7 @@ test('独立授权通知无需业务查看权限；changed 立即冻结，旧快
     assert.equal(socket.path, '/api/v1/auth/events/ws')
     assert.equal(socket.protocol, 'edo-auth-v1')
     socket.onState('connecting'); socket.onState('connected')
-    assert.equal(h.requests.length, 1)
-    // resync 挂起权限并复用在途的启动核验，不另起请求。
+    assert.equal(h.requests.length, 0, '握手不应抢在 resync 前发出一次必然作废的核验')
     socket.onEvent({ type: 'resync' })
     assert.equal(h.store.authorizationState.value, 'checking')
     // 核验未返回前沿用最近一次快照。
@@ -267,6 +301,7 @@ test('独立授权通知无需业务查看权限；changed 立即冻结，旧快
     assert.deepEqual(h.store.user.value.permissions, ['cluster.read'])
     assert.equal(h.requests.length, 1)
     // 在途核验期间已发生变更，其结果被丢弃，并串行发出一次新核验。
+    socket.onEvent({ type: 'changed' })
     h.requests[0].resolve(profile(['host.terminal.open'])); await tick()
     assert.equal(h.requests.length, 2)
     assert.equal(h.store.authorizationReady.value, false)
@@ -290,7 +325,7 @@ test('实时通道断开保留最近一次核验的权限，不伪登出、不�
   h.store.user.value = profile(['audit.read'], { is_superuser: true })
   const stop = h.store.startPermissionSync(), socket = h.sockets[0]
   try {
-    socket.onState('connecting'); socket.onState('connected')
+    socket.onState('connecting'); socket.onState('connected'); socket.onEvent({ type: 'resync' })
     h.requests[0].resolve(profile(['audit.read'], { is_superuser: true })); await tick()
     assert.equal(h.store.canAny(['user.delete']), true)
     // 断线只代表推送通道中断，REST 核验结果与身份保持不变。
@@ -306,7 +341,7 @@ test('实时通道断开保留最近一次核验的权限，不伪登出、不�
     assert.equal(h.requests.length, 2)
     h.requests[1].resolve(profile(['audit.read'], { is_superuser: true })); await tick()
     assert.equal(h.store.authorizationReady.value, true)
-    h.advance(2000); socket.onState('connecting'); socket.onState('connected')
+    h.advance(2000); socket.onState('connecting'); socket.onState('connected'); socket.onEvent({ type: 'resync' })
     assert.equal(h.requests.length, 3)
   } finally { stop() }
 })
@@ -314,7 +349,7 @@ test('实时通道断开保留最近一次核验的权限，不伪登出、不�
 test('1008确实失效清身份；停止、退出和换用户关闭自身通知流并忽略旧事件', async () => {
   for (const action of ['stop', 'logout', 'user', 'denied']) {
     const h = harness(), stop = h.store.startPermissionSync(), old = h.sockets[0]
-    old.onState('connecting'); old.onState('connected')
+    old.onState('connecting'); old.onState('connected'); old.onEvent({ type: 'resync' })
     if (action === 'stop') stop()
     if (action === 'logout') await h.store.logout()
     if (action === 'user') h.store.user.value = profile(['project.read'], { id: 'new-viewer' })
@@ -341,10 +376,10 @@ test('手动重试重建已停止的通知流，未知消息不恢复授权；�
     assert.equal(h.sockets.length, 2); assert.equal(old.closed, true)
     const socket = h.sockets[1]
     socket.onState('connecting')
-    // 重试期间 connecting 使在途 HTTP 快照过期，需要一条尾随核验，但仅在去重窗口结束后发出。
     h.requests[0].resolve(profile()); await tick()
     h.advance(1000); h.timeouts.get(1)?.callback(); await tick()
     socket.onState('connected')
+    socket.onEvent({ type: 'resync' })
     h.requests[1].resolve(profile()); await retry
     assert.equal(h.store.authorizationReady.value, true)
     assert.equal(socket.onEvent({ type: 'other' }), false)
