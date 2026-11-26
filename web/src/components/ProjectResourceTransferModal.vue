@@ -7,13 +7,14 @@ import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import KubeEditorSelect from '@/components/KubeEditorSelect.vue'
-import type { ProjectTransferCatalog, ProjectTransferPlan, ProjectTransferResource, ProjectTransferResourceRef } from '@/types/projectResourceTransfer'
+import type { ProjectTransferCatalog, ProjectTransferInput, ProjectTransferPlan, ProjectTransferResource, ProjectTransferResourceRef } from '@/types/projectResourceTransfer'
 
 const props = withDefaults(defineProps<{
   open: boolean
   sourceProjectName?: string
   initialResources?: ProjectTransferResourceRef[]
-}>(), { sourceProjectName: '', initialResources: () => [] })
+  applicationOnly?: boolean
+}>(), { sourceProjectName: '', initialResources: () => [], applicationOnly: false })
 const emit = defineEmits<{ 'update:open': [value: boolean]; completed: [plan: ProjectTransferPlan] }>()
 const { t } = useI18n(), auth = useAuthStore()
 const catalog = ref<ProjectTransferCatalog>(), plan = ref<ProjectTransferPlan>()
@@ -29,22 +30,30 @@ const allowed = computed(() => auth.authorizationState === 'ready' && auth.canAn
 function resourceKey(resource: ProjectTransferResourceRef) { return JSON.stringify([resource.kind, resource.id]) }
 function popupContainer(node: HTMLElement) { return node.parentElement || node.ownerDocument.body }
 const resourceMap = computed(() => new Map((catalog.value?.resources || []).map(item => [resourceKey(item), item])))
-const selectedResources = computed(() => selectedKeys.value.map(key => resourceMap.value.get(key)).filter((item): item is ProjectTransferResource => Boolean(item)))
+const selectableResources = computed(() => (catalog.value?.resources || []).filter(item => !props.applicationOnly || item.kind === 'application'))
+const selectableMap = computed(() => new Map(selectableResources.value.map(item => [resourceKey(item), item])))
+const fixedApplicationRef = computed(() => {
+  const applications = props.initialResources.filter(item => item.kind === 'application')
+  return props.applicationOnly && applications.length === 1 ? applications[0] : undefined
+})
+const fixedApplication = computed(() => fixedApplicationRef.value ? resourceMap.value.get(resourceKey(fixedApplicationRef.value)) : undefined)
+const selectedResources = computed(() => selectedKeys.value.map(key => selectableMap.value.get(key)).filter((item): item is ProjectTransferResource => Boolean(item)))
 const kindLabels = computed(() => new Map((catalog.value?.kinds || []).map(item => [item.kind, item.label])))
 const kindOptions = computed(() => [{ value: '', label: t('projectTransfer.allKinds') }, ...(catalog.value?.kinds || []).map(item => ({ value: item.kind, label: item.label }))])
 const projectOptions = computed(() => (catalog.value?.projects || []).filter(item => item.id !== auth.user?.project_id).map(item => ({ value: item.id, label: item.name })))
 const targetName = computed(() => projectOptions.value.find(item => item.value === targetProjectID.value)?.label || '')
 const visibleResources = computed(() => {
   const keyword = query.value.trim().toLocaleLowerCase()
-  return (catalog.value?.resources || []).filter(item => (!kind.value || item.kind === kind.value) && (!keyword || `${item.name} ${kindLabels.value.get(item.kind) || item.kind}`.toLocaleLowerCase().includes(keyword)))
+  return selectableResources.value.filter(item => (props.applicationOnly || !kind.value || item.kind === kind.value) && (!keyword || `${item.name} ${kindLabels.value.get(item.kind) || item.kind}`.toLocaleLowerCase().includes(keyword)))
 })
 const columns = computed(() => [{ key: 'name', dataIndex: 'name', title: t('projectTransfer.resourceName') }, { key: 'kind', title: t('projectTransfer.resourceKind'), width: 160 }])
+const selectionColumns = computed(() => props.applicationOnly ? [{ key: 'name', dataIndex: 'name', title: t('projectTransfer.applicationName') }] : columns.value)
 const previewColumns = computed(() => [...columns.value, { key: 'source', title: t('projectTransfer.inclusion'), width: 130 }])
-const canPreview = computed(() => allowed.value && !loading.value && !previewing.value && !submitting.value && Boolean(targetName.value) && selectedResources.value.length > 0 && selectedResources.value.length === selectedKeys.value.length)
+const canPreview = computed(() => allowed.value && !loading.value && !previewing.value && !submitting.value && Boolean(targetName.value) && selectedResources.value.length > 0 && selectedResources.value.length === selectedKeys.value.length && (!props.applicationOnly || selectedResources.value.length === 1))
 const canSubmit = computed(() => canPreview.value && stage.value === 'preview' && Boolean(plan.value?.confirmation) && !plan.value?.blockers.length && previewInput === inputKey())
-const selection = computed(() => ({ selectedRowKeys: selectedKeys.value, preserveSelectedRowKeys: true, onChange: changeSelection, getCheckboxProps: (record: ProjectTransferResource) => ({ disabled: !allowed.value || previewing.value || submitting.value, 'aria-label': t('projectTransfer.selectResource', { name: record.name }) }) }))
+const selection = computed(() => ({ type: props.applicationOnly ? 'radio' as const : 'checkbox' as const, selectedRowKeys: selectedKeys.value, preserveSelectedRowKeys: true, onChange: changeSelection, getCheckboxProps: (record: ProjectTransferResource) => ({ disabled: !allowed.value || previewing.value || submitting.value, 'aria-label': t(props.applicationOnly ? 'projectTransfer.selectApplication' : 'projectTransfer.selectResource', { name: record.name }) }) }))
 
-function input() { return { target_project_id: targetProjectID.value, resources: selectedResources.value.map(({ kind, id }) => ({ kind, id })) } }
+function input(): ProjectTransferInput { return { target_project_id: targetProjectID.value, resources: selectedResources.value.map(({ kind, id }) => ({ kind, id })), ...(props.applicationOnly ? { include_dependencies: true } : {}) } }
 function inputKey() { return JSON.stringify(input()) }
 function current(requestEpoch: number, requestIdentity: string) {
   return !disposed && props.open && epoch === requestEpoch && openedIdentity === requestIdentity && identity() === requestIdentity && allowed.value && selectedProject() === auth.user?.project_id
@@ -61,9 +70,10 @@ function reset() {
 }
 function close() { if (submitting.value) return; reset(); emit('update:open', false) }
 function changeSelection(keys: (string | number)[]) {
-  if (submitting.value || previewing.value || !allowed.value) return
-  selectedKeys.value = [...new Set(keys.map(String))].filter(key => resourceMap.value.has(key))
+  if (submitting.value || previewing.value || !allowed.value || fixedApplicationRef.value) return
+  selectedKeys.value = validSelectionKeys(keys.map(String))
 }
+function validSelectionKeys(keys: string[]) { const valid = [...new Set(keys)].filter(key => selectableMap.value.has(key)); return props.applicationOnly ? valid.slice(0, 1) : valid }
 function changeTarget(value: unknown) { if (!submitting.value && !previewing.value) targetProjectID.value = typeof value === 'string' ? value : '' }
 function back() { if (!submitting.value) { invalidatePreview(); error.value = '' } }
 
@@ -71,12 +81,12 @@ async function loadCatalog() {
   if (!props.open || !allowed.value || submitting.value || selectedProject() !== auth.user?.project_id) return
   catalogController?.abort(); invalidatePreview(); error.value = ''; loading.value = true
   const requestEpoch = epoch, requestIdentity = openedIdentity, controller = new AbortController(); catalogController = controller
-  const selectedBefore = catalog.value ? [...selectedKeys.value] : props.initialResources.map(resourceKey)
+  const selectedBefore = fixedApplicationRef.value ? [resourceKey(fixedApplicationRef.value)] : catalog.value ? [...selectedKeys.value] : props.initialResources.map(resourceKey)
   try {
     const { data } = await client.get<ProjectTransferCatalog>('/project-resource-transfers/catalog', { headers: { 'X-EDO-Project-ID': auth.user?.project_id || '' }, signal: controller.signal })
     if (controller.signal.aborted || !current(requestEpoch, requestIdentity)) return
     catalog.value = data
-    selectedKeys.value = [...new Set(selectedBefore)].filter(key => resourceMap.value.has(key))
+    selectedKeys.value = validSelectionKeys(selectedBefore)
     if (selectedKeys.value.length !== new Set(selectedBefore).size) error.value = t('projectTransfer.selectionChanged')
     if (!projectOptions.value.some(item => item.value === targetProjectID.value)) targetProjectID.value = ''
   } catch (cause) { if (!controller.signal.aborted && current(requestEpoch, requestIdentity)) error.value = apiErrorMessage(cause) }
@@ -113,10 +123,10 @@ async function execute() {
 }
 
 watch([targetProjectID, () => JSON.stringify(selectedKeys.value)], () => { if (!submitting.value) invalidatePreview() }, { flush: 'sync' })
-watch(() => props.open, open => {
+watch([() => props.open, () => props.applicationOnly, () => JSON.stringify(props.initialResources)], ([open]) => {
   reset()
   if (open && allowed.value && selectedProject() === auth.user?.project_id) { openedIdentity = identity(); void loadCatalog() }
-}, { immediate: true })
+}, { immediate: true, flush: 'sync' })
 watch(identity, () => { if (props.open && openedIdentity && identity() !== openedIdentity) { reset(); emit('update:open', false) } }, { flush: 'sync' })
 function syncProject() { if (props.open && openedIdentity && identity() !== openedIdentity) { reset(); emit('update:open', false) } }
 if (typeof window !== 'undefined') { window.addEventListener('edo:projects-changed', syncProject); window.addEventListener('storage', syncProject) }
@@ -134,15 +144,18 @@ onBeforeUnmount(() => { disposed = true; reset(); if (typeof window !== 'undefin
           <strong v-else>{{ targetName }}</strong>
         </div>
       </div>
-      <section v-if="stage === 'selection'" class="transfer-section" :aria-label="t('projectTransfer.resources')">
-        <header><h3>{{ t('projectTransfer.resources') }}</h3><span>{{ t('projectTransfer.selected', { count: selectedResources.length }) }}</span><a-button size="small" :disabled="!allowed || loading || previewing || submitting" :class="{ 'is-busy': loading }" :aria-busy="loading" :aria-label="t('projectTransfer.refreshCatalog')" @click="loadCatalog"><RefreshCw :size="14" aria-hidden="true" /></a-button></header>
+      <section v-if="stage === 'selection'" class="transfer-section" :aria-label="t(applicationOnly ? 'projectTransfer.applications' : 'projectTransfer.resources')">
+        <header><h3>{{ t(fixedApplicationRef ? 'projectTransfer.application' : applicationOnly ? 'projectTransfer.applications' : 'projectTransfer.resources') }}</h3><span v-if="!fixedApplicationRef">{{ t('projectTransfer.selected', { count: selectedResources.length }) }}</span><a-button size="small" :disabled="!allowed || loading || previewing || submitting" :class="{ 'is-busy': loading }" :aria-busy="loading" :aria-label="t(applicationOnly ? 'projectTransfer.refreshApplications' : 'projectTransfer.refreshCatalog')" @click="loadCatalog"><RefreshCw :size="14" aria-hidden="true" /></a-button></header>
+        <p v-if="fixedApplicationRef" class="transfer-fixed-application">{{ fixedApplication?.name || t(loading ? 'workspace.loading' : 'projectTransfer.applicationUnavailable') }}</p>
+        <template v-else>
         <div class="transfer-filters">
-          <a-input v-model:value="query" allow-clear :placeholder="t('projectTransfer.search')" :aria-label="t('projectTransfer.search')"><template #prefix><Search :size="14" aria-hidden="true" /></template></a-input>
-          <label class="sr-only" for="transfer-resource-kind">{{ t('projectTransfer.resourceKind') }}</label><KubeEditorSelect :active="open && allowed" :disabled="previewing || submitting" id="transfer-resource-kind" v-model:value="kind" :options="kindOptions" :aria-label="t('projectTransfer.resourceKind')" :get-popup-container="popupContainer" />
+          <a-input v-model:value="query" allow-clear :placeholder="t(applicationOnly ? 'projectTransfer.searchApplications' : 'projectTransfer.search')" :aria-label="t(applicationOnly ? 'projectTransfer.searchApplications' : 'projectTransfer.search')"><template #prefix><Search :size="14" aria-hidden="true" /></template></a-input>
+          <template v-if="!applicationOnly"><label class="sr-only" for="transfer-resource-kind">{{ t('projectTransfer.resourceKind') }}</label><KubeEditorSelect :active="open && allowed" :disabled="previewing || submitting" id="transfer-resource-kind" v-model:value="kind" :options="kindOptions" :aria-label="t('projectTransfer.resourceKind')" :get-popup-container="popupContainer" /></template>
         </div>
-        <a-table size="small" :columns="columns" :data-source="visibleResources" :row-key="resourceKey" :row-selection="selection" :scroll="{ x: 560 }" :loading="loading && !catalog" :pagination="{ pageSize: 8, size: 'small', showSizeChanger: false, hideOnSinglePage: true }" :locale="{ emptyText: loading ? t('workspace.loading') : t('projectTransfer.emptyResources') }">
+        <a-table size="small" :columns="selectionColumns" :data-source="visibleResources" :row-key="resourceKey" :row-selection="selection" :scroll="applicationOnly ? undefined : { x: 560 }" :loading="loading && !catalog" :pagination="{ pageSize: 8, size: 'small', showSizeChanger: false, hideOnSinglePage: true }" :locale="{ emptyText: loading ? t('workspace.loading') : t(applicationOnly ? 'projectTransfer.emptyApplications' : 'projectTransfer.emptyResources') }">
           <template #bodyCell="{ column, record }"><span v-if="column.key === 'name'" class="transfer-resource-name">{{ record.name }}</span><span v-else-if="column.key === 'kind'" class="transfer-kind">{{ kindLabels.get(record.kind) || record.kind }}</span></template>
         </a-table>
+        </template>
         <p v-if="catalog && !projectOptions.length" class="transfer-empty-target" role="status">{{ t('projectTransfer.noTargets') }}</p>
       </section>
       <template v-else-if="plan">
@@ -164,5 +177,6 @@ onBeforeUnmount(() => { disposed = true; reset(); if (typeof window !== 'undefin
 <style scoped>
 :global(.project-transfer-modal .ant-modal){top:24px;padding-bottom:24px}:global(.project-transfer-modal .ant-modal-body){max-height:calc(100dvh - 184px);overflow-y:auto;overflow-x:hidden}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.transfer-fixed-application{margin:0;font-size:14px;overflow-wrap:anywhere}.transfer-section>header>.ant-btn{margin-left:auto}.transfer-section>header>span+.ant-btn{margin-left:0}
 .project-transfer-content{min-width:0}.transfer-projects{display:grid;grid-template-columns:minmax(0,1fr) 18px minmax(0,1fr);gap:18px;padding:4px 0 20px;align-items:center}.transfer-field{min-width:0;display:grid;gap:8px}.transfer-field>span,.transfer-field>label{font-size:12px;color:var(--edo-muted)}.transfer-field>strong{font-size:14px;font-weight:500;overflow-wrap:anywhere}.transfer-arrow{color:var(--edo-muted)}.transfer-section{border-top:1px solid var(--edo-border);padding-top:16px}.transfer-section>header{display:flex;align-items:center;gap:12px;margin-bottom:12px}.transfer-section h3,.transfer-blockers h3{font-size:13px;font-weight:600;margin:0}.transfer-section>header>span{font-size:12px;color:var(--edo-muted);margin-left:auto}.transfer-filters{display:flex;gap:10px;margin-bottom:12px}.transfer-filters>.ant-input-affix-wrapper{flex:1;min-width:0}.transfer-filters>.ant-select{width:168px;flex:none}.transfer-resource-name{font-size:13px;overflow-wrap:anywhere}.transfer-kind,.transfer-origin{font-size:12px;color:var(--edo-muted);white-space:normal}.transfer-impact,.transfer-empty-target{font-size:12px;line-height:1.6;color:var(--edo-muted);margin:14px 0 0}.transfer-blockers{margin-top:16px;border-top:1px solid var(--edo-border);padding-top:14px;color:var(--edo-button-danger-text)}.transfer-blockers ul{list-style:none;padding:0;margin:8px 0 0;display:grid;gap:8px}.transfer-blockers li{display:grid;gap:3px;font-size:12px;overflow-wrap:anywhere}.transfer-blockers strong{font-weight:500}.transfer-feedback{min-height:30px;padding-top:10px;font-size:12px;line-height:20px;color:var(--edo-muted)}.transfer-feedback [role=alert]{color:var(--edo-button-danger-text)}.transfer-footer{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}.transfer-section :deep(.ant-table){table-layout:fixed}.transfer-section :deep(.ant-table-cell){vertical-align:top}.transfer-field :deep(.ant-select){width:100%}@media(max-width:560px){.transfer-projects{grid-template-columns:minmax(0,1fr);gap:14px}.transfer-arrow{display:none}.transfer-filters{flex-wrap:wrap}.transfer-filters>.ant-input-affix-wrapper{flex-basis:100%}.transfer-filters>.ant-select{width:100%}.transfer-section :deep(.ant-table-cell){padding:8px 6px}.transfer-section :deep(.ant-table-selection-column){width:32px!important;min-width:32px!important}.transfer-footer>.ant-btn{min-height:36px}}
 </style>

@@ -93,6 +93,20 @@ func buildHistory(tx *gorm.DB, p *Plan, selected map[resourceKey]bool, add func(
 	if err := check("release_plan", "release_plan_executions", "release_plan_id", "status IN ?", "发布计划仍有未结束的执行", []model.ReleasePlanExecutionStatus{model.ReleasePlanExecutionPending, model.ReleasePlanExecutionRunning}); err != nil {
 		return err
 	}
+	if len(ids["release_plan"]) > 0 && len(ids["application"]) > 0 {
+		var mixed []string
+		if err := tx.Table("release_plan_executions e").Joins("JOIN release_plan_execution_items i ON i.release_plan_execution_id = e.uuid").
+			Where("e.project_id = ? AND e.release_plan_id IN ? AND i.application_id NOT IN ?", source, ids["release_plan"], ids["application"]).
+			Distinct("e.release_plan_id").Pluck("e.release_plan_id", &mixed).Error; err != nil {
+			return fmt.Errorf("检查发布计划历史应用归属: %w", err)
+		}
+		for _, id := range mixed {
+			add(resourceKey{"release_plan", id}, "发布计划的历史执行包含其他应用，请先处理关联历史")
+		}
+	}
+	if err := check("application_database", "application_database_migrations", "database_id", "status IN ?", "应用数据库仍有未结束的迁移任务", []string{"pending", "running"}); err != nil {
+		return err
+	}
 	if err := check("application", "applications", "uuid", "sync_status = ?", "应用正在同步代码仓库，请等待同步结束", model.ApplicationSyncChecking); err != nil {
 		return err
 	}

@@ -20,14 +20,14 @@ const plan = (payload = { target_project_id: 'project-b', resources: [catalog.re
   blockers: [], history_count: 6, confirmation: 'server-preview-confirmation',
 })
 
-async function harness(t, { permissions = ['project.resource.move'], selectedProject = 'project-a', initialResources = [], get, post } = {}) {
+async function harness(t, { permissions = ['project.resource.move'], selectedProject = 'project-a', initialResources = [], applicationOnly = false, get, post } = {}) {
   const requests = [], events = [], notifications = [], unmounts = [], storage = { project: selectedProject }, window = new EventTarget()
   const auth = vue.reactive({ authorizationState: 'ready', user: { id: 'operator', department_id: 'department-a', project_id: 'project-a', is_superuser: false, permissions: [...permissions] }, canAny(codes) { return this.user?.is_superuser || codes.some(code => this.user?.permissions.includes(code)) } })
   const client = {
     async get(path, options) { requests.push({ method: 'get', path, options }); return get ? get(path, options) : { data: structuredClone(catalog) } },
     async post(path, body, options) { requests.push({ method: 'post', path, body: structuredClone(body), options }); return post ? post(path, body, options) : { data: plan(body) } },
   }
-  const props = vue.reactive({ open: true, sourceProjectName: '来源项目 A', initialResources })
+  const props = vue.reactive({ open: true, sourceProjectName: '来源项目 A', initialResources, applicationOnly })
   const component = loadFrontend('../src/components/ProjectResourceTransferModal.vue', {
     vue: { ...vue, onBeforeUnmount: fn => unmounts.push(fn) },
     'vue-i18n': { useI18n: () => ({ t: (name, values) => values ? `${name}:${JSON.stringify(values)}` : name }) },
@@ -163,6 +163,59 @@ test('相同身份对象校准保留资源选择、目标和预览，不重复�
   const h = await harness(t); choose(h); await h.state.preview(); const before = h.requests.length
   h.auth.user = { ...h.auth.user, permissions: [...h.auth.user.permissions] }; await settle()
   assert.equal(h.props.open, true); assert.equal(h.state.canSubmit.value, true); assert.equal(h.requests.length, before)
+})
+
+test('应用模式只显示和单选应用，不接受仓库等类型作为移动入口', async t => {
+  const secondApplication={kind:'application',id:'app-b',name:'库存应用'}
+  const h=await harness(t,{applicationOnly:true,get:async()=>({data:{...catalog,resources:[...catalog.resources,secondApplication]}})})
+  assert.deepEqual(h.state.visibleResources.value,[catalog.resources[0],secondApplication])
+  assert.equal(h.state.selection.value.type,'radio')
+  choose(h,[catalog.resources[1]])
+  assert.deepEqual(h.state.selectedResources.value,[]);assert.equal(h.state.canPreview.value,false)
+  h.state.changeSelection([key(catalog.resources[0]),key(secondApplication)])
+  assert.equal(h.state.selectedResources.value.length,1)
+  h.state.changeSelection([key(secondApplication)])
+  assert.deepEqual(h.state.selectedResources.value,[secondApplication])
+  h.state.query.value='订单';assert.deepEqual(h.state.visibleResources.value,[catalog.resources[0]])
+  assert.deepEqual(h.state.selectedResources.value,[secondApplication],'搜索不改变选中应用')
+})
+
+test('从应用行打开时固定真实应用，选择目标后预览自动关联项和历史，仍须手动确认', async t => {
+  const h=await harness(t,{applicationOnly:true,initialResources:[catalog.resources[0]]})
+  assert.equal(h.state.fixedApplication.value.name,'订单应用')
+  assert.deepEqual(h.state.selectedResources.value,[catalog.resources[0]])
+  h.state.changeSelection([]);h.state.changeSelection([key(catalog.resources[1])])
+  assert.deepEqual(h.state.selectedResources.value,[catalog.resources[0]])
+  await h.state.preview();assert.equal(previews(h).length,0,'目标项目必须显式选择')
+  h.state.changeTarget('project-b');await h.state.preview()
+  assert.deepEqual(previews(h)[0].body,{target_project_id:'project-b',resources:[{kind:'application',id:'app-a'}],include_dependencies:true})
+  assert.equal(h.state.plan.value.resources.find(item=>item.kind==='repository').automatic,true)
+  assert.equal(h.state.plan.value.history_count,6);assert.equal(h.state.canSubmit.value,true)
+  assert.equal(executions(h).length,0,'预览完成不自动执行')
+  await h.state.execute()
+  assert.deepEqual(executions(h)[0].body,{...previews(h)[0].body,confirmation:'server-preview-confirmation'})
+})
+
+test('固定应用失效不改选其他资源；应用预览仍展示阻断且不可确认', async t => {
+  const unavailable=await harness(t,{applicationOnly:true,initialResources:[catalog.resources[0]],get:async()=>({data:{...catalog,resources:catalog.resources.slice(1)}})})
+  assert.equal(unavailable.state.fixedApplication.value,undefined)
+  unavailable.state.changeTarget('project-b');await unavailable.state.preview()
+  assert.equal(previews(unavailable).length,0);assert.equal(unavailable.state.error.value,'projectTransfer.selectionChanged')
+  const h=await harness(t,{applicationOnly:true,initialResources:[catalog.resources[0]],post:async(_,body)=>({data:{...plan(body),blockers:[{...catalog.resources[0],message:'应用仍关联部署实例'}],confirmation:''}})})
+  h.state.changeTarget('project-b');await h.state.preview();await h.state.execute()
+  assert.equal(h.state.plan.value.blockers[0].message,'应用仍关联部署实例')
+  assert.equal(h.state.canSubmit.value,false);assert.equal(executions(h).length,0)
+})
+
+test('更换预填应用时作废旧预览和确认，不能把上一次的应用带入新弹窗', async t => {
+  const pending=deferred(),secondApplication={kind:'application',id:'app-b',name:'库存应用'}
+  const h=await harness(t,{applicationOnly:true,initialResources:[catalog.resources[0]],get:async()=>({data:{...catalog,resources:[...catalog.resources,secondApplication]}}),post:()=>pending.promise})
+  h.state.changeTarget('project-b');const old=h.state.preview()
+  h.props.initialResources=[secondApplication];await settle()
+  assert.equal(previews(h)[0].options.signal.aborted,true)
+  assert.deepEqual(h.state.selectedResources.value,[secondApplication]);assert.equal(h.state.targetProjectID.value,'')
+  pending.resolve({data:plan()});await old
+  assert.equal(h.state.plan.value,undefined);assert.equal(h.state.canSubmit.value,false)
 })
 
 test('项目页仅保留一个受移动权限保护的统一入口，弹窗使用可选目录且固定底部确认', () => {

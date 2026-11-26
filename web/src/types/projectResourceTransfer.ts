@@ -7,6 +7,13 @@ export interface ProjectTransferResource extends ProjectTransferResourceRef {
   name: string
 }
 
+export interface ProjectTransferInput {
+  target_project_id: string
+  resources: ProjectTransferResourceRef[]
+  include_dependencies?: boolean
+  confirmation?: string
+}
+
 export interface ProjectTransferCatalog {
   kinds: Array<{ kind: string; label: string }>
   resources: ProjectTransferResource[]

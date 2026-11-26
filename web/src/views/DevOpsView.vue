@@ -9,7 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
 import { isAxiosError } from 'axios'
 import { v4 as uuidv4 } from 'uuid'
-import { ArrowUpRight, Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Search, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
+import { ArrowUpRight, Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, FolderInput, GitBranch, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Search, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
 
 import client from '@/api/client'
 import { subscribeDeliveryEvents } from '@/utils/deliveryEvents'
@@ -30,6 +30,8 @@ import ComposeContainerControlModal from '@/components/ComposeContainerControlMo
 import GitCredentialDrawer from '@/components/GitCredentialDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceLoadStatus from '@/components/ResourceLoadStatus.vue'
+import ProjectResourceTransferModal from '@/components/ProjectResourceTransferModal.vue'
+import type { ProjectTransferPlan, ProjectTransferResourceRef } from '@/types/projectResourceTransfer'
 import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
 import PipelineTaskHistory from '@/components/PipelineTaskHistory.vue'
 import PipelineRunProgress from '@/components/PipelineRunProgress.vue'
@@ -196,6 +198,34 @@ const canCreate=computed(()=>props.section==='repositories'?auth.canAny(['reposi
 const canUpdate=computed(()=>props.section==='repositories'?auth.canAny(['repository.update']):auth.canAny([`${sectionPermission.value}.update`]))
 const canDelete=computed(()=>props.section==='repositories'?auth.canAny(['repository.delete']):auth.canAny([`${sectionPermission.value}.delete`]))
 const canExecute=computed(()=>props.section==='repositories'?auth.canAny(['repository.execute']):auth.canAny([`${sectionPermission.value}.execute`]))
+const canMoveApplication=computed(()=>props.section==='applications'&&auth.authorizationReady&&auth.canAny(['project.resource.move'])&&resourceFormIdentityReady())
+const applicationTransferOpen=ref(false),applicationTransferResources=ref<ProjectTransferResourceRef[]>([])
+let applicationTransferScope=''
+function openApplicationTransfer(application:Application){
+ if(!canMoveApplication.value||resourceMutationID.value||resourceLoadedScope!==resourceScopeKey()||!applications.value.some(item=>item.id===application.id))return
+ applicationTransferScope=resourceScopeKey()
+ applicationTransferResources.value=[{kind:'application',id:application.id}]
+ applicationTransferOpen.value=true
+}
+function closeApplicationTransfer(){applicationTransferOpen.value=false;applicationTransferResources.value=[];applicationTransferScope=''}
+function applicationMoved(plan:ProjectTransferPlan){
+ if(applicationTransferScope!==resourceScopeKey()||plan.source_project_id!==planExecutionSelectedProject.value||!canMoveApplication.value)return
+ // 先使移动前的读取失效，防止迟到响应把已移走的应用重新放回来源列表。
+ cancelResourceReads();resourceRefreshRevision++;resourceLoadingScope='';loading.value=false
+ const moved=new Set(plan.resources.map(item=>JSON.stringify([item.kind,item.id])))
+ const retained=<T extends {id:string}>(kind:string,items:T[])=>items.filter(item=>!moved.has(JSON.stringify([kind,item.id])))
+ applications.value=retained('application',applications.value)
+ repositories.value=retained('repository',repositories.value)
+ buildPlans.value=retained('build_plan',buildPlans.value)
+ registries.value=retained('image_registry',registries.value)
+ releasePlans.value=retained('release_plan',releasePlans.value)
+ deploymentPlans.value=retained('deployment_plan',deploymentPlans.value)
+ workflowTemplates.value=retained('workflow_template',workflowTemplates.value)
+ runs.value=runs.value.filter(item=>!moved.has(JSON.stringify(['application',item.application_id])))
+ deployments.value=deployments.value.filter(item=>!moved.has(JSON.stringify(['application',item.application_id])))
+ closeApplicationTransfer()
+ void refresh()
+}
 const canSaveCurrent=computed(()=>creatingApplicationRepository.value?auth.canAny(['repository.create']):editingID.value?canUpdate.value:canCreate.value)
 const resourceFormIdentity=computed(()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,planExecutionSelectedProject.value,props.section]))
 const resourceFormReadPermission=computed(()=>props.section==='repositories'?'repository.read':`${sectionPermission.value}.read`)
@@ -2452,6 +2482,7 @@ watch(()=>visibleApprovalRuns().map(run=>`${run.id}:${run.current_node_id}`).joi
 watch(approvalScope,()=>{for(const controller of runApprovalRequests.values())controller.abort();runApprovalRequests.clear();runApprovals.value={};runApprovalLoading.value={};runApprovalErrors.value={};void refreshRunApprovals()})
 watch(planExecutionScopeIdentity,resetPlanExecutionScope,{flush:'sync'})
 watch(planExecutionScopeIdentity,resetResourceStatus,{flush:'sync'})
+watch(planExecutionScopeIdentity,closeApplicationTransfer,{flush:'sync'})
 watch(()=>JSON.stringify([resourceScopeKey(),auth.authorizationState,applicationDrawerOpen.value,applicationDrawerID.value,applicationDetailTab(applicationDrawerID.value),expandedDeployments.value,[...currentDeploymentIDs.value],composeStream.value,composeStream.value&&deploymentRuntimeStates.value[composeStream.value.deploymentID]?.services?.map(service=>service.containers?.map(container=>container.id))]),syncComposeContainerContext,{flush:'sync'})
 watch([planExecutionScopeIdentity,()=>auth.authorizationReady],refreshAuthorizedResourceScope,{flush:'post'})
 watch(()=>props.section,connectDeliveryEvents)
@@ -2509,11 +2540,12 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
         <button type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'}" :aria-label="t('applicationCard.deploymentInstances')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'deployments')"><Boxes :size="14"/>{{ t('applicationWorkspace.instances') }}<span v-if="canReadDeployments" class="apps-count">{{ card.countReady?card.deploymentInstances.length:'—' }}</span></button>
         <button v-if="auth.canAny(['delivery_variable.read'])" type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='environment'}" :aria-label="t('applicationWorkspace.environmentConfiguration')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='environment'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'environment')"><Settings2 :size="14" aria-hidden="true"/>{{ t('applicationWorkspace.environmentVariables') }}</button>
       </div>
-      <ResourceRowActions v-else-if="column.key==='actions'" :more="canUpdate||canDelete" :loading="resourceMutationID===card.application.id">
+      <ResourceRowActions v-else-if="column.key==='actions'" :more="canUpdate||canDelete||canMoveApplication" :loading="resourceMutationID===card.application.id">
         <a-button v-if="canExecute" size="small" :loading="checkingApplicationIDs[card.application.id]" :disabled="card.sync.live" @click="checkApplicationUpdates(card.application)">{{ t('applicationCard.checkUpdates') }}</a-button>
         <template #more>
           <a-menu-item v-if="canUpdate" @click="edit(card.application)">{{ t('applicationCard.modify') }}</a-menu-item>
           <a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(card.application)"><Power :size="14" aria-hidden="true"/>{{ t(card.application.is_active?'delivery.disable':'delivery.enable') }}</a-menu-item>
+          <a-menu-item v-if="canMoveApplication" :disabled="Boolean(resourceMutationID)" @click="openApplicationTransfer(card.application)"><FolderInput :size="14" aria-hidden="true"/>{{ t('projectTransfer.title') }}</a-menu-item>
           <a-menu-item v-if="canDelete" danger :disabled="Boolean(resourceMutationID)" @click="confirmDeleteApplication(card.application)"><Trash2 :size="14" aria-hidden="true"/>{{ t('applicationCard.delete') }}</a-menu-item>
         </template>
       </ResourceRowActions>
@@ -3130,6 +3162,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;scaleAutoscalerRequest?.abort();
 <ComposeContainerControlModal v-model:open="containerControlDialog.open" :deploymentID="containerControlDialog.deploymentID" :containerID="containerControlDialog.containerID" :action="containerControlDialog.action" @completed="containerControlCompleted"/>
 <ContainerLogDrawer :source-deployment-i-d="composeStream?.deploymentID" v-model:open="containerLogs.open" :title="containerLogs.title" :path="containerLogs.path"/>
 <TerminalDrawer :source-deployment-i-d="composeStream?.deploymentID" v-model:open="terminal.open" :title="terminal.title" :path="terminal.path"/>
+<ProjectResourceTransferModal v-if="applicationTransferOpen" v-model:open="applicationTransferOpen" :initial-resources="applicationTransferResources" application-only @completed="applicationMoved" />
 </section></template>
 
 <style scoped>

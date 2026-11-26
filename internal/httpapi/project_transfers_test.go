@@ -197,3 +197,102 @@ func TestProjectResourceTransferRejectsOtherDepartmentEvenForAdmin(t *testing.T)
 		t.Fatalf("管理员的移动目录不应包含其他部门：%d %s", catalog.Code, catalog.Body.String())
 	}
 }
+
+func TestProjectResourceTransferApplicationDetectsDependenciesBeforeConfirmation(t *testing.T) {
+	f, admin, source, repositoryID, _ := projectTransferHTTPFixture(t)
+	applicationID := createApplicationForDepartmentTest(t, f.router, admin, "transfer_application", repositoryID)
+	var workflow model.ReleaseWorkflow
+	if err := f.db.First(&workflow, "application_id = ?", applicationID).Error; err != nil {
+		t.Fatalf("读取应用默认流水线失败：%v", err)
+	}
+	input := map[string]any{
+		"target_project_id":    f.project.ID,
+		"include_dependencies": true,
+		"resources":            []map[string]string{{"kind": "application", "id": applicationID}},
+	}
+	assertProject := func(want string) {
+		t.Helper()
+		var application model.Application
+		if err := f.db.First(&application, "uuid = ?", applicationID).Error; err != nil || application.ProjectID != want {
+			t.Fatalf("应用的项目归属不正确：got=%s want=%s err=%v", application.ProjectID, want, err)
+		}
+		var repository model.GitRepository
+		if err := f.db.First(&repository, "uuid = ?", repositoryID).Error; err != nil || repository.ProjectID != want {
+			t.Fatalf("关联仓库的项目归属不正确：got=%s want=%s err=%v", repository.ProjectID, want, err)
+		}
+		var currentWorkflow model.ReleaseWorkflow
+		if err := f.db.First(&currentWorkflow, "uuid = ?", workflow.ID).Error; err != nil || currentWorkflow.ProjectID != want {
+			t.Fatalf("关联流水线的项目归属不正确：got=%s want=%s err=%v", currentWorkflow.ProjectID, want, err)
+		}
+	}
+	preview := deliveryVariableProjectRequest(t, f, f.cookie, http.MethodPost, "/project-resource-transfers/preview", source, input)
+	var plan projecttransfer.Plan
+	if err := json.Unmarshal(preview.Body.Bytes(), &plan); err != nil || preview.Code != http.StatusOK || plan.Confirmation == "" || len(plan.Blockers) != 0 {
+		t.Fatalf("应用关联资源预览失败：%d %s err=%v", preview.Code, preview.Body.String(), err)
+	}
+	if len(plan.Resources) != 3 {
+		t.Fatalf("预览应列出应用和自动检测到的仓库、流水线：%+v", plan.Resources)
+	}
+	for _, item := range plan.Resources {
+		switch item.Kind {
+		case "application":
+			if item.ID != applicationID || item.Automatic {
+				t.Fatalf("用户选择的应用应保留原始身份：%+v", item)
+			}
+		case "repository":
+			if item.ID != repositoryID || !item.Automatic {
+				t.Fatalf("关联仓库应标记为自动检测：%+v", item)
+			}
+		case "workflow":
+			if item.ID != workflow.ID || !item.Automatic {
+				t.Fatalf("关联流水线应标记为自动检测：%+v", item)
+			}
+		default:
+			t.Fatalf("预览包含无关资源：%+v", item)
+		}
+	}
+	assertProject(source)
+	missingConfirmation := deliveryVariableProjectRequest(t, f, f.cookie, http.MethodPost, "/project-resource-transfers", source, input)
+	if missingConfirmation.Code != http.StatusConflict || !strings.Contains(missingConfirmation.Body.String(), "project_transfer_confirmation") {
+		t.Fatalf("未确认关联资源范围时不能移动：%d %s", missingConfirmation.Code, missingConfirmation.Body.String())
+	}
+	assertProject(source)
+	input["confirmation"] = plan.Confirmation
+	response := deliveryVariableProjectRequest(t, f, f.cookie, http.MethodPost, "/project-resource-transfers", source, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("确认后移动应用及关联仓库失败：%d %s", response.Code, response.Body.String())
+	}
+	assertProject(f.project.ID)
+}
+
+func TestProjectResourceTransferDependencyDetectionRequiresSingleApplication(t *testing.T) {
+	f, admin, source, repositoryID, _ := projectTransferHTTPFixture(t)
+	applicationID := createApplicationForDepartmentTest(t, f.router, admin, "transfer_selection", repositoryID)
+	selections := []struct {
+		name      string
+		resources []map[string]string
+	}{
+		{name: "非应用资源", resources: []map[string]string{{"kind": "repository", "id": repositoryID}}},
+		{name: "应用和仓库", resources: []map[string]string{{"kind": "application", "id": applicationID}, {"kind": "repository", "id": repositoryID}}},
+		{name: "重复应用", resources: []map[string]string{{"kind": "application", "id": applicationID}, {"kind": "application", "id": applicationID}}},
+	}
+	for _, selection := range selections {
+		t.Run(selection.name, func(t *testing.T) {
+			input := map[string]any{"target_project_id": f.project.ID, "include_dependencies": true, "resources": selection.resources}
+			for _, path := range []string{"/project-resource-transfers/preview", "/project-resource-transfers"} {
+				response := deliveryVariableProjectRequest(t, f, f.cookie, http.MethodPost, path, source, input)
+				if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_project_transfer") {
+					t.Fatalf("自动检测只能针对一个应用：path=%s status=%d body=%s", path, response.Code, response.Body.String())
+				}
+			}
+		})
+	}
+	var application model.Application
+	if err := f.db.First(&application, "uuid = ?", applicationID).Error; err != nil || application.ProjectID != source {
+		t.Fatalf("无效选择不能改变应用归属：%v", err)
+	}
+	var repository model.GitRepository
+	if err := f.db.First(&repository, "uuid = ?", repositoryID).Error; err != nil || repository.ProjectID != source {
+		t.Fatalf("无效选择不能改变仓库归属：%v", err)
+	}
+}

@@ -38,7 +38,7 @@ var definitions = map[string]definition{
 	"deployment_target":    {table: "deployment_targets", label: "部署目标", nameSQL: "name", uniqueFields: []string{"name"}},
 	"release_plan":         {table: "release_plans", label: "发布计划", nameSQL: "COALESCE(NULLIF(description, ''), version)", softDelete: true, uniqueFields: []string{"version"}, owned: []ownedRelation{{"release_plan_executions", "release_plan_id"}}},
 	"delivery_variable":    {table: "delivery_variables", label: "变量与配置文件", nameSQL: "name", softDelete: true, owned: []ownedRelation{{"delivery_variable_revisions", "variable_id"}}, parentKind: "application", parentField: "application_id"},
-	"application_database": {table: "application_databases", label: "应用数据库", nameSQL: "name", softDelete: true},
+	"application_database": {table: "application_databases", label: "应用数据库", nameSQL: "name", softDelete: true, parentKind: "application", parentField: "application_id", owned: []ownedRelation{{"application_database_migrations", "database_id"}}},
 	"environment":          {table: "environments", label: "主机组", nameSQL: "name", uniqueFields: []string{"name"}, owned: []ownedRelation{{"environment_release_policies", "environment_id"}}},
 	"host":                 {table: "hosts", label: "主机", nameSQL: "name", uniqueFields: []string{"name"}},
 	"cluster":              {table: "kubernetes_clusters", label: "Kubernetes 集群", nameSQL: "name", uniqueFields: []string{"name"}, owned: []ownedRelation{{"kubernetes_rbac_policies", "cluster_id"}}},
@@ -143,7 +143,7 @@ func discoverDependencies(tx *gorm.DB, projectIDs []string) (dependencies, error
 		{"environment", "host", `SELECT e.uuid AS source_id, eh.host_id AS required_id FROM environments e JOIN environment_hosts eh ON eh.environment_id = e.uuid WHERE e.project_id IN ?`},
 		{"host", "cluster", `SELECT h.uuid AS source_id, hc.runtime_id AS required_id FROM hosts h JOIN host_capabilities hc ON hc.host_id = h.uuid WHERE h.project_id IN ? AND hc.kind = 'kubernetes' AND hc.runtime_id <> ''`},
 		{"host", "docker_endpoint", `SELECT h.uuid AS source_id, hc.runtime_id AS required_id FROM hosts h JOIN host_capabilities hc ON hc.host_id = h.uuid WHERE h.project_id IN ? AND hc.kind = 'docker' AND hc.runtime_id <> ''`},
-		{"application", "image_registry", `SELECT v.application_id AS source_id, v.image_registry_id AS required_id FROM artifacts v JOIN applications a ON a.uuid = v.application_id AND a.project_id = v.project_id WHERE v.project_id IN ? AND v.status = 'available' AND v.image_registry_id <> '' AND a.deleted_at IS NULL`},
+		{"application", "image_registry", `SELECT v.application_id AS source_id, v.image_registry_id AS required_id FROM artifacts v JOIN applications a ON a.uuid = v.application_id AND a.project_id = v.project_id WHERE v.project_id IN ? AND v.status = 'available' AND v.storage_kind = 'registry' AND v.image_registry_id <> '' AND a.deleted_at IS NULL`},
 		{"application", "deployment_plan", `SELECT a.uuid AS source_id, dp.uuid AS required_id FROM applications a JOIN deployment_instance_controls c ON c.application_id = a.uuid JOIN deployment_plans dp ON dp.uuid = c.deployment_plan_id WHERE a.project_id IN ? AND a.deleted_at IS NULL AND dp.deleted_at IS NULL`},
 		{"application", "deployment_target", `SELECT a.uuid AS source_id, dt.uuid AS required_id FROM applications a JOIN deployment_instance_controls c ON c.application_id = a.uuid JOIN deployment_targets dt ON dt.uuid = c.target_id WHERE a.project_id IN ? AND a.deleted_at IS NULL`},
 	} {

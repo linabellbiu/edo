@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -37,11 +38,12 @@ type Resource struct {
 }
 
 type Input struct {
-	TargetProjectID string                     `json:"target_project_id"`
-	Resources       []Resource                 `json:"resources"`
-	Confirmation    string                     `json:"confirmation"`
-	Authorize       func(*gorm.DB) error       `json:"-"`
-	Audit           func(*gorm.DB, Plan) error `json:"-"`
+	TargetProjectID     string                     `json:"target_project_id"`
+	Resources           []Resource                 `json:"resources"`
+	Confirmation        string                     `json:"confirmation"`
+	IncludeDependencies bool                       `json:"include_dependencies"`
+	Authorize           func(*gorm.DB) error       `json:"-"`
+	Audit               func(*gorm.DB, Plan) error `json:"-"`
 }
 
 type Item struct {
@@ -126,6 +128,11 @@ func (s *Service) run(ctx context.Context, source string, input Input, commit bo
 	if err == nil {
 		// 所有未限定模型的访问都必须由固定类型目录和显式项目范围约束。
 		neutral := database.WithDepartmentScope(ctx, database.DepartmentScope{UserID: actor.UserID, AllDepartments: true})
+		var options []*sql.TxOptions
+		if commit {
+			// MySQL 默认的一致性快照会隐藏等待行锁期间的新引用，提交必须读取锁后现状。
+			options = append(options, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+		}
 		err = s.db.WithContext(neutral).Transaction(func(tx *gorm.DB) error {
 			if err := checkProjects(tx, source, input.TargetProjectID, commit); err != nil {
 				return err
@@ -135,7 +142,7 @@ func (s *Service) run(ctx context.Context, source string, input Input, commit bo
 					return err
 				}
 			}
-			if err := buildPlan(tx, &plan, input.Resources, commit); err != nil {
+			if err := buildPlan(tx, &plan, input.Resources, commit, input.IncludeDependencies); err != nil {
 				return err
 			}
 			if len(plan.Blockers) == 0 {
@@ -157,7 +164,7 @@ func (s *Service) run(ctx context.Context, source string, input Input, commit bo
 				return input.Audit(tx, plan)
 			}
 			return nil
-		})
+		}, options...)
 	}
 	if err != nil {
 		s.logger.WarnContext(ctx, "项目资源移动未完成", "operation", "project_resource_transfer", "source_project_id", source, "target_project_id", input.TargetProjectID, "actor_user_id", actor.UserID, "commit", commit, "err", err)
@@ -167,6 +174,9 @@ func (s *Service) run(ctx context.Context, source string, input Input, commit bo
 
 func validateInput(source string, input Input) error {
 	if len(input.Resources) < 1 || len(input.Resources) > maxSelection || source == input.TargetProjectID {
+		return ErrInvalid
+	}
+	if input.IncludeDependencies && (len(input.Resources) != 1 || input.Resources[0].Kind != "application") {
 		return ErrInvalid
 	}
 	for _, id := range []string{source, input.TargetProjectID} {
@@ -271,7 +281,7 @@ func rows(tx *gorm.DB, kind, project string, includeArchived bool, lockIDs []str
 	return found, nil
 }
 
-func buildPlan(tx *gorm.DB, plan *Plan, requested []Resource, lock bool) error {
+func buildPlan(tx *gorm.DB, plan *Plan, requested []Resource, lock, includeDependencies bool) error {
 	selected := map[resourceKey]bool{}
 	source := map[resourceKey]rootRow{}
 	target := map[resourceKey]rootRow{}
@@ -300,15 +310,11 @@ func buildPlan(tx *gorm.DB, plan *Plan, requested []Resource, lock bool) error {
 		}
 		selected[key] = false
 	}
-	for key, row := range source {
-		if d := definitions[key.kind]; d.parentKind != "" {
-			if _, ok := selected[resourceKey{d.parentKind, row.ParentID}]; ok {
-				if _, explicit := selected[key]; !explicit {
-					selected[key] = true
-				}
-			}
-		}
+	graph, err := discoverDependencies(tx, []string{plan.SourceProjectID, plan.TargetProjectID})
+	if err != nil {
+		return err
 	}
+	selectApplicationDependencies(source, graph, selected, includeDependencies)
 	if len(selected) > 1000 {
 		return ErrInvalid
 	}
@@ -356,12 +362,26 @@ func buildPlan(tx *gorm.DB, plan *Plan, requested []Resource, lock bool) error {
 				}
 			}
 		}
+		// 等待行锁期间可能新增了共享引用；旧目录不能代替当前引用复核。
+		graph, err = discoverDependencies(tx, []string{plan.SourceProjectID, plan.TargetProjectID})
+		if err != nil {
+			return err
+		}
+		currentSelection := make(map[resourceKey]bool, len(selected))
+		for _, item := range requested {
+			currentSelection[resourceKey{item.Kind, item.ID}] = false
+		}
+		selectApplicationDependencies(source, graph, currentSelection, includeDependencies)
+		if len(currentSelection) != len(selected) {
+			return ErrConfirmation
+		}
+		for key := range currentSelection {
+			if _, exists := selected[key]; !exists {
+				return ErrConfirmation
+			}
+		}
 	}
 	if err := checkConflicts(tx, plan, add); err != nil {
-		return err
-	}
-	graph, err := discoverDependencies(tx, []string{plan.SourceProjectID, plan.TargetProjectID})
-	if err != nil {
 		return err
 	}
 	for user, refs := range graph {
@@ -379,7 +399,11 @@ func buildPlan(tx *gorm.DB, plan *Plan, requested []Resource, lock bool) error {
 			}
 			if refMoves && !moves {
 				if _, ok := target[user]; !ok {
-					add(user, "此资源仍引用待移动的资源，请一并选择或先解除引用")
+					if includeDependencies {
+						add(user, "此资源也在使用待移动的关联资源，请先解除共享引用")
+					} else {
+						add(user, "此资源仍引用待移动的资源，请一并选择或先解除引用")
+					}
 				}
 			}
 		}
@@ -395,6 +419,60 @@ func buildPlan(tx *gorm.DB, plan *Plan, requested []Resource, lock bool) error {
 	})
 	plan.Blockers = slices.Compact(plan.Blockers)
 	return nil
+}
+
+func selectApplicationDependencies(source map[resourceKey]rootRow, graph dependencies, selected map[resourceKey]bool, includeDependencies bool) {
+	for changed := true; changed; {
+		changed = false
+		add := func(key resourceKey) {
+			if _, exists := selected[key]; exists {
+				return
+			}
+			if _, exists := source[key]; exists {
+				selected[key] = true
+				changed = true
+			}
+		}
+		// 随应用归属的流水线与配置不能留在原项目。
+		for key, row := range source {
+			if d := definitions[key.kind]; d.parentKind != "" && row.ParentID != "" {
+				if _, moves := selected[resourceKey{d.parentKind, row.ParentID}]; moves {
+					add(key)
+				}
+			}
+		}
+		if !includeDependencies {
+			continue
+		}
+		for user := range selected {
+			for _, ref := range graph[user] {
+				// 其他应用必须独立授权并确认，不能因共享方案或配置被隐式带走。
+				if ref.kind != "application" {
+					if row, exists := source[ref]; exists && !row.Archived {
+						add(ref)
+					}
+				}
+			}
+		}
+		// 仅包含当前应用的发布计划一起预览，多应用计划保留为共享引用冲突。
+		for key, refs := range graph {
+			if key.kind != "release_plan" {
+				continue
+			}
+			allApps, hasApp := true, false
+			for _, ref := range refs {
+				if ref.kind == "application" {
+					hasApp = true
+					if _, moves := selected[ref]; !moves {
+						allApps = false
+					}
+				}
+			}
+			if hasApp && allApps {
+				add(key)
+			}
+		}
+	}
 }
 
 func rootIDs(records []rootRow) map[string][]string {

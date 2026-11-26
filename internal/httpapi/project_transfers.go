@@ -36,7 +36,8 @@ type projectTransferRequest struct {
 		Kind string `json:"kind" binding:"required,max=64"`
 		ID   string `json:"id" binding:"required,max=36"`
 	} `json:"resources" binding:"required,min=1,max=100,dive"`
-	Confirmation string `json:"confirmation" binding:"max=512"`
+	Confirmation        string `json:"confirmation" binding:"max=512"`
+	IncludeDependencies bool   `json:"include_dependencies"`
 }
 
 func registerProjectTransferRoutes(group *gin.RouterGroup, deps Dependencies) {
@@ -140,9 +141,14 @@ func (h projectTransferHandler) request(c *gin.Context) (projecttransfer.Input, 
 	}
 	input.TargetProjectID = request.TargetProjectID
 	input.Confirmation = request.Confirmation
+	input.IncludeDependencies = request.IncludeDependencies
 	setAuditMetadata(c, map[string]any{"target_project_id": input.TargetProjectID})
 	for _, resource := range request.Resources {
 		input.Resources = append(input.Resources, projecttransfer.Resource{Kind: resource.Kind, ID: resource.ID})
+	}
+	if input.IncludeDependencies && (len(input.Resources) != 1 || input.Resources[0].Kind != "application") {
+		h.fail(c, "project_transfer_application_selection", input.TargetProjectID, projecttransfer.ErrInvalid)
+		return input, scope.ProjectID, false
 	}
 	actor, _ := currentUser(c)
 	target, err := h.access.ResolveProject(c.Request.Context(), actor, input.TargetProjectID)

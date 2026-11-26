@@ -26,6 +26,7 @@ async function harness({ section = 'applications', patch, remove, get } = {}) {
     'vue-router': { useRoute: () => ({ query: {} }), useRouter: () => ({}) },
     'vue-i18n': { useI18n: () => ({ t: (key, args) => args ? `${key}:${JSON.stringify(args)}` : key, locale: vue.ref('zh-CN') }) },
     '@/stores/auth': { useAuthStore: () => auth }, '@/api/client': { __esModule: true, default: client },
+    '@/utils/deliveryEvents': { subscribeDeliveryEvents: () => () => {} },
     '@/api/resources': loadFrontend('../src/api/resources.ts', { axios, '@/api/client': { __esModule: true, default: client } }),
     '@/utils/deploymentInstances': loadFrontend('../src/utils/deploymentInstances.ts'),
     'ant-design-vue': { Modal, message: Object.fromEntries(['error', 'success'].map(kind => [kind, value => notifications.push({ kind, value })])) },
@@ -38,6 +39,49 @@ async function harness({ section = 'applications', patch, remove, get } = {}) {
 }
 const writes = h => h.requests.filter(item => item.method === 'patch')
 const submit = dialog => { dialog.onOk(() => { dialog.destroyed = true; dialog.afterClose?.() }); return settle() }
+
+test('应用行移动使用独立权限并预填当前应用，切换页面或撤权关闭旧弹窗', async t => {
+  const h = await harness(); t.after(h.stop)
+  h.state.openApplicationTransfer(h.state.applications.value[0])
+  assert.equal(h.state.applicationTransferOpen.value, false)
+  h.auth.user.permissions = ['application.read', 'project.resource.move']; await settle()
+  await h.state.refresh()
+  assert.equal(h.state.canUpdate.value, false); assert.equal(h.state.canDelete.value, false)
+  assert.equal(h.state.canMoveApplication.value, true)
+  h.state.openApplicationTransfer({ id: 'stale-app', name: '不在当前列表' })
+  assert.equal(h.state.applicationTransferOpen.value, false)
+  h.state.openApplicationTransfer(h.state.applications.value[0])
+  assert.equal(h.state.applicationTransferOpen.value, true)
+  assert.deepEqual(h.state.applicationTransferResources.value, [{ kind: 'application', id: 'app-a' }])
+  h.props.section = 'repositories'; await settle()
+  assert.equal(h.state.applicationTransferOpen.value, false)
+  h.props.section = 'applications'; await settle(); await h.state.refresh()
+  h.state.openApplicationTransfer(h.state.applications.value[0])
+  assert.equal(h.state.applicationTransferOpen.value, true)
+  h.auth.user.permissions = ['application.read']; await settle()
+  assert.equal(h.state.applicationTransferOpen.value, false)
+  assert.equal(h.state.canMoveApplication.value, false)
+})
+
+test('移动应用成功后清理准确来源行，移动前的迟到读取不能恢复已移动应用', async t => {
+  const old = deferred(); let deferOld = false
+  const h = await harness({ get: async path => path === '/applications' && deferOld ? old.promise : undefined }); t.after(h.stop)
+  h.auth.user.permissions = ['application.read', 'project.resource.move']; await settle(); await h.state.refresh()
+  h.state.openApplicationTransfer(h.state.applications.value[0])
+  deferOld = true
+  const pending = h.state.resourceReaders.applications()
+  const request = h.requests.at(-1)
+  deferOld = false; h.rows.applications = []
+  h.state.applicationMoved({ source_project_id: 'project-b', target_project_id: 'project-a', resources: [{ kind: 'application', id: 'app-a' }] })
+  assert.equal(h.state.applicationTransferOpen.value, true, '其他来源的回执不能更改当前列表')
+  h.state.applicationMoved({ source_project_id: 'project-a', target_project_id: 'project-b', resources: [{ kind: 'application', id: 'app-a' }] })
+  assert.equal(request.options.signal.aborted, true)
+  assert.equal(h.state.applicationTransferOpen.value, false)
+  assert.deepEqual(h.state.applications.value, [])
+  old.resolve({ data: { applications: [{ id: 'app-a', name: '旧列表中的应用' }] } })
+  await pending; await settle()
+  assert.deepEqual(h.state.applications.value, [])
+})
 
 test('删除应用使用独立权限和当前项目，失败可重试，成功后移除对应应用', async t => {
   let attempts = 0
