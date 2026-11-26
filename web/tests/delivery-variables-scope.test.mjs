@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import * as vue from 'vue'
+import { renderToString } from '@vue/server-renderer'
 import * as configText from '../src/utils/configText.ts'
 import { loadFrontend } from './acceptanceHarness.mjs'
 
@@ -11,7 +12,7 @@ const settle = async () => { await vue.nextTick(); await new Promise(resolve => 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const variable = (project = 'project-a', patch = {}) => ({ id: `variable-${project}`, project_id: project, name: 'API_URL', description: '仅当前项目使用', kind: 'env', usage: 'build', application_id: '', environment_id: '', is_secret: false, is_active: true, version: 3, protected_refs: [], value: 'https://example.test', ...patch })
 
-async function harness({ permissions = codes, project = 'project-a', selected = project, props = {}, search = '', preferences = new Map(), get, put, post, del } = {}) {
+async function harness({ permissions = codes, project = 'project-a', selected = project, props = {}, search = '', preferences = new Map(), get, put, post, del, resolveVueProps = false } = {}) {
   const requests = [], notifications = [], confirmations = [], mounted = [], unmounts = []
   const auth = vue.reactive({ user: { id: 'operator-a', department_id: 'department-a', project_id: project, is_superuser: false, permissions: [...permissions] }, canAny(required) { return !!this.user && (this.user.is_superuser || required.some(code => this.user.permissions.includes(code))) } })
   const storage = { selected }
@@ -34,12 +35,33 @@ async function harness({ permissions = codes, project = 'project-a', selected = 
     'ant-design-vue': { Modal: { confirm(config) { const item = { ...config, destroyed: false, destroy() { this.destroyed = true; config.afterClose?.() } }; confirmations.push(item); return item } }, message: Object.fromEntries(['success', 'warning', 'error'].map(kind => [kind, text => notifications.push({ kind, text })])) },
   }, { localStorage, window }).default
   const scope = vue.effectScope(); let state, stopped = false
-  scope.run(() => { state = component.setup(props, { expose() {} }) }); mounted.forEach(fn => fn()); await settle()
+  if (resolveVueProps) {
+    // 让 Vue 按编译出的组件声明处理缺省的 Boolean 属性，再执行真实 setup。
+    const app = vue.createSSRApp({ ...component, setup(resolvedProps, context) {
+      scope.run(() => { state = component.setup(resolvedProps, context) })
+      return () => null
+    } }, props)
+    await renderToString(app)
+  } else scope.run(() => { state = component.setup(props, { expose() {} }) })
+  mounted.forEach(fn => fn()); await settle()
   const stop = () => { if (stopped) return; stopped = true; unmounts.forEach(fn => fn()); scope.stop() }
   return { state, auth, storage, window, requests, notifications, confirmations, stop }
 }
 const writes = h => h.requests.filter(item => item.method !== 'get')
 const changeProject = async (h, id) => { h.storage.selected = id; h.window.dispatchEvent(new Event('edo:projects-changed')); h.auth.user.project_id = id; await settle() }
+
+test('真实 Vue 挂载不传配置类型时，独立入口与应用入口都显示配置文件和变量', async t => {
+  for (const props of [{}, { applicationId: 'app-project-a' }]) {
+    const entries = [
+      variable('project-a', { id: 'config', kind: 'config_yaml', usage: 'deploy', application_id: props.applicationId || '' }),
+      variable('project-a', { id: 'variable', usage: 'deploy', application_id: props.applicationId || '' }),
+    ]
+    const h = await harness({ props, resolveVueProps: true, get: request => request.path === '/delivery-variables' ? { data: { variables: entries } } : undefined })
+    t.after(h.stop)
+    assert.equal(h.state.unifiedMode.value, true)
+    assert.deepEqual(h.state.filtered.value.map(item => item.id), ['config', 'variable'])
+  }
+})
 
 test('配置编辑以保存正文为基线高亮差异，历史入口不修改配置',async t=>{
  const h=await harness({props:{configurationFiles:true},get:req=>req.path==='/delivery-variables'?{data:{variables:[variable('project-a',{name:'orders_settings',kind:'config_yaml',usage:'deploy',value:'port: 8080\n'})]}}:undefined});t.after(h.stop)

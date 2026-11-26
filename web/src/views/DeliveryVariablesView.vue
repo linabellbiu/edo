@@ -20,7 +20,8 @@ interface Variable extends ResourceRecord {
 }
 interface Choice { id: string; name: string }
 
-const props = defineProps<{ applicationId?: string; applicationName?: string; configurationFiles?: boolean }>()
+// 缺省表示统一入口；显式 false 仍表示只显示变量，不能让 Vue 代填 false。
+const props = withDefaults(defineProps<{ applicationId?: string; applicationName?: string; configurationFiles?: boolean }>(), { configurationFiles: undefined })
 const instance = getCurrentInstance()
 const embedded = computed(() => !!props.applicationId)
 const unifiedMode = computed(() => props.configurationFiles === undefined)
