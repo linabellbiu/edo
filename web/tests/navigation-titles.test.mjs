@@ -87,3 +87,16 @@ test('已有主机与 Kubernetes 的分类标题继续按准确导航匹配', as
     assert.equal(h.document.title, `EDO · 翻译:${title}`, path)
   }
 })
+
+test('配置和秘钥合并为单一导航入口，旧配置路径重定向并保留分类查询', async () => {
+  const h = harness()
+  const paths = h.navigation.flatNavigation().map(item => item.path)
+  assert.ok(paths.includes('/delivery-variables'))
+  assert.ok(!paths.includes('/configuration-files'))
+  const redirected = await h.visit('/configuration-files')
+  assert.equal(redirected.path, '/delivery-variables')
+  assert.equal(redirected.query.category, 'config')
+  assert.equal(redirected.meta.title, 'nav.deliveryVariables')
+  assert.equal(h.document.title, 'EDO · 翻译:nav.deliveryVariables')
+  assert.equal(h.navigation.navigationTrail('/delivery-variables?category=config').at(-1)?.label, 'nav.deliveryVariables')
+})

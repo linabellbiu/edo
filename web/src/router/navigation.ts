@@ -1,7 +1,7 @@
 import type { Component } from 'vue'
 import {
   Activity, AppWindow, Boxes, Box, Building2, ChartNoAxesCombined, CloudCog,
-  Container, FileText, GitBranch, History, KeyRound, ListChecks, PackageCheck,
+  Container, GitBranch, History, KeyRound, ListChecks, PackageCheck,
   PanelsTopLeft, Play, Rocket, Server, ServerCog, Settings, ShieldCheck,
   Tags, UserCog, UsersRound, Workflow, LayoutDashboard, Database, Network, Layers,
 } from 'lucide-vue-next'
@@ -43,7 +43,6 @@ export const navigation: NavSection[] = [
         // 应用数据库与主机组保护暂不对外展示（路由、接口与权限保留，后续按需求再决定删除）。
         {label:'nav.applicationDatabases',path:'/application-databases',permissions:['application_database.read'],icon:Database,hidden:true},
         {label:'nav.environmentPolicies',path:'/environment-policies',permissions:['environment_policy.read'],icon:ShieldCheck,hidden:true},
-        {label:'nav.configurationFiles',path:'/configuration-files',permissions:['delivery_variable.read'],icon:FileText},
         { label: 'nav.deliveryVariables', path: '/delivery-variables', permissions: ['delivery_variable.read'], icon: KeyRound },
       ] },
       { key: 'build-artifacts', label: 'nav.buildArtifacts', icon: PackageCheck, items: [

@@ -53,7 +53,7 @@ export const messages = {
     nav: {
       overview: '概览', delivery: '持续交付', applicationsCode: '应用与代码', applications: '应用', repositories: '代码仓库', credentials: '我的令牌',
       buildArtifacts: '构建与制品', buildPlans: '构建方案', registries: '镜像仓库', releaseManagement: '发布管理', deploymentPlans: '部署方案',
-      environments: '主机组', pipelinePlans: '流水线', releasePlans: '发布计划', pipelineRuns: '流水线运行记录', configurationFiles:'配置', deliveryVariables: '变量与密钥', applicationDatabases:'应用数据库',environmentPolicies:'主机组保护',
+      environments: '主机组', pipelinePlans: '流水线', releasePlans: '发布计划', pipelineRuns: '流水线运行记录', configurationFiles: '配置和秘钥', deliveryVariables: '配置和秘钥', applicationDatabases:'应用数据库',environmentPolicies:'主机组保护',
       platform: '平台管理', infrastructure: '基础设施', domains: '域名解析', hosts: '主机', containers: '主机与集群',
       monitor: '系统监控', tasks: '任务中心', logs: '日志', security: '系统与安全', settings: '系统设置', users: '用户管理', roles: '角色与权限', audit: '审计日志',
     },
@@ -304,7 +304,7 @@ export const messages = {
     nav: {
       overview: 'Overview', delivery: 'Delivery', applicationsCode: 'Apps & Code', applications: 'Applications', repositories: 'Repositories', credentials: 'My Tokens',
       buildArtifacts: 'Build & Artifacts', buildPlans: 'Build Plans', registries: 'Registries', releaseManagement: 'Release Management', deploymentPlans: 'Deployment Plans',
-      environments: 'Environments', pipelinePlans: 'Pipelines', releasePlans: 'Release Plans', pipelineRuns: 'Pipeline Run Records', configurationFiles:'Configuration', deliveryVariables: 'Variables & Secrets', applicationDatabases:'Application databases',environmentPolicies:'Environment protection',
+      environments: 'Environments', pipelinePlans: 'Pipelines', releasePlans: 'Release Plans', pipelineRuns: 'Pipeline Run Records', configurationFiles: 'Configuration & Secrets', deliveryVariables: 'Configuration & Secrets', applicationDatabases:'Application databases',environmentPolicies:'Environment protection',
       platform: 'Platform', infrastructure: 'Infrastructure', domains: 'DNS', hosts: 'Hosts', containers: 'Hosts & Clusters',
       monitor: 'System Monitor', tasks: 'Tasks', logs: 'Logs', security: 'System & Security', settings: 'Settings', users: 'Users', roles: 'Roles & Permissions', audit: 'Audit Logs',
     },

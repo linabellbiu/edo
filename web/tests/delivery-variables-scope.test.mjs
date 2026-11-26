@@ -11,10 +11,15 @@ const settle = async () => { await vue.nextTick(); await new Promise(resolve => 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const variable = (project = 'project-a', patch = {}) => ({ id: `variable-${project}`, project_id: project, name: 'API_URL', description: '仅当前项目使用', kind: 'env', usage: 'build', application_id: '', environment_id: '', is_secret: false, is_active: true, version: 3, protected_refs: [], value: 'https://example.test', ...patch })
 
-async function harness({ permissions = codes, project = 'project-a', selected = project, props = {}, get, put, post, del } = {}) {
+async function harness({ permissions = codes, project = 'project-a', selected = project, props = {}, search = '', preferences = new Map(), get, put, post, del } = {}) {
   const requests = [], notifications = [], confirmations = [], mounted = [], unmounts = []
   const auth = vue.reactive({ user: { id: 'operator-a', department_id: 'department-a', project_id: project, is_superuser: false, permissions: [...permissions] }, canAny(required) { return !!this.user && (this.user.is_superuser || required.some(code => this.user.permissions.includes(code))) } })
-  const storage = { selected }, localStorage = { getItem: key => key === 'edo.project' ? storage.selected : null }, window = new EventTarget()
+  const storage = { selected }
+  const localStorage = {
+    getItem: key => key === 'edo.project' ? storage.selected : (preferences.get(key) ?? null),
+    setItem: (key, value) => { if (key === 'edo.project') storage.selected = String(value); else preferences.set(key, String(value)) },
+  }
+  const window = Object.assign(new EventTarget(), { location: { search } })
   const client = Object.fromEntries(['get', 'put', 'post', 'delete'].map(method => [method, async (path, bodyOrOptions, options) => {
     const request = { method, path, body: ['post', 'put'].includes(method) ? structuredClone(bodyOrOptions) : undefined, options: ['post', 'put'].includes(method) ? options : bodyOrOptions }
     requests.push(request)
@@ -210,4 +215,75 @@ test('配置文件原文保存且不自动关联，错误格式不会发送请�
 test('配置页不会把旧变量当成配置文件，按应用环境继续隔离',async t=>{
  const h=await harness({props:{configurationFiles:true,applicationId:'app-project-a'},get:request=>request.path==='/delivery-variables'?{data:{variables:[variable('project-a',{id:'config-a',name:'app.yaml',kind:'config_yaml',usage:'deploy',application_id:'app-project-a'}),variable('project-a',{id:'old-env',kind:'env_text',usage:'deploy',application_id:'app-project-a'}),variable('project-a',{id:'prod-config',kind:'config_yaml',usage:'deploy',application_id:'app-project-a',environment_id:'prod'})]}}:undefined});t.after(h.stop)
  assert.deepEqual(h.state.filtered.value.map(v=>v.id),['config-a']);h.state.environmentFilter.value='prod';await settle();assert.deepEqual(h.state.filtered.value.map(v=>v.id),['prod-config'])
+})
+
+test('合并模式统一展示配置文件和变量秘钥，分段筛选记住项目偏好且显式查询优先', async t => {
+  const preferences = new Map()
+  const dataset = projectID => [
+    variable(projectID, { id: `cfg-${projectID}`, name: 'application.yaml', kind: 'config_yaml', usage: 'deploy', value: 'port: 8080\n' }),
+    variable(projectID, { id: `var-${projectID}`, name: 'API_TOKEN', kind: 'env', usage: 'build', is_secret: true, value: undefined }),
+  ]
+  const h = await harness({ preferences, get: req => req.path === '/delivery-variables' ? { data: { variables: dataset(req.options.headers['X-EDO-Project-ID']) } } : undefined }); t.after(h.stop)
+  assert.equal(h.state.unifiedMode.value, true)
+  assert.equal(h.state.category.value, 'all')
+  assert.equal(h.state.configCount.value, 1); assert.equal(h.state.variableCount.value, 1)
+  assert.deepEqual(h.state.filtered.value.map(v => v.id), ['cfg-project-a', 'var-project-a'])
+
+  h.state.selectCategory('config'); await settle()
+  assert.deepEqual(h.state.filtered.value.map(v => v.id), ['cfg-project-a'])
+  h.state.selectCategory('variable'); await settle()
+  assert.deepEqual(h.state.filtered.value.map(v => v.id), ['var-project-a'])
+
+  // 切到项目 B 不沿用项目 A 的偏好，切回项目 A 恢复项目 A 上次选择
+  await changeProject(h, 'project-b')
+  assert.equal(h.state.category.value, 'all')
+  assert.deepEqual(h.state.filtered.value.map(v => v.id), ['cfg-project-b', 'var-project-b'])
+  await changeProject(h, 'project-a')
+  assert.equal(h.state.category.value, 'variable')
+
+  // 显式 URL 查询参数优先于本地偏好
+  const explicit = await harness({ preferences, search: '?category=config', get: req => req.path === '/delivery-variables' ? { data: { variables: dataset(req.options.headers['X-EDO-Project-ID']) } } : undefined }); t.after(explicit.stop)
+  assert.equal(explicit.state.category.value, 'config')
+  assert.deepEqual(explicit.state.filtered.value.map(v => v.id), ['cfg-project-a'])
+})
+
+test('合并模式新建可切换配置文件与变量秘钥，编辑时历史和读取原文仍仅限配置文件', async t => {
+  const rows = [
+    variable('project-a', { id: 'cfg-secret', name: 'runtime.env', kind: 'config_env', usage: 'deploy', is_secret: true, value: undefined }),
+    variable('project-a', { id: 'var-secret', name: 'DB_PASSWORD', kind: 'env', usage: 'deploy', is_secret: true, value: undefined }),
+  ]
+  const h = await harness({
+    permissions: [...codes, 'delivery_variable.reveal'],
+    get: req => req.path === '/delivery-variables' ? { data: { variables: rows } } : undefined,
+    post: req => req.path.endsWith('/reveal') ? { data: { revision: { version: 3, value: 'PORT=8080\n', hidden: false } } } : { data: {} },
+  }); t.after(h.stop)
+
+  // 新建时从变量切到配置文件，提交强制 deploy + auto_deploy=false
+  h.state.edit()
+  assert.equal(h.state.formIsConfig.value, false)
+  h.state.switchEntryType('config'); await settle()
+  assert.equal(h.state.formIsConfig.value, true)
+  h.state.form.name = 'service.yaml'; await settle()
+  assert.equal(h.state.form.kind, 'config_yaml')
+  h.state.form.value = 'port: 8080\n'
+  await h.state.save()
+  assert.equal(writes(h).length, 1)
+  assert.equal(writes(h)[0].body.kind, 'config_yaml')
+  assert.equal(writes(h)[0].body.usage, 'deploy')
+  assert.equal(writes(h)[0].body.auto_deploy, false)
+
+  // 普通变量密钥不允许查看历史或读取原文
+  h.state.showHistory(rows[1])
+  assert.equal(h.state.historyTarget.value, undefined)
+  h.state.edit(rows[1]); await h.state.readOriginal()
+  assert.equal(writes(h).length, 1)
+  assert.equal(h.state.draftOriginal.value, undefined)
+
+  // 配置文件密钥允许查看历史和带权限读取原文
+  h.state.edit(rows[0]); await h.state.readOriginal()
+  assert.equal(writes(h).length, 2)
+  assert.ok(writes(h)[1].path.endsWith('/cfg-secret/revisions/3/reveal'))
+  assert.equal(h.state.draftOriginal.value, 'PORT=8080\n')
+  h.state.showHistory(rows[0])
+  assert.equal(h.state.historyTarget.value.id, 'cfg-secret')
 })
