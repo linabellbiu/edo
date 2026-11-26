@@ -31,6 +31,7 @@ import (
 	"edo/internal/monitor"
 	"edo/internal/notification"
 	"edo/internal/pipeline"
+	"edo/internal/projecttransfer"
 	"edo/internal/realtime"
 	"edo/internal/repository"
 	"edo/internal/scheduler"
@@ -41,45 +42,46 @@ import (
 )
 
 type Dependencies struct {
-	Environment    string
-	Database       *sql.DB
-	Redis          Pinger
-	NATS           Pinger
-	Logger         *slog.Logger
-	RuntimeLogs    *logging.RuntimeController
-	Version        string
-	TrustedProxies []string
-	AuthConfig     config.Auth
-	Accounts       *account.Service
-	Login          *account.LoginService
-	LoginLimiter   *auth.LoginRateLimiter
-	Sessions       *auth.SessionStore
-	Access         *access.Service
-	Audits         *audit.Service
-	Identities     *identity.Service
-	Repositories   *repository.Service
-	Pipelines      *pipeline.Service
-	SQLChanges     *sqlchange.Service
-	Realtime       *realtime.Bus
-	Artifacts      *artifactmanager.Service
-	Docker         *dockerengine.Service
-	Kubernetes     *kube.Service
-	K3s            *k3s.Service
-	Hosts          *hostmanager.Service
-	Environments   *environmentmanager.Service
-	Deployments    *deployment.Service
-	Departments    *department.Service
-	Terminal       *terminal.Service
-	Configurations *configuration.Service
-	Credentials    *credential.Service
-	DNS            *dnsmanager.Service
-	Notifications  *notification.Service
-	Monitors       *monitor.Service
-	Scheduler      *scheduler.Service
-	Tasks          *task.Service
-	SystemMetrics  *systemmetrics.Service
-	LogRetention   *logretention.Service
-	Assistant      *assistant.Service
+	Environment      string
+	Database         *sql.DB
+	Redis            Pinger
+	NATS             Pinger
+	Logger           *slog.Logger
+	RuntimeLogs      *logging.RuntimeController
+	Version          string
+	TrustedProxies   []string
+	AuthConfig       config.Auth
+	Accounts         *account.Service
+	Login            *account.LoginService
+	LoginLimiter     *auth.LoginRateLimiter
+	Sessions         *auth.SessionStore
+	Access           *access.Service
+	Audits           *audit.Service
+	Identities       *identity.Service
+	Repositories     *repository.Service
+	ProjectTransfers *projecttransfer.Service
+	Pipelines        *pipeline.Service
+	SQLChanges       *sqlchange.Service
+	Realtime         *realtime.Bus
+	Artifacts        *artifactmanager.Service
+	Docker           *dockerengine.Service
+	Kubernetes       *kube.Service
+	K3s              *k3s.Service
+	Hosts            *hostmanager.Service
+	Environments     *environmentmanager.Service
+	Deployments      *deployment.Service
+	Departments      *department.Service
+	Terminal         *terminal.Service
+	Configurations   *configuration.Service
+	Credentials      *credential.Service
+	DNS              *dnsmanager.Service
+	Notifications    *notification.Service
+	Monitors         *monitor.Service
+	Scheduler        *scheduler.Service
+	Tasks            *task.Service
+	SystemMetrics    *systemmetrics.Service
+	LogRetention     *logretention.Service
+	Assistant        *assistant.Service
 }
 
 type errorResponse struct {
@@ -136,6 +138,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/organization", requireAnyPermission(deps.Access, deps.Logger, "organization.read", "organization.update"), projectAPI.organization)
 	protected.PUT("/organization", auditAction(deps.Audits, deps.Logger, "organization.update", "organization"), requirePermission(deps.Access, deps.Logger, "organization.update"), projectAPI.saveOrganization)
 	protected.Use(realtimeMutation(deps.Realtime))
+	registerProjectTransferRoutes(protected, deps)
 	registerK3sRoutes(protected, deps)
 	registerKubernetesRBACRoutes(protected, deps)
 	registerAssistantRoutes(protected, deps)

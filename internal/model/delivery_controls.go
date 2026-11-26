@@ -1,6 +1,9 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -32,6 +35,11 @@ type DeliveryVariable struct {
 }
 
 func (DeliveryVariable) TableName() string { return "delivery_variables" }
+
+func DeliveryVariableScopeKey(projectID, applicationID, environmentID, usage, name string) string {
+	value := sha256.Sum256([]byte(strings.Join([]string{projectID, applicationID, environmentID, usage, name}, "\x00")))
+	return hex.EncodeToString(value[:])
+}
 
 type DeliveryVariableRevision struct {
 	RowID        uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`

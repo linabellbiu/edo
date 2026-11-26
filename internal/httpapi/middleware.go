@@ -19,6 +19,7 @@ import (
 const requestIDKey = "request_id"
 const auditResourceIDKey = "audit_resource_id"
 const auditMetadataKey = "audit_metadata"
+const auditCommittedKey = "audit_committed"
 
 func requestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -86,6 +87,10 @@ func securityHeaders() gin.HandlerFunc {
 func auditAction(audits *audit.Service, logger *slog.Logger, action, resourceType string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
+		// 业务提交已在同一事务写入成功审计时，不再重复记录。
+		if committed, exists := c.Get(auditCommittedKey); exists && committed == true {
+			return
+		}
 		result := model.AuditSucceeded
 		if c.Writer.Status() == http.StatusForbidden {
 			result = model.AuditDenied

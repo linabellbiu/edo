@@ -172,7 +172,7 @@ func (s *Service) SaveVariable(ctx context.Context, actorID, id string, in Varia
 			item = model.DeliveryVariable{ID: uuid.NewString(), ProjectID: scope.ProjectID, DepartmentID: scope.DepartmentID,
 				ApplicationID: in.ApplicationID, EnvironmentID: in.EnvironmentID, Name: in.Name, Kind: in.Kind, Usage: in.Usage,
 				Version: 1, CreatedBy: actorID, CreatedAt: now}
-			item.ScopeKey = digest(scope.ProjectID, in.ApplicationID, in.EnvironmentID, in.Usage, in.Name)
+			item.ScopeKey = model.DeliveryVariableScopeKey(scope.ProjectID, in.ApplicationID, in.EnvironmentID, in.Usage, in.Name)
 		} else {
 			if e := tx.Where("uuid = ? AND project_id = ?", id, scope.ProjectID).First(&item).Error; e != nil {
 				return ErrVariableUnavailable

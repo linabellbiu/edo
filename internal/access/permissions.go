@@ -36,7 +36,8 @@ const (
 	PermissionDepartmentUpdate = "department.update"
 	PermissionDepartmentDelete = "department.delete"
 
-	PermissionAuditRead = "audit.read"
+	PermissionAuditRead           = "audit.read"
+	PermissionProjectResourceMove = "project.resource.move"
 
 	PermissionIdentityRead   = "identity.read"
 	PermissionIdentityCreate = "identity.create"

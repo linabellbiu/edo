@@ -35,6 +35,7 @@ import (
 	"edo/internal/logging"
 	"edo/internal/model"
 	"edo/internal/pipeline"
+	"edo/internal/projecttransfer"
 	"edo/internal/realtime"
 	"edo/internal/repository"
 	"edo/internal/secret"
@@ -215,11 +216,12 @@ func newAuthTestRouter(t *testing.T, configure ...func(*Dependencies, *gorm.DB))
 		Access:     accessService, Audits: auditService,
 		Departments: departmentService,
 		Credentials: credentialService, Repositories: repositoryService, Pipelines: pipelineService,
-		Realtime:       realtimeBus,
-		Artifacts:      artifactService,
-		Kubernetes:     kubernetesService,
-		Deployments:    deploymentService,
-		Configurations: configurationService,
+		ProjectTransfers: projecttransfer.New(db, logger),
+		Realtime:         realtimeBus,
+		Artifacts:        artifactService,
+		Kubernetes:       kubernetesService,
+		Deployments:      deploymentService,
+		Configurations:   configurationService,
 	}
 	for _, option := range configure {
 		option(&deps, db)
